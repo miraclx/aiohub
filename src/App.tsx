@@ -105,7 +105,9 @@ function Hubbed() {
       update: change => {if (!shown.current) return; const next = structuredClone(shown.current); change(next); show(next); clearTimeout(timer.current); timer.current = window.setTimeout(settled, 400);},
     };
   }, []);
-  useEffect(() => {void live.reload();}, []);
+  // On opening the site, the player setups are also brought in step once: that is how an improvement to the site reaches a hub
+  // that nobody is changing anything on. It is a no-op when nothing differs.
+  useEffect(() => {void live.reload().then(() => {if (shown.current?.groups.length) void live.sync();});}, []);
   useEffect(() => {document.documentElement.dataset.theme = hub?.me.theme ?? 'dark';}, [hub?.me.theme]);
   // Other people change things too (someone joins, an app signs in). Pick that up when the tab is looked at again, and now and then while moving around.
   useEffect(() => {const look = () => {if (document.visibilityState === 'visible' && shown.current && Date.now() - loaded.current > 5000) {loaded.current = Date.now(); void live.reload();}}; document.addEventListener('visibilitychange', look); return () => document.removeEventListener('visibilitychange', look);}, []);
