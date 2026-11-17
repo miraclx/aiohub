@@ -32,7 +32,7 @@ function Frame({page, parts, mine, bar, toastView, children}: {page?: PageProps;
         {at === 'hub' && <HubPage {...page} tab={id ?? 'home'}/>}
         {at === 'activity' && <><div className="page-head"><h1>Activity</h1><p className="muted">What everyone is watching.</p></div><Activity hub={hub} pick toast={page.toast} live={page.live}/></>}
         {at === 'account' && <AccountPage {...page}/>}
-        {!!at && !['person', 'group', 'hub', 'activity', 'account', 'setup', 'join', 'me'].includes(at) && <div className="empty"><p>There’s no page at this address.</p><p><a className="link" href="#/">Go to People</a></p></div>}
+        {!!at && !['person', 'group', 'hub', 'activity', 'account'].includes(at) && <div className="empty"><p>There’s no page at this address.</p><p><a className="link" href="#/">Go to People</a></p></div>}
       </>)}
     </main>
     {toastView}
