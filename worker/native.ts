@@ -30,10 +30,21 @@ const STUCK: Synced = {state: 'stuck', message: 'Setting up the players did not 
 
 /* Playback choices, as AIOStreams settings. The three "how long to look" conditions were checked on staging. */
 const RESOLUTIONS = ['2160p', '1440p', '1080p', '720p', '576p', '480p', '360p', '240p', '144p', 'Unknown'];
-const QUALITY: Record<Settings['quality'], {excluded: string[]; first: string[]}> = {
-  saver: {excluded: ['2160p', '1440p'], first: ['720p', '1080p', '576p', '480p']},
-  balanced: {excluded: ['2160p'], first: ['1080p', '1440p', '720p']},
-  best: {excluded: [], first: ['2160p', '1440p', '1080p', '720p']},
+// Each choice also keeps files inside a bitrate band (bits per second; movies, then episodes) and lists the largest file inside it
+// first. A trial of 19 titles (2026-11-17) showed why: "largest first" alone put 20-48 Mbps remuxes on top, "smallest first" put
+// 0.2-0.6 GB copies squeezed to under 1 Mbps on top. The 1 Mbps floor keeps those out. A file whose bitrate is not known passes.
+// The data saver is about 1-2 GB a film in 1080p, and prefers HEVC and AV1, which keep a good picture at that size.
+// Many files list no bitrate (working it out needs a TMDB key in AIOStreams), so each choice also caps the file size (bytes;
+// movies, then episodes); the person's own size limit still applies when it is lower. Checked against AIOStreams on 2026-11-18.
+type Band = [number, number];
+const band = (movies: Band, series: Band) => ({movies, series});
+const QUALITY: Record<Settings['quality'], {excluded: string[]; first: string[]; bitrate: Record<string, {movies: Band; series: Band}>; encodes?: string[]; most?: [number, number]}> = {
+  saver: {excluded: ['2160p', '1440p'], first: ['1080p', '720p', '576p', '480p'], encodes: ['HEVC', 'AV1'], most: [3e9, 1.5e9],
+    bitrate: {global: band([0.5e6, 3e6], [0.5e6, 3e6]), '1080p': band([0.8e6, 2.5e6], [0.6e6, 2.5e6]), '720p': band([0.5e6, 2e6], [0.5e6, 2e6])}},
+  balanced: {excluded: ['2160p'], first: ['1080p', '1440p', '720p'], most: [15e9, 6e9],
+    bitrate: {global: band([0.6e6, 12e6], [0.5e6, 10e6]), '1440p': band([1e6, 14e6], [1e6, 12e6]), '1080p': band([1e6, 10e6], [0.8e6, 8e6]), '720p': band([0.6e6, 6e6], [0.5e6, 5e6])}},
+  best: {excluded: [], first: ['2160p', '1440p', '1080p', '720p'],
+    bitrate: {global: band([0.6e6, 40e6], [0.5e6, 30e6]), '2160p': band([1e6, 40e6], [1e6, 30e6]), '1440p': band([1e6, 25e6], [1e6, 20e6]), '1080p': band([1e6, 20e6], [0.8e6, 15e6]), '720p': band([0.6e6, 8e6], [0.5e6, 6e6])}},
 };
 const SEARCH: Record<Settings['search'], {enabled: boolean; condition: string}> = {
   // Each waits for the library first: what is already in the debrid account must always be in the list, and it is listed first.
@@ -48,9 +59,13 @@ export function playback(stored: Stored, settings: Settings) {
   stored.excludedResolutions = quality.excluded;
   stored.preferredResolutions = [...quality.first, ...RESOLUTIONS.filter(item => !quality.first.includes(item) && !quality.excluded.includes(item))];
   stored.excludedQualities = ['CAM', 'SCR', 'TS', 'TC'];
-  stored.size = {...(stored.size as object ?? {}), global: {movies: [0, bytes], series: [0, bytes], anime: [0, bytes]}};
+  const movies = Math.min(bytes, quality.most?.[0] ?? bytes), series = Math.min(bytes, quality.most?.[1] ?? bytes);
+  stored.size = {...(stored.size as object ?? {}), global: {movies: [0, movies], series: [0, series], anime: [0, series]}};
   stored.preferredLanguages = [...settings.languages.filter(item => LANGUAGES.has(item)), 'Dual Audio', 'Multi'];
-  const order = settings.cachedFirst ? ['library', 'cached', 'resolution', 'language', 'quality', 'size'] : ['library', 'resolution', 'language', 'quality', 'cached', 'size'];
+  const {global, ...resolution} = quality.bitrate;
+  stored.bitrate = {useMetadataRuntime: false, global, resolution};
+  stored.preferredEncodes = quality.encodes ?? [];
+  const order = [...(settings.cachedFirst ? ['library', 'cached', 'resolution', 'language', 'quality'] : ['library', 'resolution', 'language', 'quality', 'cached']), ...(quality.encodes ? ['encode'] : []), 'size'];
   stored.sortCriteria = {...(stored.sortCriteria as object ?? {}), global: order.map(key => ({key, direction: 'desc'}))};
   stored.dynamicAddonFetching = SEARCH[settings.search] ?? SEARCH.balanced;
   // A tidy list: what is already owned is marked, the same file from two sources shows once, and each quality shows its best few.
@@ -122,6 +137,7 @@ function differences(above: Settings, own: Settings, keys: Map<string, string>, 
   say('excludedResolutions', a.excludedResolutions, b.excludedResolutions); say('preferredResolutions', a.preferredResolutions, b.preferredResolutions);
   say('size.global', (a.size as {global: unknown}).global, (b.size as {global: unknown}).global); say('preferredLanguages', a.preferredLanguages, b.preferredLanguages);
   say('sortCriteria.global', (a.sortCriteria as {global: unknown}).global, (b.sortCriteria as {global: unknown}).global); say('dynamicAddonFetching', a.dynamicAddonFetching, b.dynamicAddonFetching);
+  say('bitrate', a.bitrate, b.bitrate); say('preferredEncodes', a.preferredEncodes, b.preferredEncodes);
   say('formatter', label(above), label(own));
   for (const [id, source] of Object.entries(SOURCE)) {
     const was = id === 'library' || above.sources.includes(id), is = id === 'library' || own.sources.includes(id);

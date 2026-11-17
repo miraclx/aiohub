@@ -23,7 +23,7 @@ export function PlaybackEditor({hub, resolved: {values, from}, scope, set, reset
     <div className="section-head"><div><h2>Playback</h2><p className="muted">{who}</p></div></div>
     <h3 className="sub first">Picking a stream</h3>
     <div className="card settings">
-      <Setting title="Quality" hint={values.quality === 'saver' ? 'Smaller files, starts fastest.' : values.quality === 'best' ? 'Highest quality available.' : 'Good picture without huge files.'} {...line('quality')}>
+      <Setting title="Quality" hint={values.quality === 'saver' ? 'Small, efficient files: about 1 GB a film in 1080p. Starts fastest and suits slower connections.' : values.quality === 'best' ? 'Highest quality available.' : 'Good picture without huge files.'} {...line('quality')}>
         <Segments label="Quality" value={values.quality} onChange={value => set('quality', value)} options={[{value: 'saver', label: 'Data saver'}, {value: 'balanced', label: 'Balanced'}, {value: 'best', label: 'Best'}]}/></Setting>
       <Setting title="Largest file" hint={values.maxSizeGb >= 100 ? 'No limit.' : `Skip anything bigger than ${values.maxSizeGb} GB.`} {...line('maxSizeGb')}>
         <input type="range" min={1} max={100} step={1} value={values.maxSizeGb} aria-label="Largest file in gigabytes" onChange={event => set('maxSizeGb', Number(event.target.value), 'Size limit saved')}/></Setting>

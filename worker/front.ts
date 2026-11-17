@@ -29,6 +29,9 @@ function whereOf(request: Request) {
   return {place: [cf.city, cf.country].filter(Boolean).join(', ').slice(0, 60), net: String(cf.asOrganization ?? '').slice(0, 60)};
 }
 
+// Where each picture lives. Asking AIOStreams costs 0.2-1.8 s per poster (measured 2026-11-18), and the answer is a redirect that
+// rarely changes, so each running copy of the Worker remembers it for an hour and browsers keep it for a day. Adds no requests.
+const pictures = new Map<string, {location: string; until: number}>(), PICTURE = /^\/items\/[^/]+\/images\//, PICTURE_KEEP = 'public, max-age=86400';
 interface Upstream {user: string; pass: string; auth?: string}
 interface Answer {AccessToken: string; User: {Id: string; Name?: string}; SessionInfo?: Record<string, unknown>}
 interface Seat {person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string}
@@ -158,14 +161,16 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
   // anyone in the household, so it is never passed on; nobody switches user here, they sign in as themselves.
   if (lower.startsWith('/aiostreams/token')) return json(403, {Message: 'Not available here'});
   if (lower === '/users/authenticatebyname' && request.method === 'POST') return signIn(request, env, hub, base);
+  const picture = request.method === 'GET' && PICTURE.test(lower) ? `${hub}${path}${url.search}` : '', kept = picture ? pictures.get(picture) : undefined;
+  if (kept && kept.until > Date.now()) return new Response(null, {status: 302, headers: {...CORS, location: kept.location, 'cache-control': PICTURE_KEEP}});
 
   const token = tokenOf(request, url), id = token ? await sha(token) : '', seat = token ? await seatOf(env, hub, id) : null;
   if (token && !seat) return json(401, {Message: 'Unauthorized'});
   if (!seat && !reading) return json(401, {Message: 'Unauthorized'});
   if (seat) {
     if (lower === '/sessions/logout') {seats.delete(id); await env.DB.prepare('DELETE FROM devices WHERE id = ?').bind(id).run(); return new Response(null, {status: 204, headers: CORS});}
-    // Worded so it reads as a hold to talk about, not as being thrown out: it names whoever runs the hub.
-    if (seat.paused && PLAYS.test(lower)) {const owner = await env.DB.prepare('SELECT a.name FROM hubs h JOIN accounts a ON a.id = h.owner WHERE h.id = ?').bind(hub).first<{name: string}>(); return json(403, {Message: `Playing is on hold for now. Have a word with ${owner?.name || 'whoever runs this hub'}.`});}
+    // Deliberately vague: it says nothing about who switched it off or why, only that someone they know can sort it out.
+    if (seat.paused && PLAYS.test(lower)) return json(403, {Message: 'Huh, this can’t play right now. Whoever set you up can sort it out.'});
     if (now() - seat.seen > SEEN_EVERY) {const where = whereOf(request); seat.seen = now(); ctx.waitUntil(env.DB.prepare('UPDATE devices SET seen = ?, place = ?, net = ? WHERE id = ?').bind(seat.seen, where.place, where.net, id).run());}
   }
   const body = reading ? undefined : await request.text();
@@ -194,6 +199,11 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
   const location = upstream.headers.get('location');
   if (location) out.set('location', location.startsWith(env.UP_ORIGIN + MOUNT) ? base + location.slice((env.UP_ORIGIN + MOUNT).length) : location);
   out.set('x-hub-upstream-ms', String(Date.now() - started));
+  if (picture && upstream.status === 302 && location && !location.startsWith(env.UP_ORIGIN)) {
+    if (pictures.size > 5000) pictures.clear();
+    pictures.set(picture, {location, until: Date.now() + 3_600_000}); out.set('cache-control', PICTURE_KEEP);
+    return new Response(null, {status: 302, headers: out});
+  }
   if (!/json|text/.test(type)) return new Response(upstream.body, {status: upstream.status, headers: out});
 
   let text = await upstream.text();
