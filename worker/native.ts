@@ -36,8 +36,9 @@ const QUALITY: Record<Settings['quality'], {excluded: string[]; first: string[]}
   best: {excluded: [], first: ['2160p', '1440p', '1080p', '720p']},
 };
 const SEARCH: Record<Settings['search'], {enabled: boolean; condition: string}> = {
-  fast: {enabled: true, condition: 'count(cached(totalStreams)) >= 3 or totalTimeTaken > 3000'},
-  balanced: {enabled: true, condition: "count(cached(resolution(totalStreams,'2160p','1080p'))) >= 5 or (count(cached(totalStreams)) >= 1 and totalTimeTaken > 6000) or totalTimeTaken > 10000"},
+  // Each waits for the library first: what is already in the debrid account must always be in the list, and it is listed first.
+  fast: {enabled: true, condition: `"${SOURCE.library.name}" in queriedAddons and (count(cached(totalStreams)) >= 3 or totalTimeTaken > 3000)`},
+  balanced: {enabled: true, condition: `"${SOURCE.library.name}" in queriedAddons and (count(cached(resolution(totalStreams,'2160p','1080p'))) >= 5 or (count(cached(totalStreams)) >= 1 and totalTimeTaken > 6000) or totalTimeTaken > 10000)`},
   thorough: {enabled: false, condition: 'false'},
 };
 // AIOStreams refuses a whole save over one language name it does not know, so only names it listed on staging are ever sent.
@@ -52,6 +53,11 @@ export function playback(stored: Stored, settings: Settings) {
   const order = settings.cachedFirst ? ['library', 'cached', 'resolution', 'language', 'quality', 'size'] : ['library', 'resolution', 'language', 'quality', 'cached', 'size'];
   stored.sortCriteria = {...(stored.sortCriteria as object ?? {}), global: order.map(key => ({key, direction: 'desc'}))};
   stored.dynamicAddonFetching = SEARCH[settings.search] ?? SEARCH.balanced;
+  // A tidy list: what is already owned is marked, the same file from two sources shows once, and each quality shows its best few.
+  // Set once; if these are changed in AIOStreams itself (Advanced), the change is kept.
+  stored.checkOwned ??= true;
+  stored.deduplicator ??= {enabled: true, excludeAddons: [], multiGroupBehaviour: 'aggressive', keys: ['filename', 'infoHash'], cached: 'single_result', uncached: 'per_service', p2p: 'single_result'};
+  stored.resultLimits ??= {resolution: 5};
 }
 
 /* Subtitles come from OpenSubtitles, asked for in the chosen languages. Sources added by their link ride as presets of their own. */
