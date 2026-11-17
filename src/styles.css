@@ -361,8 +361,9 @@ a.primary.button { display: inline-flex; align-items: center; min-height: 34px; 
 .quiet-name input { min-height: 32px !important; border-color: transparent !important; background: transparent !important; font-weight: 600; padding: 0 6px !important; margin-left: -6px; }
 .quiet-name input:hover { background: var(--raised) !important; }
 .quiet-name input:focus { background: var(--bg) !important; border-color: var(--line) !important; }
-.group-order { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
-.group-order li { display: flex; align-items: center; gap: 6px; }
+.group-order { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 6px; }
+.group-order li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--raised); }
+.group-order li.dragging { opacity: .6; }
 .group-order li span { flex: 1; font-weight: 600; }
-.group-order button:disabled { opacity: .3; cursor: default; }
-.page-head > button { justify-self: start; }
+.page-head .title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.page-head .title-row .link { font-size: 14px; }

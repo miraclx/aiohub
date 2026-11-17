@@ -1,7 +1,7 @@
 /// <reference types="@cloudflare/workers-types" />
 export interface Env {
   ASSETS: Fetcher; DB: D1Database;
-  UP_ORIGIN: string; VAULT_KEY: string; CLAIM_CODE?: string; TMDB_CHECK?: string; MDBLIST_API?: string; AIOM_ORIGIN?: string; MAX_HUBS?: string; MAX_PEOPLE?: string;
+  UP_ORIGIN: string; VAULT_KEY: string; CLAIM_CODE?: string; TMDB_CHECK?: string; MDBLIST_API?: string; AIOM_ORIGIN?: string; MAX_HUBS?: string;
 }
 export const enc = new TextEncoder(), dec = new TextDecoder();
 /* The same settings, pointed at the servers this hub uses. A hub that has not chosen its own uses the site's. */

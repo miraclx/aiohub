@@ -6,7 +6,7 @@ import type {Cover, Level, Row} from './data';
 import {Art, Chips, NameField, Posters, Segments, Sheet, Switch, hash} from './ui';
 
 type Pick = {id: string; title: string; kind: string; source: string};
-function Grip({handleRef, label}: {handleRef: (element: Element | null) => void; label: string}) {
+export function Grip({handleRef, label}: {handleRef: (element: Element | null) => void; label: string}) {
   return <button type="button" ref={handleRef} className="grip" aria-label={label}><i/><i/><i/></button>;
 }
 function RowCard({row, index, tag, locked, onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
@@ -32,7 +32,7 @@ function FolderItem({cover, index, onRename}: {cover: Cover; index: number; onRe
     <Grip handleRef={sortable.handleRef} label={`Move ${cover.title}`}/><span className="folder-art" style={{backgroundImage: `url(${cover.image})`}}/><NameField label={`Name of ${cover.title}`} value={cover.title} onSave={onRename}/>
   </li>;
 }
-function moved<T>(list: T[], from: number, to: number) {const next = [...list]; const [item] = next.splice(from, 1); next.splice(to, 0, item); return next;}
+export function moved<T>(list: T[], from: number, to: number) {const next = [...list]; const [item] = next.splice(from, 1); next.splice(to, 0, item); return next;}
 
 export interface HomeProps {
   rows: Row[]; level: Level; onChange: (rows: Row[], note: string) => void;
@@ -110,4 +110,17 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
       }}><ol className="folders">{folder.covers.map((cover, index) => <FolderItem key={cover.image} cover={cover} index={index} onRename={title => set(folder.id, {covers: folder.covers!.map(item => item.image === cover.image ? {...item, title} : item)}, 'Renamed')}/>)}</ol></DragDropProvider></>}
     </Sheet>}
   </section>;
+}
+
+/* The order groups are listed in, by dragging. */
+function GroupLine({id, name, index}: {id: string; name: string; index: number}) {
+  const sortable = useSortable({id, index});
+  return <li ref={sortable.ref} className={sortable.isDragging ? 'dragging' : ''}><Grip handleRef={sortable.handleRef} label={`Move ${name}`}/><span>{name}</span></li>;
+}
+export function GroupOrder({groups, onChange}: {groups: {id: string; name: string}[]; onChange: (from: number, to: number) => void}) {
+  return <DragDropProvider onDragEnd={event => {
+    if (event.canceled || !isSortableOperation(event.operation) || !event.operation.source) return;
+    const from = groups.findIndex(group => group.id === String(event.operation.source!.id)), to = event.operation.source.index;
+    if (from >= 0 && from !== to) onChange(from, to);
+  }}><ol className="group-order">{groups.map((group, index) => <GroupLine key={group.id} id={group.id} name={group.name} index={index}/>)}</ol></DragDropProvider>;
 }

@@ -3,5 +3,5 @@
   "assets": {"directory": "./dist", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": ["/h/*", "/api/*"]},
   "d1_databases": [{"binding": "DB", "database_name": "aiohub", "migrations_dir": "migrations"}],
   // How many hubs and how many people in total this copy of the site will carry. UP_ORIGIN and AIOM_ORIGIN are the AIOStreams and AIOMetadata servers hubs use unless they choose their own. Secrets: VAULT_KEY, CLAIM_CODE.
-  "vars": {"MAX_HUBS": "1", "MAX_PEOPLE": "60", "UP_ORIGIN": "https://aiostreams.fortheweak.cloud", "AIOM_ORIGIN": "https://aiometadata.fortheweak.cloud"}
+  "vars": {"MAX_HUBS": "1", "UP_ORIGIN": "https://aiostreams.fortheweak.cloud", "AIOM_ORIGIN": "https://aiometadata.fortheweak.cloud"}
 }

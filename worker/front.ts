@@ -52,7 +52,7 @@ async function mint(env: Env, hub: string, person: string, jf: string, upstream:
 }
 async function seatOf(env: Env, hub: string, id: string): Promise<Seat | null> {
   const known = seats.get(id); if (known && Date.now() - known.at < REMEMBER) return known;
-  const row = await env.DB.prepare("SELECT d.person, d.seen, d.app, d.name, p.paused, p.jf, s.value FROM devices d JOIN people p ON p.hub = d.hub AND p.id = d.person LEFT JOIN secrets s ON s.hub = d.hub AND s.owner = d.person AND s.kind = 'upstream' WHERE d.id = ? AND d.hub = ?")
+  const row = await env.DB.prepare("SELECT d.person, d.seen, d.app, d.name, p.paused OR coalesce(json_extract(g.data, '$.paused'), 0) AS paused, p.jf, s.value FROM devices d JOIN people p ON p.hub = d.hub AND p.id = d.person LEFT JOIN groups g ON g.hub = p.hub AND g.id = p.grp LEFT JOIN secrets s ON s.hub = d.hub AND s.owner = d.person AND s.kind = 'upstream' WHERE d.id = ? AND d.hub = ?")
     .bind(id, hub).first<{person: string; seen: number; app: string; name: string; paused: number; jf: string; value: string | null}>();
   seats.delete(id); if (!row) return null;
   const upstream = await unseal<Upstream>(env, `${hub}/${row.person}/upstream`, row.value), answer = upstream?.auth ? JSON.parse(upstream.auth) as Answer : null;

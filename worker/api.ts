@@ -60,7 +60,7 @@ const cleanPassword = (value: unknown) => typeof value === 'string' && value.len
 
 /* ---------- rows as stored ---------- */
 interface HubData {host: string; hostUrl: string; metaUrl?: string; missing?: string[]; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; order?: string[]}
-interface GroupData {rows: Row[] | null; settings: Overrides}
+interface GroupData {rows: Row[] | null; settings: Overrides; paused?: boolean}
 interface PersonData {rows: Row[] | null; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; trakt: boolean; lists: boolean}
 interface HubRow {id: string; code: string; owner: string; data: string; version: number}
 interface GroupRow {id: string; name: string; data: string; version: number}
@@ -146,7 +146,7 @@ async function saveHub(env: Env, who: Who, body: Body) {
   versioned(done.meta.changes); return {v: Number(body.v) + 1};
 }
 async function saveGroup(env: Env, who: Who, id: string, body: Body) {
-  const data: GroupData = {rows: cleanRows(body.rows), settings: cleanSettings(body.settings ?? {}, false)}, name = cleanName(body.name);
+  const data: GroupData = {rows: cleanRows(body.rows), settings: cleanSettings(body.settings ?? {}, false), ...(flag(body.paused) ? {paused: true} : {})}, name = cleanName(body.name);
   if (body.v === undefined) {
     if ((await env.DB.prepare('SELECT COUNT(*) AS n FROM groups WHERE hub = ?').bind(who.hub.id).first<{n: number}>())!.n >= 40) bad(400, 'That is the most groups a hub can have');
     await env.DB.prepare('INSERT INTO groups (hub, id, name, data, created) VALUES (?, ?, ?, ?, ?)').bind(who.hub.id, cleanId(id), name, JSON.stringify(data), now()).run().catch(() => bad(409, 'A group with that name already exists'));
@@ -189,8 +189,6 @@ async function savePerson(env: Env, who: Who, id: string, body: Body) {
   if (!await env.DB.prepare('SELECT 1 FROM groups WHERE hub = ? AND id = ?').bind(hub, grp).first()) bad(400, 'That group is gone');
   if (!current) {
     if (body.v !== undefined) bad(409, 'This person was removed somewhere else');
-    const total = (await env.DB.prepare('SELECT COUNT(*) AS n FROM people').first<{n: number}>())!.n;
-    if (total >= Number(env.MAX_PEOPLE ?? 60)) bad(403, 'This site is full for now. No more people can be added.');
     if ((await env.DB.prepare('SELECT COUNT(*) AS n FROM people WHERE hub = ?').bind(hub).first<{n: number}>())!.n >= MOST_PEOPLE) bad(403, `A hub carries up to ${MOST_PEOPLE} people for now.`);
     const invite = newToken('i');
     // The name is what they sign in with, so it has to be theirs alone in this hub.
@@ -472,7 +470,18 @@ async function advanced(request: Request, site: Env, who: Who, body: Body) {
   return {
     aiostreams: players ? {open: sealed ? `${up}/stremio/${players.uuid}/${encodeURIComponent(sealed)}/configure` : `${up}/stremio/configure`, id: players.uuid, password: players.password} : null,
     aiometadata: home ? {open: `${home.at ?? env.AIOM_ORIGIN}/stremio/${home.uuid}/configure`, id: home.uuid, password: home.password} : null,
+    // The separate AIOMetadata setups a group or a person has while their Home, looks or accounts differ from the shared one.
+    own: await ownDoors(env, who.hub.id),
   };
+}
+async function ownDoors(env: Env, hub: string) {
+  const owners = (await env.DB.prepare("SELECT s.owner, coalesce(p.name, g.name) AS name FROM secrets s LEFT JOIN people p ON p.hub = s.hub AND p.id = s.owner LEFT JOIN groups g ON g.hub = s.hub AND s.owner = '#g:' || g.id WHERE s.hub = ? AND s.kind = 'catalogs' AND s.owner != ?").bind(hub, HUB_OWNER).all<{owner: string; name: string | null}>()).results;
+  const doors = [];
+  for (const row of owners) {
+    const made = await getSecret<{uuid: string; password: string; at?: string}>(env, hub, row.owner, 'catalogs');
+    if (made) doors.push({name: row.name ?? 'Someone removed', group: row.owner.startsWith('#g:'), open: `${made.at ?? env.AIOM_ORIGIN}/stremio/${made.uuid}/configure`, id: made.uuid, password: made.password});
+  }
+  return doors;
 }
 async function removeHub(request: Request, env: Env, who: Who, body: Body) {
   const key = guesses(request, `site:${who.account!.username}`), stored = await env.DB.prepare('SELECT pass FROM accounts WHERE id = ?').bind(who.account!.id).first<{pass: string}>();

@@ -90,6 +90,13 @@ test('the manager builds a hub', async () => {
   const saved = await owner('PUT', '/api/hub', {...hub, defaults: {...hub.defaults, quality: 'best'}});
   assert.equal(saved.status, 200); assert.equal(saved.body.v, 2);
   assert.equal((await owner('PUT', '/api/hub', {...hub, v: 1})).status, 409);
+  // Groups are listed in the manager's order, and a whole group can be paused.
+  assert.equal((await owner('PUT', '/api/hub', {...hub, defaults: {...hub.defaults, quality: 'best'}, order: ['friends', 'family'], v: 2})).status, 200);
+  assert.deepEqual((await owner('GET', '/api/state')).body.hub.groups.map(group => group.id), ['friends', 'family']);
+  assert.equal((await owner('PUT', '/api/groups/friends', {name: 'Friends', rows: null, settings: {quality: 'saver'}, paused: true, v: 1})).status, 200);
+  assert.equal((await owner('GET', '/api/state')).body.hub.groups.find(group => group.id === 'friends').paused, true);
+  assert.equal((await owner('PUT', '/api/groups/friends', {name: 'Friends', rows: null, settings: {quality: 'saver'}, v: 2})).status, 200);
+  assert.equal((await owner('PUT', '/api/hub', {...hub, defaults: {...hub.defaults, quality: 'best'}, order: ['family', 'friends'], v: 3})).status, 200);
 });
 test('sign-in details load one person at a time and never ride in the page', async () => {
   const state = (await owner('GET', '/api/state')).body;

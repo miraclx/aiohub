@@ -3,7 +3,7 @@ import {QRCodeSVG} from 'qrcode.react';
 import {SAMPLE, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, ownLists, personRows, resolve, samplePassword, samplePin, slug, traktRows} from './data';
 import type {Group, Hub, Person, Row, Settings} from './data';
 import {Activity} from './activity';
-import {HomeEditor} from './home';
+import {GroupOrder, HomeEditor, moved} from './home';
 import {PlaybackEditor, SourcesEditor} from './settings';
 import type {EditorProps} from './settings';
 import {addPasskey, canPasskey, usePasskey} from './live';
@@ -66,15 +66,15 @@ export function PeoplePage(page: PageProps) {
   const [playing, setPlaying] = useState<Record<string, string>>({});
   useEffect(() => {if (!page.live) return; void page.live.call<{now: number; plays: {person: string; title: string; playing: number; updated: number}[]}>('GET', '/api/activity').then(found => setPlaying(Object.fromEntries(found.plays.filter(play => play.playing && found.now - play.updated < 600).reverse().map(play => [play.person, play.title]))), () => {});}, [hub.v]);
   return <>
-    <div className="page-head"><h1>People</h1><p className="muted">Everyone you share streaming with. Each person gets their own Home.</p>{hub.groups.length > 1 && <button type="button" className="ghost small" onClick={() => setOrdering(true)}>Reorder groups</button>}</div>
+    <div className="page-head"><div className="title-row"><h1>People</h1>{hub.groups.length > 1 && <button type="button" className="link" onClick={() => setOrdering(true)}>Reorder groups</button>}</div><p className="muted">Everyone you share streaming with. Each person gets their own Home.</p></div>
     {hub.groups.map(group => {
       const people = hub.people.filter(person => person.groupId === group.id);
       return <section key={group.id} className="group">
-        <div className="group-head"><h2>{group.name}</h2><span className="group-links">{SAMPLE && <button type="button" className="link" onClick={soon(toast, `the ${group.name} player`)}>Watch</button>}<a className="link" href={`#/group/${group.id}`}>Group settings</a></span></div>
+        <div className="group-head"><h2>{group.name}{group.paused && <em className="tag">Paused</em>}</h2><span className="group-links">{SAMPLE && <button type="button" className="link" onClick={soon(toast, `the ${group.name} player`)}>Watch</button>}<a className="link" href={`#/group/${group.id}`}>Group settings</a></span></div>
         <ul className="people">{people.map(person => <li key={person.id}><a href={`#/person/${person.id}`}>
           <Avatar name={person.name}/>
-          <span className="person-text"><strong>{person.name}</strong><small>{person.paused ? 'Paused' : playing[person.id] ? `Watching ${playing[person.id]}` : person.joined ? `${personRows(hub, person).filter(row => row.on).length} rows on Home${person.rows || Object.keys(person.settings).length ? ' · personalized' : ''}` : 'Link not opened yet'}</small></span>
-          <span className={`dot${person.paused ? ' paused' : person.joined ? ' ok' : ''}`} aria-label={person.paused ? 'Paused' : person.joined ? 'Joined' : 'Waiting'}/>
+          <span className="person-text"><strong>{person.name}</strong><small>{person.paused || group.paused ? 'Paused' : playing[person.id] ? `Watching ${playing[person.id]}` : person.joined ? `${personRows(hub, person).filter(row => row.on).length} rows on Home${person.rows || Object.keys(person.settings).length ? ' · personalized' : ''}` : 'Link not opened yet'}</small></span>
+          <span className={`dot${person.paused || group.paused ? ' paused' : person.joined ? ' ok' : ''}`} aria-label={person.paused || group.paused ? 'Paused' : person.joined ? 'Joined' : 'Waiting'}/>
         </a></li>)}
           <li><button type="button" className="add-person" onClick={() => {setAdding(group.id); setName(''); setFrom('');}}><span className="avatar plus" aria-hidden="true">+</span><span className="person-text"><strong>Add someone to {group.name}</strong></span></button></li>
         </ul>
@@ -94,10 +94,8 @@ export function PeoplePage(page: PageProps) {
       </form>
     </Sheet>}
     {ordering && <Sheet title="Reorder groups" onClose={() => setOrdering(false)}>
-      <ul className="group-order">{hub.groups.map((group, at) => {
-        const shift = (by: number) => update(next => {const [item] = next.groups.splice(at, 1); next.groups.splice(at + by, 0, item);});
-        return <li key={group.id}><span>{group.name}</span><button type="button" className="ghost small" aria-label={`Move ${group.name} up`} disabled={!at} onClick={() => shift(-1)}>↑</button><button type="button" className="ghost small" aria-label={`Move ${group.name} down`} disabled={at === hub.groups.length - 1} onClick={() => shift(1)}>↓</button></li>;
-      })}</ul>
+      <p className="muted small">Drag a group to where it should be.</p>
+      <GroupOrder groups={hub.groups} onChange={(from, to) => update(next => {next.groups = moved(next.groups, from, to);})}/>
     </Sheet>}
     {grouping && <Sheet title="New group" onClose={() => setGrouping(false)}>
       <form className="stack" onSubmit={event => {
@@ -248,7 +246,7 @@ export function PersonPage(page: PageProps & {id: string; tab: string}) {
         {hub.groups.length > 1 && <Setting title="Group" hint="Moving keeps their own changes and follows the new group for the rest."><select aria-label="Group" value={person.groupId} onChange={event => edit(target => {target.groupId = event.target.value;}, 'Moved')}>{hub.groups.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Setting>}
         {live && person.joined && <Setting title="Forgotten password" hint={`Lets ${person.name} choose a new password for their page through the invite link. Their apps stay signed in.`}><button type="button" className="ghost small" onClick={() => void live.call('POST', `/api/people/${id}/reset`, {}).then(() => live.reload()).then(() => toast('They can choose a new password with their link'), fail(toast))}>Reset</button></Setting>}
         <Setting title="Make a copy" hint="A new person with the same Home, playback and permissions. Accounts and devices are not copied."><button type="button" className="ghost small" onClick={() => {setCopying(true); setName('');}}>Copy</button></Setting>
-        <Setting title="Pause playing" hint={person.paused ? `${person.name} can browse and search, but nothing plays. Something already playing runs to its end.` : 'They can still browse and search, but nothing new plays. Nothing is deleted.'}><Switch label="Pause playing" checked={!!person.paused} onChange={value => edit(target => {target.paused = value;}, value ? `${person.name} is paused` : `${person.name} can play again`)}/></Setting>
+        <Setting title="Pause playing" hint={group.paused && !person.paused ? `All of ${group.name} is paused, ${person.name} with them. Turn it off in the group’s settings.` : person.paused ? `${person.name} can browse and search, but nothing plays. Something already playing runs to its end.` : 'They can still browse and search, but nothing new plays. Nothing is deleted.'}><Switch label="Pause playing" checked={!!person.paused} onChange={value => edit(target => {target.paused = value;}, value ? `${person.name} is paused` : `${person.name} can play again`)}/></Setting>
       </div>
       {SAMPLE && <><h3 className="sub">Advanced</h3>
       <div className="card settings"><Setting title="Open in AIOMetadata" hint={`Everything about ${person.name}’s catalogs that isn’t covered here.`}><button type="button" className="ghost small" onClick={soon(toast, 'their AIOMetadata setup')}>Open</button></Setting></div></>}
@@ -286,6 +284,7 @@ export function GroupPage(page: PageProps & {id: string; tab: string}) {
       <div className="card settings">
         <Setting title="Name"><NameField label="Group name" value={group.name} onSave={value => edit(target => {target.name = value;}, 'Renamed')}/></Setting>
         {SAMPLE && <Setting title="Shared player" hint="One page for a shared screen. Everyone in the group is listed, each behind their PIN."><button type="button" className="ghost small" onClick={soon(toast, `the ${group.name} player`)}>Watch</button></Setting>}
+        <Setting title="Pause playing" hint={group.paused ? `Nobody in ${group.name} can start anything. They can still browse and search. Something already playing runs to its end.` : 'Everyone in this group can still browse and search, but nothing new plays. Nothing is deleted.'}><Switch label="Pause playing for the group" checked={!!group.paused} onChange={value => edit(target => {target.paused = value;}, value ? `${group.name} is paused` : `${group.name} can play again`)}/></Setting>
         <Setting title="Make a copy" hint="A new group with the same Home, playback and sources. No people."><button type="button" className="ghost small" onClick={() => {let next = slug(`${group.name} copy`); while (hub.groups.some(item => item.id === next)) next += '-2'; update(draft => {draft.groups.push({id: next, name: `${group.name} copy`, rows: structuredClone(group.rows), settings: structuredClone(group.settings)});}); toast('Group copied'); go(`/group/${next}/settings`);}}>Copy</button></Setting>
       </div>
       {SAMPLE && <><h3 className="sub">Advanced</h3>
@@ -325,23 +324,25 @@ export function HubPage(page: PageProps & {tab: string}) {
 /* Which AIOStreams and AIOMetadata servers the hub's setups live on. The site checks an address before keeping it. */
 /* The way into the hub's own setups on AIOStreams and AIOMetadata, behind the manager's password. */
 interface Door {open: string; id: string; password: string}
+interface Doors {aiostreams: Door | null; aiometadata: Door | null; own?: (Door & {name: string; group: boolean})[]}
 function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
-  const [asking, setAsking] = useState(false), [pass, setPass] = useState(''), [busy, setBusy] = useState(false), [doors, setDoors] = useState<{aiostreams: Door | null; aiometadata: Door | null} | null>(null);
+  const [asking, setAsking] = useState(false), [pass, setPass] = useState(''), [busy, setBusy] = useState(false), [doors, setDoors] = useState<Doors | null>(null);
   const copy = (text: string) => () => {void navigator.clipboard?.writeText(text).catch(() => {}); toast('Copied');};
-  const door = (name: string, found: Door | null, note: string) => <Setting column title={name} hint={found ? note : 'Not made yet. It appears once the hub has its keys.'}>
+  const door = (name: string, found: Door | null, note: string) => <Setting key={name} column title={name} hint={found ? note : 'Not made yet. It appears once the hub has its keys.'}>
     {found && <dl className="creds inner"><div><dt>ID</dt><dd><code>{found.id}</code><button type="button" className="ghost small" onClick={copy(found.id)}>Copy</button></dd></div>
       <div><dt>Password</dt><dd><Secret value={found.password} label={`${name} password`} onCopy={() => toast('Copied')}/></dd></div>
       <div><dt></dt><dd><a className="ghost small button" href={found.open} target="_blank" rel="noreferrer">Open {name}</a></dd></div></dl>}</Setting>;
   return <section>
     <div className="section-head"><div><h2>Advanced</h2><p className="muted">Step into the setups behind your hub, on AIOStreams and AIOMetadata themselves, for anything this site doesn’t offer.</p></div></div>
     {!doors ? <div className="card settings"><Setting column title="Open the setups" hint="These are the real keys to your hub’s setups, so your password is asked for again. Anyone holding them can change the setups directly.">
-      {asking ? <form className="field-row" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call<{aiostreams: Door | null; aiometadata: Door | null}>('POST', '/api/hub/advanced', {password: pass}).then(found => {setDoors(found); setPass('');}, (error: Error) => toast(error.message)).finally(() => setBusy(false));}}>
+      {asking ? <form className="field-row" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call<Doors>('POST', '/api/hub/advanced', {password: pass}).then(found => {setDoors(found); setPass('');}, (error: Error) => toast(error.message)).finally(() => setBusy(false));}}>
         <input type="password" aria-label="Your password" placeholder="Your password" autoComplete="current-password" autoFocus value={pass} onChange={event => setPass(event.target.value)}/><button className="primary" disabled={busy || !pass}>Show</button></form>
         : <button type="button" className="ghost small" onClick={() => setAsking(true)}>Show</button>}</Setting></div>
     : <div className="card settings">
-      {door('AIOStreams', doors.aiostreams, 'Sources, filters, sorting and the stream label. Sign in there with this ID and password.')}
+      {door('AIOStreams', doors.aiostreams, 'Sources, filters, sorting and the stream label. If it asks, use this ID and password.')}
       {door('AIOMetadata', doors.aiometadata, 'Catalogs, collections and posters for the shared Home. It asks for this password.')}
-      <Setting column title="What the hub keeps putting back" hint="The hub rewrites the things it manages each time you change something here: debrid account, the sources it lists, quality and size, languages, the stream label, people, Home rows and collections. Anything else you add there is left alone. A group’s or a person’s own Home lives in a separate setup that is not shown here."><button type="button" className="ghost small" onClick={() => setDoors(null)}>Hide</button></Setting>
+      {(doors.own ?? []).map(found => door(`AIOMetadata for ${found.name}`, found, `${found.group ? `The ${found.name} group’s` : `${found.name}’s`} own Home, looks and accounts. The hub made it because they differ from the shared one, and removes it once they don’t.`))}
+      <Setting column title="What the hub keeps putting back" hint="The hub rewrites the things it manages each time you change something here: debrid account, the sources it lists, quality and size, languages, the stream label, people, Home rows and collections. Anything else you add there is left alone. A group’s or a person’s own Home lives in its own AIOMetadata setup, listed above when there is one."><button type="button" className="ghost small" onClick={() => setDoors(null)}>Hide</button></Setting>
     </div>}
   </section>;
 }
@@ -481,7 +482,7 @@ export function JoinPage(page: PageProps & {id: string; tab: string; base?: stri
   const tabs: [string, string][] = [['home', 'Home'], ...(person.can.playback ? [['playback', 'Playback'] as [string, string]] : []), ['devices', 'Devices'], ['accounts', 'Accounts'], ['activity', 'Activity'], ['you', 'You']];
   return <>
     <div className="person-head"><Avatar name={person.name} size={64}/><div><h1>{person.name}</h1><p className="muted">{hub.me.name ? `Shared with you by ${hub.me.name}` : 'Shared with you'}</p></div></div>
-    {person.paused && <div className="notice"><span>{hub.me.name ? `${hub.me.name} has paused playing for now.` : 'Playing is paused for now.'} You can still browse and set things up.</span></div>}
+    {(person.paused || hub.groups.find(item => item.id === person.groupId)?.paused) && <div className="notice"><span>{hub.me.name ? `${hub.me.name} has paused playing for now.` : 'Playing is paused for now.'} You can still browse and set things up.</span></div>}
     <Tabs base={base} tab={tab} tabs={tabs}/>
     {tab === 'home' && ((SAMPLE && !person.trakt) || !person.devices.length) && <div className="todo">
       {!person.devices.length && <a href={`#${base}/devices`}><span className="check" aria-hidden="true">→</span><span><strong>Watch on a device</strong><small>Phone, TV or laptop. Takes a minute.</small></span></a>}

@@ -39,7 +39,7 @@ Inside the site you will need a debrid key (TorBox, Real-Debrid and so on), a fr
 
 ## Things to know
 
-- `wrangler.jsonc` holds the limits (`MAX_HUBS`, `MAX_PEOPLE`) and the AIOStreams and AIOMetadata servers hubs use unless
+- `wrangler.jsonc` holds the hub limit (`MAX_HUBS`) and the AIOStreams and AIOMetadata servers hubs use unless
   they choose their own (`UP_ORIGIN`, `AIOM_ORIGIN`). The defaults are the public ForTheWeak servers.
 - The hub only ever touches setups it created itself on those servers, and deletes them when the hub is deleted.
 - The "Get an account" links for TorBox and Real-Debrid in `src/data.ts` are the original author's referral links. Change or
