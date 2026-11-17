@@ -59,7 +59,7 @@ const cleanId = (value: string) => /^[a-z0-9][a-z0-9-]{0,39}$/.test(value) ? val
 const cleanPassword = (value: unknown) => typeof value === 'string' && value.length >= 8 && value.length <= 200 ? value : bad(400, 'Use a password of at least 8 characters');
 
 /* ---------- rows as stored ---------- */
-interface HubData {host: string; hostUrl: string; metaUrl?: string; missing?: string[]; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]}
+interface HubData {host: string; hostUrl: string; metaUrl?: string; missing?: string[]; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; order?: string[]}
 interface GroupData {rows: Row[] | null; settings: Overrides}
 interface PersonData {rows: Row[] | null; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; trakt: boolean; lists: boolean}
 interface HubRow {id: string; code: string; owner: string; data: string; version: number}
@@ -117,7 +117,8 @@ async function state(env: Env, who: Who) {
   const persons = people.results as unknown as PersonRow[];
   if (mine && !persons.length) return null;
   // An invited person gets themselves, their group and the defaults. Never the other people, the server choice or the manager's account.
-  const shown = (groups.results as unknown as GroupRow[]).filter(group => !mine || group.id === persons[0].grp);
+  const rank = (id: string) => {const at = data.order?.indexOf(id) ?? -1; return at < 0 ? Infinity : at;};
+  const shown = (groups.results as unknown as GroupRow[]).filter(group => !mine || group.id === persons[0].grp).map((group, at) => ({group, at})).sort((a, b) => rank(a.group.id) - rank(b.group.id) || a.at - b.at).map(item => item.group);
   return {
     role: mine ? 'person' : 'owner', personId: mine ?? null,
     hub: {
@@ -138,6 +139,8 @@ async function saveHub(env: Env, who: Who, body: Body) {
     // Accounts are added and removed with their key, one at a time, never as part of a page save.
     services: was.services,
     addons: cleanAddons(body.addons), defaults: cleanSettings(body.defaults, true) as Settings, rows: cleanRows(body.rows) ?? bad(400, 'Home rows are needed'),
+    // The order groups are shown in. Groups not named yet go after the rest, oldest first.
+    order: Array.isArray(body.order) ? body.order.filter((id): id is string => typeof id === 'string').slice(0, 40).map(id => id.slice(0, 40)) : was.order,
   };
   const done = await env.DB.prepare('UPDATE hubs SET data = ?, version = version + 1 WHERE id = ? AND version = ?').bind(JSON.stringify(data), who.hub.id, Number(body.v)).run();
   versioned(done.meta.changes); return {v: Number(body.v) + 1};

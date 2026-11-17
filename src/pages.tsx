@@ -67,10 +67,11 @@ export function PeoplePage(page: PageProps) {
   useEffect(() => {if (!page.live) return; void page.live.call<{now: number; plays: {person: string; title: string; playing: number; updated: number}[]}>('GET', '/api/activity').then(found => setPlaying(Object.fromEntries(found.plays.filter(play => play.playing && found.now - play.updated < 600).reverse().map(play => [play.person, play.title]))), () => {});}, [hub.v]);
   return <>
     <div className="page-head"><h1>People</h1><p className="muted">Everyone you share streaming with. Each person gets their own Home.</p></div>
-    {hub.groups.map(group => {
+    {hub.groups.map((group, at) => {
       const people = hub.people.filter(person => person.groupId === group.id);
+      const shift = (by: number) => update(next => {const [item] = next.groups.splice(at, 1); next.groups.splice(at + by, 0, item);});
       return <section key={group.id} className="group">
-        <div className="group-head"><h2>{group.name}</h2><span className="group-links">{SAMPLE && <button type="button" className="link" onClick={soon(toast, `the ${group.name} player`)}>Watch</button>}<a className="link" href={`#/group/${group.id}`}>Group settings</a></span></div>
+        <div className="group-head"><h2>{group.name}</h2><span className="group-links">{hub.groups.length > 1 && <span className="group-order"><button type="button" className="link" aria-label={`Move ${group.name} up`} title="Move up" disabled={!at} onClick={() => shift(-1)}>↑</button><button type="button" className="link" aria-label={`Move ${group.name} down`} title="Move down" disabled={at === hub.groups.length - 1} onClick={() => shift(1)}>↓</button></span>}{SAMPLE && <button type="button" className="link" onClick={soon(toast, `the ${group.name} player`)}>Watch</button>}<a className="link" href={`#/group/${group.id}`}>Group settings</a></span></div>
         <ul className="people">{people.map(person => <li key={person.id}><a href={`#/person/${person.id}`}>
           <Avatar name={person.name}/>
           <span className="person-text"><strong>{person.name}</strong><small>{person.paused ? 'Paused' : playing[person.id] ? `Watching ${playing[person.id]}` : person.joined ? `${personRows(hub, person).filter(row => row.on).length} rows on Home${person.rows || Object.keys(person.settings).length ? ' · personalized' : ''}` : 'Link not opened yet'}</small></span>

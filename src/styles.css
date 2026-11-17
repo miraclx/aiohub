@@ -361,3 +361,5 @@ a.primary.button { display: inline-flex; align-items: center; min-height: 34px; 
 .quiet-name input { min-height: 32px !important; border-color: transparent !important; background: transparent !important; font-weight: 600; padding: 0 6px !important; margin-left: -6px; }
 .quiet-name input:hover { background: var(--raised) !important; }
 .quiet-name input:focus { background: var(--bg) !important; border-color: var(--line) !important; }
+.group-order { display: inline-flex; gap: 10px; }
+.group-order button:disabled { opacity: .3; cursor: default; }

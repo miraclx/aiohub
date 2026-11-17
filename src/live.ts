@@ -19,7 +19,7 @@ export async function call<T = Record<string, unknown>>(method: string, path: st
   return data;
 }
 
-const hubBody = (hub: Hub) => ({host: hub.host, hostUrl: hub.hostUrl, addons: hub.addons, defaults: hub.defaults, rows: hub.rows});
+const hubBody = (hub: Hub) => ({host: hub.host, hostUrl: hub.hostUrl, addons: hub.addons, defaults: hub.defaults, rows: hub.rows, order: hub.groups.map(group => group.id)});
 const groupBody = (group: Group) => ({name: group.name, rows: group.rows, settings: group.settings});
 const personBody = (person: Person) => ({name: person.name, groupId: person.groupId, rows: person.rows, settings: person.settings, can: person.can, paused: !!person.paused, trakt: person.trakt, lists: person.lists});
 const differs = (a: unknown, b: unknown) => JSON.stringify(a) !== JSON.stringify(b);
@@ -42,7 +42,10 @@ export function changes(saved: Hub, shown: Hub, role: 'owner' | 'person'): Job[]
 }
 /* Records one finished save in a hub: the new version number, and in the saved copy also what was sent. */
 export function settle(hub: Hub, job: Job, v: number | undefined, shown?: Hub) {
-  if (job.kind === 'hub') {hub.v = v; if (shown) Object.assign(hub, structuredClone(hubBody(shown)));}
+  if (job.kind === 'hub') {
+    hub.v = v;
+    if (shown) {const {order, ...rest} = hubBody(shown), rank = (id: string) => {const at = order.indexOf(id); return at < 0 ? order.length : at;}; Object.assign(hub, structuredClone(rest)); hub.groups.sort((a, b) => rank(a.id) - rank(b.id));}
+  }
   if (job.kind === 'me' && shown) hub.me = {...hub.me, name: shown.me.name, theme: shown.me.theme};
   for (const kind of ['group', 'person'] as const) if (job.kind === kind) {
     const key = kind === 'group' ? 'groups' : 'people', items = hub[key] as (Group | Person)[], at = items.findIndex(item => item.id === job.id);
