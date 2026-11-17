@@ -23,6 +23,11 @@ function clientOf(request: Request) {
   const part = (name: string) => {const found = new RegExp(`${name}="?([^",]+)"?`, 'i').exec(header)?.[1] ?? ''; try {return decodeURIComponent(found).slice(0, 80);} catch {return found.slice(0, 80);}};
   return {device: part('DeviceId'), name: part('Device'), app: part('Client')};
 }
+/* Roughly where a request came from, as Cloudflare places it: city and country, and the network's name. The address is not kept. */
+function whereOf(request: Request) {
+  const cf = (request.cf ?? {}) as {city?: string; country?: string; asOrganization?: string};
+  return {place: [cf.city, cf.country].filter(Boolean).join(', ').slice(0, 60), net: String(cf.asOrganization ?? '').slice(0, 60)};
+}
 
 interface Upstream {user: string; pass: string; auth?: string}
 interface Answer {AccessToken: string; User: {Id: string; Name?: string}; SessionInfo?: Record<string, unknown>}
@@ -96,10 +101,10 @@ async function signIn(request: Request, env: Env, hub: string, base: string): Pr
   const person = await env.DB.prepare('SELECT id, jf, name FROM people WHERE hub = ? AND login = ?').bind(hub, username).first<{id: string; jf: string; name: string}>();
   const signin = person ? await getSecret<{password: string}>(env, hub, person.id, 'signin') : null;
   if (!person || !signin || !await same(String(sent.Pw ?? ''), signin.password)) {await failed(env, key); return wrong;}
-  return letIn(env, hub, person, clientOf(request), base);
+  return letIn(env, hub, person, clientOf(request), whereOf(request), base);
 }
 /* Lets one app in as a person: its own token, a line under Devices, and the sign-in answer a Jellyfin app expects. */
-async function letIn(env: Env, hub: string, person: {id: string; jf: string; name: string}, client: {device: string; name: string; app: string}, base: string): Promise<Response> {
+async function letIn(env: Env, hub: string, person: {id: string; jf: string; name: string}, client: {device: string; name: string; app: string}, where: {place: string; net: string}, base: string): Promise<Response> {
   const upstream = await getSecret<Upstream>(env, hub, person.id, 'upstream');
   if (!upstream) return json(401, {Message: 'This profile is not ready to play yet'});
   const answer = upstream.auth ? JSON.parse(upstream.auth) as Answer : await mint(env, hub, person.id, person.jf, upstream);
@@ -107,7 +112,7 @@ async function letIn(env: Env, hub: string, person: {id: string; jf: string; nam
   const token = newToken('hub'), at = now();
   await env.DB.batch([
     ...(client.device ? [env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ? AND device = ?').bind(hub, person.id, client.device)] : []),
-    env.DB.prepare('INSERT INTO devices (id, ref, hub, person, device, app, name, seen, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(await sha(token), newId().slice(0, 16), hub, person.id, client.device, client.app, client.name, at, at),
+    env.DB.prepare('INSERT INTO devices (id, ref, hub, person, device, app, name, seen, created, place, net) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(await sha(token), newId().slice(0, 16), hub, person.id, client.device, client.app, client.name, at, at, where.place, where.net),
     env.DB.prepare('DELETE FROM devices WHERE hub = ?1 AND person = ?2 AND id NOT IN (SELECT id FROM devices WHERE hub = ?1 AND person = ?2 ORDER BY seen DESC LIMIT ?3)').bind(hub, person.id, MOST_DEVICES),
   ]);
   const up = answer.AccessToken, upId = answer.User.Id;
@@ -136,7 +141,7 @@ async function quick(request: Request, env: Env, hub: string, url: URL, lower: s
   const person = await env.DB.prepare('SELECT id, jf, name FROM people WHERE hub = ? AND id = ?').bind(hub, row.person).first<{id: string; jf: string; name: string}>();
   if (!person) return json(401, {Message: 'Not approved'});
   await env.DB.prepare('DELETE FROM quick WHERE secret = ?').bind(await sha(secret)).run();
-  return letIn(env, hub, person, {device: row.device, app: row.app, name: row.name}, base);
+  return letIn(env, hub, person, {device: row.device, app: row.app, name: row.name}, whereOf(request), base);
 }
 
 export async function front(request: Request, site: Env, ctx: ExecutionContext, url: URL, code: string, path: string): Promise<Response> {
@@ -159,8 +164,9 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
   if (!seat && !reading) return json(401, {Message: 'Unauthorized'});
   if (seat) {
     if (lower === '/sessions/logout') {seats.delete(id); await env.DB.prepare('DELETE FROM devices WHERE id = ?').bind(id).run(); return new Response(null, {status: 204, headers: CORS});}
-    if (seat.paused && PLAYS.test(lower)) return json(403, {Message: 'Playing is paused for this profile'});
-    if (now() - seat.seen > SEEN_EVERY) {seat.seen = now(); ctx.waitUntil(env.DB.prepare('UPDATE devices SET seen = ? WHERE id = ?').bind(seat.seen, id).run());}
+    // Worded so it reads as a hold to talk about, not as being thrown out: it names whoever runs the hub.
+    if (seat.paused && PLAYS.test(lower)) {const owner = await env.DB.prepare('SELECT a.name FROM hubs h JOIN accounts a ON a.id = h.owner WHERE h.id = ?').bind(hub).first<{name: string}>(); return json(403, {Message: `Playing is on hold for now. Have a word with ${owner?.name || 'whoever runs this hub'}.`});}
+    if (now() - seat.seen > SEEN_EVERY) {const where = whereOf(request); seat.seen = now(); ctx.waitUntil(env.DB.prepare('UPDATE devices SET seen = ?, place = ?, net = ? WHERE id = ?').bind(seat.seen, where.place, where.net, id).run());}
   }
   const body = reading ? undefined : await request.text();
   if (seat && body && REPORTS[lower]) ctx.waitUntil(note(env, hub, seat, REPORTS[lower], body).catch(() => {}));

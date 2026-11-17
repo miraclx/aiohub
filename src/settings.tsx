@@ -121,7 +121,7 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
           event.preventDefault(); const text = link.trim(); if (!text) return;
           const url = text.replace(/^stremio:\/\//, 'https://'), name = url.replace(/^https?:\/\//, '').split('/')[0], id = `custom-${hash(url)}`;
           if (live && !/^https:\/\/\S+\/manifest\.json(\?\S*)?$/.test(url)) return toast('Paste the https address of the source’s manifest.json');
-          if (!hub.addons.some(addon => addon.id === id)) update(next => {next.addons.push({id, name, note: scope.level === 'hub' ? 'Added by link.' : 'Added by link. Remove it under Defaults.', custom: true, url});});
+          if (!hub.addons.some(addon => addon.id === id)) update(next => {next.addons.push({id, name, note: scope.level === 'hub' ? 'Added by link.' : 'Added by link. Remove it under Hub.', custom: true, url});});
           set('sources', [...values.sources.filter(item => item !== id), id], `Added ${name}`); setLink('');
         }}><input aria-label="Addon link" placeholder="Add another by its manifest link" value={link} onChange={event => setLink(event.target.value)} autoComplete="off"/><button className="ghost" disabled={!link.trim()}>Add</button></form>
       </Setting>

@@ -124,7 +124,7 @@ function Devices({page, person, mine}: {page: PageProps; person: Person; mine: b
   const who = mine ? 'you' : person.name;
   return <section>
     <div className="section-head"><div><h2>Devices</h2><p className="muted">Any Jellyfin app works: on a phone, a TV or a laptop.</p></div>{SAMPLE && <button type="button" className="primary" onClick={soon(toast, `${mine ? 'your' : person.name + '’s'} player in the browser`)}>Watch here</button>}</div>
-    {live && !person.ready && <div className="notice"><span>{mine ? 'Your' : `${person.name}’s`} profile can’t sign in to a player app yet. It is being set up on the streaming server; if this stays, check that a debrid account is connected under Defaults, Sources.</span></div>}
+    {live && !person.ready && <div className="notice"><span>{mine ? 'Your' : `${person.name}’s`} profile can’t sign in to a player app yet. It is being set up on the streaming server; if this stays, check that a debrid account is connected under Hub, Sources.</span></div>}
     <h3 className="sub first">Sign in to an app</h3>
     <dl className="card creds">
       <div><dt>Server</dt><dd><code>{`${location.origin}/h/${page.hub.code}`}</code><button type="button" className="ghost small" onClick={copy(`${location.origin}/h/${page.hub.code}`)}>Copy</button></dd></div>
@@ -149,7 +149,7 @@ function Devices({page, person, mine}: {page: PageProps; person: Person; mine: b
       </Setting>}
     </div></>}
     <h3 className="sub">Signed in</h3>
-    {person.devices.length ? <><ul className="feed">{person.devices.map(device => <li key={device.id}><div className="quiet-name">{live ? <NameField label={`Name of ${device.name}`} value={device.name} onSave={value => act(live.call('PUT', `${at}/devices/${device.id}`, {name: value}), 'Renamed')}/> : <strong>{device.name}</strong>}<small>{device.app} · {device.seen === 'Now' ? 'active now' : `last used ${device.seen.toLowerCase()}`}</small></div><button type="button" className="ghost small" onClick={() => live ? act(live.call('DELETE', `${at}/devices/${device.id}`), `${device.name} signed out`) : edit(target => {target.devices = target.devices.filter(item => item.id !== device.id);}, `${device.name} signed out`)}>Sign out</button></li>)}</ul>
+    {person.devices.length ? <><ul className="feed">{person.devices.map(device => <li key={device.id}><div className="quiet-name">{live ? <NameField label={`Name of ${device.name}`} value={device.name} onSave={value => act(live.call('PUT', `${at}/devices/${device.id}`, {name: value}), 'Renamed')}/> : <strong>{device.name}</strong>}<small>{device.app} · {device.seen === 'Now' ? 'active now' : `last used ${device.seen.toLowerCase()}`}{device.where ? ` · ${device.where}` : ''}</small></div><button type="button" className="ghost small" onClick={() => live ? act(live.call('DELETE', `${at}/devices/${device.id}`), `${device.name} signed out`) : edit(target => {target.devices = target.devices.filter(item => item.id !== device.id);}, `${device.name} signed out`)}>Sign out</button></li>)}</ul>
       <button type="button" className="link below" onClick={() => live ? act(live.call('POST', `${at}/rotate`, {}), 'Signed out everywhere. New password set.') : edit(target => {target.devices = []; target.password = samplePassword(person.id);}, 'Signed out everywhere. New password set.')}>Sign {who} out everywhere</button></>
       : <p className="muted">No device yet.</p>}
   </section>;
@@ -302,7 +302,7 @@ export function HubPage(page: PageProps & {tab: string}) {
   const following = hub.groups.filter(group => !group.rows).length;
   return <>
     <a className="back" href="#/">← People</a>
-    <div className="page-head"><h1>Defaults</h1><p className="muted">What every group starts with. A group or a person can change anything for themselves.</p></div>
+    <div className="page-head"><h1>Hub</h1><p className="muted">What every group starts with, where things play from, and the hub’s own setup. A group or a person can change anything for themselves.</p></div>
     <Tabs base="/hub" tab={tab} tabs={[['home', 'Home'], ['playback', 'Playback'], ['sources', 'Sources'], ['general', 'General']]}/>
     {tab === 'home' && <><HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="hub" rows={hub.rows} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{page.live && !hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p></>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
@@ -435,7 +435,7 @@ export function SetupPage({hub, go, update, toast, live, signedIn, needCode, lin
       <label htmlFor="setup-tmdb">TMDB API key</label><input id="setup-tmdb" type="password" value={tmdb} onChange={event => setTmdb(event.target.value)} autoComplete="off" placeholder="Paste it here" autoFocus/>
       <p className="muted small">Trending, top rated and popular rows, and search. <a className="link" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noreferrer">Get a key</a>, and copy the one labelled “API Key”.</p>
       <label htmlFor="setup-mdblist">MDBList API key <span className="muted">(optional)</span></label><input id="setup-mdblist" type="password" value={lists} onChange={event => setLists(event.target.value)} autoComplete="off" placeholder="Paste it here"/>
-      <p className="muted small">The collection rows: movies and shows by service and by genre. <a className="link" href="https://mdblist.com/preferences/" target="_blank" rel="noreferrer">Get a key</a>. It can be added later under Defaults.</p>
+      <p className="muted small">The collection rows: movies and shows by service and by genre. <a className="link" href="https://mdblist.com/preferences/" target="_blank" rel="noreferrer">Get a key</a>. It can be added later under Hub, Sources.</p>
       <div className="split">{back}<button className="primary big" disabled={busy || !tmdb.trim()}>Continue</button></div>
     </form>}
     {at === 'Quality' && <form className="stack" onSubmit={event => {event.preventDefault(); setStep(step + 1);}}>

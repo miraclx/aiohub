@@ -29,6 +29,8 @@ export function Activity({hub, personId, groupId, pick, toast, live}: {hub: Hub;
   const plays = all.filter(play => (!personId || play.personId === personId) && (!scope || person(play.personId)!.groupId === scope));
   const name = (id: string) => person(id)?.name ?? '';
   const now = plays.filter(play => play.when === 'Now'), days = ['Today', 'Yesterday', 'Earlier this week'] as const;
+  // One profile playing on more than one device at the same time: worth a look if it is not expected.
+  const atOnce = (id: string) => new Set(now.filter(play => play.personId === id).map(play => play.on)).size;
   const text = (play: typeof plays[number]) => personId ? play.detail : `${name(play.personId)} · ${play.detail}`;
   const head = <div className="activity-bar">
     {pick && hub.groups.length > 1 ? <Segments label="Show" value={filter} onChange={setFilter} options={[{value: 'all', label: 'Everyone'}, ...hub.groups.map(group => ({value: group.id, label: group.name}))]}/> : <span/>}
@@ -38,7 +40,7 @@ export function Activity({hub, personId, groupId, pick, toast, live}: {hub: Hub;
   return <section>
     {head}
     {!!now.length && <><h2 className="sub first">Watching now</h2><ul className="now">{now.map(play => <li key={play.id}>{play.art ? <Picture url={play.art}/> : <Posters seed={play.title}/>}<div className="now-text">
-      <button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small><small className="on-device">{play.on}</small>
+      <button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small><small className="on-device">{play.on}{atOnce(play.personId) > 1 ? ` · ${name(play.personId)} is on ${atOnce(play.personId)} devices at once` : ''}</small>
       <span className="bar" role="progressbar" aria-valuenow={play.progress} aria-valuemin={0} aria-valuemax={100} aria-label={`${play.progress}% watched`}><i style={{width: `${play.progress}%`}}/></span></div></li>)}</ul></>}
     {days.map(day => {
       const items = plays.filter(play => play.day === day && play.when !== 'Now');

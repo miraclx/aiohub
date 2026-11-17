@@ -21,7 +21,7 @@ function Frame({page, parts, mine, bar, toastView, children}: {page?: PageProps;
   const [at, id, tab] = parts, people = !at || at === 'person' || at === 'group', hub = page?.hub;
   return <div className="app">
     <header className="top"><a className="brand" href={mine ?? '#/'}><span className="logo" aria-hidden="true"/>AIOHub</a>
-      {page && hub && !mine && <nav><a href="#/" className={people ? 'on' : ''}>People</a><a href="#/activity" className={at === 'activity' ? 'on' : ''}>Activity</a><a href="#/hub" className={at === 'hub' ? 'on' : ''}>Defaults</a><a href="#/account" className={`me${at === 'account' ? ' on' : ''}`} aria-label="Your account"><Avatar name={hub.me.name} size={26}/></a></nav>}
+      {page && hub && !mine && <nav><a href="#/" className={people ? 'on' : ''}>People</a><a href="#/activity" className={at === 'activity' ? 'on' : ''}>Activity</a><a href="#/hub" className={at === 'hub' ? 'on' : ''}>Hub</a><a href="#/account" className={`me${at === 'account' ? ' on' : ''}`} aria-label="Your account"><Avatar name={hub.me.name} size={26}/></a></nav>}
     </header>
     {bar}
     <main>

@@ -163,7 +163,7 @@ async function create(env: Env, hub: string, config: Stored, service: string): P
     // AIOStreams tries the debrid key while checking a new setup; a key it cannot use is by far the usual reason for a refusal.
     const why = answer.status === 429 ? '' : ((await answer.json().catch(() => null)) as {error?: {message?: string}} | null)?.error?.message ?? '';
     if (answer.status === 429) return {state: 'error', message: 'AIOStreams is not taking new setups right now. Try again in an hour.'};
-    if (/401|403|unauthori[sz]ed|forbidden/i.test(why)) return {state: 'error', message: `${service} did not accept the key. Replace it under Defaults, Sources.`};
+    if (/401|403|unauthori[sz]ed|forbidden/i.test(why)) return {state: 'error', message: `${service} did not accept the key. Replace it under Hub, Sources.`};
     console.error('create refused', answer.status, why.replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, '<id>').slice(0, 200));
     return {state: 'error', message: 'AIOStreams refused the setup. Nothing was created; it will be tried again on your next change.'};
   }
@@ -269,7 +269,7 @@ async function syncHome(env: Env, vault: Vault, hub: string, owner: string, want
       if (answer.status < 400 || answer.status >= 500) return {message: STUCK.message!};
       // Refused outright: nothing was created, so the claim is released and it can be tried again.
       await env.DB.batch([env.DB.prepare("DELETE FROM ops WHERE hub = ? AND kind = 'create-catalogs' AND target = ?").bind(hub, owner), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'catalogs-pending'").bind(hub, owner)]);
-      return {message: 'AIOMetadata refused the Home setup. Check the TMDB and MDBList keys under Defaults, Sources.'};
+      return {message: 'AIOMetadata refused the Home setup. Check the TMDB and MDBList keys under Hub, Sources.'};
     }
     made = {uuid: body.userUUID, password, v: now(), sent, at: env.AIOM_ORIGIN};
     await env.DB.batch([await putSecret(env, hub, owner, 'catalogs', made), env.DB.prepare("UPDATE ops SET state = 'done', updated = ? WHERE hub = ? AND kind = 'create-catalogs' AND target = ?").bind(now(), hub, owner), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'catalogs-pending'").bind(hub, owner)]);
@@ -340,7 +340,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
   const vault = await vaultOf(env, hub.id), accounts = new Map<string, string>();
   for (const name of data.services) {const account = SERVICE[name] ? await held<string>(env, vault, hub.id, HUB_OWNER, `debrid:${name}`) : null; if (account) accounts.set(name, account);}
   const key = accounts.get(service);
-  if (!key) return {state: 'needs-key', message: `Connect ${service} under Defaults, Sources, so there is something to play from.`};
+  if (!key) return {state: 'needs-key', message: `Connect ${service} under Hub, Sources, so there is something to play from.`};
   const [groupRows, personRows] = await env.DB.batch([env.DB.prepare('SELECT id, name, data FROM groups WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, grp, name, data FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id)]);
   const top: Want = {rows: data.rows, settings: data.defaults}, linked = new Map<string, string>(), watching = new Map<string, string>();
   for (const name of vault.keys()) if (name.endsWith('/mdblist')) {const owner = name.slice(0, -8), own = await held<{key: string}>(env, vault, hub.id, owner, 'mdblist'); if (own?.key) watching.set(owner, own.key);}
@@ -355,7 +355,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
 
   // Home. The hub has one setup on AIOMetadata; a group or a person gets their own only while theirs differs from the one above.
   const tmdb = env.AIOM_ORIGIN ? await held<string>(env, vault, hub.id, HUB_OWNER, 'key:tmdb') : null, budget = {left: 30};
-  let note = !env.AIOM_ORIGIN ? 'Home rows are not set up on this site.' : !tmdb ? 'Add a TMDB key under Defaults, Sources, so Home has rows in the player apps.' : '', more = false, base: string | null = null;
+  let note = !env.AIOM_ORIGIN ? 'Home rows are not set up on this site.' : !tmdb ? 'Add a TMDB key under Hub, Sources, so Home has rows in the player apps.' : '', more = false, base: string | null = null;
   if (tmdb) {
     const keys: Keys = {tmdb, mdblist: await held<string>(env, vault, hub.id, HUB_OWNER, 'key:mdblist')}, needed = new Set([HUB_OWNER]);
     const make = async (owner: string, wanted: Wanted) => {const got = await syncHome(env, vault, hub.id, owner, wanted, keys, budget); if ('address' in got) return got.address; note ||= got.message; more ||= !!got.more; return null;};

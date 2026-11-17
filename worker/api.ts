@@ -65,7 +65,7 @@ interface PersonData {rows: Row[] | null; settings: Overrides; can: {arrange: bo
 interface HubRow {id: string; code: string; owner: string; data: string; version: number}
 interface GroupRow {id: string; name: string; data: string; version: number}
 interface PersonRow {id: string; grp: string; name: string; data: string; joined: number; paused: number; version: number}
-interface DeviceRow {ref: string; person: string; app: string; name: string; seen: number}
+interface DeviceRow {ref: string; person: string; app: string; name: string; seen: number; place: string; net: string}
 interface SignIn {password: string; pin: string | null}
 const TRAKT_ROWS = ['watchlist', 'recommended-movies', 'recommended-series', 'up-next', 'recently-aired'];
 
@@ -78,7 +78,7 @@ const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean) => ({
   ready,
   id: row.id, name: row.name, groupId: row.grp, joined: !!row.joined, paused: !!row.paused, ...(JSON.parse(row.data) as PersonData), v: row.version,
   // Sign-in details are never part of what a page loads; they are asked for one person at a time.
-  pin: null, password: '', devices: devices.filter(device => device.person === row.id).map(device => ({id: device.ref, app: device.app || 'Player app', name: device.name || 'A device', seen: ago(device.seen)})),
+  pin: null, password: '', devices: devices.filter(device => device.person === row.id).map(device => ({id: device.ref, app: device.app || 'Player app', name: device.name || 'A device', seen: ago(device.seen), where: [device.place, device.net].filter(Boolean).join(' · ')})),
 });
 
 /* ---------- who is asking ---------- */
@@ -107,7 +107,7 @@ async function state(env: Env, who: Who) {
   const [groups, people, devices, owner, ready, keys, passkeys] = await env.DB.batch([
     env.DB.prepare('SELECT id, name, data, version FROM groups WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? AND id = ?').bind(hub.id, mine) : env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
-    mine ? env.DB.prepare('SELECT ref, person, app, name, seen FROM devices WHERE hub = ? AND person = ? ORDER BY seen DESC').bind(hub.id, mine) : env.DB.prepare('SELECT ref, person, app, name, seen FROM devices WHERE hub = ? ORDER BY seen DESC').bind(hub.id),
+    mine ? env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? AND person = ? ORDER BY seen DESC').bind(hub.id, mine) : env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? ORDER BY seen DESC').bind(hub.id),
     env.DB.prepare('SELECT name FROM accounts WHERE id = ?').bind(hub.owner),
     env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind = 'upstream'").bind(hub.id),
     env.DB.prepare("SELECT kind FROM secrets WHERE hub = ? AND owner = ? AND kind IN ('key:tmdb', 'key:mdblist', 'key:posters')").bind(hub.id, HUB_OWNER),
@@ -419,7 +419,7 @@ async function catalogKey(env: Env, who: Who, name: string, body: Body) {
 /* A list someone pastes the link of, looked up with the hub's MDBList key, so it can be a Home row. */
 async function findList(env: Env, who: Who, body: Body) {
   const at = /mdblist\.com\/lists\/([\w.-]+)\/([\w.-]+)/.exec(text(body.link, 400, 'Link')) ?? bad(400, 'Paste the link of an MDBList list, like mdblist.com/lists/someone/a-list');
-  const key = await getSecret<string>(env, who.hub.id, HUB_OWNER, 'key:mdblist') ?? bad(400, 'Lists need the hub’s MDBList key first. It goes under Defaults, Sources.');
+  const key = await getSecret<string>(env, who.hub.id, HUB_OWNER, 'key:mdblist') ?? bad(400, 'Lists need the hub’s MDBList key first. It goes under Hub, Sources.');
   const answer = await fetch(`${env.MDBLIST_API ?? 'https://api.mdblist.com'}/lists/${at[1]}/${at[2]}?apikey=${encodeURIComponent(key)}`, {headers: {accept: 'application/json', 'user-agent': 'AIOHub/1.0'}}).catch(() => null);
   const found = answer?.status === 200 ? await answer.json().catch(() => null) as {id?: number; name?: string; mediatype?: string | null}[] | {id?: number; name?: string; mediatype?: string | null} | null : null, list = Array.isArray(found) ? found[0] : found;
   if (!list || !Number.isInteger(list.id)) bad(404, 'MDBList has no public list at that link');
