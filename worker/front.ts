@@ -71,15 +71,16 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   if (!item || (kind === 'progress' && Date.now() - last < 60_000)) return;
   if (noted.size > 5000) noted.clear(); noted.set(key, Date.now());
   const position = Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' ? 0 : 1;
-  const known = await env.DB.prepare('SELECT 1 FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first();
-  if (known) {await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, device = ?, updated = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, seat.on, now(), hub, seat.person, item).run(); return;}
+  const known = await env.DB.prepare('SELECT art FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{art: string}>();
+  // Rows from before pictures were kept are looked up once more, on their next start.
+  if (known && (known.art || kind !== 'start')) {await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, device = ?, updated = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, seat.on, now(), hub, seat.person, item).run(); return;}
   // First report for this title: ask AIOStreams what it is called, as this person.
-  const about = await fetch(`${env.UP_ORIGIN}${MOUNT}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number} | null;
+  const about = await fetch(`${env.UP_ORIGIN}${MOUNT}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string} | null;
   if (!about?.Name) return;
-  const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name;
+  const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
   const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
-  await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, device = excluded.device, updated = excluded.updated')
-    .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now()).run();
+  await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, device = excluded.device, updated = excluded.updated, art = excluded.art')
+    .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art).run();
 }
 /* Paused: browsing works, playing does not. */
 const PLAYS = /\/playbackinfo|\/mediasources|\/download|^\/(videos|audio)\//;

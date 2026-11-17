@@ -45,7 +45,7 @@ http.createServer(async (request, answer) => {
   }
   const token = /Token="([^"]+)"/.exec(request.headers.authorization ?? '')?.[1];
   if (fake.refuseAll || token !== fake.valid) return send(401, {});
-  if (request.url.includes('/Items/ep-7')) return send(200, {Name: 'The One With The Test', Type: 'Episode', SeriesName: 'Harbor Lights', ParentIndexNumber: 2, IndexNumber: 4, RunTimeTicks: 3000 * 1e7});
+  if (request.url.includes('/Items/ep-7')) return send(200, {Name: 'The One With The Test', Type: 'Episode', SeriesName: 'Harbor Lights', SeriesId: 'show-3', ParentIndexNumber: 2, IndexNumber: 4, RunTimeTicks: 3000 * 1e7});
   if (request.url.startsWith('/jellyfin/Sessions/Playing')) return send(204, {});
   send(200, {Id: 'upstream-user-id', Name: 'x', Via: 'http://127.0.0.1:8798/jellyfin/thing'});
 }).listen(8798, '127.0.0.1').unref();
@@ -275,7 +275,7 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   await say('/Sessions/Playing', {ItemId: 'ep-7', PositionTicks: 0}); await say('/Sessions/Playing/Progress', {ItemId: 'ep-7', PositionTicks: 600 * 1e7});
   await say('/Sessions/Playing/Stopped', {ItemId: 'ep-7', PositionTicks: 1500 * 1e7});
   let seen; for (let i = 0; i < 20 && !(seen = (await owner('GET', '/api/activity')).body.plays[0])?.position; i++) await new Promise(done => setTimeout(done, 150));
-  assert.deepEqual({...seen, updated: 0}, {person: 'ada', item: 'ep-7', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', position: 1500, duration: 3000, device: 'Test · TV', playing: 0, updated: 0});
+  assert.deepEqual({...seen, updated: 0}, {person: 'ada', item: 'ep-7', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', position: 1500, duration: 3000, device: 'Test · TV', playing: 0, updated: 0, art: 'show-3'}, 'an episode is pictured by its show');
   assert.equal((await guest('GET', '/api/activity')).body.plays.length, 1); assert.equal((await stranger('GET', '/api/activity')).status, 401);
   // AIOStreams stops accepting the kept sign-in: the hub renews it once and the app never notices.
   fake.valid = 'rotated-away';

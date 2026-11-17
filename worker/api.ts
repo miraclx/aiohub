@@ -510,7 +510,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     if (first === 'previews' && method === 'GET') return reply({rows: await previews(env, who.hub, who.person ?? (url.searchParams.get('person') || undefined))});
     if (first === 'activity' && method === 'GET') {
       // The manager sees everyone; an invited person sees only themselves.
-      const rows = await env.DB.prepare(`SELECT person, item, title, detail, position, duration, device, playing, updated FROM plays WHERE hub = ?1 ${who.person ? 'AND person = ?2' : ''} ORDER BY updated DESC LIMIT 300`).bind(...(who.person ? [who.hub.id, who.person] : [who.hub.id])).all();
+      const rows = await env.DB.prepare(`SELECT person, item, title, detail, position, duration, device, playing, updated, art FROM plays WHERE hub = ?1 ${who.person ? 'AND person = ?2' : ''} ORDER BY updated DESC LIMIT 300`).bind(...(who.person ? [who.hub.id, who.person] : [who.hub.id])).all();
       return reply({now: now(), plays: rows.results});
     }
     if (first === 'state' && method === 'GET') return reply(await state(env, who) ?? bad(401, 'Sign in first'));

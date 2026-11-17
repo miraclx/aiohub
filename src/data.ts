@@ -124,7 +124,7 @@ export const sampleHub = (): Hub => ({
 });
 
 // Invented titles. Activity is what the player last reported, not a full play-by-play log.
-export interface Play {id: string; personId: string; title: string; detail: string; when: string; day: 'Today' | 'Yesterday' | 'Earlier this week'; progress?: number; on: string}
+export interface Play {art?: string; id: string; personId: string; title: string; detail: string; when: string; day: 'Today' | 'Yesterday' | 'Earlier this week'; progress?: number; on: string}
 export const samplePlays = (): Play[] => [
   {id: 'p1', personId: 'ada', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', when: 'Now', day: 'Today', progress: 62, on: 'AIOStreams · Living room TV'},
   {id: 'p2', personId: 'dev', title: 'The Quiet Orbit', detail: 'Movie', when: 'Now', day: 'Today', progress: 18, on: 'Odin · Apple TV'},
