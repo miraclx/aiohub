@@ -353,6 +353,9 @@ test('Trakt: a checked connection gives that person their own rows, and only a d
   const home = mine().config; assert.equal(home.apiKeys.traktTokenId, 'trakt-token-id-0001'); assert.equal(home.hideWatchedTrakt, false);
   assert.deepEqual(home.catalogs.slice(0, 3).map(row => [row.id, row.type, row.source, row.enabled]), [['trakt.watchlist', 'all', 'trakt', true], ['trakt.recommendations.movies', 'movie', 'trakt', true], ['trakt.recommendations.shows', 'series', 'trakt', true]]);
   assert.equal([...fake.homes.values()].filter(item => item.config.apiKeys.traktTokenId).length, 1, 'nobody else gets the connection');
+  // His own rows get real posters on the site as well; a row he does not have is not there for someone else.
+  assert.deepEqual((await owner('GET', '/api/previews?person=ben')).body.rows.watchlist, ['https://img.example/1.jpg', 'https://img.example/2.jpg']); assert.equal((await owner('GET', '/api/previews')).body.rows.watchlist, undefined);
+  assert.equal((await guest('GET', '/api/previews?person=ben')).body.rows.watchlist, undefined, 'an invited person only ever gets their own');
   // An ordinary save of the person cannot switch the connection off, and hiding what's been watched reads from it.
   const ben = await find();
   assert.equal((await owner('PUT', '/api/people/ben', {name: ben.name, groupId: ben.groupId, rows: ben.rows, settings: {...ben.settings, hideWatched: true}, can: ben.can, trakt: false, lists: false, v: ben.v})).status, 200);

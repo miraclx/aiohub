@@ -8,7 +8,7 @@ import {PlaybackEditor, SourcesEditor} from './settings';
 import type {EditorProps} from './settings';
 import {addPasskey, canPasskey, usePasskey} from './live';
 import type {Live} from './live';
-import {Avatar, NameField, Secret, Segments, Setting, Sheet, Switch, Tabs} from './ui';
+import {Avatar, NameField, Secret, Segments, Setting, Sheet, Switch, Tabs, addReal} from './ui';
 
 /* `live` is there when the page is backed by the real hub; without it everything runs on the preview's sample data. */
 export interface PageProps {hub: Hub; go: (to: string) => void; update: (change: (hub: Hub) => void) => void; toast: (text: string) => void; live?: Live}
@@ -216,6 +216,9 @@ export function PersonPage(page: PageProps & {id: string; tab: string}) {
   const {hub, go, update, toast, id, tab, live} = page;
   const [copying, setCopying] = useState(false), [name, setName] = useState(''), [removing, setRemoving] = useState(false);
   const person = hub.people.find(item => item.id === id);
+  // Their own rows (Trakt, lists, a Home of their own) get real posters too, from the setup they are on.
+  const [, redraw] = useState(0);
+  useEffect(() => {if (!live) return; void live.call<{rows: Record<string, string[]>}>('GET', `/api/previews?person=${encodeURIComponent(id)}`).then(found => {addReal(found.rows); redraw(count => count + 1);}, () => {});}, [id, person?.v]);
   if (!person) return <p className="empty">This person is gone. <a className="link" href="#/">Back to people</a></p>;
   const group = hub.groups.find(item => item.id === person.groupId)!;
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === id)!)); toast(note);};

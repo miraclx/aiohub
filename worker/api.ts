@@ -506,7 +506,8 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     // Anyone signed in may ask for the players to be brought in step; what is sent comes only from what the hub has stored.
     if (first === 'lists' && method === 'POST') return reply(await findList(env, who, body));
     if (first === 'sync' && method === 'POST') return reply(await syncPlayers(env, who.hub));
-    if (first === 'previews' && method === 'GET') return reply({rows: await previews(env, who.hub)});
+    // An invited person gets their own rows; the manager can ask for anyone's.
+    if (first === 'previews' && method === 'GET') return reply({rows: await previews(env, who.hub, who.person ?? (url.searchParams.get('person') || undefined))});
     if (first === 'activity' && method === 'GET') {
       // The manager sees everyone; an invited person sees only themselves.
       const rows = await env.DB.prepare(`SELECT person, item, title, detail, position, duration, device, playing, updated FROM plays WHERE hub = ?1 ${who.person ? 'AND person = ?2' : ''} ORDER BY updated DESC LIMIT 300`).bind(...(who.person ? [who.hub.id, who.person] : [who.hub.id])).all();

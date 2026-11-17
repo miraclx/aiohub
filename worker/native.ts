@@ -299,21 +299,32 @@ async function dropHome(env: Env, hub: string, owner: string): Promise<boolean> 
 /* What each Home row actually holds right now, for the site's own preview: the first few posters, exactly as a player app would get
    them from the hub's AIOMetadata setup (so with its poster settings applied). Remembered for ten minutes per running copy. */
 const shown = new Map<string, {at: number; rows: Record<string, string[]>}>();
-export async function previews(site: Env, hub: {id: string; data: string}): Promise<Record<string, string[]>> {
-  const env = hosted(site, JSON.parse(hub.data) as HubData);
-  const made = env.AIOM_ORIGIN ? await getSecret<Catalogs>(env, hub.id, HUB_OWNER, 'catalogs') : null;
+export async function previews(site: Env, hub: {id: string; data: string}, person?: string): Promise<Record<string, string[]>> {
+  const data = JSON.parse(hub.data) as HubData, env = hosted(site, data);
+  if (!env.AIOM_ORIGIN) return {};
+  // A person's rows come from whichever Home setup they are on: their own, their group's, or the hub's.
+  let rows = data.rows, owners = [HUB_OWNER];
+  if (person) {
+    const found = await env.DB.prepare('SELECT p.data AS mine, g.id AS grp, g.data AS theirs FROM people p JOIN groups g ON g.hub = p.hub AND g.id = p.grp WHERE p.hub = ? AND p.id = ?').bind(hub.id, person).first<{mine: string; grp: string; theirs: string}>();
+    if (!found) return {};
+    const mine = JSON.parse(found.mine) as {rows: Row[] | null; trakt?: boolean}, shared = (JSON.parse(found.theirs) as {rows: Row[] | null}).rows ?? data.rows;
+    rows = mine.rows ?? [...(mine.trakt ? traktRows() : []), ...shared]; owners = [person, groupOwner(found.grp), HUB_OWNER];
+  }
+  let made: Catalogs | null = null;
+  for (const owner of owners) if ((made = await getSecret<Catalogs>(env, hub.id, owner, 'catalogs'))) break;
   if (!made) return {};
-  const key = `${hub.id}/${made.v}`, known = shown.get(key);
+  const key = `${hub.id}/${made.uuid}/${made.v}`, known = shown.get(key);
   if (known && Date.now() - known.at < 600_000) return known.rows;
-  const rows: Record<string, string[]> = {};
-  await Promise.all((JSON.parse(hub.data) as HubData).rows.filter(row => TMDB_ROW[row.id] && row.on).map(async row => {
-    const at = TMDB_ROW[row.id], answer = await fetch(`${env.AIOM_ORIGIN}/stremio/${made.uuid}/catalog/${at.type}/${at.id}.json`, {headers: {accept: 'application/json', 'user-agent': 'AIOHub/1.0'}}).catch(() => null);
+  const at = made.at ?? env.AIOM_ORIGIN, out: Record<string, string[]> = {};
+  const where = (row: Row) => {const list = /^mdblist\.(\d+)\.(movie|series|all)$/.exec(row.id); return TMDB_ROW[row.id] ?? TRAKT_ROW[row.id] ?? (list ? {id: `mdblist.${list[1]}`, type: list[2]} : null);};
+  await Promise.all(rows.filter(row => row.on && where(row)).slice(0, 16).map(async row => {
+    const from = where(row)!, answer = await fetch(`${at}/stremio/${made!.uuid}/catalog/${from.type}/${from.id}.json`, {headers: {accept: 'application/json', 'user-agent': 'AIOHub/1.0'}}).catch(() => null);
     const metas = answer?.status === 200 ? ((await answer.json().catch(() => null)) as {metas?: {poster?: string}[]} | null)?.metas ?? [] : [];
     const posters = metas.map(meta => meta.poster).filter((poster): poster is string => typeof poster === 'string' && poster.startsWith('https://')).slice(0, 8);
-    if (posters.length) rows[row.id] = posters;
+    if (posters.length) out[row.id] = posters;
   }));
-  if (shown.size > 500) shown.clear(); shown.set(key, {at: Date.now(), rows});
-  return rows;
+  if (shown.size > 500) shown.clear(); shown.set(key, {at: Date.now(), rows: out});
+  return out;
 }
 
 /* Brings the hub's setups in step with the site: the debrid account, sources, stream label, who can sign in, everyone's Home, and

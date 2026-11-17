@@ -19,6 +19,8 @@ export function hash(text: string) {let h = 7; for (const c of text) h = (h * 31
    never the preview's sample art. */
 const real = new Map<string, string[]>();
 export const showReal = (rows: Record<string, string[]>) => {real.clear(); for (const [id, posters] of Object.entries(rows)) real.set(id, posters);};
+/* One person's own rows, laid over the shared ones while their page is open. */
+export const addReal = (rows: Record<string, string[]>) => {for (const [id, posters] of Object.entries(rows)) real.set(id, posters);};
 export function Posters({seed, dim}: {seed: string; dim?: boolean}) {
   if (!SAMPLE) return <div className={`posters${dim ? ' dim' : ''}`} aria-hidden="true">{(real.get(seed) ?? Array<string>(7).fill('')).map((poster, i) => <span key={i} className={poster ? '' : 'blank'} style={poster ? {backgroundImage: `url(${JSON.stringify(poster)})`} : undefined}/>)}</div>;
   return <div className={`posters${dim ? ' dim' : ''}`} aria-hidden="true">{Array.from({length: 7}, (_, i) => {
