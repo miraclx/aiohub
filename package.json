@@ -1,0 +1,42 @@
+{
+  "name": "aiohub",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit && tsc -p worker",
+    "db:migrations:apply": "wrangler d1 migrations apply DB --remote",
+    "deploy": "npm run db:migrations:apply && wrangler deploy",
+    "setup": "node setup.mjs",
+    "test": "sh tests/run.sh"
+  },
+  "dependencies": {
+    "@dnd-kit/react": "0.5.3",
+    "buffer": "6.0.3",
+    "qrcode.react": "4.2.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261108.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "playwright-core": "1.65.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.6",
+    "wrangler": "4.158.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "VAULT_KEY": {
+        "description": "A long random text (40+ characters) that locks every key and password the site stores. Make one up, keep a copy, and **never change it**: without it stored keys cannot be read again."
+      },
+      "CLAIM_CODE": {
+        "description": "A code you make up. The site asks for it once, when the first hub is created, so a stranger cannot claim your copy. Open `https://<your site>/#/setup/<this code>` afterwards."
+      }
+    }
+  }
+}

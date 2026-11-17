@@ -1,0 +1,113 @@
+import {useState} from 'react';
+import {DragDropProvider} from '@dnd-kit/react';
+import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
+import {countries, suggestions, tongues} from './data';
+import type {Cover, Level, Row} from './data';
+import {Art, Chips, NameField, Posters, Segments, Sheet, Switch, hash} from './ui';
+
+type Pick = {id: string; title: string; kind: string; source: string};
+function Grip({handleRef, label}: {handleRef: (element: Element | null) => void; label: string}) {
+  return <button type="button" ref={handleRef} className="grip" aria-label={label}><i/><i/><i/></button>;
+}
+function RowCard({row, index, tag, locked, onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
+  const sortable = useSortable({id: row.id, index, disabled: locked});
+  return <li ref={sortable.ref} className={`row${sortable.isDragging ? ' dragging' : ''}${locked ? ' locked' : ''}`}>
+    {!locked && <Grip handleRef={sortable.handleRef} label={`Move ${row.title}`}/>}
+    <div className="row-main">
+      <div className="row-head">
+        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{row.kind} · {row.source}</p></div>
+        {!locked && <div className="row-actions">
+          {onArrange && <button type="button" className="ghost small" onClick={onArrange}>Edit</button>}
+          {onRemove && <button type="button" className="ghost small" onClick={onRemove}>Remove</button>}
+          <Switch checked={row.on} onChange={onToggle} label={`Show ${row.title} on Home`}/>
+        </div>}
+      </div>
+      <Art row={row}/>
+    </div>
+  </li>;
+}
+function FolderItem({cover, index, onRename}: {cover: Cover; index: number; onRename: (title: string) => void}) {
+  const sortable = useSortable({id: cover.image, index});
+  return <li ref={sortable.ref} className={sortable.isDragging ? 'dragging' : ''}>
+    <Grip handleRef={sortable.handleRef} label={`Move ${cover.title}`}/><span className="folder-art" style={{backgroundImage: `url(${cover.image})`}}/><NameField label={`Name of ${cover.title}`} value={cover.title} onSave={onRename}/>
+  </li>;
+}
+function moved<T>(list: T[], from: number, to: number) {const next = [...list]; const [item] = next.splice(from, 1); next.splice(to, 0, item); return next;}
+
+export interface HomeProps {
+  rows: Row[]; level: Level; onChange: (rows: Row[], note: string) => void;
+  tag: (row: Row) => string | undefined; lists?: Pick[]; listsHint?: string;
+  followLabel?: string; onFollow?: () => void; onBuild?: () => void; canAdd?: boolean; canArrange?: boolean; mine?: boolean;
+  /* On a real hub: looks a pasted link up, and only what really reaches the player apps is offered. */
+  find?: (link: string) => Promise<Pick>; fail?: (text: string) => void;
+}
+export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, onBuild, canAdd = true, canArrange = true, mine = false, find, fail}: HomeProps) {
+  const [country, setCountry] = useState(''), [tongue, setTongue] = useState(''), [kinds, setKinds] = useState(['Movies']), [adding, setAdding] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
+  const on = rows.filter(row => row.on), off = rows.filter(row => !row.on);
+  const set = (id: string, next: Partial<Row>, note: string) => onChange(rows.map(row => row.id === id ? {...row, ...next} : row), note);
+  function add(item: Pick) {
+    if (rows.some(row => row.id === item.id)) return;
+    onChange([{...item, origin: level, on: true}, ...rows], `Added “${item.title}”`); setAdding(false); setLink('');
+  }
+  const has = (item: Pick) => rows.some(row => row.id === item.id);
+  const folder = rows.find(row => row.id === arranging);
+  return <section>
+    <div className="section-head"><div><h2>Home</h2><p className="muted">{mine ? 'What you see first when you open the player.' : level === 'own' ? 'What they see first when they open the player.' : 'The Home everyone here starts with.'}{canArrange ? ' Drag to reorder.' : ''}</p></div>{canAdd && <button type="button" className="primary" onClick={() => setAdding(true)}>+ Add row</button>}</div>
+    {onFollow && <div className="notice"><span>This Home has its own changes.</span><button type="button" className="link" onClick={onFollow}>{followLabel}</button></div>}
+    <p className="pinned"><strong>Always first:</strong> Continue watching and Upcoming. The player adds these itself.</p>
+    <DragDropProvider onDragEnd={event => {
+      if (event.canceled || !canArrange || !isSortableOperation(event.operation) || !event.operation.source) return;
+      const from = on.findIndex(row => row.id === String(event.operation.source!.id)), to = event.operation.source.index;
+      if (from >= 0 && from !== to) onChange([...moved(on, from, to), ...off], 'Order saved');
+    }}>
+      <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange}
+        onToggle={() => set(row.id, {on: false}, `“${row.title}” is off Home`)}
+        onArrange={find && !row.covers ? undefined : () => setArranging(row.id)}
+        onRemove={row.origin === level && !row.core ? () => onChange(rows.filter(item => item.id !== row.id), `Removed “${row.title}”`) : undefined}/>)}</ol>
+    </DragDropProvider>
+    {!on.length && <p className="empty">Nothing on Home yet. Add a row or turn one on below.</p>}
+    {!!off.length && <details className="off" open={off.length <= 4}><summary>Not on Home <span className="count">{off.length}</span></summary>
+      <ul>{off.map(row => <li key={row.id}><Art row={row} dim/><div><h3>{row.title}</h3><p>{row.kind} · {row.source}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>)}</ul>
+    </details>}
+    {adding && <Sheet title="Add a row" onClose={() => setAdding(false)}>
+      <form className="link-form" onSubmit={event => {
+        event.preventDefault(); const text = link.trim(); if (!text) return;
+        if (find) return void find(text).then(add, (error: Error) => fail?.(error.message));
+        const name = text.replace(/^https?:\/\/(www\.)?/, '').split(/[/?#]/).filter(Boolean);
+        add({id: `link-${hash(text)}`, title: name.slice(-1)[0]?.replace(/[-_]/g, ' ') || 'My list', kind: 'List', source: name[0]?.split('.')[0] ?? 'Link'});
+      }}>
+        <label htmlFor="add-link">{find ? 'Paste the link of an MDBList list' : 'Paste a list link'}</label>
+        <div className="field-row"><input id="add-link" value={link} onChange={event => setLink(event.target.value)} placeholder={find ? 'mdblist.com/lists/someone/a-list' : 'Trakt, Letterboxd, MDBList, TMDB…'} autoComplete="off"/><button className="primary" disabled={!link.trim()}>Add</button></div>
+      </form>
+      {!find && (!!lists.length || listsHint) && <><h3 className="sheet-sub">{mine ? 'Your lists' : 'Their lists'}</h3>
+        {lists.length ? <ul className="picks compact">{lists.map(item => <li key={item.id}><button type="button" disabled={has(item)} onClick={() => add(item)}><span><strong>{item.title}</strong><small>{has(item) ? 'Added' : item.source.split(' · ')[0]}</small></span></button></li>)}</ul>
+          : <p className="muted small">{listsHint}</p>}</>}
+      {!find && <><h3 className="sheet-sub">From a country or language</h3>
+      <form className="region" onSubmit={event => {
+        event.preventDefault(); if ((!country && !tongue) || !kinds.length) return;
+        const kind = kinds.length > 1 ? 'Both' : kinds[0];
+        const what = kind === 'Both' ? 'movies & shows' : kind.toLowerCase(), named = tongue ? `${tongue} ${what}` : what[0].toUpperCase() + what.slice(1);
+        add({id: `where-${country}-${tongue}-${kind}`.toLowerCase().replace(/\s+/g, '-'), title: country ? `${named} from ${country}` : named, kind: kind === 'Both' ? 'Movies & shows' : kind === 'Movies' ? 'Movies' : 'Series', source: 'TMDB · popular first'});
+      }}>
+        <div className="region-picks"><label>Country<select value={country} onChange={event => setCountry(event.target.value)}><option value="">Any</option>{countries.map(item => <option key={item}>{item}</option>)}</select></label>
+          <label>Language<select value={tongue} onChange={event => setTongue(event.target.value)}><option value="">Any</option>{tongues.map(item => <option key={item}>{item}</option>)}</select></label></div>
+        <div className="region-go"><Chips all={['Movies', 'Shows']} value={kinds} onChange={setKinds}/><button className="primary" disabled={(!country && !tongue) || !kinds.length}>Add</button></div>
+      </form>
+      <h3 className="sheet-sub">Or pick one</h3>
+      <ul className="picks">{suggestions.filter(item => !has(item)).map(item => <li key={item.id}><button type="button" onClick={() => add(item)}><Posters seed={item.id}/><span><strong>{item.title}</strong><small>{item.kind}</small></span></button></li>)}</ul>
+      </>}
+      {!mine && onBuild && <p className="muted small foot">Want one that isn’t here? <button type="button" className="link" onClick={onBuild}>Build it in AIOMetadata</button> and it shows up in this list.</p>}
+    </Sheet>}
+    {folder && <Sheet title={folder.title} onClose={() => setArranging(null)}>
+      {!find && <><h3 className="sheet-sub first">Titles already watched</h3>
+      <Segments label="Titles already watched" value={folder.watched ?? 'follow'} onChange={value => set(folder.id, {watched: value === 'follow' ? undefined : value}, 'Saved')} options={[{value: 'follow', label: 'Default'}, {value: 'hide', label: 'Hide here'}, {value: 'show', label: 'Show here'}]}/>
+      <p className="muted small note">Default uses the “Hide what’s been watched” switch on the Playback tab.</p></>}
+      {folder.covers && <><h3 className="sheet-sub">Folders</h3><p className="muted sheet-lead">Drag to choose what comes first. Tap a name to change it. Inside a folder, titles keep the list’s own ranking.</p>
+      <DragDropProvider onDragEnd={event => {
+        if (event.canceled || !isSortableOperation(event.operation) || !event.operation.source) return;
+        const from = folder.covers!.findIndex(cover => cover.image === String(event.operation.source!.id)), to = event.operation.source.index;
+        if (from >= 0 && from !== to) set(folder.id, {covers: moved(folder.covers!, from, to)}, 'Order saved');
+      }}><ol className="folders">{folder.covers.map((cover, index) => <FolderItem key={cover.image} cover={cover} index={index} onRename={title => set(folder.id, {covers: folder.covers!.map(item => item.image === cover.image ? {...item, title} : item)}, 'Renamed')}/>)}</ol></DragDropProvider></>}
+    </Sheet>}
+  </section>;
+}

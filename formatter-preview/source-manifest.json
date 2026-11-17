@@ -1,0 +1,135 @@
+{
+  "repository": "https://github.com/Viren070/AIOStreams",
+  "version": "v2.37.0",
+  "commit": "ed8b085f081bc8442dc59ac9de4a4a2070b93f0a",
+  "license": "AGPL-3.0-only",
+  "generatedAt": "2026-11-09",
+  "compiler": "typescript@5.9.3",
+  "transformations": [
+    "TypeScript type erasure to ES2022 ESM; comments retained.",
+    "Explicit buffer import only in generated modifiers.js; no global Node polyfill."
+  ],
+  "files": [
+    {
+      "path": "formatters/base.ts",
+      "upstreamPath": "packages/core/src/formatters/base.ts",
+      "gitBlob": "2692b17380b5dcfb216421ab4a111bedc1140d0e",
+      "bytes": 31472,
+      "sha256": "3ae7c763c7de9d468d2fcdfa4873884dafa28bf0956a75f5ff7c2d24ebe7de58",
+      "generatedSha256": "2a11758dfe93c7a462bcb1822f1fee3382a33c8cc2ffba7f9f4f6506e5f072b0"
+    },
+    {
+      "path": "formatters/custom.ts",
+      "upstreamPath": "packages/core/src/formatters/custom.ts",
+      "gitBlob": "7b1f2e1449fddcec2d1a06bf60dbddfc6a9422d2",
+      "bytes": 804,
+      "sha256": "0e957cda7ce211e6bc6c67882426f8290d109783d1bf96091fdb19d9301e53cf",
+      "generatedSha256": "226c690dd662d49da6405eb3da85db98ed42196e35db580f728e12e99b931e0b"
+    },
+    {
+      "path": "formatters/utils.ts",
+      "upstreamPath": "packages/core/src/formatters/utils.ts",
+      "gitBlob": "b484a495f8cdbf75d18fd634d6574c01d9c46fb2",
+      "bytes": 10491,
+      "sha256": "7c026e6e4f82c124b1923218eecf6e335ef3b8b8ee7c12c6cfe60548a45cfbc7",
+      "generatedSha256": "b6d1cfad21d13e32b4ce9cdc8efc34a1734a9cf136c39a887faa5ad3b3e00e06"
+    },
+    {
+      "path": "formatters/engine/ast.ts",
+      "upstreamPath": "packages/core/src/formatters/engine/ast.ts",
+      "gitBlob": "590233c06f970ad8085010e7e253ccf0aac4c5ca",
+      "bytes": 2301,
+      "sha256": "9ae85478203e1f507d2358e4b1290100f5c23d91042fe3c7bc4fae5e1559c521",
+      "generatedSha256": "f2abdffe7cb4d2ebb61bcd301b3301a0f8acee7a34e31af8a29226b000189afc"
+    },
+    {
+      "path": "formatters/engine/comparators.ts",
+      "upstreamPath": "packages/core/src/formatters/engine/comparators.ts",
+      "gitBlob": "cc40b1e2594432adb852c6e1bb134b5c08de243a",
+      "bytes": 598,
+      "sha256": "6ea89b543c87670096080e4cdbd7bf2437e82b76c0f92d941742e8f0dcdec549",
+      "generatedSha256": "f582898e06ec8f15cea8dea99fd186e9f202d38151b7ebbc42e2504bf13df959"
+    },
+    {
+      "path": "formatters/engine/compile.ts",
+      "upstreamPath": "packages/core/src/formatters/engine/compile.ts",
+      "gitBlob": "eae39e046cf5a5d85750d254e6752a7e12686687",
+      "bytes": 13694,
+      "sha256": "17c1e4f52dfc1352ae4b1093662288f03db60a6fcfcdc583b3f04743c74c71a6",
+      "generatedSha256": "f4c781a5626293a7fd788fddb217ddbb8788274c69ed78b5f3d8c51a26480199"
+    },
+    {
+      "path": "formatters/engine/fields.ts",
+      "upstreamPath": "packages/core/src/formatters/engine/fields.ts",
+      "gitBlob": "230cd09e66415df72be465cb0ebf1de6eb1d3daa",
+      "bytes": 7305,
+      "sha256": "92cab5748e51fc147b6a629e6129c78338b8e7bbe7ee2e21cbf820f578f69cee",
+      "generatedSha256": "5249591e8bcf266de7bcb9d0a43b29fb638403e7b191bb19657b8e7ec4755882"
+    },
+    {
+      "path": "formatters/engine/modifiers.ts",
+      "upstreamPath": "packages/core/src/formatters/engine/modifiers.ts",
+      "gitBlob": "6dda4375266c7adb872fdd7a91deead7217a374e",
+      "bytes": 23242,
+      "sha256": "9208a8533589ed001db779b8e980b5490966d732470f2d8280bc34cf93342c0f",
+      "generatedSha256": "8de7a174352e3489240d0b7ccb432b865fbcd4a1aef98dd767656a154314747b"
+    },
+    {
+      "path": "formatters/engine/parser.ts",
+      "upstreamPath": "packages/core/src/formatters/engine/parser.ts",
+      "gitBlob": "5d93122992d877ae7152f33b74aeb3f348bde8d1",
+      "bytes": 49115,
+      "sha256": "4b892d8aadc8532475e8ae984c1b0c65b30a7497c4897be5b73c4f2230716946",
+      "generatedSha256": "25abd7846d1f25336d17b627821bd0ab5708fd0d1023b58158055303904ca8c1"
+    },
+    {
+      "path": "formatters/engine/sentinels.ts",
+      "upstreamPath": "packages/core/src/formatters/engine/sentinels.ts",
+      "gitBlob": "a5ac97212395f3cc5d90aac620a6c1811690bd03",
+      "bytes": 981,
+      "sha256": "1e4c74dcad2cfd97f9d51764ae66114b0d16f9f94bddd619912bb727698b47f1",
+      "generatedSha256": "90f37f8ba9ab4f26a61951e13f273e24f3bb0e3320dedc9421d41d2f98af6f21"
+    },
+    {
+      "path": "utils/constants.ts",
+      "upstreamPath": "packages/core/src/utils/constants.ts",
+      "gitBlob": "3a943812515f6689e8a444f07175b45bea17f44b",
+      "bytes": 54365,
+      "sha256": "1f61ab0429a9a664849dd0c28121defb09c8a63fe0de61e7faed726f7d420e71",
+      "generatedSha256": "ca807c58c49909fcc2743f9d563972c62790c8e8710029a47c4f13675510c240"
+    },
+    {
+      "path": "utils/languages.ts",
+      "upstreamPath": "packages/core/src/utils/languages.ts",
+      "gitBlob": "983caa854c01a5e052e521db2ee767cb11c2f990",
+      "bytes": 13364,
+      "sha256": "54b817ce175bbf3de07cbbb8943d8a5157fe807634259f853ec997fd5b47cb0f",
+      "generatedSha256": "6f6b985290f8197de29034ed4d6b57e7d433bf19258b6c943d5b48c35b0ac838"
+    },
+    {
+      "path": "utils/language-list.ts",
+      "upstreamPath": "packages/core/src/utils/language-list.ts",
+      "gitBlob": "03a1a34252cc88af775fd0b22cb2958d2f782da5",
+      "bytes": 38975,
+      "sha256": "d294e3a6083f35454774d50851cbd2e87d685860f316cdc6c32331bd1281ff88",
+      "generatedSha256": "d5bc1aae89aa184884ceadae709cb433cbe35edba5e1f1a781c4306279a13e89"
+    },
+    {
+      "path": "utils/media-info.ts",
+      "upstreamPath": "packages/core/src/utils/media-info.ts",
+      "gitBlob": "a598d15d37883d9e3510644087ac679b326786bb",
+      "bytes": 18306,
+      "sha256": "d72b72cf1e195fd9bba51a77354dcccf291217c13f638afe491a254052c2e387",
+      "generatedSha256": "1fc20c8a11751c870599d65eabd91b1c7ae5498eb3a45684f25d21428c702a5a"
+    },
+    {
+      "path": "utils/object-filter.ts",
+      "upstreamPath": "packages/core/src/utils/object-filter.ts",
+      "gitBlob": "57b61b970bf053579b5fb2bbbda77c25bc87bf77",
+      "bytes": 2783,
+      "sha256": "34aa1aa4ca163da42d6004f4e92750146b9aa32c831cd0412ce759d59843316c",
+      "generatedSha256": "34e4545051e265ab269f7353947c87e51d66a093097091f34f54ad33093c41cb"
+    }
+  ],
+  "licenseSha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+}
