@@ -256,6 +256,10 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   const me = await stranger('GET', `${at}/Users/Me`, undefined, app(first.body.AccessToken));
   assert.equal(me.status, 200); assert.equal(me.body.Id, first.body.User.Id); assert.equal(me.body.Via, `${BASE}${at}/thing`);
   assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').devices.length, 2);
+  const named = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').devices[0];
+  assert.equal((await guest('PUT', `/api/people/ada/devices/${named.id}`, {name: 'Living room'})).status, 200);
+  assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').devices.find(device => device.id === named.id).name, 'Living room');
+  assert.equal((await owner('PUT', `/api/people/ada/devices/${named.id}`, {name: '  '})).status, 400);
   // Quick Connect: a TV asks for a code, the code is approved on the site, and only then is the TV let in, as that person.
   const tv = {authorization: 'MediaBrowser Client="TV App", Device="Living room", DeviceId="tv-1"'};
   assert.deepEqual((await stranger('GET', `${at}/QuickConnect/Enabled`)).body, true);

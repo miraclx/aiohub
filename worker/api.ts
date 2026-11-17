@@ -289,6 +289,8 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     return {};
   }
   if (action === 'signout' && request.method === 'POST') {await env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ?').bind(hub, id).run(); return {};}
+  // A device's name as the app sent it, or whatever is easier to recognise.
+  if (action === 'devices' && rest && request.method === 'PUT') {const name = text(body.name, 60, 'Name').trim() || bad(400, 'Give it a name'); await env.DB.prepare('UPDATE devices SET name = ? WHERE hub = ? AND person = ? AND ref = ?').bind(name, hub, id, rest).run(); return {};}
   if (action === 'devices' && rest && request.method === 'DELETE') {await env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ? AND ref = ?').bind(hub, id, rest).run(); return {};}
   return bad(404, 'Not found');
 }
