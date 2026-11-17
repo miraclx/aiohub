@@ -61,17 +61,16 @@ function copyOf(hub: Hub, source: Person, name: string, groupId = source.groupId
 /* ---------- people ---------- */
 export function PeoplePage(page: PageProps) {
   const {hub, go, update, toast} = page;
-  const [adding, setAdding] = useState<string | null>(null), [name, setName] = useState(''), [from, setFrom] = useState(''), [grouping, setGrouping] = useState(false);
+  const [adding, setAdding] = useState<string | null>(null), [name, setName] = useState(''), [from, setFrom] = useState(''), [grouping, setGrouping] = useState(false), [ordering, setOrdering] = useState(false);
   // Who is watching something right now, said beside their name. The rest of it is under Activity.
   const [playing, setPlaying] = useState<Record<string, string>>({});
   useEffect(() => {if (!page.live) return; void page.live.call<{now: number; plays: {person: string; title: string; playing: number; updated: number}[]}>('GET', '/api/activity').then(found => setPlaying(Object.fromEntries(found.plays.filter(play => play.playing && found.now - play.updated < 600).reverse().map(play => [play.person, play.title]))), () => {});}, [hub.v]);
   return <>
-    <div className="page-head"><h1>People</h1><p className="muted">Everyone you share streaming with. Each person gets their own Home.</p></div>
-    {hub.groups.map((group, at) => {
+    <div className="page-head"><h1>People</h1><p className="muted">Everyone you share streaming with. Each person gets their own Home.</p>{hub.groups.length > 1 && <button type="button" className="ghost small" onClick={() => setOrdering(true)}>Reorder groups</button>}</div>
+    {hub.groups.map(group => {
       const people = hub.people.filter(person => person.groupId === group.id);
-      const shift = (by: number) => update(next => {const [item] = next.groups.splice(at, 1); next.groups.splice(at + by, 0, item);});
       return <section key={group.id} className="group">
-        <div className="group-head"><h2>{group.name}</h2><span className="group-links">{hub.groups.length > 1 && <span className="group-order"><button type="button" className="link" aria-label={`Move ${group.name} up`} title="Move up" disabled={!at} onClick={() => shift(-1)}>↑</button><button type="button" className="link" aria-label={`Move ${group.name} down`} title="Move down" disabled={at === hub.groups.length - 1} onClick={() => shift(1)}>↓</button></span>}{SAMPLE && <button type="button" className="link" onClick={soon(toast, `the ${group.name} player`)}>Watch</button>}<a className="link" href={`#/group/${group.id}`}>Group settings</a></span></div>
+        <div className="group-head"><h2>{group.name}</h2><span className="group-links">{SAMPLE && <button type="button" className="link" onClick={soon(toast, `the ${group.name} player`)}>Watch</button>}<a className="link" href={`#/group/${group.id}`}>Group settings</a></span></div>
         <ul className="people">{people.map(person => <li key={person.id}><a href={`#/person/${person.id}`}>
           <Avatar name={person.name}/>
           <span className="person-text"><strong>{person.name}</strong><small>{person.paused ? 'Paused' : playing[person.id] ? `Watching ${playing[person.id]}` : person.joined ? `${personRows(hub, person).filter(row => row.on).length} rows on Home${person.rows || Object.keys(person.settings).length ? ' · personalized' : ''}` : 'Link not opened yet'}</small></span>
@@ -93,6 +92,12 @@ export function PeoplePage(page: PageProps) {
         <p className="muted small">{from ? 'Copies their Home, playback and permissions. Their accounts, devices and history stay theirs.' : 'You’ll get a link to send them.'}</p>
         <button className="primary" disabled={!name.trim()}>Add and get link</button>
       </form>
+    </Sheet>}
+    {ordering && <Sheet title="Reorder groups" onClose={() => setOrdering(false)}>
+      <ul className="group-order">{hub.groups.map((group, at) => {
+        const shift = (by: number) => update(next => {const [item] = next.groups.splice(at, 1); next.groups.splice(at + by, 0, item);});
+        return <li key={group.id}><span>{group.name}</span><button type="button" className="ghost small" aria-label={`Move ${group.name} up`} disabled={!at} onClick={() => shift(-1)}>↑</button><button type="button" className="ghost small" aria-label={`Move ${group.name} down`} disabled={at === hub.groups.length - 1} onClick={() => shift(1)}>↓</button></li>;
+      })}</ul>
     </Sheet>}
     {grouping && <Sheet title="New group" onClose={() => setGrouping(false)}>
       <form className="stack" onSubmit={event => {

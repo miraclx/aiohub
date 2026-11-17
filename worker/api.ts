@@ -467,8 +467,10 @@ async function advanced(request: Request, site: Env, who: Who, body: Body) {
   if (!await checkPassword(String(body.password ?? ''), stored!.pass)) {await failed(site, key); bad(403, 'That is not your password');}
   const env = hosted(site, JSON.parse(who.hub.data) as HubData);
   const players = await getSecret<{uuid: string; password: string; at?: string}>(env, who.hub.id, HUB_OWNER, 'players'), home = await getSecret<{uuid: string; password: string; at?: string}>(env, who.hub.id, HUB_OWNER, 'catalogs');
+  // AIOStreams opens a setup already signed in from the address Stremio's own Configure button uses; it needs the password in AIOStreams' sealed form.
+  const up = players?.at ?? env.UP_ORIGIN, sealed = players ? await fetch(`${up}/api/v1/user`, {headers: {authorization: `Basic ${btoa(`${players.uuid}:${players.password}`)}`, accept: 'application/json', 'user-agent': 'AIOHub/1.0'}}).then(r => r.ok ? r.json() as Promise<{data?: {encryptedPassword?: string}}> : null, () => null).then(j => j?.data?.encryptedPassword) : undefined;
   return {
-    aiostreams: players ? {open: `${players.at ?? env.UP_ORIGIN}/stremio/configure`, id: players.uuid, password: players.password} : null,
+    aiostreams: players ? {open: sealed ? `${up}/stremio/${players.uuid}/${encodeURIComponent(sealed)}/configure` : `${up}/stremio/configure`, id: players.uuid, password: players.password} : null,
     aiometadata: home ? {open: `${home.at ?? env.AIOM_ORIGIN}/stremio/${home.uuid}/configure`, id: home.uuid, password: home.password} : null,
   };
 }
