@@ -19,10 +19,11 @@ export function hash(text: string) {let h = 7; for (const c of text) h = (h * 31
    never the preview's sample art. */
 const real = new Map<string, string[]>();
 export const showReal = (rows: Record<string, string[]>) => {real.clear(); for (const [id, posters] of Object.entries(rows)) real.set(id, posters);};
-/* One person's own rows, laid over the shared ones while their page is open. */
-export const addReal = (rows: Record<string, string[]>) => {for (const [id, posters] of Object.entries(rows)) real.set(id, posters);};
+/* One person's own rows, kept apart from the shared ones so a reload of either never wipes the other. */
+const own = new Map<string, string[]>();
+export const addReal = (rows: Record<string, string[]>) => {own.clear(); for (const [id, posters] of Object.entries(rows)) own.set(id, posters);};
 export function Posters({seed, dim}: {seed: string; dim?: boolean}) {
-  if (!SAMPLE) return <div className={`posters${dim ? ' dim' : ''}`} aria-hidden="true">{(real.get(seed) ?? Array<string>(7).fill('')).map((poster, i) => <span key={i} className={poster ? '' : 'blank'} style={poster ? {backgroundImage: `url(${JSON.stringify(poster)})`} : undefined}/>)}</div>;
+  if (!SAMPLE) return <div className={`posters${dim ? ' dim' : ''}`} aria-hidden="true">{(own.get(seed) ?? real.get(seed) ?? Array<string>(7).fill('')).map((poster, i) => <span key={i} className={poster ? '' : 'blank'} style={poster ? {backgroundImage: `url(${JSON.stringify(poster)})`} : undefined}/>)}</div>;
   return <div className={`posters${dim ? ' dim' : ''}`} aria-hidden="true">{Array.from({length: 7}, (_, i) => {
     const h = hash(`${i}:${seed}:${i * 7}`), a = (hash(seed) + i * 47 + h % 30) % 360, b = (a + 40 + (h >> 4) % 80) % 360;
     const poster = String((hash(seed) + i * 5) % 56).padStart(2, '0');

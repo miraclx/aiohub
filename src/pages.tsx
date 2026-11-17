@@ -218,7 +218,7 @@ export function PersonPage(page: PageProps & {id: string; tab: string}) {
   const person = hub.people.find(item => item.id === id);
   // Their own rows (Trakt, lists, a Home of their own) get real posters too, from the setup they are on.
   const [, redraw] = useState(0);
-  useEffect(() => {if (!live) return; void live.call<{rows: Record<string, string[]>}>('GET', `/api/previews?person=${encodeURIComponent(id)}`).then(found => {addReal(found.rows); redraw(count => count + 1);}, () => {});}, [id, person?.v]);
+  useEffect(() => {if (!live) return; addReal({}); void live.call<{rows: Record<string, string[]>}>('GET', `/api/previews?person=${encodeURIComponent(id)}`).then(found => {addReal(found.rows); redraw(count => count + 1);}, () => {});}, [id, person?.v]);
   if (!person) return <p className="empty">This person is gone. <a className="link" href="#/">Back to people</a></p>;
   const group = hub.groups.find(item => item.id === person.groupId)!;
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === id)!)); toast(note);};
