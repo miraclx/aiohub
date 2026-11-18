@@ -33,14 +33,15 @@ const RESOLUTIONS = ['2160p', '1440p', '1080p', '720p', '576p', '480p', '360p', 
 // Each choice also keeps files inside a bitrate band (bits per second; movies, then episodes) and lists the largest file inside it
 // first. A trial of 19 titles (2026-11-17) showed why: "largest first" alone put 20-48 Mbps remuxes on top, "smallest first" put
 // 0.2-0.6 GB copies squeezed to under 1 Mbps on top. The 1 Mbps floor keeps those out. A file whose bitrate is not known passes.
-// The data saver is about 1-2 GB a film in 1080p, and prefers HEVC and AV1, which keep a good picture at that size.
+// The data saver is a size target, not a resolution: any resolution may play if the file is small (a 4K film at 800 MB wins over
+// a 1080p one). It caps bitrate per resolution and file size, and prefers HEVC and AV1, which keep a good picture at that size.
 // Many files list no bitrate (working it out needs a TMDB key in AIOStreams), so each choice also caps the file size (bytes;
 // movies, then episodes); the person's own size limit still applies when it is lower. Checked against AIOStreams on 2026-11-18.
 type Band = [number, number];
 const band = (movies: Band, series: Band) => ({movies, series});
 const QUALITY: Record<Settings['quality'], {excluded: string[]; first: string[]; bitrate: Record<string, {movies: Band; series: Band}>; encodes?: string[]; most?: [number, number]}> = {
-  saver: {excluded: ['2160p', '1440p'], first: ['1080p', '720p', '576p', '480p'], encodes: ['HEVC', 'AV1'], most: [3e9, 1.5e9],
-    bitrate: {global: band([0.5e6, 3e6], [0.5e6, 3e6]), '1080p': band([0.8e6, 2.5e6], [0.6e6, 2.5e6]), '720p': band([0.5e6, 2e6], [0.5e6, 2e6])}},
+  saver: {excluded: [], first: ['2160p', '1440p', '1080p', '720p', '576p', '480p'], encodes: ['HEVC', 'AV1'], most: [3e9, 1.5e9],
+    bitrate: {global: band([0.5e6, 4e6], [0.5e6, 4e6]), '2160p': band([0.8e6, 4e6], [0.8e6, 4e6]), '1440p': band([0.8e6, 3.5e6], [0.8e6, 3.5e6]), '1080p': band([0.8e6, 2.5e6], [0.6e6, 2.5e6]), '720p': band([0.5e6, 2e6], [0.5e6, 2e6])}},
   balanced: {excluded: ['2160p'], first: ['1080p', '1440p', '720p'], most: [15e9, 6e9],
     bitrate: {global: band([0.6e6, 12e6], [0.5e6, 10e6]), '1440p': band([1e6, 14e6], [1e6, 12e6]), '1080p': band([1e6, 10e6], [0.8e6, 8e6]), '720p': band([0.6e6, 6e6], [0.5e6, 5e6])}},
   best: {excluded: [], first: ['2160p', '1440p', '1080p', '720p'],
