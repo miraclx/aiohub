@@ -1,5 +1,6 @@
 // The site's own API: managers' accounts, the hub they run, and what an invited person may change about themselves.
 // What reaches the streaming server goes through ./native.
+import {carry, plan} from './carry';
 import {defaultAddons, defaultRows, defaultSettings, slug, traktRows} from '../src/data';
 import type {Addon, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
@@ -256,6 +257,13 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       return {username};
     }
     if (request.method === 'DELETE') {await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'mdblist'").bind(hub, id), save(false)]); return {};}
+  }
+  if (action === 'carry') {
+    // Someone's own watching: only they can look at it or move it, from their own page.
+    if (who.person !== id) bad(403, 'Only they can do this, from their own page');
+    const got = request.method === 'POST' ? await carry(env, hub, id) : await plan(env, hub, id);
+    if ('error' in got) bad(409, got.error);
+    return got;
   }
   if (action === 'rotate' && request.method === 'POST') {
     // A fresh player-app password. Every app is signed out; the person's own page is untouched.

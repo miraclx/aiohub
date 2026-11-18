@@ -188,8 +188,41 @@ function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: 
       {!live && <li><div><h3>MDBList</h3><p>{person.lists ? 'Connected. Keeps what’s been watched and how far, and its lists can be added as rows.' : 'Remembers what’s been watched and how far, across every device. Its lists can be added as rows.'}</p></div>
         {person.lists ? off('MDBList', target => {target.lists = false; target.rows = target.rows?.filter(row => !row.source.startsWith('MDBList')) ?? null;})
           : live ? later : mine ? <button type="button" className="primary" onClick={() => edit(target => {target.lists = true;}, 'MDBList connected')}>Connect</button> : waiting}</li>}
+      {live && mine && person.lists && <Carry page={page} person={person}/>}
     </ul>
   </section>;
+}
+/* Copying what someone watched here to their MDBList: they see exactly what would go, then it is done in a few short steps. */
+interface CarryEntry {key: string; title: string; detail: string; at: string; pct?: number}
+interface CarryPlan {watched: CarryEntry[]; partway: CarryEntry[]; already: number; unknown: number; more: boolean}
+function Carry({page, person}: {page: PageProps; person: Person}) {
+  const {toast, live} = page, at = `/api/people/${person.id}/carry`;
+  const [plan, setPlan] = useState<CarryPlan | null>(null), [phase, setPhase] = useState<'idle' | 'looking' | 'shown' | 'copying' | 'done'>('idle'), [copied, setCopied] = useState(0);
+  if (!live) return null;
+  const look = () => {setPhase('looking'); void live.call<CarryPlan>('GET', at).then(found => {setPlan(found); setPhase('shown');}, (error: Error) => {toast(error.message); setPhase('idle');});};
+  const go = async () => {
+    setPhase('copying'); let total = 0;
+    try {
+      for (let pass = 0; pass < 20; pass++) {const got = await live.call<{watched: number; partway: number; more: boolean}>('POST', at, {}); total += got.watched + got.partway; if (!got.more) break;}
+      setCopied(total); setPhase('done');
+    } catch (error) {toast((error as Error).message); setPhase('shown');}
+  };
+  const items = plan ? [...plan.watched, ...plan.partway] : [], count = items.length;
+  const when = (entry: CarryEntry) => entry.pct != null ? `${entry.pct}% in` : new Date(entry.at).toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'});
+  return <li className="stacked"><div><h3>What you watched here</h3>
+    {phase === 'idle' && <p>It stays in your apps either way. Copy it to MDBList too, so anything else that reads MDBList knows what you’ve seen.</p>}
+    {phase === 'looking' && <p>Looking…</p>}
+    {phase === 'shown' && plan && (count ? <>
+      <p>{[plan.watched.length && `${plan.watched.length} watched`, plan.partway.length && `${plan.partway.length} partway`].filter(Boolean).join(' and ')} will be copied, each with the date you watched it.{plan.already ? ` ${plan.already} already in MDBList, left as they are.` : ''}{plan.unknown ? ` ${plan.unknown} couldn’t be matched and stay here only.` : ''}{plan.more ? ' There’s more after these; it carries on by itself.' : ''}</p>
+      <ul className="feed compact">{items.slice(0, 12).map(entry => <li key={entry.key}><div><strong>{entry.title}</strong> <span className="muted">{entry.detail} · {when(entry)}</span></div></li>)}</ul>
+      {count > 12 && <p className="muted small">And {count - 12} more.</p>}
+    </> : <p>Nothing to copy. MDBList already has everything you watched here.{plan.unknown ? ` ${plan.unknown} couldn’t be matched and stay here only.` : ''}</p>)}
+    {phase === 'copying' && <p>Copying. This takes a few seconds.</p>}
+    {phase === 'done' && <p>Done. {copied} copied to MDBList.</p>}
+  </div>
+    {phase === 'idle' && <button type="button" className="ghost small" onClick={look}>See what would be copied</button>}
+    {phase === 'shown' && plan && count > 0 && <div className="field-row"><button type="button" className="primary small" onClick={() => void go()}>Copy {count}</button><button type="button" className="ghost small" onClick={() => setPhase('idle')}>Not now</button></div>}
+  </li>;
 }
 function PersonSections({page, person, tab, mine}: {page: PageProps; person: Person; tab: string; mine: boolean}) {
   const {hub, update, toast} = page, group = hub.groups.find(item => item.id === person.groupId)!;

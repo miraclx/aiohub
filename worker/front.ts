@@ -96,7 +96,7 @@ async function seatOf(env: Env, hub: string, id: string): Promise<Seat | null> {
    reports pass through: on start, on stop, and at most once a minute in between. Nothing is ever sent on a person's behalf. */
 const REPORTS: Record<string, 'start' | 'progress' | 'stop'> = {'/sessions/playing': 'start', '/sessions/playing/progress': 'progress', '/sessions/playing/stopped': 'stop'};
 const noted = new Map<string, number>();
-async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop', text: string) {
+async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', text: string) {
   let report: {ItemId?: string; PositionTicks?: number; IsPaused?: boolean};
   try {report = JSON.parse(text);} catch {return;}
   const item = String(report.ItemId ?? '').slice(0, 200), key = `${hub}/${seat.person}/${item}`, last = noted.get(key) ?? 0;
@@ -106,8 +106,8 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
     await env.DB.prepare('INSERT INTO starts (hub, person, item, device, at) VALUES (?, ?, ?, ?, ?)').bind(hub, seat.person, item, seat.on, now()).run();
     if (Math.random() < 0.02) await env.DB.prepare('DELETE FROM starts WHERE hub = ? AND at < ?').bind(hub, now() - 180 * 86400).run();
   }
-  const position = Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' ? 0 : 1;
-  const known = await env.DB.prepare('SELECT art FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{art: string}>();
+  const known = await env.DB.prepare('SELECT art, duration FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{art: string; duration: number}>();
+  const position = kind === 'mark' ? known?.duration ?? 0 : Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' || kind === 'mark' ? 0 : 1;
   // Rows from before pictures were kept are looked up once more, on their next start.
   if (known && (known.art || kind !== 'start')) {await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, device = ?, updated = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, seat.on, now(), hub, seat.person, item).run(); return;}
   // First report for this title: ask AIOStreams what it is called, as this person.
@@ -116,7 +116,7 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
   const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
   await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, device = excluded.device, updated = excluded.updated, art = excluded.art')
-    .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art).run();
+    .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), kind === 'mark' ? Math.round(Number(about.RunTimeTicks ?? 0) / 1e7) : position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art).run();
 }
 /* Paused: browsing works, playing does not. */
 const PLAYS = /\/playbackinfo|\/mediasources|\/download|^\/(videos|audio)\//;
@@ -207,6 +207,9 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
   }
   const body = reading ? undefined : await request.text();
   if (seat && body && REPORTS[lower]) ctx.waitUntil(note(env, hub, seat, REPORTS[lower], body).catch(() => {}));
+  // Ticked as watched in an app without playing it: kept like a finished play, so it can be copied to MDBList later too.
+  const ticked = seat && request.method === 'POST' ? /^\/(?:users\/[^/]+\/playeditems|userplayeditems)\/([\w-]{1,80})$/i.exec(path) : null;
+  if (seat && ticked) ctx.waitUntil(note(env, hub, seat, 'mark', JSON.stringify({ItemId: ticked[1]})).catch(() => {}));
   const send = (live: Seat | null) => {
     const headers = new Headers(), inbound: [string, string][] = live ? [[token, live.up], [live.jf, live.upId]] : [];
     for (const name of [...AUTH_HEADERS, 'content-type', 'accept', 'user-agent', 'range', 'accept-language']) {const value = request.headers.get(name); if (value) headers.set(name, swap(value, AUTH_HEADERS.includes(name) ? inbound : []));}
