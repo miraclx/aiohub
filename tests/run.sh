@@ -8,10 +8,12 @@ export WRANGLER_WRITE_LOGS=false
 fresh() {
   pkill -f "wrangler dev --local --port 8799"; sleep 1; rm -rf .wrangler/state
   npx wrangler d1 migrations apply aiohub --local >/dev/null 2>&1
-  (npx wrangler dev --local --port 8799 > /tmp/aiohub-dev.log 2>&1 &)
+  (npx wrangler dev --local --port 8799 "$@" > /tmp/aiohub-dev.log 2>&1 &)
   for i in $(seq 1 60); do curl -s -o /dev/null http://localhost:8799/api/open && return; sleep 0.5; done
 }
 npx vite build >/dev/null 2>&1
 fresh; node --test tests/api.test.mjs 2>&1 | grep -E "^ℹ (tests|pass|fail)|✖"
 fresh; node tests/browser.mjs "$@" 2>&1 | tail -14
+# The same site with every person on their own AIOMetadata setup.
+fresh --var FRONT:aiometadata; node --test tests/aiom.test.mjs 2>&1 | grep -E "^ℹ (tests|pass|fail)|✖" | sed "s/^/aiom: /"
 pkill -f "wrangler dev --local --port 8799"

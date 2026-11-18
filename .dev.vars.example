@@ -1,3 +1,5 @@
 # The two secrets your copy needs. See the README.
 VAULT_KEY=
 CLAIM_CODE=
+# off: player apps are served by AIOStreams; aiometadata: each person by their own AIOMetadata setup.
+FRONT=off
