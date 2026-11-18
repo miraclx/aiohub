@@ -312,7 +312,8 @@ test('what a group or a person changes for themselves reaches the players as the
   assert.deepEqual(setup.variants.map(item => item.id).sort(), [`hub-g-${group.id}`, 'hub-p-ada', 'hub-p-ben']);
   assert.ok(of(`hub-g-${group.id}`).includes('set excludedResolutions = ["2160p","1440p"]')); assert.ok(of(`hub-g-${group.id}`).includes('set size.global = {"movies":[0,3000000000],"series":[0,1500000000],"anime":[0,1500000000]}'));
   assert.ok(of(`hub-g-${group.id}`).includes('disable presets[type="torrentio"]')); assert.ok(!of(`hub-g-${group.id}`).some(line => line.includes('manifestUrl')));
-  assert.ok(of('hub-p-ben').includes('set excludedResolutions = []')); assert.ok(of('hub-p-ben').includes('enable presets[type="stremthruTorz"]')); assert.ok(!of('hub-p-ben').some(line => line.startsWith('set size.')));
+  assert.ok(of('hub-p-ben').includes('set excludedResolutions = []')); assert.ok(of('hub-p-ben').includes('enable presets[type="stremthruTorz"]')); // Best lifts the data saver's size cap back to the group's own limit.
+  assert.ok(of('hub-p-ben').includes('set size.global = {"movies":[0,8000000000],"series":[0,8000000000],"anime":[0,8000000000]}'));
   // Data saver keeps files in a small bitrate band and prefers HEVC and AV1; Best widens the band again.
   assert.ok(of(`hub-g-${group.id}`).includes('set preferredEncodes = ["HEVC","AV1"]')); assert.ok(of(`hub-g-${group.id}`).some(line => line.startsWith('set bitrate = {"useMetadataRuntime":false')));
   assert.ok(of('hub-p-ben').includes('set preferredEncodes = []')); assert.ok(of('hub-p-ben').some(line => line.includes('"2160p":{"movies":[1000000,40000000]')));
