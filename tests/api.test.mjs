@@ -315,7 +315,7 @@ test('what a group or a person changes for themselves reaches the players as the
   assert.ok(of('hub-p-ben').includes('set excludedResolutions = []')); assert.ok(of('hub-p-ben').includes('enable presets[type="stremthruTorz"]')); // Best lifts the data saver's size cap back to the group's own limit.
   assert.ok(of('hub-p-ben').includes('set size.global = {"movies":[0,8000000000],"series":[0,8000000000],"anime":[0,8000000000]}'));
   // Data saver keeps files in a small bitrate band and prefers HEVC and AV1; Best widens the band again.
-  assert.ok(of(`hub-g-${group.id}`).includes('set preferredEncodes = ["HEVC","AV1"]')); assert.ok(of(`hub-g-${group.id}`).some(line => line.startsWith('set bitrate = {"useMetadataRuntime":false')));
+  assert.ok(of(`hub-g-${group.id}`).includes('set preferredEncodes = ["HEVC","AV1"]')); assert.ok(of(`hub-g-${group.id}`).some(line => line.startsWith('set bitrate = {"useMetadataRuntime":true')));
   assert.ok(of('hub-p-ben').includes('set preferredEncodes = []')); assert.ok(of('hub-p-ben').some(line => line.includes('"2160p":{"movies":[1000000,40000000]')));
   assert.deepEqual(setup.jellyfin.personas.find(user => user.id === 'ben').variants, [`hub-g-${group.id}`, 'hub-p-ben']);
   // The spare source is in the setup, switched off for everyone else; the hub's own defaults are untouched.

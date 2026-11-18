@@ -482,7 +482,7 @@ export function JoinPage(page: PageProps & {id: string; tab: string; base?: stri
   const tabs: [string, string][] = [['home', 'Home'], ...(person.can.playback ? [['playback', 'Playback'] as [string, string]] : []), ['devices', 'Devices'], ['accounts', 'Accounts'], ['activity', 'Activity'], ['you', 'You']];
   return <>
     <div className="person-head"><Avatar name={person.name} size={64}/><div><h1>{person.name}</h1><p className="muted">{hub.me.name ? `Shared with you by ${hub.me.name}` : 'Shared with you'}</p></div></div>
-    {(person.paused || hub.groups.find(item => item.id === person.groupId)?.paused) && <div className="notice"><span>Nothing will play for you right now. Whoever set you up can sort it out. You can still browse and set things up.</span></div>}
+    {(person.paused || hub.groups.find(item => item.id === person.groupId)?.paused) && <div className="notice"><span>Meh, nothing plays right now. You can still browse and set things up.</span></div>}
     <Tabs base={base} tab={tab} tabs={tabs}/>
     {tab === 'home' && ((SAMPLE && !person.trakt) || !person.devices.length) && <div className="todo">
       {!person.devices.length && <a href={`#${base}/devices`}><span className="check" aria-hidden="true">→</span><span><strong>Watch on a device</strong><small>Phone, TV or laptop. Takes a minute.</small></span></a>}

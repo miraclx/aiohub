@@ -54,7 +54,9 @@ const SEARCH: Record<Settings['search'], {enabled: boolean; condition: string}> 
 };
 // AIOStreams refuses a whole save over one language name it does not know, so only names it listed on staging are ever sent.
 const LANGUAGES = new Set('English Japanese Chinese Russian Arabic Portuguese Spanish French German Italian Korean Hindi Bengali Punjabi Marathi Gujarati Tamil Telugu Kannada Malayalam Thai Vietnamese Indonesian Turkish Hebrew Persian Ukrainian Greek Lithuanian Latvian Estonian Polish Czech Slovak Hungarian Romanian Bulgarian Serbian Croatian Slovenian Dutch Danish Finnish Swedish'.split(' '));
-export function playback(stored: Stored, settings: Settings) {
+// With the hub's TMDB key, AIOStreams works out every file's bitrate from its size and the title's running time; without it,
+// only files that state their own length have one, and the size caps do the work.
+export function playback(stored: Stored, settings: Settings, runtime = false) {
   const quality = QUALITY[settings.quality] ?? QUALITY.balanced, bytes = Math.round(settings.maxSizeGb * 1e9);
   stored.excludedResolutions = quality.excluded;
   stored.preferredResolutions = [...quality.first, ...RESOLUTIONS.filter(item => !quality.first.includes(item) && !quality.excluded.includes(item))];
@@ -63,7 +65,7 @@ export function playback(stored: Stored, settings: Settings) {
   stored.size = {...(stored.size as object ?? {}), global: {movies: [0, movies], series: [0, series], anime: [0, series]}};
   stored.preferredLanguages = [...settings.languages.filter(item => LANGUAGES.has(item)), 'Dual Audio', 'Multi'];
   const {global, ...resolution} = quality.bitrate;
-  stored.bitrate = {useMetadataRuntime: false, global, resolution};
+  stored.bitrate = {useMetadataRuntime: runtime, global, resolution};
   stored.preferredEncodes = quality.encodes ?? [];
   const order = [...(settings.cachedFirst ? ['library', 'cached', 'resolution', 'language', 'quality'] : ['library', 'resolution', 'language', 'quality', 'cached']), ...(quality.encodes ? ['encode'] : []), 'size'];
   stored.sortCriteria = {...(stored.sortCriteria as object ?? {}), global: order.map(key => ({key, direction: 'desc'}))};
@@ -84,7 +86,8 @@ const extrasOf = (data: HubData) => data.addons.filter(addon => addon.custom && 
 /* Changes only what the hub owns, in place. Everything else in the stored setup, and every user's other fields, is left exactly as found. */
 interface Variant {id: string; name: string; enabled: boolean; script: string}
 const OURS = 'hub-';
-function patch(stored: Stored, data: HubData, key: string, people: {id: string; name: string; variants?: string[]; tracks?: boolean}[], home: string | null, variants: Variant[] = []) {
+function patch(stored: Stored, data: HubData, key: string, people: {id: string; name: string; variants?: string[]; tracks?: boolean}[], home: string | null, variants: Variant[] = [], tmdb: string | null = null) {
+  if (tmdb) stored[tmdb.length > 40 ? 'tmdbAccessToken' : 'tmdbApiKey'] = tmdb;
   stored.services = [{id: SERVICE[data.defaults.debrid], enabled: true, credentials: {apiKey: key}}];
   // Every source the hub knows is kept in the setup, on or off, so a group or a person can switch one on for themselves.
   const wanted = new Set(['library', ...data.defaults.sources]), presets = stored.presets ?? [];
@@ -114,7 +117,7 @@ function patch(stored: Stored, data: HubData, key: string, people: {id: string; 
     else presets.push({type: 'custom', instanceId: extraId(addon), enabled: wanted.has(addon.id), options: {name: addon.name, manifestUrl: addon.url, timeout: 30000, resources: ['stream'], mediaTypes: [], libraryAddon: false, resultPassthrough: false, forceToTop: false}});
   }
   stored.presets = presets.filter(item => !(item.type === 'custom' && /^x[a-z0-9]{1,6}$/.test(item.instanceId) && !ids.has(item.instanceId)));
-  playback(stored, data.defaults);
+  playback(stored, data.defaults, !!tmdb);
   stored.formatter = label(data.defaults);
   // What a group or a person has changed for themselves travels as a variant: a short list of changes applied only for them.
   stored.variants = [...variants, ...((stored.variants as Variant[] | undefined) ?? []).filter(item => !item.id?.startsWith(OURS))];
@@ -131,8 +134,8 @@ function patch(stored: Stored, data: HubData, key: string, people: {id: string; 
 }
 const label = (settings: Settings) => ({id: 'custom', definitions: {custom: {name: settings.formatter.name, description: settings.formatter.description}}});
 /* What one level changes compared with the level above it, as variant lines. Only real differences are written. */
-function differences(above: Settings, own: Settings, keys: Map<string, string>, home: string | null, extras: Addon[]): string[] {
-  const a: Stored = {}, b: Stored = {}, lines: string[] = []; playback(a, above); playback(b, own);
+function differences(above: Settings, own: Settings, keys: Map<string, string>, home: string | null, extras: Addon[], runtime = false): string[] {
+  const a: Stored = {}, b: Stored = {}, lines: string[] = []; playback(a, above, runtime); playback(b, own, runtime);
   const say = (path: string, from: unknown, to: unknown) => {if (JSON.stringify(from) !== JSON.stringify(to)) lines.push(`set ${path} = ${JSON.stringify(to)}`);};
   say('excludedResolutions', a.excludedResolutions, b.excludedResolutions); say('preferredResolutions', a.preferredResolutions, b.preferredResolutions);
   say('size.global', (a.size as {global: unknown}).global, (b.size as {global: unknown}).global); say('preferredLanguages', a.preferredLanguages, b.preferredLanguages);
@@ -370,7 +373,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
   });
 
   // Home. The hub has one setup on AIOMetadata; a group or a person gets their own only while theirs differs from the one above.
-  const tmdb = env.AIOM_ORIGIN ? await held<string>(env, vault, hub.id, HUB_OWNER, 'key:tmdb') : null, budget = {left: 30};
+  const known = await held<string>(env, vault, hub.id, HUB_OWNER, 'key:tmdb'), tmdb = env.AIOM_ORIGIN ? known : null, budget = {left: 30};
   let note = !env.AIOM_ORIGIN ? 'Home rows are not set up on this site.' : !tmdb ? 'Add a TMDB key under Hub, Sources, so Home has rows in the player apps.' : '', more = false, base: string | null = null;
   if (tmdb) {
     const keys: Keys = {tmdb, mdblist: await held<string>(env, vault, hub.id, HUB_OWNER, 'key:mdblist')}, needed = new Set([HUB_OWNER]);
@@ -397,12 +400,12 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     // A group with nobody in it has nobody to apply its changes to.
     const reach = limited(group.home ?? base, group.want.settings);
     group.reach = reach;
-    const lines = people.some(person => person.group === group) ? differences(top.settings, group.want.settings, accounts, reach !== hubReach ? reach : null, extras) : [];
+    const lines = people.some(person => person.group === group) ? differences(top.settings, group.want.settings, accounts, reach !== hubReach ? reach : null, extras, !!known) : [];
     if (lines.length) variants.push({id: `${OURS}g-${group.id}`, name: `Group: ${group.name}`, enabled: true, script: lines.join('\n')});
   }
   for (const person of people) {
     const over = person.group?.reach ?? hubReach, reach = limited(person.home ?? person.group?.home ?? base, person.want.settings);
-    const lines = differences(person.above.settings, person.want.settings, accounts, reach !== over ? reach : null, extras);
+    const lines = differences(person.above.settings, person.want.settings, accounts, reach !== over ? reach : null, extras, !!known);
     if (lines.length) variants.push({id: `${OURS}p-${person.id}`, name: `Person: ${person.name}`, enabled: true, script: lines.join('\n')});
     person.variants = [`${OURS}g-${person.group?.id}`, `${OURS}p-${person.id}`].filter(id => variants.some(item => item.id === id));
   }
@@ -416,7 +419,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     players = null;
   }
   if (!players) {
-    const first = fresh(); patch(first, data, key, people, hubReach, variants);
+    const first = fresh(); patch(first, data, key, people, hubReach, variants, known);
     const made = await create(env, hub.id, first, service);
     if ('state' in made) return made;
     players = made;
@@ -424,7 +427,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     const read = await fetch(`${env.UP_ORIGIN}/api/v1/user?raw=true`, {headers: basic(players)}).catch(() => null);
     const stored = read?.status === 200 ? ((await read.json().catch(() => null)) as {data?: {userData?: Stored}} | null)?.data?.userData : null;
     if (!stored) return {state: 'error', message: 'AIOStreams did not answer. Your changes are saved here and will be sent on the next try.'};
-    const before = JSON.stringify(stored); patch(stored, data, key, people, hubReach, variants);
+    const before = JSON.stringify(stored); patch(stored, data, key, people, hubReach, variants, known);
     if (JSON.stringify(stored) !== before) {
       const write = await fetch(`${env.UP_ORIGIN}/api/v1/user`, {method: 'PUT', headers: {...basic(players), 'content-type': 'application/json'}, body: JSON.stringify({config: stored})}).catch(() => null);
       if (write?.status !== 200) {

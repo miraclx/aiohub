@@ -16,14 +16,22 @@ function told(row: Noted, now: number, code: string): Play | null {
 }
 /* A week per person, from the same notes: how many titles, roughly how long (each title counts up to where it was last left),
    how many were finished, and the device used most. Rough on purpose; it is for spotting who watches what, not for billing. */
-interface Week {person: string; titles: number; seconds: number; finished: number; devices: number; mostly: string; last: number}
-function weeks(rows: Noted[], now: number): Week[] {
+interface Week {person: string; titles: number; seconds: number; finished: number; devices: number; mostly: string; last: number; plays: number; when: string}
+/* The part of the day most plays started in, in this device's time zone; said only once there are a few to go on. */
+const PARTS: [number, string][] = [[5, 'late at night'], [12, 'in the mornings'], [17, 'in the afternoons'], [22, 'in the evenings'], [24, 'late at night']];
+function partOf(starts: number[]) {
+  if (starts.length < 3) return '';
+  const count = new Map<string, number>(); for (const at of starts) {const hour = new Date(at * 1000).getHours(), part = PARTS.find(([end]) => hour < end)![1]; count.set(part, (count.get(part) ?? 0) + 1);}
+  return [...count].sort((a, b) => b[1] - a[1])[0][0];
+}
+function weeks(rows: Noted[], now: number, starts: {person: string; at: number}[] = []): Week[] {
   const by = new Map<string, Noted[]>();
   for (const row of rows) if (now - row.updated < 7 * 86400) by.set(row.person, [...(by.get(row.person) ?? []), row]);
   return [...by].map(([person, list]) => {
     const count = new Map<string, number>(); for (const row of list) count.set(row.device || 'A player app', (count.get(row.device || 'A player app') ?? 0) + 1);
     const done = (row: Noted) => row.duration > 0 && row.position / row.duration >= 0.9;
-    return {person, titles: list.length, finished: list.filter(done).length, devices: count.size, mostly: [...count].sort((a, b) => b[1] - a[1])[0][0], last: Math.max(...list.map(row => row.updated)),
+    const mine = starts.filter(start => start.person === person).map(start => start.at);
+    return {person, plays: mine.length, when: partOf(mine), titles: list.length, finished: list.filter(done).length, devices: count.size, mostly: [...count].sort((a, b) => b[1] - a[1])[0][0], last: Math.max(...list.map(row => row.updated)),
       seconds: list.reduce((sum, row) => sum + (done(row) ? row.duration : row.duration ? Math.min(row.position, row.duration) : row.position), 0)};
   }).sort((a, b) => b.seconds - a.seconds);
 }
@@ -31,10 +39,10 @@ const hours = (seconds: number) => seconds < 3600 ? `${Math.max(1, Math.round(se
 /* The title's own picture, as the player apps show it. */
 const Picture = ({url}: {url: string}) => <div className="posters" aria-hidden="true"><span style={{backgroundImage: `url(${JSON.stringify(url)})`}}/></div>;
 export function Activity({hub, personId, groupId, pick, toast, live}: {hub: Hub; personId?: string; groupId?: string; pick?: boolean; toast: (text: string) => void; live?: Live}) {
-  const [filter, setFilter] = useState('all'), [title, setTitle] = useState<string | null>(null), [real, setReal] = useState<Play[]>([]), [turn, setTurn] = useState(0), [noted, setNoted] = useState<{now: number; plays: Noted[]}>({now: 0, plays: []});
+  const [filter, setFilter] = useState('all'), [title, setTitle] = useState<string | null>(null), [real, setReal] = useState<Play[]>([]), [turn, setTurn] = useState(0), [noted, setNoted] = useState<{now: number; plays: Noted[]; starts?: {person: string; at: number}[]}>({now: 0, plays: []});
   useEffect(() => {
     if (!live) return; let on = true;
-    void live.call<{now: number; plays: Noted[]}>('GET', '/api/activity').then(found => {if (on) {setNoted(found); setReal(found.plays.map(row => told(row, found.now, hub.code)).filter((play): play is Play => !!play)); if (turn) toast('Up to date');}}, (error: Error) => toast(error.message));
+    void live.call<{now: number; plays: Noted[]; starts?: {person: string; at: number}[]}>('GET', '/api/activity').then(found => {if (on) {setNoted(found); setReal(found.plays.map(row => told(row, found.now, hub.code)).filter((play): play is Play => !!play)); if (turn) toast('Up to date');}}, (error: Error) => toast(error.message));
     return () => {on = false;};
   }, [live, turn]);
   const scope = groupId ?? (filter === 'all' ? undefined : filter);
@@ -54,9 +62,9 @@ export function Activity({hub, personId, groupId, pick, toast, live}: {hub: Hub;
   return <section>
     {head}
     {!personId && (() => {
-      const shown = weeks(noted.plays, noted.now).filter(week => person(week.person) && (!scope || person(week.person)!.groupId === scope));
+      const shown = weeks(noted.plays, noted.now, noted.starts).filter(week => person(week.person) && (!scope || person(week.person)!.groupId === scope));
       return shown.length > 0 && <><h2 className="sub first">This week</h2><ul className="feed">{shown.map(week => <li key={week.person}><Avatar name={name(week.person)} size={36}/>
-        <div><strong>{name(week.person)}</strong><small>{week.titles} {week.titles === 1 ? 'title' : 'titles'} · {hours(week.seconds)}{week.finished ? ` · ${week.finished} finished` : ''}</small><small className="on-device">Mostly on {week.mostly}{week.devices > 1 ? ` · ${week.devices} devices` : ''}</small></div></li>)}</ul></>;
+        <div><strong>{name(week.person)}</strong><small>{week.titles} {week.titles === 1 ? 'title' : 'titles'} · {hours(week.seconds)}{week.finished ? ` · ${week.finished} finished` : ''}{week.plays > 1 ? ` · pressed play ${week.plays} times` : ''}{week.when ? `, mostly ${week.when}` : ''}</small><small className="on-device">Mostly on {week.mostly}{week.devices > 1 ? ` · ${week.devices} devices` : ''}</small></div></li>)}</ul></>;
     })()}
     {!!now.length && <><h2 className="sub">Watching now</h2><ul className="now">{now.map(play => <li key={play.id}>{play.art ? <Picture url={play.art}/> : <Posters seed={play.title}/>}<div className="now-text">
       <button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small><small className="on-device">{play.on}{atOnce(play.personId) > 1 ? ` · watching on ${atOnce(play.personId)} devices` : ''}</small>

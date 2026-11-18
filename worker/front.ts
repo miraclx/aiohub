@@ -78,6 +78,10 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   const item = String(report.ItemId ?? '').slice(0, 200), key = `${hub}/${seat.person}/${item}`, last = noted.get(key) ?? 0;
   if (!item || (kind === 'progress' && Date.now() - last < 60_000)) return;
   if (noted.size > 5000) noted.clear(); noted.set(key, Date.now());
+  if (kind === 'start') {
+    await env.DB.prepare('INSERT INTO starts (hub, person, item, device, at) VALUES (?, ?, ?, ?, ?)').bind(hub, seat.person, item, seat.on, now()).run();
+    if (Math.random() < 0.02) await env.DB.prepare('DELETE FROM starts WHERE hub = ? AND at < ?').bind(hub, now() - 180 * 86400).run();
+  }
   const position = Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' ? 0 : 1;
   const known = await env.DB.prepare('SELECT art FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{art: string}>();
   // Rows from before pictures were kept are looked up once more, on their next start.
@@ -169,8 +173,8 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
   if (!seat && !reading) return json(401, {Message: 'Unauthorized'});
   if (seat) {
     if (lower === '/sessions/logout') {seats.delete(id); await env.DB.prepare('DELETE FROM devices WHERE id = ?').bind(id).run(); return new Response(null, {status: 204, headers: CORS});}
-    // Deliberately vague: it says nothing about who switched it off or why, only that someone they know can sort it out.
-    if (seat.paused && PLAYS.test(lower)) return json(403, {Message: 'Huh, this can’t play right now. Whoever set you up can sort it out.'});
+    // Deliberately vague: it says nothing about who switched it off, or why.
+    if (seat.paused && PLAYS.test(lower)) return json(403, {Message: 'Meh, can’t play right now.'});
     if (now() - seat.seen > SEEN_EVERY) {const where = whereOf(request); seat.seen = now(); ctx.waitUntil(env.DB.prepare('UPDATE devices SET seen = ?, place = ?, net = ? WHERE id = ?').bind(seat.seen, where.place, where.net, id).run());}
   }
   const body = reading ? undefined : await request.text();
