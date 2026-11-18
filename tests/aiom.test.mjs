@@ -72,7 +72,7 @@ test('a hub with two people, a debrid key and a TMDB key', async () => {
   assert.equal((await owner('PUT', '/api/groups/friends', {name: 'Friends', rows: null, settings: {quality: 'saver'}})).status, 200);
   const person = {rows: null, settings: {}, can: {arrange: false, add: false, playback: false}, trakt: false, lists: false};
   assert.equal((await owner('PUT', '/api/people/ada', {...person, name: 'Ada', groupId: 'mein'})).status, 200);
-  assert.equal((await owner('PUT', '/api/people/ben', {...person, name: 'Ben', groupId: 'friends', settings: {spoilers: true}})).status, 200);
+  assert.equal((await owner('PUT', '/api/people/ben', {...person, name: 'Ben', groupId: 'friends', settings: {spoilers: true, limit: 'kids', skip: false}})).status, 200);
   assert.equal((await owner('PUT', '/api/services/TorBox', {key: 'tb-key'})).status, 200);
   assert.equal((await owner('PUT', '/api/keys/tmdb', {key: 'good-tmdb-key'})).status, 200);
 });
@@ -88,6 +88,17 @@ test('each person gets their own AIOMetadata setup, pointed at their own streams
   assert.equal(ben.config.jellyfinStreamUrl, `${UP}/stremio/cfg-1/${encodeURIComponent('enc+pw/1')}/v/hub-c-ben/manifest.json`);
   const combined = players().variants.find(item => item.id === 'hub-c-ben');
   assert.ok(combined.script.includes('set preferredEncodes = ["HEVC","AV1"]')); assert.ok(!combined.script.includes('manifestUrl'));
+  // AIOStreams only finds streams here: one variant per person who differs and nothing else of ours, no users, no Home.
+  assert.deepEqual(players().variants.map(item => item.id), ['hub-c-ben']);
+  assert.deepEqual(players().jellyfin?.personas ?? [], []);
+  assert.ok(!(players().presets ?? []).some(item => item.instanceId === 'h01' && item.enabled));
+  assert.ok(!(players().catalogModifications ?? []).length);
+  // What production carries on AIOStreams (the content limit, skipping intros) is set on each person's own server.
+  assert.equal(ada.config.ageRating, 'None'); assert.equal(ben.config.ageRating, 'PG');
+  assert.equal(ada.config.jellyfinSkipSource, 'auto'); assert.equal(ben.config.jellyfinSkipSource, 'off');
+  // Both are ready to sign in, as far as the site can tell.
+  const shown = (await owner('GET', '/api/state')).body.hub.people;
+  assert.ok(shown.every(person => person.ready !== false), JSON.stringify(shown.map(person => [person.id, person.ready])));
   // Nothing changed, so a second sync writes nothing.
   const versions = [...fake.homes.values()].map(home => home.config.configVersion);
   assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual([...fake.homes.values()].map(home => home.config.configVersion), versions);

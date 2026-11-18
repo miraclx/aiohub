@@ -87,7 +87,7 @@ const extrasOf = (data: HubData) => data.addons.filter(addon => addon.custom && 
 /* Changes only what the hub owns, in place. Everything else in the stored setup, and every user's other fields, is left exactly as found. */
 interface Variant {id: string; name: string; enabled: boolean; script: string}
 const OURS = 'hub-';
-function patch(stored: Stored, data: HubData, key: string, people: {id: string; name: string; variants?: string[]; tracks?: boolean}[], home: string | null, variants: Variant[] = [], tmdb: string | null = null) {
+function patch(stored: Stored, data: HubData, key: string, people: {id: string; name: string; variants?: string[]; tracks?: boolean}[], home: string | null, variants: Variant[] = [], tmdb: string | null = null, front = false) {
   if (tmdb) stored[tmdb.length > 40 ? 'tmdbAccessToken' : 'tmdbApiKey'] = tmdb;
   stored.services = [{id: SERVICE[data.defaults.debrid], enabled: true, credentials: {apiKey: key}}];
   // Every source the hub knows is kept in the setup, on or off, so a group or a person can switch one on for themselves.
@@ -107,6 +107,11 @@ function patch(stored: Stored, data: HubData, key: string, people: {id: string; 
     else presets.push({type: 'custom', instanceId: HOME, enabled: true, options: {name: 'Home', manifestUrl: home, timeout: 30000, resources: ['catalog', 'meta', 'watch_state'], mediaTypes: [], libraryAddon: false, resultPassthrough: false, forceToTop: false}});
     stored.upstreamCatalogOrder = [ADDON];
     stored.catalogModifications = [...MODIFICATIONS, ...((stored.catalogModifications as {id?: string}[] | undefined) ?? []).filter(item => !item.id?.startsWith(`${ADDON}.`))];
+  } else if (front) {
+    // With AIOMetadata in front, nobody browses through AIOStreams: it only finds streams, so the hub's Home there is switched off.
+    const found = presets.find(item => item.type === 'custom' && item.instanceId === HOME);
+    if (found) found.enabled = false;
+    stored.catalogModifications = ((stored.catalogModifications as {id?: string}[] | undefined) ?? []).filter(item => !item.id?.startsWith(`${ADDON}.`));
   }
   const subs = codes(data.defaults.subtitles), captions = presets.find(item => item.type === SUBTITLES);
   if (captions) {captions.enabled = !!subs.length; if (subs.length) captions.options.language = subs;}
@@ -122,8 +127,9 @@ function patch(stored: Stored, data: HubData, key: string, people: {id: string; 
   stored.formatter = label(data.defaults);
   // What a group or a person has changed for themselves travels as a variant: a short list of changes applied only for them.
   stored.variants = [...variants, ...((stored.variants as Variant[] | undefined) ?? []).filter(item => !item.id?.startsWith(OURS))];
-  const users = stored.jellyfin?.personas ?? [], keep = new Set(people.map(person => person.id));
-  for (const person of people) {
+  // With AIOMetadata in front, people sign in to their own AIOMetadata setup, so AIOStreams keeps no users for them.
+  const users = stored.jellyfin?.personas ?? [], keep = new Set(front ? [] : people.map(person => person.id));
+  for (const person of front ? [] : people) {
     let found = users.find(user => user.id === person.id);
     if (found) found.name = person.name; else users.push(found = {id: person.id, name: person.name, history: 'own', trackers: []});
     // AIOStreams records plays for a person with no tracker list of their own (it finds their Home setup); an empty list means never.
@@ -340,8 +346,9 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
     const mine = JSON.parse(found.mine) as {rows: Row[] | null; trakt?: boolean}, shared = (JSON.parse(found.theirs) as {rows: Row[] | null}).rows ?? data.rows;
     rows = mine.rows ?? [...(mine.trakt ? traktRows() : []), ...shared]; owners = [person, groupOwner(found.grp), HUB_OWNER];
   }
-  let made: Catalogs | null = null;
-  for (const owner of owners) if ((made = await getSecret<Catalogs>(env, hub.id, owner, 'catalogs'))) break;
+  // With AIOMetadata in front, a person's rows are on their own setup there.
+  let made: Catalogs | null = person && env.FRONT === 'aiometadata' ? await getSecret<Catalogs>(env, hub.id, person, PLAYER) : null;
+  if (!made) for (const owner of owners) if ((made = await getSecret<Catalogs>(env, hub.id, owner, 'catalogs'))) break;
   if (!made) return {};
   const key = `${hub.id}/${made.uuid}/${made.v}`, known = shown.get(key);
   if (known && Date.now() - known.at < 600_000) return known.rows;
@@ -380,7 +387,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
   // Home. The hub has one setup on AIOMetadata; a group or a person gets their own only while theirs differs from the one above.
   const known = await held<string>(env, vault, hub.id, HUB_OWNER, 'key:tmdb'), tmdb = env.AIOM_ORIGIN ? known : null, budget = {left: 30};
   let note = !env.AIOM_ORIGIN ? 'Home rows are not set up on this site.' : !tmdb ? 'Add a TMDB key under Hub, Sources, so Home has rows in the player apps.' : '', more = false, base: string | null = null;
-  const keys: Keys | null = tmdb ? {tmdb, mdblist: await held<string>(env, vault, hub.id, HUB_OWNER, 'key:mdblist')} : null, front = env.FRONT === 'aiometadata' && !!keys;
+  const keys: Keys | null = tmdb ? {tmdb, mdblist: await held<string>(env, vault, hub.id, HUB_OWNER, 'key:mdblist')} : null, front = env.FRONT === 'aiometadata';
   if (keys) {
     const needed = new Set([HUB_OWNER]);
     const make = async (owner: string, wanted: Wanted) => {const got = await syncHome(env, vault, hub.id, owner, wanted, keys, budget); if ('address' in got) return got.address; note ||= got.message; more ||= !!got.more; return null;};
@@ -403,7 +410,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     }
   }
   const variants: Variant[] = [], hubReach = limited(base, top.settings), extras = extrasOf(data);
-  for (const group of groups) {
+  for (const group of front ? [] : groups) {
     // A group with nobody in it has nobody to apply its changes to.
     const reach = limited(group.home ?? base, group.want.settings);
     group.reach = reach;
@@ -411,14 +418,17 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     if (lines.length) variants.push({id: `${OURS}g-${group.id}`, name: `Group: ${group.name}`, enabled: true, script: lines.join('\n')});
   }
   for (const person of people) {
+    // With AIOMetadata in front, a person's streams come from one address, and an address names one variant: so each person has
+    // at most one, everything they change compared with the hub (their group's changes and their own), and none if nothing differs.
+    if (front) {
+      const lines = differences(top.settings, person.want.settings, accounts, null, extras, !!known);
+      if (lines.length) variants.push({id: `${OURS}c-${person.id}`, name: `Streams: ${person.name}`, enabled: true, script: lines.join('\n')});
+      continue;
+    }
     const over = person.group?.reach ?? hubReach, reach = limited(person.home ?? person.group?.home ?? base, person.want.settings);
     const lines = differences(person.above.settings, person.want.settings, accounts, reach !== over ? reach : null, extras, !!known);
     if (lines.length) variants.push({id: `${OURS}p-${person.id}`, name: `Person: ${person.name}`, enabled: true, script: lines.join('\n')});
     person.variants = [`${OURS}g-${person.group?.id}`, `${OURS}p-${person.id}`].filter(id => variants.some(item => item.id === id));
-    // A person's own AIOMetadata asks for streams at one address, and an address names one variant, so the group's and the
-    // person's changes travel together as one more: everything they change compared with the hub.
-    const all = front ? differences(top.settings, person.want.settings, accounts, null, extras, !!known) : [];
-    if (all.length) variants.push({id: `${OURS}c-${person.id}`, name: `Streams: ${person.name}`, enabled: true, script: all.join('\n')});
   }
 
   let players = await held<Home>(env, vault, hub.id, HUB_OWNER, 'players');
@@ -430,7 +440,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     players = null;
   }
   if (!players) {
-    const first = fresh(); patch(first, data, key, people, hubReach, variants, known);
+    const first = fresh(); patch(first, data, key, people, front ? null : hubReach, variants, known, front);
     const made = await create(env, hub.id, first, service);
     if ('state' in made) return made;
     players = made;
@@ -438,7 +448,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     const read = await fetch(`${env.UP_ORIGIN}/api/v1/user?raw=true`, {headers: basic(players)}).catch(() => null);
     const stored = read?.status === 200 ? ((await read.json().catch(() => null)) as {data?: {userData?: Stored}} | null)?.data?.userData : null;
     if (!stored) return {state: 'error', message: 'AIOStreams did not answer. Your changes are saved here and will be sent on the next try.'};
-    const before = JSON.stringify(stored); patch(stored, data, key, people, hubReach, variants, known);
+    const before = JSON.stringify(stored); patch(stored, data, key, people, front ? null : hubReach, variants, known, front);
     if (JSON.stringify(stored) !== before) {
       const write = await fetch(`${env.UP_ORIGIN}/api/v1/user`, {method: 'PUT', headers: {...basic(players), 'content-type': 'application/json'}, body: JSON.stringify({config: stored})}).catch(() => null);
       if (write?.status !== 200) {
@@ -448,8 +458,10 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     }
   }
   // Each person signs in upstream under this setup with their own name. The kept sign-in answer, if any, is left in place.
+  // With AIOMetadata in front they sign in to their own AIOMetadata setup instead, so no AIOStreams sign-in is kept.
   const writes = [];
-  for (const person of people) {
+  if (front) writes.push(env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND kind = 'upstream'").bind(hub.id));
+  for (const person of front ? [] : people) {
     const user = `${players.uuid}/${person.name}`, had = await held<{user: string; pass: string; auth?: string}>(env, vault, hub.id, person.id, 'upstream');
     if (!had || had.user !== user || had.pass !== players.password) writes.push(await putSecret(env, hub.id, person.id, 'upstream', {...(had?.user.split('/')[0] === players.uuid ? had : {}), user, pass: players.password}));
   }
@@ -477,7 +489,9 @@ async function syncFronts(env: Env, vault: Vault, hub: string, people: {id: stri
   for (const person of people) {
     const kept = await held<Catalogs>(env, vault, hub, person.id, PLAYER), client = kept?.client ?? newToken('a');
     const variant = variants.some(item => item.id === `${OURS}c-${person.id}`) ? `/v/${OURS}c-${person.id}` : '';
-    const wanted: Wanted = {...wantedOf(person.want, keys), jellyfinUserName: person.name, jellyfinAppPassword: client, jellyfinStreamUrl: `${base}${variant}/manifest.json`, jellyfinResumeSource: 'auto', jellyfinUsers: []};
+    const wanted: Wanted = {...wantedOf(person.want, keys), jellyfinUserName: person.name, jellyfinAppPassword: client, jellyfinStreamUrl: `${base}${variant}/manifest.json`, jellyfinResumeSource: 'auto', jellyfinUsers: [],
+      // What production carries on AIOStreams' Home address and in its personas, here set on the person's own server.
+      ageRating: RATING[person.want.settings.limit] ?? 'None', jellyfinSkipSource: person.want.settings.skip ? 'auto' : 'off'};
     const got = await syncHome(env, vault, hub, person.id, wanted, keys, budget, PLAYER, {client});
     if (!('made' in got)) {note ||= got.message; more ||= !!got.more; continue;}
     const at = `${got.made.at ?? env.AIOM_ORIGIN}/jellyfin/${got.made.uuid}`, had = await held<{user: string; pass: string; base: string}>(env, vault, hub, person.id, VIA);

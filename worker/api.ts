@@ -109,7 +109,7 @@ async function state(env: Env, who: Who) {
     mine ? env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? AND id = ?').bind(hub.id, mine) : env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? AND person = ? ORDER BY seen DESC').bind(hub.id, mine) : env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? ORDER BY seen DESC').bind(hub.id),
     env.DB.prepare('SELECT name FROM accounts WHERE id = ?').bind(hub.owner),
-    env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind = 'upstream'").bind(hub.id),
+    env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind IN ('upstream', 'upstream-aiom')").bind(hub.id),
     env.DB.prepare("SELECT kind FROM secrets WHERE hub = ? AND owner = ? AND kind IN ('key:tmdb', 'key:mdblist', 'key:posters')").bind(hub.id, HUB_OWNER),
     env.DB.prepare('SELECT substr(id, 1, 16) AS id, name, created FROM passkeys WHERE account = ? ORDER BY created').bind(who.account?.id ?? ''),
   ]);
@@ -472,14 +472,15 @@ async function advanced(request: Request, site: Env, who: Who, body: Body) {
     aiometadata: home ? {open: `${home.at ?? env.AIOM_ORIGIN}/stremio/${home.uuid}/configure`, id: home.uuid, password: home.password} : null,
     // The separate AIOMetadata setups a group or a person has while their Home, looks or accounts differ from the shared one.
     own: await ownDoors(env, who.hub.id),
+    front: env.FRONT === 'aiometadata',
   };
 }
 async function ownDoors(env: Env, hub: string) {
-  const owners = (await env.DB.prepare("SELECT s.owner, coalesce(p.name, g.name) AS name FROM secrets s LEFT JOIN people p ON p.hub = s.hub AND p.id = s.owner LEFT JOIN groups g ON g.hub = s.hub AND s.owner = '#g:' || g.id WHERE s.hub = ? AND s.kind = 'catalogs' AND s.owner != ?").bind(hub, HUB_OWNER).all<{owner: string; name: string | null}>()).results;
+  const owners = (await env.DB.prepare("SELECT s.owner, s.kind, coalesce(p.name, g.name) AS name FROM secrets s LEFT JOIN people p ON p.hub = s.hub AND p.id = s.owner LEFT JOIN groups g ON g.hub = s.hub AND s.owner = '#g:' || g.id WHERE s.hub = ? AND s.kind IN ('catalogs', 'aiom') AND s.owner != ?").bind(hub, HUB_OWNER).all<{owner: string; name: string | null; kind: string}>()).results;
   const doors = [];
   for (const row of owners) {
-    const made = await getSecret<{uuid: string; password: string; at?: string}>(env, hub, row.owner, 'catalogs');
-    if (made) doors.push({name: row.name ?? 'Someone removed', group: row.owner.startsWith('#g:'), open: `${made.at ?? env.AIOM_ORIGIN}/stremio/${made.uuid}/configure`, id: made.uuid, password: made.password});
+    const made = await getSecret<{uuid: string; password: string; at?: string}>(env, hub, row.owner, row.kind);
+    if (made) doors.push({name: row.name ?? 'Someone removed', group: row.owner.startsWith('#g:'), player: row.kind === 'aiom', open: `${made.at ?? env.AIOM_ORIGIN}/stremio/${made.uuid}/configure`, id: made.uuid, password: made.password});
   }
   return doors;
 }

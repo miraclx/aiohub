@@ -324,7 +324,7 @@ export function HubPage(page: PageProps & {tab: string}) {
 /* Which AIOStreams and AIOMetadata servers the hub's setups live on. The site checks an address before keeping it. */
 /* The way into the hub's own setups on AIOStreams and AIOMetadata, behind the manager's password. */
 interface Door {open: string; id: string; password: string}
-interface Doors {aiostreams: Door | null; aiometadata: Door | null; own?: (Door & {name: string; group: boolean})[]}
+interface Doors {aiostreams: Door | null; aiometadata: Door | null; own?: (Door & {name: string; group: boolean; player?: boolean})[]; front?: boolean}
 function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
   const [asking, setAsking] = useState(false), [pass, setPass] = useState(''), [busy, setBusy] = useState(false), [doors, setDoors] = useState<Doors | null>(null);
   const copy = (text: string) => () => {void navigator.clipboard?.writeText(text).catch(() => {}); toast('Copied');};
@@ -339,10 +339,10 @@ function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
         <input type="password" aria-label="Your password" placeholder="Your password" autoComplete="current-password" autoFocus value={pass} onChange={event => setPass(event.target.value)}/><button className="primary" disabled={busy || !pass}>Show</button></form>
         : <button type="button" className="ghost small" onClick={() => setAsking(true)}>Show</button>}</Setting></div>
     : <div className="card settings">
-      {door('AIOStreams', doors.aiostreams, 'Sources, filters, sorting and the stream label. If it asks, use this ID and password.')}
-      {door('AIOMetadata', doors.aiometadata, 'Catalogs, collections and posters for the shared Home. It asks for this password.')}
-      {(doors.own ?? []).map(found => door(`AIOMetadata for ${found.name}`, found, `${found.group ? `The ${found.name} group’s` : `${found.name}’s`} own Home, looks and accounts. The hub made it because they differ from the shared one, and removes it once they don’t.`))}
-      <Setting column title="What the hub keeps putting back" hint="The hub rewrites the things it manages each time you change something here: debrid account, the sources it lists, quality and size, languages, the stream label, people, Home rows and collections. Anything else you add there is left alone. A group’s or a person’s own Home lives in its own AIOMetadata setup, listed above when there is one."><button type="button" className="ghost small" onClick={() => setDoors(null)}>Hide</button></Setting>
+      {door('AIOStreams', doors.aiostreams, doors.front ? 'Sources, filters, sorting and the stream label. It finds the streams; browsing happens on each person’s own AIOMetadata. If it asks, use this ID and password.' : 'Sources, filters, sorting and the stream label. If it asks, use this ID and password.')}
+      {door('AIOMetadata', doors.aiometadata, doors.front ? 'The hub’s own setup. It draws the posters everyone sees. It asks for this password.' : 'Catalogs, collections and posters for the shared Home. It asks for this password.')}
+      {(doors.own ?? []).map(found => door(`AIOMetadata for ${found.name}`, found, found.player ? `${found.name}’s own server: their Home, looks, accounts and what they’ve watched. Their apps reach it through the hub, which keeps it in step with the hub and their group.` : `${found.group ? `The ${found.name} group’s` : `${found.name}’s`} own Home, looks and accounts. The hub made it because they differ from the shared one, and removes it once they don’t.`))}
+      <Setting column title="What the hub keeps putting back" hint={`The hub rewrites the things it manages each time you change something here: debrid account, the sources it lists, quality and size, languages, the stream label, people, Home rows and collections. Anything else you add there is left alone. ${doors.front ? 'Each person’s Home lives on their own AIOMetadata setup, listed above.' : 'A group’s or a person’s own Home lives in its own AIOMetadata setup, listed above when there is one.'}`}><button type="button" className="ghost small" onClick={() => setDoors(null)}>Hide</button></Setting>
     </div>}
   </section>;
 }
