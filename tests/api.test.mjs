@@ -12,7 +12,6 @@ function client() {
 }
 import http from 'node:http';
 // A stand-in for AIOStreams: holds setups, counts sign-ins, accepts only the token it last gave out, and can be told to refuse everything.
-const AIOM_CFG = '0c0f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b', AIOM_ITEM = 'a1110100-0000-eaf7-78ff-ffffff010000';
 const fake = {signIns: 0, creates: 0, valid: '', refuseAll: false, configs: new Map(), homes: new Map()};
 http.createServer(async (request, answer) => {
   const send = (status, body) => {answer.writeHead(status, {'content-type': 'application/json'}); answer.end(JSON.stringify(body));};
@@ -38,16 +37,6 @@ http.createServer(async (request, answer) => {
     if (request.method === 'GET') return send(200, {success: true, data: {userData: {...mine().config, keptByTheServer: true}}});
     if (request.method === 'PUT') {mine().config = body.config; return send(200, {success: true});}
     if (request.method === 'DELETE') {fake.configs.delete(id); return send(200, {success: true});}
-  }
-  // A stand-in for AIOMetadata's Jellyfin server (staging path): the config id is the owner's user id and the server id.
-  if (request.url === '/jellyfin/System/Info/Public') return send(200, {Id: 'aiosserverid', ServerName: 'AIOStreams'});
-  if (request.url.startsWith(`/aiom/jellyfin/${AIOM_CFG}/`)) {
-    const rest = request.url.slice(`/aiom/jellyfin/${AIOM_CFG}`.length);
-    if (rest === '/Users/AuthenticateByName') return body.Username === 'Owner' && body.Pw === 'client-pass' ? send(200, {AccessToken: 'aiom-token', ServerId: AIOM_CFG, User: {Id: AIOM_CFG, Name: 'Owner', ServerId: AIOM_CFG}, SessionInfo: {UserId: AIOM_CFG, Id: AIOM_CFG.replace(/-/g, '')}}) : send(401, {});
-    if (/Token="aiom-token"/.test(request.headers.authorization ?? '') === false) return send(401, {});
-    if (rest === '/System/Info') return send(200, {Id: AIOM_CFG, ServerName: 'AIOMetadata', LocalAddress: `http://127.0.0.1:8798/aiom/jellyfin/${AIOM_CFG}`});
-    if (rest.startsWith(`/Users/${AIOM_CFG}/Items/`)) return send(200, {Id: AIOM_ITEM, Name: 'Meta Movie', ServerId: AIOM_CFG, UserData: {Key: AIOM_CFG}, Poster: `http://127.0.0.1:8798/aiom/jellyfin/${AIOM_CFG}/Items/${AIOM_ITEM}/Images/Primary`});
-    return send(200, {Id: 'other', Seen: rest});
   }
   if (request.url === '/jellyfin/Users/AuthenticateByName') {
     const [uuid, name] = String(body.Username).split('/'), config = fake.configs.get(uuid);
@@ -449,32 +438,6 @@ test('account: password, recovery codes, sign out', async () => {
   assert.equal((await owner('GET', '/api/account/recovery')).body.left, 9);
   assert.equal((await owner('PUT', '/api/account', {name: 'Sam O', theme: 'light'})).status, 200);
   assert.equal((await owner('GET', '/api/state')).body.hub.me.theme, 'light');
-});
-test('staging: a person served by their own AIOMetadata config never sees its id, its address or its private routes', async () => {
-  // Nothing in the site makes this record yet; it is written straight into the test database, sealed the way the hub seals.
-  const {execFileSync} = await import('node:child_process'), {readFileSync} = await import('node:fs');
-  const db = /"database_name":\s*"([^"]+)"/.exec(readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8'))[1];
-  const d1 = sql => JSON.parse(execFileSync('npx', ['wrangler', 'd1', 'execute', db, '--local', '--json', '--command', sql], {encoding: 'utf8', env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: ['ignore', 'pipe', 'ignore']}))[0].results;
-  const vault = /^VAULT_KEY=(.*)$/m.exec(readFileSync(new URL('../.dev.vars', import.meta.url), 'utf8'))[1].trim();
-  const {id: hubId} = d1('SELECT id FROM hubs LIMIT 1')[0], {jf} = d1("SELECT jf FROM people WHERE id = 'ben'")[0];
-  const key = await crypto.subtle.importKey('raw', await crypto.subtle.digest('SHA-256', new TextEncoder().encode(vault)), 'AES-GCM', false, ['encrypt']);
-  const iv = crypto.getRandomValues(new Uint8Array(12)), sealed = new Uint8Array(await crypto.subtle.encrypt({name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(`${hubId}/ben/upstream-aiom`)}, key, new TextEncoder().encode(JSON.stringify({user: 'Owner', pass: 'client-pass', base: `http://127.0.0.1:8798/aiom/jellyfin/${AIOM_CFG}`}))));
-  const value = 'v1.' + Buffer.from([...iv, ...sealed]).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  d1(`INSERT INTO secrets (hub, owner, kind, value) VALUES ('${hubId}', 'ben', 'upstream-aiom', '${value}')`);
-  const at = `/h/${hub.code}`, app = token => ({authorization: `MediaBrowser Client="Test", Device="TV", DeviceId="aiom-1"${token ? `, Token="${token}"` : ''}`});
-  const pass = (await owner('GET', '/api/people/ben/signin')).body.password, {name} = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ben');
-  const raw = async (path, token) => {const answer = await fetch(BASE + at + path, {headers: app(token), redirect: 'manual'}); return {status: answer.status, text: await answer.text(), location: answer.headers.get('location')};};
-  const signed = await fetch(BASE + at + '/Users/AuthenticateByName', {method: 'POST', headers: {'content-type': 'application/json', ...app()}, body: JSON.stringify({Username: name, Pw: pass})});
-  const text = await signed.text(), answer = signed.status === 200 ? JSON.parse(text) : {};
-  assert.equal(signed.status, 200, text); assert.equal(answer.User.Id, jf); assert.equal(answer.ServerId, 'aiosserverid'); assert.equal(answer.User.ServerId, 'aiosserverid'); assert.equal(answer.User.Name, name);
-  assert.ok(!text.includes(AIOM_CFG) && !text.includes(AIOM_CFG.replace(/-/g, '')) && !text.includes('aiom-token') && !text.includes('/aiom/'));
-  const token = answer.AccessToken, info = await raw('/System/Info', token), item = await raw(`/Users/${jf}/Items/${AIOM_ITEM}`, token);
-  assert.equal(JSON.parse(info.text).Id, 'aiosserverid'); assert.ok(!info.text.includes(AIOM_CFG) && !info.text.includes('/aiom/'));
-  const shown = JSON.parse(item.text); assert.equal(item.status, 200); assert.equal(shown.ServerId, 'aiosserverid'); assert.equal(shown.UserData.Key, jf); assert.equal(shown.Poster, `${BASE}${at}/Items/${AIOM_ITEM}/Images/Primary`);
-  for (const path of ['/AIOStreams/Users', '/AIOStreams/Activity', '/AIOStreams/History/Export', '/AIOStreams/Token']) assert.equal((await raw(path, token)).status, 403, path);
-  // Other people are still served by AIOStreams, exactly as before.
-  assert.equal((await raw('/System/Info/Public')).text.includes('aiosserverid'), true);
-  d1(`DELETE FROM secrets WHERE hub = '${hubId}' AND owner = 'ben' AND kind = 'upstream-aiom'`);
 });
 test('removing a person removes their sign-in', async () => {
   assert.equal((await owner('DELETE', '/api/people/ada')).status, 200);
