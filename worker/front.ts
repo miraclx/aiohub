@@ -173,8 +173,8 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
   if (!seat && !reading) return json(401, {Message: 'Unauthorized'});
   if (seat) {
     if (lower === '/sessions/logout') {seats.delete(id); await env.DB.prepare('DELETE FROM devices WHERE id = ?').bind(id).run(); return new Response(null, {status: 204, headers: CORS});}
-    // Deliberately vague: it says nothing about who switched it off, or why.
-    if (seat.paused && PLAYS.test(lower)) return json(403, {Message: 'Meh, can’t play right now.'});
+    // Deliberately unbothered: no reason, no blame, nobody to chase. It just isn't on right now.
+    if (seat.paused && PLAYS.test(lower)) return json(403, {Message: 'Not playing right now. Try again later.'});
     if (now() - seat.seen > SEEN_EVERY) {const where = whereOf(request); seat.seen = now(); ctx.waitUntil(env.DB.prepare('UPDATE devices SET seen = ?, place = ?, net = ? WHERE id = ?').bind(seat.seen, where.place, where.net, id).run());}
   }
   const body = reading ? undefined : await request.text();
