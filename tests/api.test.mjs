@@ -277,7 +277,8 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   assert.equal((await guest('POST', '/api/people/ben/quick', {code: asked.Code})).status, 403);
   assert.equal((await guest('POST', '/api/people/ada/quick', {code: asked.Code})).status, 200);
   assert.equal((await stranger('GET', `${at}/QuickConnect/Connect?secret=${asked.Secret}`, undefined, tv)).body.Authenticated, true);
-  const onTv = await stranger('POST', `${at}/Users/AuthenticateWithQuickConnect`, {Secret: asked.Secret}, tv);
+  // Streamyfin sends the secret as {secret}; Jellyfin takes either.
+  const onTv = await stranger('POST', `${at}/Users/AuthenticateWithQuickConnect`, {secret: asked.Secret}, tv);
   assert.equal(onTv.status, 200); assert.equal(onTv.body.User.Name, 'Ada L'); assert.equal(fake.signIns, 1);
   assert.equal((await stranger('POST', `${at}/Users/AuthenticateWithQuickConnect`, {Secret: asked.Secret}, tv)).status, 404, 'a code works once');
   assert.equal((await stranger('GET', `${at}/Users/Me`, undefined, {authorization: `${tv.authorization}, Token="${onTv.body.AccessToken}"`})).status, 200);

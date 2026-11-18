@@ -140,8 +140,9 @@ async function quick(request: Request, env: Env, hub: string, url: URL, lower: s
     await env.DB.batch([env.DB.prepare('DELETE FROM quick WHERE expires < ?').bind(now()), env.DB.prepare('INSERT INTO quick (secret, hub, code, device, app, name, expires) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(await sha(secret), hub, code, client.device, client.app, client.name, now() + 600)]);
     return json(200, quickView({code, person: null, ...client}, secret));
   }
-  const sent = lower === '/quickconnect/connect' ? {Secret: url.searchParams.get('secret') ?? url.searchParams.get('Secret') ?? ''} : await request.json().catch(() => ({})) as {Secret?: string};
-  const secret = String(sent.Secret ?? ''), row = secret ? await env.DB.prepare('SELECT code, person, device, app, name FROM quick WHERE secret = ? AND hub = ? AND expires > ?').bind(await sha(secret), hub, now()).first<{code: string; person: string | null; device: string; app: string; name: string}>() : null;
+  // Jellyfin reads names in any case; Streamyfin sends {secret}.
+  const sent = lower === '/quickconnect/connect' ? {Secret: url.searchParams.get('secret') ?? url.searchParams.get('Secret') ?? ''} : await request.json().catch(() => ({})) as {Secret?: string; secret?: string};
+  const secret = String(sent.Secret ?? sent.secret ?? ''), row = secret ? await env.DB.prepare('SELECT code, person, device, app, name FROM quick WHERE secret = ? AND hub = ? AND expires > ?').bind(await sha(secret), hub, now()).first<{code: string; person: string | null; device: string; app: string; name: string}>() : null;
   if (!row) return json(404, {Message: 'This request has run out. Start again on the TV.'});
   if (lower === '/quickconnect/connect') return json(200, quickView(row, secret));
   if (!row.person) return json(401, {Message: 'Not approved yet'});
