@@ -36,14 +36,19 @@ interface Upstream {user: string; pass: string; auth?: string}
 interface Answer {AccessToken: string; User: {Id: string; Name?: string}; SessionInfo?: Record<string, unknown>}
 interface Seat {person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string}
 // Kept for a few seconds per running copy of the Worker, so a page of posters is one lookup, not fifty.
-const hubs = new Map<string, {id: string; up: string; at: number}>(), seats = new Map<string, Seat>();
+const hubs = new Map<string, {id: string; up: string; at: number; name: string}>(), seats = new Map<string, Seat>();
 
+// What apps and Trakt call the hub. They read it before anyone signs in, so it is the hub's, set under Hub, General.
+const DEFAULT_NAME = 'AIOHub';
+/* A saved hub is looked up again on its next request here; other running copies catch up within the minute. */
+export const forgetHub = (code: string) => hubs.delete(code);
 async function hubOf(env: Env, code: string) {
   const known = hubs.get(code); if (known && Date.now() - known.at < 60_000) return known;
   const row = await env.DB.prepare('SELECT id, data FROM hubs WHERE code = ?').bind(code).first<{id: string; data: string}>();
   if (!row) return null;
   // Each hub can use its own AIOStreams server; everything below talks to that one.
-  const found = {id: row.id, up: (JSON.parse(row.data) as {hostUrl?: string}).hostUrl || env.UP_ORIGIN, at: Date.now()};
+  const data = JSON.parse(row.data) as {hostUrl?: string; serverName?: string};
+  const found = {id: row.id, up: data.hostUrl || env.UP_ORIGIN, at: Date.now(), name: data.serverName || DEFAULT_NAME};
   hubs.set(code, found); return found;
 }
 /* Signs in to AIOStreams as this person and keeps the answer, so it happens once and not on every app sign-in. */
@@ -226,6 +231,7 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
     const strip = (value: unknown): unknown => typeof value === 'string' ? (value.includes(env.UP_ORIGIN) ? undefined : value) : Array.isArray(value) ? value.map(strip) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([name, item]) => [name, strip(item)])) : value;
     try {text = JSON.stringify(strip(JSON.parse(text)));} catch {/* leave as is */}
   }
+  if (lower.startsWith('/system/info') && type.includes('json')) {try {const info = JSON.parse(text) as {ServerName?: string}; if ('ServerName' in info) {info.ServerName = found.name; text = JSON.stringify(info);}} catch {/* leave as is */}}
   out.set('x-hub-total-ms', String(Date.now() - started));
   return new Response(text, {status: upstream.status, headers: out});
 }

@@ -30,6 +30,7 @@ http.createServer(async (request, answer) => {
     if (request.url.includes('/update/')) {if (body.baseVersion !== home.config.configVersion) return send(409, {error: 'CONFIG_CHANGED'}); home.config = {...body.config, configVersion: home.config.configVersion + 1}; return send(200, {success: true, configVersion: home.config.configVersion});}
     if (request.url.includes('/delete-user/')) {fake.homes.delete(request.url.split('/').pop()); return send(200, {success: true});}
   }
+  if (request.url === '/jellyfin/System/Info/Public') return send(200, {Id: 'aiosserverid', ServerName: 'AIOStreams'});
   if (request.url.startsWith('/stremio/')) return send(200, {metas: [{name: 'One', poster: 'https://img.example/1.jpg'}, {name: 'Two', poster: 'https://img.example/2.jpg'}, {name: 'No art'}]});
   if (request.url.startsWith('/api/v1/user')) {
     if (request.method === 'POST') {if (!body.config?.sortCriteria?.global) return send(400, {}); fake.creates++; const uuid = `cfg-${fake.creates}`; fake.configs.set(uuid, {password: body.password, config: body.config}); return send(201, {success: true, data: {uuid}});}
@@ -111,6 +112,17 @@ test('a debrid key goes in and never comes back', async () => {
   assert.equal((await owner('PUT', '/api/services/TorBox', {key: 'tb-secret-key-123'})).status, 200);
   const state = (await owner('GET', '/api/state')).body;
   assert.deepEqual(state.hub.services, ['TorBox']); assert.ok(!JSON.stringify(state).includes('tb-secret'));
+});
+test('the hub has a name apps and Trakt show, the same for everyone', async () => {
+  const at = `/h/${hub.code}`, ask = async () => (await (await fetch(BASE + at + '/System/Info/Public')).json()).ServerName;
+  assert.equal(await ask(), 'AIOHub');
+  const state = (await owner('GET', '/api/state')).body.hub;
+  assert.equal((await owner('PUT', '/api/hub', {...state, serverName: '  Our <b>place</b>  '})).status, 200);
+  assert.equal((await owner('GET', '/api/state')).body.hub.serverName, 'Our bplace/b');
+  assert.equal(await ask(), 'Our bplace/b');
+  const again = (await owner('GET', '/api/state')).body.hub;
+  assert.equal((await owner('PUT', '/api/hub', {...again, serverName: ''})).status, 200);
+  assert.equal((await owner('GET', '/api/state')).body.hub.serverName, '');
 });
 test('the TMDB key is checked, stored, and never comes back', async () => {
   assert.equal((await owner('GET', '/api/state')).body.hub.tmdb, false);

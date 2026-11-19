@@ -307,7 +307,7 @@ export function HubPage(page: PageProps & {tab: string}) {
     {tab === 'home' && <><HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="hub" rows={hub.rows} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{page.live && !hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p></>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
-    {tab === 'general' && page.live && <><Servers hub={hub} live={page.live} toast={toast}/><Advanced live={page.live} toast={toast}/></>}
+    {tab === 'general' && page.live && <><ServerName hub={hub} update={update} toast={toast}/><Servers hub={hub} live={page.live} toast={toast}/><Advanced live={page.live} toast={toast}/></>}
     {tab === 'general' && SAMPLE && <section>
       <div className="card settings">
         <Setting column title="AIOStreams server" hint="Where the players connect behind the scenes. Changing it moves every group; watch history moves with it.">
@@ -344,6 +344,17 @@ function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
       {(doors.own ?? []).map(found => door(`AIOMetadata for ${found.name}`, found, `${found.group ? `The ${found.name} group’s` : `${found.name}’s`} own Home, looks and accounts. The hub made it because they differ from the shared one, and removes it once they don’t.`))}
       <Setting column title="What the hub keeps putting back" hint="The hub rewrites the things it manages each time you change something here: debrid account, the sources it lists, quality and size, languages, the stream label, people, Home rows and collections. Anything else you add there is left alone. A group’s or a person’s own Home lives in its own AIOMetadata setup, listed above when there is one."><button type="button" className="ghost small" onClick={() => setDoors(null)}>Hide</button></Setting>
     </div>}
+  </section>;
+}
+/* The name player apps and Trakt show for this hub. */
+function ServerName({hub, update, toast}: {hub: Hub; update: PageProps['update']; toast: (text: string) => void}) {
+  const shown = hub.serverName || 'AIOHub', [draft, setDraft] = useState(shown);
+  return <section>
+    <div className="section-head"><div><h2>Name</h2><p className="muted">What player apps and Trakt call this hub. It’s the same for everyone, because apps read it before anyone signs in.</p></div></div>
+    <form className="card settings" onSubmit={event => {event.preventDefault(); update(next => {next.serverName = draft.trim();}); toast('Saved. Apps show it the next time they connect.');}}>
+      <Setting column title="Server name" hint="Leave it as AIOHub, or make it yours.">
+        <div className="field-row"><input aria-label="Server name" maxLength={40} value={draft} onChange={event => setDraft(event.target.value)}/><button className="ghost" disabled={!draft.trim() || draft.trim() === shown}>Save</button></div></Setting>
+    </form>
   </section>;
 }
 function Servers({hub, live, toast}: {hub: Hub; live: Live; toast: (text: string) => void}) {

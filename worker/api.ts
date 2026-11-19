@@ -4,6 +4,7 @@ import {defaultAddons, defaultRows, defaultSettings, slug, traktRows} from '../s
 import type {Addon, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './native';
+import {forgetHub} from './front';
 import type {Env} from './util';
 import {blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp} from './util';
 
@@ -59,7 +60,7 @@ const cleanId = (value: string) => /^[a-z0-9][a-z0-9-]{0,39}$/.test(value) ? val
 const cleanPassword = (value: unknown) => typeof value === 'string' && value.length >= 8 && value.length <= 200 ? value : bad(400, 'Use a password of at least 8 characters');
 
 /* ---------- rows as stored ---------- */
-interface HubData {host: string; hostUrl: string; metaUrl?: string; missing?: string[]; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; order?: string[]}
+interface HubData {host: string; hostUrl: string; serverName?: string; metaUrl?: string; missing?: string[]; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; order?: string[]}
 interface GroupData {rows: Row[] | null; settings: Overrides; paused?: boolean}
 interface PersonData {rows: Row[] | null; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; trakt: boolean; lists: boolean}
 interface HubRow {id: string; code: string; owner: string; data: string; version: number}
@@ -122,7 +123,7 @@ async function state(env: Env, who: Who) {
   return {
     role: mine ? 'person' : 'owner', personId: mine ?? null,
     hub: {
-      name: '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'),
+      name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'),
       groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id))),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
@@ -138,12 +139,14 @@ async function saveHub(env: Env, who: Who, body: Body) {
     host: was.host, hostUrl: was.hostUrl, metaUrl: was.metaUrl, missing: was.missing,
     // Accounts are added and removed with their key, one at a time, never as part of a page save.
     services: was.services,
+    // What apps and Trakt call the hub. Empty means the usual name.
+    serverName: typeof body.serverName === 'string' ? body.serverName.replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 40) || undefined : was.serverName,
     addons: cleanAddons(body.addons), defaults: cleanSettings(body.defaults, true) as Settings, rows: cleanRows(body.rows) ?? bad(400, 'Home rows are needed'),
     // The order groups are shown in. Groups not named yet go after the rest, oldest first.
     order: Array.isArray(body.order) ? body.order.filter((id): id is string => typeof id === 'string').slice(0, 40).map(id => id.slice(0, 40)) : was.order,
   };
   const done = await env.DB.prepare('UPDATE hubs SET data = ?, version = version + 1 WHERE id = ? AND version = ?').bind(JSON.stringify(data), who.hub.id, Number(body.v)).run();
-  versioned(done.meta.changes); return {v: Number(body.v) + 1};
+  versioned(done.meta.changes); forgetHub(who.hub.code); return {v: Number(body.v) + 1};
 }
 async function saveGroup(env: Env, who: Who, id: string, body: Body) {
   const data: GroupData = {rows: cleanRows(body.rows), settings: cleanSettings(body.settings ?? {}, false), ...(flag(body.paused) ? {paused: true} : {})}, name = cleanName(body.name);

@@ -19,7 +19,7 @@ export async function call<T = Record<string, unknown>>(method: string, path: st
   return data;
 }
 
-const hubBody = (hub: Hub) => ({host: hub.host, hostUrl: hub.hostUrl, addons: hub.addons, defaults: hub.defaults, rows: hub.rows, order: hub.groups.map(group => group.id)});
+const hubBody = (hub: Hub) => ({host: hub.host, hostUrl: hub.hostUrl, serverName: hub.serverName ?? "", addons: hub.addons, defaults: hub.defaults, rows: hub.rows, order: hub.groups.map(group => group.id)});
 const groupBody = (group: Group) => ({name: group.name, rows: group.rows, settings: group.settings, paused: !!group.paused});
 const personBody = (person: Person) => ({name: person.name, groupId: person.groupId, rows: person.rows, settings: person.settings, can: person.can, paused: !!person.paused, trakt: person.trakt, lists: person.lists});
 const differs = (a: unknown, b: unknown) => JSON.stringify(a) !== JSON.stringify(b);
