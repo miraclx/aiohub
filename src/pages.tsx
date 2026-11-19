@@ -189,6 +189,7 @@ function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: 
         {person.lists ? off('MDBList', target => {target.lists = false; target.rows = target.rows?.filter(row => !row.source.startsWith('MDBList')) ?? null;})
           : live ? later : mine ? <button type="button" className="primary" onClick={() => edit(target => {target.lists = true;}, 'MDBList connected')}>Connect</button> : waiting}</li>}
       {live && mine && person.lists && <Carry page={page} person={person}/>}
+      {live && !mine && person.lists && <li><div><h3>What they watched here</h3><p>{person.name} can copy it to MDBList from their own page, under Accounts. It’s theirs, so it isn’t shown here.</p></div></li>}
     </ul>
   </section>;
 }

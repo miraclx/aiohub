@@ -101,17 +101,17 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
         {hub.services.length > 1 ? <Segments label="Debrid account" value={values.debrid} onChange={value => set('debrid', value)} options={hub.services.map(item => ({value: item, label: item}))}/> : <span className="pill">{values.debrid}</span>}</Setting>
     </div>
     {live && scope.level === 'hub' && <><h3 className="sub">Catalogs</h3>
-      <div className="card settings"><Setting column title="TMDB key" hint={hub.tmdb ? 'Connected. Home rows are built from TMDB. Paste a new key to replace it.' : 'Missing. Home rows are built from TMDB; the key is free.'}>
-        <form className="field-row" onSubmit={event => {event.preventDefault(); void live.call('PUT', '/api/keys/tmdb', {key: tmdb}).then(() => live.sync()).then(() => live.reload()).then(() => {setTmdb(''); toast('TMDB key saved');}, (error: Error) => toast(error.message));}}>
-          <input type="password" aria-label="TMDB API key" placeholder={hub.tmdb ? 'New key' : 'API key'} autoComplete="off" value={tmdb} onChange={event => setTmdb(event.target.value)}/><button className="ghost" disabled={!tmdb.trim()}>Save</button></form>
-        <a className="link small" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noreferrer">Get a key from TMDB</a>
-      </Setting>
-      <Setting column title="MDBList key" hint={hub.mdblist ? 'Connected. The collection rows (by Service, by Genre) are built from MDBList lists.' : 'Optional. Without it the collection rows (by Service, by Genre) stay out of the player apps. The key is free.'}>
-        <form className="field-row" onSubmit={event => {event.preventDefault(); void live.call('PUT', '/api/keys/mdblist', {key: lists}).then(() => live.sync()).then(() => live.reload()).then(() => {setLists(''); toast('MDBList key saved');}, (error: Error) => toast(error.message));}}>
-          <input type="password" aria-label="MDBList API key" placeholder={hub.mdblist ? 'New key' : 'API key'} autoComplete="off" value={lists} onChange={event => setLists(event.target.value)}/><button className="ghost" disabled={!lists.trim()}>Save</button>
-          {hub.mdblist && <button type="button" className="ghost" onClick={() => void live.call('DELETE', '/api/keys/mdblist').then(() => live.sync()).then(() => live.reload()).then(() => toast('MDBList key removed'), (error: Error) => toast(error.message))}>Remove</button>}</form>
-        <a className="link small" href="https://mdblist.com/preferences/" target="_blank" rel="noreferrer">Get a key from MDBList</a>
-      </Setting></div></>}
+      {/* Laid out like the debrid accounts above: what it does, then Replace key once it is connected. */}
+      <ul className="accounts">{([
+        {id: 'tmdb', name: 'TMDB', on: hub.tmdb, does: 'Builds the Home rows.', missing: 'Missing. Home rows are built from TMDB; the key is free.', get: 'https://www.themoviedb.org/settings/api', value: tmdb, setValue: setTmdb},
+        {id: 'mdblist', name: 'MDBList', on: hub.mdblist, does: 'Builds the collection rows (by Service, by Genre) from MDBList lists.', missing: 'Optional. Without it the collection rows (by Service, by Genre) stay out of the player apps. The key is free.', get: 'https://mdblist.com/preferences/', value: lists, setValue: setLists},
+      ] as const).map(item => {
+        const save = () => void live.call('PUT', `/api/keys/${item.id}`, {key: item.value}).then(() => live.sync()).then(() => live.reload()).then(() => {item.setValue(''); setReplacing(''); toast(`${item.name} key ${item.on ? 'replaced' : 'saved'}`);}, (error: Error) => toast(error.message));
+        const field = (label: string) => <form className="field-row" onSubmit={event => {event.preventDefault(); save();}}><input type="password" aria-label={`${item.name} API key`} placeholder={item.on ? 'New API key' : 'API key'} autoComplete="off" autoFocus={item.on} value={item.value} onChange={event => item.setValue(event.target.value)}/><button className="ghost small" disabled={!item.value.trim()}>{label}</button></form>;
+        return <li key={item.id} className={!item.on || replacing === item.id ? 'stacked' : ''}><div><h3>{item.name}</h3><p>{item.on ? item.does : item.missing}</p>{!item.on && <a className="link small" href={item.get} target="_blank" rel="noreferrer">Get a key</a>}</div>
+          {!item.on ? field('Connect') : replacing === item.id ? field('Save') : <button type="button" className="ghost small" onClick={() => {setReplacing(item.id); item.setValue('');}}>Replace key</button>}
+          {item.on && item.id === 'mdblist' && replacing !== item.id && <button type="button" className="ghost small" onClick={() => void live.call('DELETE', '/api/keys/mdblist').then(() => live.sync()).then(() => live.reload()).then(() => toast('MDBList key removed'), (error: Error) => toast(error.message))}>Remove</button>}</li>;
+      })}</ul></>}
     <h3 className="sub">Stream sources</h3>
     <div className="card settings">
       <Setting column title="Search these" hint="Results from all of them are combined, then sorted by the playback settings." {...line('sources')}>
