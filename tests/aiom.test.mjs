@@ -36,7 +36,8 @@ function traktAnswer(request, path, body, send) {
   if (request.headers['trakt-api-key'] !== 'local-trakt-client' || request.headers['trakt-api-version'] !== '2' || !request.headers['user-agent'] || request.headers['content-type'] !== 'application/json') return send(403, {});
   if (path === '/oauth/device/code') {trakt.polls = 0; return send(200, {device_code: 'trakt-device-code', user_code: 'ABCD1234', verification_url: 'https://trakt.tv/activate', expires_in: 600, interval: 1});}
   if (path === '/oauth/device/token') return body.code !== 'trakt-device-code' || body.client_secret !== undefined ? send(404, {}) : ++trakt.polls < 2 ? send(400, {}) : send(200, issue());
-  if (path === '/oauth/token') {trakt.refreshed.push(body); if (body.refresh_token !== trakt.refresh) return send(400, {error: 'invalid_grant'}); trakt.expiresIn = 7 * 86400; return send(200, issue());}
+  // Renewing takes a moment, so reports that arrive together find it under way.
+  if (path === '/oauth/token') {trakt.refreshed.push(body); if (body.refresh_token !== trakt.refresh) return send(400, {error: 'invalid_grant'}); trakt.expiresIn = 7 * 86400; return new Promise(done => setTimeout(done, 300)).then(() => send(200, issue()));}
   if (path === '/oauth/revoke') {trakt.revoked.push(body); trakt.valid.delete(body.token); return send(200, {});}
   const auth = (request.headers.authorization ?? '').replace('Bearer ', '');
   if (!trakt.valid.has(auth)) return send(401, {});
@@ -260,31 +261,33 @@ test('ticking a title as watched adds it to Trakt history', async () => {
   assert.equal(call.path, '/sync/history'); assert.deepEqual(call.body.movies.map(({ids}) => ids), [{tmdb: 603, imdb: 'tt0133093'}]);
   assert.ok(Math.abs(Date.parse(call.body.movies[0].watched_at) - Date.now()) < 60_000); assert.equal(trakt.calls.length, 1);
 });
+test('a play left running by an app that went quiet is stopped on Trakt by the quarter-hourly sweep', async () => {
+  // One film left at 85%, one at the very start; then half an hour without a report, as if the app was closed.
+  trakt.calls = [];
+  await say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 5100e7}); await say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}); await heard(2);
+  execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', "UPDATE plays SET updated = updated - 3600 WHERE scrobbled IN ('playing', 'paused')"], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
+  trakt.calls = [];
+  const sweep = () => fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/15 * * * *')}`).then(answer => answer.text());
+  await sweep();
+  // Only the film left at 85% is sent (Trakt records it as watched). The one left at the very start has nothing to keep, and the
+  // episode whose stop Trakt already had (409) was done then, so neither is sent.
+  assert.deepEqual(await heard(1), [{path: '/scrobble/stop', body: {movie: {ids: {tmdb: 550, imdb: 'tt0137523'}}, progress: 85}}]);
+  await sweep(); await pause(500); assert.equal(trakt.calls.length, 1);
+});
 test('a connection near its end is renewed once, and the new pair is kept', async () => {
   assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200);
   assert.deepEqual(trakt.revoked, [{token: 'trakt-access-1', client_id: 'local-trakt-client'}]);
   assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').history, null);
   // Connected again with an hour left: the next calls renew it first, once, however many arrive together.
   trakt.expiresIn = 3600; await connect(); trakt.calls = [];
-  await Promise.all([say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}), say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 5100e7})]);
+  await Promise.all([say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}), say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 0})]);
   await heard(2);
   assert.deepEqual(trakt.refreshed, [{refresh_token: 'trakt-refresh-2', client_id: 'local-trakt-client', redirect_uri: 'urn:ietf:wg:oauth:2.0:oob', grant_type: 'refresh_token'}]);
   assert.deepEqual(trakt.calls.map(call => call.path).sort(), ['/scrobble/start', '/scrobble/start']);
   // The renewed pair is what is used from then on, and it is not renewed again.
-  trakt.calls = []; await say(`/Users/${jf}/PlayedItems/${EP3}`, {}); await heard(1);
+  trakt.calls = []; await say(`/Users/${jf}/PlayedItems/${ITEM}`, {}); await heard(1);
   assert.equal(trakt.calls[0].auth, 'trakt-access-3'); assert.equal(trakt.refreshed.length, 1);
   assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').history, {username: 'adatrakt', again: false});
-});
-test('a play left running by an app that went quiet is stopped on Trakt by the quarter-hourly sweep', async () => {
-  // Half an hour without a report, as if the app was closed mid-film.
-  execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', "UPDATE plays SET updated = updated - 3600 WHERE scrobbled IN ('playing', 'paused')"], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
-  trakt.calls = [];
-  const sweep = () => fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/15 * * * *')}`).then(answer => answer.text());
-  await sweep();
-  // Only the film left at 85% is sent (Trakt records it as watched); the one left at the very start had nothing to keep, and
-  // the episode Trakt already had (409) is not sent again.
-  assert.deepEqual(await heard(1), [{path: '/scrobble/stop', body: {movie: {ids: {tmdb: 550, imdb: 'tt0137523'}}, progress: 85}}]);
-  await sweep(); await pause(500); assert.equal(trakt.calls.length, 1);
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);
