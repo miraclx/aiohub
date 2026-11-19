@@ -167,7 +167,7 @@ function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: 
     <div className="section-head"><div><h2>Accounts</h2><p className="muted">{mine ? 'Connect your own. Nobody else sees them.' : live ? <>{person.name} can connect their own from their page, or you can do it here with them.</> : <>Only {person.name} can connect these, from their own page. <a className="link" href={`#/person/${person.id}/settings`}>Get their link</a></>}</p></div></div>
     <ul className="accounts">
       <li><div><h3>Streams</h3><p>Played through the shared {resolve(hub, group, person).values.debrid} account. Nothing to set up.</p></div><span className="pill ok">Shared</span></li>
-      {live && <li className={linking && !person.trakt ? 'stacked' : ''}><div><h3>Trakt</h3><p>{person.trakt ? 'Connected. Watchlist, recommendations and what’s next are on Home. Plays here are not written back to Trakt.' : 'Brings a watchlist, recommendations and what’s next to Home. Plays here are not written back to Trakt.'}</p></div>
+      {live && <li className={linking && !person.trakt ? 'stacked' : ''}><div><h3>Trakt</h3><p>{person.trakt ? 'Connected. Watchlist, recommendations and what’s next are on Home.' : 'Brings a watchlist, recommendations and what’s next to Home.'}{hub.scrobble ? '' : ' Plays here are not written back to Trakt.'}</p></div>
         {person.trakt ? <button type="button" className="ghost small" disabled={busy} onClick={() => {setBusy(true); void live.call('DELETE', at).then(() => live.sync()).then(() => live.reload()).then(() => toast('Trakt disconnected'), fail(toast)).finally(() => setBusy(false));}}>Disconnect</button>
           : !linking ? <a className="primary button" href={hub.traktLink} target="_blank" rel="noreferrer" onClick={() => setLinking(true)}>Connect</a>
           : <form className="stack link-back" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call<{username: string}>('POST', at, {tokenId: token}).then(found => live.sync().then(() => live.reload()).then(() => {toast(`Trakt connected as ${found.username}`); setLinking(false); setToken('');}), fail(toast)).finally(() => setBusy(false));}}>
@@ -178,6 +178,7 @@ function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: 
       {!live && <li><div><h3>Trakt</h3><p>{person.trakt ? 'Connected. Watchlist and recommendations are on Home.' : 'Brings a watchlist and recommendations to Home.'}</p></div>
         {person.trakt ? off('Trakt', target => {target.trakt = false; target.rows = target.rows?.filter(row => !isTrakt(row)) ?? null;})
           : mine ? <button type="button" className="primary" onClick={() => edit(target => {target.trakt = true; if (target.rows) target.rows = [...traktRows(), ...target.rows];}, 'Trakt connected')}>Connect</button> : waiting}</li>}
+      {live && hub.scrobble && <History page={page} person={person}/>}
       {live && <li className={keying && !person.lists ? 'stacked' : ''}><div><h3>MDBList</h3><p>{person.lists ? 'Connected. What’s played is recorded to this MDBList account, and “Hide what’s been watched” reads from it.' : 'Records what’s played and how far, in the person’s own MDBList account, and lets Home hide what’s been watched. Free.'}</p></div>
         {person.lists ? <button type="button" className="ghost small" disabled={busy} onClick={() => {setBusy(true); void live.call('DELETE', `/api/people/${person.id}/mdblist`).then(() => live.sync()).then(() => live.reload()).then(() => toast('MDBList disconnected'), fail(toast)).finally(() => setBusy(false));}}>Disconnect</button>
           : !keying ? <button type="button" className="primary small" onClick={() => setKeying(true)}>Connect</button>
@@ -192,6 +193,35 @@ function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: 
       {live && !mine && person.lists && <li><div><h3>What they watched here</h3><p>{person.name} can copy it to MDBList from their own page, under Accounts. It’s theirs, so it isn’t shown here.</p></div></li>}
     </ul>
   </section>;
+}
+/* Trakt history: Trakt shows a short code to type on its own page, and this page waits until it has been typed. */
+function History({page, person}: {page: PageProps; person: Person}) {
+  const {toast, live} = page, at = `/api/people/${person.id}/scrobble`, link = person.history;
+  const [shown, setShown] = useState<{code: string; url: string; interval: number} | null>(null), [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!shown || !live) return;
+    let gone = false;
+    const timer = setInterval(() => void live.call<{state: string; username?: string}>('POST', `${at}/check`, {}).then(got => {
+      if (gone || got.state === 'waiting') return;
+      setShown(null);
+      if (got.state === 'connected') void live.reload().then(() => toast(got.username ? `Trakt history connected as ${got.username}` : 'Trakt history connected'));
+      else toast('That code ran out. Connect again for a new one.');
+    }, () => {}), shown.interval * 1000);
+    return () => {gone = true; clearInterval(timer);};
+  }, [shown]);
+  if (!live) return null;
+  const connect = () => {setBusy(true); void live.call<{code: string; url: string; interval: number}>('POST', at, {}).then(setShown, fail(toast)).finally(() => setBusy(false));};
+  const on = !!link && !link.again;
+  return <li className={shown ? 'stacked' : ''}><div><h3>Trakt history</h3>
+    <p>{on ? `Connected${link!.username ? ` as ${link!.username}` : ''}. What’s played here goes to Trakt as it happens.` : link?.again ? 'Trakt asked to be connected again.' : 'Sends what’s played here to Trakt as it happens: what’s on now, how far in, and what’s finished. Recommendations stay fresh.'}</p>
+    {shown && <div className="stack link-back">
+      <p className="muted small">On <a className="link" href={shown.url} target="_blank" rel="noreferrer">{shown.url.replace(/^https?:\/\//, '')}</a>, sign in to Trakt and type this code. This page carries on by itself.</p>
+      <div className="code-show"><code>{shown.code}</code><button type="button" className="ghost small" onClick={() => {void navigator.clipboard?.writeText(shown.code).catch(() => {}); toast('Copied');}}>Copy</button></div>
+    </div>}</div>
+    {on ? <button type="button" className="ghost small" disabled={busy} onClick={() => {setBusy(true); void live.call('DELETE', at).then(() => live.reload()).then(() => toast('Trakt history disconnected'), fail(toast)).finally(() => setBusy(false));}}>Disconnect</button>
+      : shown ? <button type="button" className="ghost small" onClick={() => setShown(null)}>Not now</button>
+      : <button type="button" className="primary small" disabled={busy} onClick={connect}>Connect</button>}
+  </li>;
 }
 /* Copying what someone watched here to their MDBList: they see exactly what would go, then it is done in a few short steps. */
 interface CarryEntry {key: string; title: string; detail: string; at: string; pct?: number}

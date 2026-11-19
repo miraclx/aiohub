@@ -7,6 +7,8 @@
 import {slug} from '../src/data';
 import type {Env} from './util';
 import {blocked, failed, getSecret, guesses, newId, newToken, now, putSecret, same, sha, unseal} from './util';
+import type {Target} from './trakt';
+import {LINK, history, progressOf, send, taken} from './trakt';
 
 const MOUNT = '/jellyfin', SEEN_EVERY = 600, REMEMBER = 20_000, MOST_DEVICES = 30;
 // The headers are named one by one: in a browser, `*` does not cover Authorization.
@@ -34,7 +36,7 @@ function whereOf(request: Request) {
 const pictures = new Map<string, {location: string; until: number}>(), PICTURE = /^\/items\/[^/]+\/images\//, PICTURE_KEEP = 'public, max-age=86400';
 interface Upstream {user: string; pass: string; auth?: string; base?: string}
 interface Answer {AccessToken: string; User: {Id: string; Name?: string}; SessionInfo?: Record<string, unknown>}
-interface Seat {person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string; base: string; kind: string}
+interface Seat {person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string; base: string; kind: string; scrobble: boolean}
 // Kept for a few seconds per running copy of the Worker, so a page of posters is one lookup, not fifty.
 const hubs = new Map<string, {id: string; up: string; at: number; pictures: string; name: string}>(), seats = new Map<string, Seat>();
 /* A person's top-level libraries on their own server, asked for once and kept ten minutes per running copy. */
@@ -76,6 +78,8 @@ function outward(text: string, upId: string, jf: string, server: string, info: b
 const DEFAULT_NAME = 'AIOHub';
 /* A saved hub is looked up again on its next request here; other running copies catch up within the minute. */
 export const forgetHub = (code: string) => hubs.delete(code);
+/* Someone's connections changed: their apps here are looked up again on their next request (other copies within twenty seconds). */
+export const forgetSeats = (person: string) => {for (const [id, seat] of seats) if (seat.person === person) seats.delete(id);};
 async function hubOf(env: Env, code: string) {
   const known = hubs.get(code); if (known && Date.now() - known.at < 60_000) return known;
   const row = await env.DB.prepare('SELECT id, data FROM hubs WHERE code = ?').bind(code).first<{id: string; data: string}>();
@@ -100,23 +104,26 @@ async function mint(env: Env, hub: string, person: string, jf: string, upstream:
 }
 async function seatOf(env: Env, hub: string, id: string): Promise<Seat | null> {
   const known = seats.get(id); if (known && Date.now() - known.at < REMEMBER) return known;
-  const row = await env.DB.prepare("SELECT d.person, d.seen, d.app, d.name, p.paused OR coalesce(json_extract(g.data, '$.paused'), 0) AS paused, p.jf, s.value, m.value AS via FROM devices d JOIN people p ON p.hub = d.hub AND p.id = d.person LEFT JOIN groups g ON g.hub = p.hub AND g.id = p.grp LEFT JOIN secrets s ON s.hub = d.hub AND s.owner = d.person AND s.kind = 'upstream' LEFT JOIN secrets m ON m.hub = d.hub AND m.owner = d.person AND m.kind = ? WHERE d.id = ? AND d.hub = ?")
-    .bind(VIA, id, hub).first<{person: string; seen: number; app: string; name: string; paused: number; jf: string; value: string | null; via: string | null}>();
+  const row = await env.DB.prepare("SELECT d.person, d.seen, d.app, d.name, p.paused OR coalesce(json_extract(g.data, '$.paused'), 0) AS paused, p.jf, s.value, m.value AS via, EXISTS (SELECT 1 FROM secrets t WHERE t.hub = d.hub AND t.owner = d.person AND t.kind = ?) AS scrobble FROM devices d JOIN people p ON p.hub = d.hub AND p.id = d.person LEFT JOIN groups g ON g.hub = p.hub AND g.id = p.grp LEFT JOIN secrets s ON s.hub = d.hub AND s.owner = d.person AND s.kind = 'upstream' LEFT JOIN secrets m ON m.hub = d.hub AND m.owner = d.person AND m.kind = ? WHERE d.id = ? AND d.hub = ?")
+    .bind(LINK, VIA, id, hub).first<{person: string; seen: number; app: string; name: string; paused: number; jf: string; value: string | null; via: string | null; scrobble: number}>();
   seats.delete(id); if (!row) return null;
   const kind = row.via ? VIA : 'upstream', upstream = await unseal<Upstream>(env, `${hub}/${row.person}/${kind}`, row.via ?? row.value), answer = upstream?.auth ? JSON.parse(upstream.auth) as Answer : null;
   if (!answer) return null;
-  const seat = {person: row.person, jf: row.jf, paused: !!row.paused, seen: row.seen, up: answer.AccessToken, upId: answer.User.Id, at: Date.now(), on: [row.app, row.name].filter(Boolean).join(' · '), base: upstream?.base ?? env.UP_ORIGIN + MOUNT, kind};
+  const seat = {person: row.person, jf: row.jf, paused: !!row.paused, seen: row.seen, up: answer.AccessToken, upId: answer.User.Id, at: Date.now(), on: [row.app, row.name].filter(Boolean).join(' · '), base: upstream?.base ?? env.UP_ORIGIN + MOUNT, kind, scrobble: !!row.scrobble && !!env.TRAKT_CLIENT_ID};
   if (seats.size > 2000) seats.clear(); seats.set(id, seat); return seat;
 }
 /* Activity: players report what they are playing and how far in. The hub notes the latest state per person and title as those
-   reports pass through: on start, on stop, and at most once a minute in between. Nothing is ever sent on a person's behalf. */
+   reports pass through: on start, on stop, and at most once a minute in between. Nothing is sent on a person's behalf unless
+   they connected Trakt history (scrobble, below). */
 const REPORTS: Record<string, 'start' | 'progress' | 'stop'> = {'/sessions/playing': 'start', '/sessions/playing/progress': 'progress', '/sessions/playing/stopped': 'stop'};
 const noted = new Map<string, number>();
 async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', text: string) {
   let report: {ItemId?: string; PositionTicks?: number; IsPaused?: boolean};
   try {report = JSON.parse(text);} catch {return;}
-  const item = String(report.ItemId ?? '').slice(0, 200), key = `${hub}/${seat.person}/${item}`, last = noted.get(key) ?? 0;
-  if (!item || (kind === 'progress' && Date.now() - last < 60_000)) return;
+  const item = String(report.ItemId ?? '').slice(0, 200), key = `${hub}/${seat.person}/${item}`, last = noted.get(key) ?? 0, paused = report.IsPaused === true;
+  // For Trakt, a pause (or carrying on after one) counts as it happens, not at the next once-a-minute note.
+  const turned = kind === 'progress' && seat.scrobble && told.get(key) !== (paused ? 'paused' : 'playing');
+  if (!item || (kind === 'progress' && !turned && Date.now() - last < 60_000)) return;
   if (noted.size > 5000) noted.clear(); noted.set(key, Date.now());
   if (kind === 'start') {
     await env.DB.prepare('INSERT INTO starts (hub, person, item, device, at) VALUES (?, ?, ?, ?, ?)').bind(hub, seat.person, item, seat.on, now()).run();
@@ -125,14 +132,53 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   const known = await env.DB.prepare('SELECT art, duration FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{art: string; duration: number}>();
   const position = kind === 'mark' ? known?.duration ?? 0 : Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' || kind === 'mark' ? 0 : 1;
   // Rows from before pictures were kept are looked up once more, on their next start.
-  if (known && (known.art || kind !== 'start')) {await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, device = ?, updated = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, seat.on, now(), hub, seat.person, item).run(); return;}
-  // First report for this title: ask AIOStreams what it is called, as this person.
-  const about = await fetch(`${seat.base}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string} | null;
-  if (!about?.Name) return;
-  const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
-  const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
-  await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, device = excluded.device, updated = excluded.updated, art = excluded.art')
-    .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), kind === 'mark' ? Math.round(Number(about.RunTimeTicks ?? 0) / 1e7) : position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art).run();
+  if (known && (known.art || kind !== 'start')) await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, device = ?, updated = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, seat.on, now(), hub, seat.person, item).run();
+  else {
+    // First report for this title: ask AIOStreams what it is called, as this person.
+    const about = await fetch(`${seat.base}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: asPerson(seat)}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string} | null;
+    if (!about?.Name) return;
+    const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
+    const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
+    await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, device = excluded.device, updated = excluded.updated, art = excluded.art')
+      .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), kind === 'mark' ? Math.round(Number(about.RunTimeTicks ?? 0) / 1e7) : position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art).run();
+  }
+  if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused);
+}
+const asPerson = (seat: Seat) => `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`;
+/* Trakt history, for a person who connected it (see trakt.ts). Starting, pausing, carrying on, stopping and ticking as watched are
+   passed on as they happen, in the background; the app's own request never waits. Progress in between is not sent. */
+const told = new Map<string, string>();
+async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', item: string, position: number, paused: boolean) {
+  const key = `${hub}/${seat.person}/${item}`, want = kind === 'start' ? 'playing' : kind === 'progress' ? (paused ? 'paused' : 'playing') : 'stopped';
+  if (told.size > 5000) told.clear(); told.set(key, want);
+  const row = await env.DB.prepare('SELECT duration, ids, scrobbled FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{duration: number; ids: string | null; scrobbled: string | null}>();
+  // A pause or carrying on only counts inside a play Trakt was told about; a report that arrives after stop starts nothing.
+  if (!row || (kind === 'progress' && (row.scrobbled === want || (row.scrobbled !== 'playing' && row.scrobbled !== 'paused')))) return;
+  const ids = row.ids ?? await idsOf(env, hub, seat, item);
+  if (!ids) return;
+  const target = JSON.parse(ids) as Target, progress = row.duration ? progressOf(position, row.duration) : 0;
+  let status: number | null = 200;
+  if (kind === 'mark') status = await send(env, hub, seat.person, '/sync/history', history(target, new Date().toISOString()));
+  // Without a length there is no telling how far in; and under 1% there is nothing for Trakt to keep.
+  else if (!row.duration) return;
+  else if (kind !== 'stop' || progress >= 1) status = await send(env, hub, seat.person, `/scrobble/${want === 'playing' ? 'start' : want === 'paused' ? 'pause' : 'stop'}`, {...target, progress});
+  if (taken(status)) await env.DB.prepare('UPDATE plays SET scrobbled = ?, scrobbled_at = ? WHERE hub = ? AND person = ? AND item = ?').bind(want, now(), hub, seat.person, item).run();
+}
+/* What Trakt knows a title by, asked of the person's own server once and kept with the play ('' when there is nothing usable).
+   A film by its own ids; an episode by its show's, with its season and number (AIOMetadata episodes carry no ids of their own). */
+async function idsOf(env: Env, hub: string, seat: Seat, item: string): Promise<string | null> {
+  const ask = async (id: string) => (await fetch(`${seat.base}/Users/${seat.upId}/Items?Ids=${encodeURIComponent(id)}&Fields=ProviderIds`, {headers: {accept: 'application/json', authorization: asPerson(seat)}})
+    .then(answer => answer.ok ? answer.json() : null).catch(() => null) as {Items?: {Type?: string; SeriesId?: string; ParentIndexNumber?: number; IndexNumber?: number; ProviderIds?: Record<string, string>}[]} | null);
+  const found = await ask(item);
+  if (!found) return null;
+  const it = found.Items?.[0], episode = it?.Type === 'Episode', show = episode && it.SeriesId ? await ask(it.SeriesId) : null;
+  if (episode && !show) return null;
+  const provider = (episode ? show?.Items?.[0] : it)?.ProviderIds ?? {}, tmdb = Number(provider.Tmdb), imdb = /^tt\d+$/.test(provider.Imdb ?? '') ? provider.Imdb : '';
+  const ids = {...(tmdb > 0 ? {tmdb} : {}), ...(imdb ? {imdb} : {})};
+  const target: Target | null = !(tmdb > 0 || imdb) ? null : it?.Type === 'Movie' ? {movie: {ids}} : episode && it.ParentIndexNumber != null && it.IndexNumber != null ? {show: {ids}, episode: {season: it.ParentIndexNumber, number: it.IndexNumber}} : null;
+  const kept = target ? JSON.stringify(target) : '';
+  await env.DB.prepare('UPDATE plays SET ids = ? WHERE hub = ? AND person = ? AND item = ?').bind(kept, hub, seat.person, item).run();
+  return kept;
 }
 /* Paused: browsing works, playing does not. */
 const PLAYS = /\/playbackinfo|\/mediasources|\/download|^\/(videos|audio)\//;

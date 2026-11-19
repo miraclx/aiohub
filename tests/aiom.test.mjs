@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import http from 'node:http';
+import {execFileSync} from 'node:child_process';
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8799', UP = 'http://127.0.0.1:8798';
 function client() {
   let cookie = '';
@@ -16,18 +17,39 @@ function client() {
 const fake = {configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: []};
 const uuidOf = n => `${String(n).padStart(8, '0')}-0000-4000-8000-0000000000aa`, ITEM = 'a1110100-0000-eaf7-78ff-ffffff010000';
 // What Ada's own server holds: a film she watched, an episode she is partway through, one MDBList already has, and their show.
+const FILM = 'a1110100-0000-eaf7-78ff-ffffff050000', LEFT = 'a1110100-0000-eaf7-78ff-ffffff060000', EP3 = 'a1110100-0000-eaf7-78ff-ffffff070000';
 const VIEW = 'b220f707-f7e5-0b8e-9314-1314e52c6304', EP = 'a1110100-0000-eaf7-78ff-ffffff020000', EP_HELD = 'a1110100-0000-eaf7-78ff-ffffff030000', SHOW = 'a1210200-0000-eaf7-78ff-ffffff040000';
 const HELD = {
   [ITEM]: {Id: ITEM, Type: 'Movie', Name: 'Meta Movie', ProviderIds: {Tmdb: '603', Imdb: 'tt0133093'}, UserData: {Played: true, LastPlayedDate: '2026-11-01T20:00:00.000Z'}},
   [EP]: {Id: EP, Type: 'Episode', Name: 'Two', SeriesId: SHOW, SeriesName: 'Meta Show', ParentIndexNumber: 1, IndexNumber: 2, ProviderIds: {}, UserData: {PlayedPercentage: 40}},
   [EP_HELD]: {Id: EP_HELD, Type: 'Episode', Name: 'One', SeriesId: SHOW, SeriesName: 'Meta Show', ParentIndexNumber: 1, IndexNumber: 1, ProviderIds: {}, UserData: {Played: true}},
   [SHOW]: {Id: SHOW, Type: 'Series', Name: 'Meta Show', ProviderIds: {Tmdb: '1399'}},
+  // Played only once Trakt history is connected.
+  [FILM]: {Id: FILM, Type: 'Movie', Name: 'Scrobbled Movie', ProviderIds: {Tmdb: '27205', Imdb: 'tt1375666'}},
+  [LEFT]: {Id: LEFT, Type: 'Movie', Name: 'Left Running', ProviderIds: {Tmdb: '550', Imdb: 'tt0137523'}},
+  [EP3]: {Id: EP3, Type: 'Episode', Name: 'Three', SeriesId: SHOW, SeriesName: 'Meta Show', ParentIndexNumber: 1, IndexNumber: 3, ProviderIds: {}},
 };
+// Trakt: the device code flow, single-use refresh tokens, and every call as Ada logged. Each title above runs 6000 seconds.
+const trakt = {calls: [], polls: 0, issued: 0, valid: new Set(), refresh: '', expiresIn: 7 * 86400, refreshed: [], revoked: [], stop: 201};
+const issue = () => {const n = ++trakt.issued; trakt.valid.add(`trakt-access-${n}`); trakt.refresh = `trakt-refresh-${n}`; return {access_token: `trakt-access-${n}`, refresh_token: trakt.refresh, expires_in: trakt.expiresIn, created_at: Math.floor(Date.now() / 1000), token_type: 'bearer', scope: 'public'};};
+function traktAnswer(request, path, body, send) {
+  if (request.headers['trakt-api-key'] !== 'local-trakt-client' || request.headers['trakt-api-version'] !== '2' || !request.headers['user-agent'] || request.headers['content-type'] !== 'application/json') return send(403, {});
+  if (path === '/oauth/device/code') {trakt.polls = 0; return send(200, {device_code: 'trakt-device-code', user_code: 'ABCD1234', verification_url: 'https://trakt.tv/activate', expires_in: 600, interval: 1});}
+  if (path === '/oauth/device/token') return body.code !== 'trakt-device-code' || body.client_secret !== undefined ? send(404, {}) : ++trakt.polls < 2 ? send(400, {}) : send(200, issue());
+  if (path === '/oauth/token') {trakt.refreshed.push(body); if (body.refresh_token !== trakt.refresh) return send(400, {error: 'invalid_grant'}); trakt.expiresIn = 7 * 86400; return send(200, issue());}
+  if (path === '/oauth/revoke') {trakt.revoked.push(body); trakt.valid.delete(body.token); return send(200, {});}
+  const auth = (request.headers.authorization ?? '').replace('Bearer ', '');
+  if (!trakt.valid.has(auth)) return send(401, {});
+  if (path === '/users/settings') return send(200, {user: {username: 'adatrakt'}});
+  trakt.calls.push({path, body, auth});
+  return send(path === '/scrobble/stop' ? trakt.stop : 201, {});
+}
 http.createServer(async (request, answer) => {
   const send = (status, body) => {answer.writeHead(status, {'content-type': 'application/json'}); answer.end(JSON.stringify(body));};
   let raw = ''; for await (const chunk of request) raw += chunk; const body = raw ? JSON.parse(raw) : {};
   const [id, pass] = request.headers.authorization?.startsWith('Basic ') ? atob(request.headers.authorization.slice(6)).split(':') : [];
   const mine = () => fake.configs.get(id)?.password === pass ? fake.configs.get(id) : null;
+  if (request.url.startsWith('/trakt/')) return traktAnswer(request, request.url.slice(6), body, send);
   if (request.url.startsWith('/tmdb')) return send(request.url.includes('api_key=good-tmdb-key') ? 200 : 401, {});
   if (request.url.startsWith('/mdblist/user')) return send(request.url.includes('apikey=ada-mdblist-key') ? 200 : 403, {username: 'adalists'});
   if (request.url.startsWith('/mdblist/') && !request.url.includes('apikey=ada-mdblist-key')) return send(403, {});
@@ -66,7 +88,7 @@ http.createServer(async (request, answer) => {
     if (rest.startsWith('/Sessions/Playing')) return send(204, {});
     if (rest.startsWith('/UserViews')) return send(200, {Items: [{Id: VIEW, Name: 'Trending Movies', CollectionType: 'movies'}]});
     if (rest.startsWith(`/Users/${uuid}/Items?Ids=`)) return send(200, {Items: decodeURIComponent(rest.split('Ids=')[1].split('&')[0]).split(',').map(id => HELD[id]).filter(Boolean)});
-    if (rest.startsWith(`/Users/${uuid}/Items/`)) return send(200, {Id: ITEM, Name: 'Meta Movie', ServerId: uuid, UserData: {Key: uuid}, Poster: `${UP}/jellyfin/${uuid}/Items/${ITEM}/Images/Primary`});
+    if (rest.startsWith(`/Users/${uuid}/Items/`)) {const id = rest.split('/').pop().split('?')[0], {UserData, ...held} = HELD[id] ?? {}; return send(200, {Id: ITEM, Name: 'Meta Movie', ...held, RunTimeTicks: 6000e7, ServerId: uuid, UserData: {Key: uuid}, Poster: `${UP}/jellyfin/${uuid}/Items/${ITEM}/Images/Primary`});}
     return send(200, {Seen: rest});
   }
   send(404, {});
@@ -181,6 +203,88 @@ test('watched titles asked for library by library come from everything watched, 
   // Under a show, or when not asking for what was watched, the question goes on exactly as asked.
   assert.ok((await asked(`userId=${jf}&parentId=${SHOW}&isPlayed=true&recursive=true`)).includes(`parentId=${SHOW}`));
   assert.ok((await asked(`userId=${jf}&parentId=${VIEW}&recursive=true`)).includes(`parentId=${VIEW}`));
+});
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+const say = (path, body) => raw(path, token, {method: 'POST', body: JSON.stringify(body)});
+// Reports are passed on in the background, after the app has its answer: wait for Trakt to have heard, then a moment more.
+const heard = async count => {for (let i = 0; i < 50 && trakt.calls.length < count; i++) await pause(100); await pause(300); return trakt.calls.map(({path, body}) => ({path, body}));};
+const connect = async () => {
+  const started = await owner('POST', '/api/people/ada/scrobble', {});
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  assert.deepEqual(started.body, {code: 'ABCD1234', url: 'https://trakt.tv/activate', interval: 1, expires: 600});
+  // Not typed yet; asked again at once, Trakt is not asked again.
+  assert.deepEqual((await owner('POST', '/api/people/ada/scrobble/check', {})).body, {state: 'waiting'});
+  assert.deepEqual((await owner('POST', '/api/people/ada/scrobble/check', {})).body, {state: 'waiting'}); assert.equal(trakt.polls, 1);
+  await pause(1100);
+  assert.deepEqual((await owner('POST', '/api/people/ada/scrobble/check', {})).body, {state: 'connected', username: 'adatrakt'}); assert.equal(trakt.polls, 2);
+};
+test('Trakt history connects with the code Trakt shows, and the device code stays with the hub', async () => {
+  const before = (await owner('GET', '/api/state')).body.hub;
+  assert.equal(before.scrobble, true); assert.equal(before.people.find(person => person.id === 'ada').history, null);
+  await connect();
+  const after = await owner('GET', '/api/state'), text = JSON.stringify(after.body);
+  assert.deepEqual(after.body.hub.people.find(person => person.id === 'ada').history, {username: 'adatrakt', again: false});
+  assert.ok(!text.includes('trakt-device-code') && !text.includes('trakt-access') && !text.includes('trakt-refresh'));
+  // Asking once it is done says so, and never hands out the device code either.
+  const late = await owner('POST', '/api/people/ada/scrobble/check', {});
+  assert.deepEqual(late.body, {state: 'connected', username: 'adatrakt'});
+});
+test('a film played, paused, carried on and finished reaches Trakt as start, pause, start, stop', async () => {
+  const film = {movie: {ids: {tmdb: 27205, imdb: 'tt1375666'}}};
+  await say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}); await heard(1);
+  // Plain progress is not passed on; a pause is, at once, and only once however often the app says it is still paused.
+  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 300e7, IsPaused: false});
+  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: true}); await heard(2);
+  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: true});
+  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: false}); await heard(3);
+  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 900e7, IsPaused: false});
+  await say('/Sessions/Playing/Stopped', {ItemId: FILM, PositionTicks: 5400e7});
+  assert.deepEqual(await heard(4), [
+    {path: '/scrobble/start', body: {...film, progress: 0}}, {path: '/scrobble/pause', body: {...film, progress: 10}},
+    {path: '/scrobble/start', body: {...film, progress: 10}}, {path: '/scrobble/stop', body: {...film, progress: 90}},
+  ]);
+  assert.ok(trakt.calls.every(call => call.auth === 'trakt-access-1'));
+});
+test('an episode goes by its show’s ids with its season and number, and a repeated stop (409) counts as done', async () => {
+  trakt.calls = []; trakt.stop = 409;
+  const episode = {show: {ids: {tmdb: 1399}}, episode: {season: 1, number: 3}};
+  await say('/Sessions/Playing', {ItemId: EP3, PositionTicks: 0}); await heard(1);
+  await say('/Sessions/Playing/Stopped', {ItemId: EP3, PositionTicks: 5700e7});
+  assert.deepEqual(await heard(2), [{path: '/scrobble/start', body: {...episode, progress: 0}}, {path: '/scrobble/stop', body: {...episode, progress: 95}}]);
+  trakt.stop = 201;
+});
+test('ticking a title as watched adds it to Trakt history', async () => {
+  trakt.calls = [];
+  assert.equal((await say(`/Users/${jf}/PlayedItems/${ITEM}`, {})).status, 200);
+  const [call] = await heard(1);
+  assert.equal(call.path, '/sync/history'); assert.deepEqual(call.body.movies.map(({ids}) => ids), [{tmdb: 603, imdb: 'tt0133093'}]);
+  assert.ok(Math.abs(Date.parse(call.body.movies[0].watched_at) - Date.now()) < 60_000); assert.equal(trakt.calls.length, 1);
+});
+test('a connection near its end is renewed once, and the new pair is kept', async () => {
+  assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200);
+  assert.deepEqual(trakt.revoked, [{token: 'trakt-access-1', client_id: 'local-trakt-client'}]);
+  assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').history, null);
+  // Connected again with an hour left: the next calls renew it first, once, however many arrive together.
+  trakt.expiresIn = 3600; await connect(); trakt.calls = [];
+  await Promise.all([say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}), say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 5100e7})]);
+  await heard(2);
+  assert.deepEqual(trakt.refreshed, [{refresh_token: 'trakt-refresh-2', client_id: 'local-trakt-client', redirect_uri: 'urn:ietf:wg:oauth:2.0:oob', grant_type: 'refresh_token'}]);
+  assert.deepEqual(trakt.calls.map(call => call.path).sort(), ['/scrobble/start', '/scrobble/start']);
+  // The renewed pair is what is used from then on, and it is not renewed again.
+  trakt.calls = []; await say(`/Users/${jf}/PlayedItems/${EP3}`, {}); await heard(1);
+  assert.equal(trakt.calls[0].auth, 'trakt-access-3'); assert.equal(trakt.refreshed.length, 1);
+  assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').history, {username: 'adatrakt', again: false});
+});
+test('a play left running by an app that went quiet is stopped on Trakt by the quarter-hourly sweep', async () => {
+  // Half an hour without a report, as if the app was closed mid-film.
+  execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', "UPDATE plays SET updated = updated - 3600 WHERE scrobbled IN ('playing', 'paused')"], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
+  trakt.calls = [];
+  const sweep = () => fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/15 * * * *')}`).then(answer => answer.text());
+  await sweep();
+  // Only the film left at 85% is sent (Trakt records it as watched); the one left at the very start had nothing to keep, and
+  // the episode Trakt already had (409) is not sent again.
+  assert.deepEqual(await heard(1), [{path: '/scrobble/stop', body: {movie: {ids: {tmdb: 550, imdb: 'tt0137523'}}, progress: 85}}]);
+  await sweep(); await pause(500); assert.equal(trakt.calls.length, 1);
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);
