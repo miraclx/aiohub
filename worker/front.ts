@@ -7,6 +7,8 @@
 import {slug} from '../src/data';
 import type {Env} from './util';
 import {blocked, failed, getSecret, guesses, newId, newToken, now, putSecret, same, sha, unseal} from './util';
+import type {Target} from './trakt';
+import {LINK, history, progressOf, send, taken} from './trakt';
 
 const MOUNT = '/jellyfin', SEEN_EVERY = 600, REMEMBER = 20_000, MOST_DEVICES = 30;
 // The headers are named one by one: in a browser, `*` does not cover Authorization.
@@ -32,72 +34,161 @@ function whereOf(request: Request) {
 // Where each picture lives. Asking AIOStreams costs 0.2-1.8 s per poster (measured 2026-11-18), and the answer is a redirect that
 // rarely changes, so each running copy of the Worker remembers it for an hour and browsers keep it for a day. Adds no requests.
 const pictures = new Map<string, {location: string; until: number}>(), PICTURE = /^\/items\/[^/]+\/images\//, PICTURE_KEEP = 'public, max-age=86400';
-interface Upstream {user: string; pass: string; auth?: string}
+interface Upstream {user: string; pass: string; auth?: string; base?: string}
 interface Answer {AccessToken: string; User: {Id: string; Name?: string}; SessionInfo?: Record<string, unknown>}
-interface Seat {person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string}
+interface Seat {person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string; base: string; kind: string; scrobble: boolean}
 // Kept for a few seconds per running copy of the Worker, so a page of posters is one lookup, not fifty.
-const hubs = new Map<string, {id: string; up: string; at: number; name: string}>(), seats = new Map<string, Seat>();
+const hubs = new Map<string, {id: string; up: string; at: number; pictures: string; name: string}>(), seats = new Map<string, Seat>();
+/* A person's top-level libraries on their own server, asked for once and kept ten minutes per running copy. */
+const libraries = new Map<string, {ids: Set<string>; at: number}>();
+async function librariesOf(seat: Seat): Promise<Set<string>> {
+  const key = `${seat.base}/${seat.upId}`, known = libraries.get(key);
+  if (known && Date.now() - known.at < 600_000) return known.ids;
+  const answer = await fetch(`${seat.base}/UserViews?userId=${encodeURIComponent(seat.upId)}`, {headers: {accept: 'application/json', authorization: `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`}})
+    .then(found => found.ok ? found.json() : null).catch(() => null) as {Items?: {Id?: string}[]} | null;
+  const ids = new Set((answer?.Items ?? []).map(item => String(item.Id ?? '')).filter(Boolean));
+  if (libraries.size > 2000) libraries.clear();
+  if (ids.size) libraries.set(key, {ids, at: Date.now()});
+  return ids;
+}
+
+/* With FRONT=aiometadata the hub keeps one AIOMetadata setup per person (see native.ts), and a person with one ('upstream-aiom')
+   is served by it; anyone without one yet is served by AIOStreams as before. Its base is that setup's Jellyfin address. In
+   AIOMetadata the setup's id is the owner's user id, the ServerId and the server's Id, so the app gets the person's usual id for the
+   user and AIOStreams' server id for the server, and never sees the setup's id. AIOMetadata sends picture bytes itself, so the hub
+   sends the app there instead of carrying them: always to the hub's own Home setup, which holds nothing personal, never to a
+   person's. Its item ids are dashed, which is how such a picture request is told apart without a token. */
+const VIA = 'upstream-aiom', AIOM_ITEM = /^\/items\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/images\//;
+const AIOM_PRIVATE = /^\/aiostreams\/(users|activity|history)/, servers = new Map<string, {id: string; at: number}>();
+async function serverIdOf(env: Env) {
+  const known = servers.get(env.UP_ORIGIN); if (known && Date.now() - known.at < 3_600_000) return known.id;
+  const info = await fetch(`${env.UP_ORIGIN}${MOUNT}/System/Info/Public`, {headers: {accept: 'application/json'}}).then(answer => answer.ok ? answer.json() : null).catch(() => null) as {Id?: string} | null;
+  const id = String(info?.Id ?? ''); if (id) servers.set(env.UP_ORIGIN, {id, at: Date.now()}); return id;
+}
+/* The config id, as the app should see it: the server's id where it names the server, the person's id everywhere else. */
+function outward(text: string, upId: string, jf: string, server: string, info: boolean) {
+  if (!server || !upId) return text;
+  text = text.split(`"ServerId":"${upId}"`).join(`"ServerId":"${server}"`);
+  if (info) text = text.split(`"Id":"${upId}"`).join(`"Id":"${server}"`);
+  // A session's id is the config id without its dashes.
+  return upId.includes('-') ? text.split(upId.replace(/-/g, '')).join(jf) : text;
+}
 
 // What apps and Trakt call the hub. They read it before anyone signs in, so it is the hub's, set under Hub, General.
 const DEFAULT_NAME = 'AIOHub';
 /* A saved hub is looked up again on its next request here; other running copies catch up within the minute. */
 export const forgetHub = (code: string) => hubs.delete(code);
+/* Someone's connections changed: their apps here are looked up again on their next request (other copies within twenty seconds). */
+export const forgetSeats = (person: string) => {for (const [id, seat] of seats) if (seat.person === person) seats.delete(id);};
 async function hubOf(env: Env, code: string) {
   const known = hubs.get(code); if (known && Date.now() - known.at < 60_000) return known;
   const row = await env.DB.prepare('SELECT id, data FROM hubs WHERE code = ?').bind(code).first<{id: string; data: string}>();
   if (!row) return null;
   // Each hub can use its own AIOStreams server; everything below talks to that one.
-  const data = JSON.parse(row.data) as {hostUrl?: string; serverName?: string};
-  const found = {id: row.id, up: data.hostUrl || env.UP_ORIGIN, at: Date.now(), name: data.serverName || DEFAULT_NAME};
+  const data = JSON.parse(row.data) as {hostUrl?: string; metaUrl?: string; serverName?: string}, home = env.FRONT === 'aiometadata' ? await getSecret<{uuid: string; at?: string}>(env, row.id, '#hub', 'catalogs') : null;
+  const pictures = home ? `${home.at ?? data.metaUrl ?? env.AIOM_ORIGIN}/jellyfin/${home.uuid}` : '';
+  const found = {id: row.id, up: data.hostUrl || env.UP_ORIGIN, at: Date.now(), pictures, name: data.serverName || DEFAULT_NAME};
   hubs.set(code, found); return found;
 }
 /* Signs in to AIOStreams as this person and keeps the answer, so it happens once and not on every app sign-in. */
-async function mint(env: Env, hub: string, person: string, jf: string, upstream: Upstream): Promise<Answer | null> {
+async function mint(env: Env, hub: string, person: string, jf: string, upstream: Upstream, kind = 'upstream'): Promise<Answer | null> {
   // A brake: AIOStreams allows only a few sign-ins per address, so one person gets at most two in ten minutes, however often it says no.
   const brake: [string, number][] = [[`mint:${hub}:${person}`, 2]];
   if (await blocked(env, brake)) return null;
   await failed(env, brake);
-  const answer = await fetch(`${env.UP_ORIGIN}${MOUNT}/Users/AuthenticateByName`, {method: 'POST', headers: {'content-type': 'application/json', authorization: `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${jf}", Version="1"`}, body: JSON.stringify({Username: upstream.user, Pw: upstream.pass})});
+  const answer = await fetch(`${upstream.base ?? env.UP_ORIGIN + MOUNT}/Users/AuthenticateByName`, {method: 'POST', headers: {'content-type': 'application/json', authorization: `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${jf}", Version="1"`}, body: JSON.stringify({Username: upstream.user, Pw: upstream.pass})});
   if (answer.status !== 200) return null;
   const auth = await answer.text();
-  await (await putSecret(env, hub, person, 'upstream', {...upstream, auth})).run();
+  await (await putSecret(env, hub, person, kind, {...upstream, auth})).run();
   return JSON.parse(auth) as Answer;
 }
 async function seatOf(env: Env, hub: string, id: string): Promise<Seat | null> {
   const known = seats.get(id); if (known && Date.now() - known.at < REMEMBER) return known;
-  const row = await env.DB.prepare("SELECT d.person, d.seen, d.app, d.name, p.paused OR coalesce(json_extract(g.data, '$.paused'), 0) AS paused, p.jf, s.value FROM devices d JOIN people p ON p.hub = d.hub AND p.id = d.person LEFT JOIN groups g ON g.hub = p.hub AND g.id = p.grp LEFT JOIN secrets s ON s.hub = d.hub AND s.owner = d.person AND s.kind = 'upstream' WHERE d.id = ? AND d.hub = ?")
-    .bind(id, hub).first<{person: string; seen: number; app: string; name: string; paused: number; jf: string; value: string | null}>();
+  const row = await env.DB.prepare("SELECT d.person, d.seen, d.app, d.name, p.paused OR coalesce(json_extract(g.data, '$.paused'), 0) AS paused, p.jf, s.value, m.value AS via, EXISTS (SELECT 1 FROM secrets t WHERE t.hub = d.hub AND t.owner = d.person AND t.kind = ?) AS scrobble FROM devices d JOIN people p ON p.hub = d.hub AND p.id = d.person LEFT JOIN groups g ON g.hub = p.hub AND g.id = p.grp LEFT JOIN secrets s ON s.hub = d.hub AND s.owner = d.person AND s.kind = 'upstream' LEFT JOIN secrets m ON m.hub = d.hub AND m.owner = d.person AND m.kind = ? WHERE d.id = ? AND d.hub = ?")
+    .bind(LINK, VIA, id, hub).first<{person: string; seen: number; app: string; name: string; paused: number; jf: string; value: string | null; via: string | null; scrobble: number}>();
   seats.delete(id); if (!row) return null;
-  const upstream = await unseal<Upstream>(env, `${hub}/${row.person}/upstream`, row.value), answer = upstream?.auth ? JSON.parse(upstream.auth) as Answer : null;
+  const kind = row.via ? VIA : 'upstream', upstream = await unseal<Upstream>(env, `${hub}/${row.person}/${kind}`, row.via ?? row.value), answer = upstream?.auth ? JSON.parse(upstream.auth) as Answer : null;
   if (!answer) return null;
-  const seat = {person: row.person, jf: row.jf, paused: !!row.paused, seen: row.seen, up: answer.AccessToken, upId: answer.User.Id, at: Date.now(), on: [row.app, row.name].filter(Boolean).join(' · ')};
+  const seat = {person: row.person, jf: row.jf, paused: !!row.paused, seen: row.seen, up: answer.AccessToken, upId: answer.User.Id, at: Date.now(), on: [row.app, row.name].filter(Boolean).join(' · '), base: upstream?.base ?? env.UP_ORIGIN + MOUNT, kind, scrobble: !!row.scrobble && !!env.TRAKT_CLIENT_ID};
   if (seats.size > 2000) seats.clear(); seats.set(id, seat); return seat;
 }
 /* Activity: players report what they are playing and how far in. The hub notes the latest state per person and title as those
-   reports pass through: on start, on stop, and at most once a minute in between. Nothing is ever sent on a person's behalf. */
+   reports pass through: on start, on stop, and at most once a minute in between. Nothing is sent on a person's behalf unless
+   they connected Trakt history (scrobble, below). */
 const REPORTS: Record<string, 'start' | 'progress' | 'stop'> = {'/sessions/playing': 'start', '/sessions/playing/progress': 'progress', '/sessions/playing/stopped': 'stop'};
-const noted = new Map<string, number>();
-async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop', text: string) {
+const noted = new Map<string, number>(), seen = new Map<string, {pos: number; at: number; paused: boolean}>();
+async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', text: string) {
   let report: {ItemId?: string; PositionTicks?: number; IsPaused?: boolean};
   try {report = JSON.parse(text);} catch {return;}
-  const item = String(report.ItemId ?? '').slice(0, 200), key = `${hub}/${seat.person}/${item}`, last = noted.get(key) ?? 0;
-  if (!item || (kind === 'progress' && Date.now() - last < 60_000)) return;
+  const item = String(report.ItemId ?? '').slice(0, 200), key = `${hub}/${seat.person}/${item}`, last = noted.get(key) ?? 0, paused = report.IsPaused === true;
+  // For Trakt, a pause (or carrying on after one) counts as it happens, not at the next once-a-minute note.
+  const turned = kind === 'progress' && seat.scrobble && told.get(key) !== (paused ? 'paused' : 'playing');
+  // So does a jump forward or back: Trakt counts on from where it was last told, so a skip leaves it behind until told again.
+  const at = Math.max(0, Number(report.PositionTicks ?? 0) / 1e7), before = seen.get(key);
+  const jumped = kind === 'progress' && !!seat.scrobble && !paused && !!before && Math.abs(at - before.pos - (before.paused ? 0 : (Date.now() - before.at) / 1000)) > 60;
+  if (kind === 'stop' || kind === 'mark') seen.delete(key); else {if (seen.size > 5000) seen.clear(); seen.set(key, {pos: at, at: Date.now(), paused});}
+  if (!item || (kind === 'progress' && !turned && !jumped && Date.now() - last < 60_000)) return;
   if (noted.size > 5000) noted.clear(); noted.set(key, Date.now());
   if (kind === 'start') {
     await env.DB.prepare('INSERT INTO starts (hub, person, item, device, at) VALUES (?, ?, ?, ?, ?)').bind(hub, seat.person, item, seat.on, now()).run();
     if (Math.random() < 0.02) await env.DB.prepare('DELETE FROM starts WHERE hub = ? AND at < ?').bind(hub, now() - 180 * 86400).run();
   }
-  const position = Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' ? 0 : 1;
-  const known = await env.DB.prepare('SELECT art FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{art: string}>();
+  const known = await env.DB.prepare('SELECT art, duration FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{art: string; duration: number}>();
+  const position = kind === 'mark' ? known?.duration ?? 0 : Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' || kind === 'mark' ? 0 : 1;
   // Rows from before pictures were kept are looked up once more, on their next start.
-  if (known && (known.art || kind !== 'start')) {await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, device = ?, updated = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, seat.on, now(), hub, seat.person, item).run(); return;}
-  // First report for this title: ask AIOStreams what it is called, as this person.
-  const about = await fetch(`${env.UP_ORIGIN}${MOUNT}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string} | null;
-  if (!about?.Name) return;
-  const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
-  const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
-  await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, device = excluded.device, updated = excluded.updated, art = excluded.art')
-    .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art).run();
+  if (known && (known.art || kind !== 'start')) await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, device = ?, updated = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, seat.on, now(), hub, seat.person, item).run();
+  else {
+    // First report for this title: ask AIOStreams what it is called, as this person.
+    const about = await fetch(`${seat.base}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: asPerson(seat)}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string} | null;
+    if (!about?.Name) return;
+    const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
+    const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
+    await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, device = excluded.device, updated = excluded.updated, art = excluded.art')
+      .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), kind === 'mark' ? Math.round(Number(about.RunTimeTicks ?? 0) / 1e7) : position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art).run();
+  }
+  if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused, jumped);
+}
+const asPerson = (seat: Seat) => `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`;
+/* Trakt history, for a person who connected it (see trakt.ts). Starting, pausing, carrying on, stopping and ticking as watched are
+   passed on as they happen, in the background; the app's own request never waits. Progress in between is not sent. */
+const told = new Map<string, string>();
+async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', item: string, position: number, paused: boolean, jumped = false) {
+  const key = `${hub}/${seat.person}/${item}`, want = kind === 'start' ? 'playing' : kind === 'progress' ? (paused ? 'paused' : 'playing') : 'stopped';
+  if (told.size > 5000) told.clear(); told.set(key, want);
+  const row = await env.DB.prepare('SELECT duration, ids, scrobbled, scrobbled_at FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{duration: number; ids: string | null; scrobbled: string | null; scrobbled_at: number | null}>();
+  // A pause or carrying on only counts inside a play Trakt was told about; a report that arrives after stop starts nothing.
+  // A skip while playing is told as a fresh start from the new place.
+  const skipped = jumped && want === 'playing' && row?.scrobbled === 'playing';
+  if (!row || (kind === 'progress' && !skipped && (row.scrobbled === want || (row.scrobbled !== 'playing' && row.scrobbled !== 'paused')))) return;
+  const ids = row.ids ?? await idsOf(env, hub, seat, item);
+  if (!ids) return;
+  const target = JSON.parse(ids) as Target, progress = row.duration ? progressOf(position, row.duration) : 0;
+  let status: number | null = 200;
+  // Many apps tick a title as watched right after a stop that Trakt already counted: that would be a second play.
+  if (kind === 'mark' && row.scrobbled === 'watched' && now() - (row.scrobbled_at ?? 0) < 12 * 3600) return;
+  if (kind === 'mark') status = await send(env, hub, seat.person, '/sync/history', history(target, new Date().toISOString()));
+  // Without a length there is no telling how far in; and under 1% there is nothing for Trakt to keep.
+  else if (!row.duration) return;
+  else if (kind !== 'stop' || progress >= 1) status = await send(env, hub, seat.person, `/scrobble/${want === 'playing' ? 'start' : want === 'paused' ? 'pause' : 'stop'}`, {...target, progress});
+  // A stop at 80% or more is a watch on Trakt's side, as is a tick: remembered as such, so a tick straight after adds nothing.
+  const kept = kind === 'mark' || (kind === 'stop' && progress >= 80) ? 'watched' : want;
+  if (taken(status)) await env.DB.prepare('UPDATE plays SET scrobbled = ?, scrobbled_at = ? WHERE hub = ? AND person = ? AND item = ?').bind(kept, now(), hub, seat.person, item).run();
+}
+/* What Trakt knows a title by, asked of the person's own server once and kept with the play ('' when there is nothing usable).
+   A film by its own ids; an episode by its show's, with its season and number (AIOMetadata episodes carry no ids of their own). */
+async function idsOf(env: Env, hub: string, seat: Seat, item: string): Promise<string | null> {
+  const ask = async (id: string) => (await fetch(`${seat.base}/Users/${seat.upId}/Items?Ids=${encodeURIComponent(id)}&Fields=ProviderIds`, {headers: {accept: 'application/json', authorization: asPerson(seat)}})
+    .then(answer => answer.ok ? answer.json() : null).catch(() => null) as {Items?: {Type?: string; SeriesId?: string; ParentIndexNumber?: number; IndexNumber?: number; ProviderIds?: Record<string, string>}[]} | null);
+  const found = await ask(item);
+  if (!found) return null;
+  const it = found.Items?.[0], episode = it?.Type === 'Episode', show = episode && it.SeriesId ? await ask(it.SeriesId) : null;
+  if (episode && !show) return null;
+  const provider = (episode ? show?.Items?.[0] : it)?.ProviderIds ?? {}, tmdb = Number(provider.Tmdb), imdb = /^tt\d+$/.test(provider.Imdb ?? '') ? provider.Imdb : '';
+  const ids = {...(tmdb > 0 ? {tmdb} : {}), ...(imdb ? {imdb} : {})};
+  const target: Target | null = !(tmdb > 0 || imdb) ? null : it?.Type === 'Movie' ? {movie: {ids}} : episode && it.ParentIndexNumber != null && it.IndexNumber != null ? {show: {ids}, episode: {season: it.ParentIndexNumber, number: it.IndexNumber}} : null;
+  const kept = target ? JSON.stringify(target) : '';
+  await env.DB.prepare('UPDATE plays SET ids = ? WHERE hub = ? AND person = ? AND item = ?').bind(kept, hub, seat.person, item).run();
+  return kept;
 }
 /* Paused: browsing works, playing does not. */
 const PLAYS = /\/playbackinfo|\/mediasources|\/download|^\/(videos|audio)\//;
@@ -117,9 +208,9 @@ async function signIn(request: Request, env: Env, hub: string, base: string): Pr
 }
 /* Lets one app in as a person: its own token, a line under Devices, and the sign-in answer a Jellyfin app expects. */
 async function letIn(env: Env, hub: string, person: {id: string; jf: string; name: string}, client: {device: string; name: string; app: string}, where: {place: string; net: string}, base: string): Promise<Response> {
-  const upstream = await getSecret<Upstream>(env, hub, person.id, 'upstream');
+  const via = await getSecret<Upstream>(env, hub, person.id, VIA), kind = via ? VIA : 'upstream', upstream = via ?? await getSecret<Upstream>(env, hub, person.id, 'upstream');
   if (!upstream) return json(401, {Message: 'This profile is not ready to play yet'});
-  const answer = upstream.auth ? JSON.parse(upstream.auth) as Answer : await mint(env, hub, person.id, person.jf, upstream);
+  const answer = upstream.auth ? JSON.parse(upstream.auth) as Answer : await mint(env, hub, person.id, person.jf, upstream, kind);
   if (!answer) return json(502, {Message: 'The server behind this hub did not accept the sign-in'});
   const token = newToken('hub'), at = now();
   await env.DB.batch([
@@ -130,7 +221,8 @@ async function letIn(env: Env, hub: string, person: {id: string; jf: string; nam
   const up = answer.AccessToken, upId = answer.User.Id;
   answer.User.Name = person.name;
   if (answer.SessionInfo) Object.assign(answer.SessionInfo, {DeviceId: client.device, DeviceName: client.name, Client: client.app, UserName: person.name});
-  return new Response(swap(JSON.stringify(answer), [[up, token], [upId, person.jf], [env.UP_ORIGIN + MOUNT, base]]), {status: 200, headers: {'content-type': 'application/json', ...CORS}});
+  const text = outward(JSON.stringify(answer), upId, person.jf, via ? await serverIdOf(env) : '', false);
+  return new Response(swap(text, [[upstream.base ?? env.UP_ORIGIN + MOUNT, base], [up, token], [upId, person.jf]]), {status: 200, headers: {'content-type': 'application/json', ...CORS}});
 }
 
 
@@ -173,6 +265,7 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
   if (lower === '/users/authenticatebyname' && request.method === 'POST') return signIn(request, env, hub, base);
   const picture = request.method === 'GET' && PICTURE.test(lower) ? `${hub}${path}${url.search}` : '', kept = picture ? pictures.get(picture) : undefined;
   if (kept && kept.until > Date.now()) return new Response(null, {status: 302, headers: {...CORS, location: kept.location, 'cache-control': PICTURE_KEEP}});
+  if (found.pictures && picture && AIOM_ITEM.test(lower)) return new Response(null, {status: 302, headers: {...CORS, location: found.pictures + path + url.search, 'cache-control': PICTURE_KEEP}});
 
   const token = tokenOf(request, url), id = token ? await sha(token) : '', seat = token ? await seatOf(env, hub, id) : null;
   if (token && !seat) return json(401, {Message: 'Unauthorized'});
@@ -181,14 +274,28 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
     if (lower === '/sessions/logout') {seats.delete(id); await env.DB.prepare('DELETE FROM devices WHERE id = ?').bind(id).run(); return new Response(null, {status: 204, headers: CORS});}
     // Deliberately unbothered: no reason, no blame, nobody to chase. It just isn't on right now.
     if (seat.paused && PLAYS.test(lower)) return json(403, {Message: 'Not playing right now. Try again later.'});
+    if (seat.kind === VIA && AIOM_PRIVATE.test(lower)) return json(403, {Message: 'Not available here'});
     if (now() - seat.seen > SEEN_EVERY) {const where = whereOf(request); seat.seen = now(); ctx.waitUntil(env.DB.prepare('UPDATE devices SET seen = ?, place = ?, net = ? WHERE id = ?').bind(seat.seen, where.place, where.net, id).run());}
   }
   const body = reading ? undefined : await request.text();
   if (seat && body && REPORTS[lower]) ctx.waitUntil(note(env, hub, seat, REPORTS[lower], body).catch(() => {}));
+  // Ticked as watched in an app without playing it: kept like a finished play, so it can be copied to MDBList later too.
+  const ticked = seat && request.method === 'POST' ? /^\/(?:users\/[^/]+\/playeditems|userplayeditems)\/([\w-]{1,80})$/i.exec(path) : null;
+  if (seat && ticked) ctx.waitUntil(note(env, hub, seat, 'mark', JSON.stringify({ItemId: ticked[1]})).catch(() => {}));
+  // AIOMetadata's libraries are its catalog rows, so "watched, in this library" only covers what the row shows today. In a real
+  // Jellyfin server a library holds everything, which is what history readers (Trakt's own Jellyfin sync) rely on: they ask
+  // library by library. So a watched list asked for under one of the person's own top-level libraries is answered from all of
+  // what they have watched. Anything else under a parent (a show, a season, a folder) is passed on as asked.
+  let search = url.search;
+  if (seat?.kind === VIA && reading && /^\/(users\/[^/]+\/)?items$/.test(lower)) {
+    const params = new URLSearchParams(url.search), named = (name: string) => [...params.keys()].filter(key => key.toLowerCase() === name);
+    const parent = named('parentid').map(key => params.get(key))[0], played = named('isplayed').map(key => params.get(key)?.toLowerCase())[0];
+    if (parent && played === 'true' && (await librariesOf(seat)).has(parent)) {for (const key of named('parentid')) params.delete(key); search = `?${params}`;}
+  }
   const send = (live: Seat | null) => {
     const headers = new Headers(), inbound: [string, string][] = live ? [[token, live.up], [live.jf, live.upId]] : [];
     for (const name of [...AUTH_HEADERS, 'content-type', 'accept', 'user-agent', 'range', 'accept-language']) {const value = request.headers.get(name); if (value) headers.set(name, swap(value, AUTH_HEADERS.includes(name) ? inbound : []));}
-    const target = env.UP_ORIGIN + MOUNT + swap(path, inbound) + swap(url.search, inbound);
+    const target = (live?.base ?? env.UP_ORIGIN + MOUNT) + swap(path, inbound) + swap(search, inbound);
     if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') return fetch(target, {headers: {upgrade: 'websocket'}});
     return fetch(target, {method: request.method, headers, body: body === undefined ? undefined : swap(body, inbound), redirect: 'manual'});
   };
@@ -198,16 +305,16 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
     // AIOStreams no longer accepts the kept sign-in (its password or PIN changed). Sign in again once and retry.
     // Another request may already have done so; only sign in again if the kept one is the one that was just refused.
     seats.delete(id);
-    const kept = await getSecret<Upstream>(env, hub, live.person, 'upstream');
+    const kept = await getSecret<Upstream>(env, hub, live.person, live.kind);
     let fresh = kept?.auth ? JSON.parse(kept.auth) as Answer : null;
-    if (kept && (!fresh || fresh.AccessToken === live.up)) fresh = await mint(env, hub, live.person, live.jf, kept);
+    if (kept && (!fresh || fresh.AccessToken === live.up)) fresh = await mint(env, hub, live.person, live.jf, kept, live.kind);
     if (fresh && fresh.AccessToken !== live.up) {live = {...live, up: fresh.AccessToken, upId: fresh.User.Id}; upstream = await send(live);}
   }
   const out = new Headers(CORS), type = upstream.headers.get('content-type') ?? '';
   if (type) out.set('content-type', type);
   for (const name of ['cache-control', 'etag', 'last-modified', 'content-range', 'accept-ranges']) {const value = upstream.headers.get(name); if (value) out.set(name, value);}
-  const location = upstream.headers.get('location');
-  if (location) out.set('location', location.startsWith(env.UP_ORIGIN + MOUNT) ? base + location.slice((env.UP_ORIGIN + MOUNT).length) : location);
+  const location = upstream.headers.get('location'), from = live?.base ?? env.UP_ORIGIN + MOUNT;
+  if (location) out.set('location', location.startsWith(from) ? base + location.slice(from.length) : location);
   out.set('x-hub-upstream-ms', String(Date.now() - started));
   if (picture && upstream.status === 302 && location && !location.startsWith(env.UP_ORIGIN)) {
     if (pictures.size > 5000) pictures.clear();
@@ -218,20 +325,23 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
 
   let text = await upstream.text();
   if (live) {
+    if (live.kind === VIA) text = outward(swap(text, [[live.base, base]]), live.upId, live.jf, await serverIdOf(env), lower.startsWith('/system/info'));
     text = swap(text, [[live.upId, live.jf], [live.up, token]]);
     // Only ever show a person themselves, never the rest of the household.
     if (lower === '/users' || lower === '/aiostreams/users') {try {const users = JSON.parse(text) as {Id: string}[]; text = JSON.stringify(users.filter(user => user.Id === live!.jf));} catch {/* leave as is */}}
     if (live.paused && type.includes('json')) {try {text = JSON.stringify(noSources(JSON.parse(text)));} catch {/* leave as is */}}
   }
-  text = swap(text, [[env.UP_ORIGIN + MOUNT, base]]);
+  text = swap(text, [[from, base], [env.UP_ORIGIN + MOUNT, base]]);
   // Server info also names the AIOStreams host in a couple of extra fields. Drop any that still do.
   // And it must not say sign-in is by a setup's id: here people sign in with their own name.
   if (lower.startsWith('/system/info') && text.includes('configSignIn')) {try {const info = JSON.parse(text) as {aiostreams?: {features?: Record<string, unknown>}}; if (info.aiostreams?.features) delete info.aiostreams.features.configSignIn; text = JSON.stringify(info);} catch {/* leave as is */}}
-  if (lower.startsWith('/system/info') && text.includes(env.UP_ORIGIN)) {
-    const strip = (value: unknown): unknown => typeof value === 'string' ? (value.includes(env.UP_ORIGIN) ? undefined : value) : Array.isArray(value) ? value.map(strip) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([name, item]) => [name, strip(item)])) : value;
+  // The app names the server after what it says it is: here that is the hub, whichever setup answered.
+  if (lower.startsWith('/system/info') && type.includes('json')) {try {const info = JSON.parse(text) as {ServerName?: string}; if ('ServerName' in info) {info.ServerName = found.name; text = JSON.stringify(info);}} catch {/* leave as is */}}
+  const hosts = [env.UP_ORIGIN, ...(live?.kind === VIA ? [new URL(live.base).origin] : [])];
+  if (lower.startsWith('/system/info') && hosts.some(host => text.includes(host))) {
+    const strip = (value: unknown): unknown => typeof value === 'string' ? (hosts.some(host => value.includes(host)) ? undefined : value) : Array.isArray(value) ? value.map(strip) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([name, item]) => [name, strip(item)])) : value;
     try {text = JSON.stringify(strip(JSON.parse(text)));} catch {/* leave as is */}
   }
-  if (lower.startsWith('/system/info') && type.includes('json')) {try {const info = JSON.parse(text) as {ServerName?: string}; if ('ServerName' in info) {info.ServerName = found.name; text = JSON.stringify(info);}} catch {/* leave as is */}}
   out.set('x-hub-total-ms', String(Date.now() - started));
   return new Response(text, {status: upstream.status, headers: out});
 }

@@ -1,10 +1,12 @@
 // The site's own API: managers' accounts, the hub they run, and what an invited person may change about themselves.
 // What reaches the streaming server goes through ./native.
+import {carry, plan} from './carry';
 import {defaultAddons, defaultRows, defaultSettings, slug, traktRows} from '../src/data';
 import type {Addon, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './native';
-import {forgetHub} from './front';
+import {forgetHub, forgetSeats} from './front';
+import {LINK, begin, check, disconnect, links} from './trakt';
 import type {Env} from './util';
 import {blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp} from './util';
 
@@ -75,8 +77,8 @@ function ago(seen: number) {
   return gap < 300 ? 'Now' : gap < 3600 ? `${Math.floor(gap / 60)} min ago` : gap < 86400 ? `${Math.floor(gap / 3600)} h ago` : gap < 172800 ? 'Yesterday' : `${Math.floor(gap / 86400)} days ago`;
 }
 const groupDto = (row: GroupRow) => ({id: row.id, name: row.name, ...(JSON.parse(row.data) as GroupData), v: row.version});
-const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean) => ({
-  ready,
+const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null) => ({
+  ready, history,
   id: row.id, name: row.name, groupId: row.grp, joined: !!row.joined, paused: !!row.paused, ...(JSON.parse(row.data) as PersonData), v: row.version,
   // Sign-in details are never part of what a page loads; they are asked for one person at a time.
   pin: null, password: '', devices: devices.filter(device => device.person === row.id).map(device => ({id: device.ref, app: device.app || 'Player app', name: device.name || 'A device', seen: ago(device.seen), where: [device.place, device.net].filter(Boolean).join(' · ')})),
@@ -105,15 +107,17 @@ async function startSession(env: Env, subject: {account: string} | {hub: string;
 /* ---------- what a page loads ---------- */
 async function state(env: Env, who: Who) {
   const hub = who.hub, data = JSON.parse(hub.data) as HubData, mine = who.person;
-  const [groups, people, devices, owner, ready, keys, passkeys] = await env.DB.batch([
+  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks] = await env.DB.batch([
     env.DB.prepare('SELECT id, name, data, version FROM groups WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? AND id = ?').bind(hub.id, mine) : env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? AND person = ? ORDER BY seen DESC').bind(hub.id, mine) : env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? ORDER BY seen DESC').bind(hub.id),
     env.DB.prepare('SELECT name FROM accounts WHERE id = ?').bind(hub.owner),
-    env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind = 'upstream'").bind(hub.id),
+    env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind IN ('upstream', 'upstream-aiom')").bind(hub.id),
     env.DB.prepare("SELECT kind FROM secrets WHERE hub = ? AND owner = ? AND kind IN ('key:tmdb', 'key:mdblist', 'key:posters')").bind(hub.id, HUB_OWNER),
     env.DB.prepare('SELECT substr(id, 1, 16) AS id, name, created FROM passkeys WHERE account = ? ORDER BY created').bind(who.account?.id ?? ''),
+    env.DB.prepare('SELECT owner, value FROM secrets WHERE hub = ? AND kind = ? AND owner = coalesce(?, owner)').bind(hub.id, LINK, mine ?? null),
   ]);
+  const history = env.TRAKT_CLIENT_ID ? await links(env, hub.id, traktLinks.results as {owner: string; value: string}[]) : {};
   const linked = new Set((ready.results as {owner: string}[]).map(row => row.owner));
   const persons = people.results as unknown as PersonRow[];
   if (mine && !persons.length) return null;
@@ -123,8 +127,8 @@ async function state(env: Env, who: Who) {
   return {
     role: mine ? 'person' : 'owner', personId: mine ?? null,
     hub: {
-      name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'),
-      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id))),
+      name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID,
+      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null)),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
   };
@@ -209,7 +213,7 @@ const forget = (env: Env, hub: string, id: string) => [
   env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare('DELETE FROM sessions WHERE hub = ? AND person = ?').bind(hub, id),
 ];
 async function removePerson(env: Env, who: Who, id: string) {
-  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
+  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
   return {};
 }
 /* Checks a person's own password. People who joined before the two passwords were split are checked against the old shared one. */
@@ -259,6 +263,20 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       return {username};
     }
     if (request.method === 'DELETE') {await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'mdblist'").bind(hub, id), save(false)]); return {};}
+  }
+  if (action === 'scrobble' && env.TRAKT_CLIENT_ID) {
+    // Trakt history, connected by the person or by the manager with them: Trakt shows a code to type on its own page, and the page
+    // asks here until it has been. The device code Trakt hands out is kept here, never sent to the page.
+    if (request.method === 'POST' && !rest) return await begin(env, hub, id) ?? bad(502, 'Trakt did not answer. Try again in a moment.');
+    if (request.method === 'POST' && rest === 'check') {const got = await check(env, hub, id); if (got.state === 'connected') forgetSeats(id); return got;}
+    if (request.method === 'DELETE') {await disconnect(env, hub, id); forgetSeats(id); return {};}
+  }
+  if (action === 'carry') {
+    // Someone's own watching: only they can look at it or move it, from their own page.
+    if (who.person !== id) bad(403, 'Only they can do this, from their own page');
+    const got = request.method === 'POST' ? await carry(env, hub, id) : await plan(env, hub, id);
+    if ('error' in got) bad(409, got.error);
+    return got;
   }
   if (action === 'rotate' && request.method === 'POST') {
     // A fresh player-app password. Every app is signed out; the person's own page is untouched.
@@ -475,14 +493,15 @@ async function advanced(request: Request, site: Env, who: Who, body: Body) {
     aiometadata: home ? {open: `${home.at ?? env.AIOM_ORIGIN}/stremio/${home.uuid}/configure`, id: home.uuid, password: home.password} : null,
     // The separate AIOMetadata setups a group or a person has while their Home, looks or accounts differ from the shared one.
     own: await ownDoors(env, who.hub.id),
+    front: env.FRONT === 'aiometadata',
   };
 }
 async function ownDoors(env: Env, hub: string) {
-  const owners = (await env.DB.prepare("SELECT s.owner, coalesce(p.name, g.name) AS name FROM secrets s LEFT JOIN people p ON p.hub = s.hub AND p.id = s.owner LEFT JOIN groups g ON g.hub = s.hub AND s.owner = '#g:' || g.id WHERE s.hub = ? AND s.kind = 'catalogs' AND s.owner != ?").bind(hub, HUB_OWNER).all<{owner: string; name: string | null}>()).results;
+  const owners = (await env.DB.prepare("SELECT s.owner, s.kind, coalesce(p.name, g.name) AS name FROM secrets s LEFT JOIN people p ON p.hub = s.hub AND p.id = s.owner LEFT JOIN groups g ON g.hub = s.hub AND s.owner = '#g:' || g.id WHERE s.hub = ? AND s.kind IN ('catalogs', 'aiom') AND s.owner != ?").bind(hub, HUB_OWNER).all<{owner: string; name: string | null; kind: string}>()).results;
   const doors = [];
   for (const row of owners) {
-    const made = await getSecret<{uuid: string; password: string; at?: string}>(env, hub, row.owner, 'catalogs');
-    if (made) doors.push({name: row.name ?? 'Someone removed', group: row.owner.startsWith('#g:'), open: `${made.at ?? env.AIOM_ORIGIN}/stremio/${made.uuid}/configure`, id: made.uuid, password: made.password});
+    const made = await getSecret<{uuid: string; password: string; at?: string}>(env, hub, row.owner, row.kind);
+    if (made) doors.push({name: row.name ?? 'Someone removed', group: row.owner.startsWith('#g:'), player: row.kind === 'aiom', open: `${made.at ?? env.AIOM_ORIGIN}/stremio/${made.uuid}/configure`, id: made.uuid, password: made.password});
   }
   return doors;
 }

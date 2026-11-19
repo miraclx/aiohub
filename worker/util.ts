@@ -2,6 +2,10 @@
 export interface Env {
   ASSETS: Fetcher; DB: D1Database;
   UP_ORIGIN: string; VAULT_KEY: string; CLAIM_CODE?: string; TMDB_CHECK?: string; MDBLIST_API?: string; AIOM_ORIGIN?: string; MAX_HUBS?: string;
+  // 'aiometadata': every person's player apps are served by their own AIOMetadata config (streams still come from AIOStreams).
+  FRONT?: string;
+  // Trakt history (see trakt.ts). Without a client id it stays off: nothing offered, nothing sent.
+  TRAKT_CLIENT_ID?: string; TRAKT_API?: string;
 }
 export const enc = new TextEncoder(), dec = new TextDecoder();
 /* The same settings, pointed at the servers this hub uses. A hub that has not chosen its own uses the site's. */

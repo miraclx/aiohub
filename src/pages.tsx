@@ -167,7 +167,7 @@ function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: 
     <div className="section-head"><div><h2>Accounts</h2><p className="muted">{mine ? 'Connect your own. Nobody else sees them.' : live ? <>{person.name} can connect their own from their page, or you can do it here with them.</> : <>Only {person.name} can connect these, from their own page. <a className="link" href={`#/person/${person.id}/settings`}>Get their link</a></>}</p></div></div>
     <ul className="accounts">
       <li><div><h3>Streams</h3><p>Played through the shared {resolve(hub, group, person).values.debrid} account. Nothing to set up.</p></div><span className="pill ok">Shared</span></li>
-      {live && <li className={linking && !person.trakt ? 'stacked' : ''}><div><h3>Trakt</h3><p>{person.trakt ? 'Connected. Watchlist, recommendations and what’s next are on Home. Plays here are not written back to Trakt.' : 'Brings a watchlist, recommendations and what’s next to Home. Plays here are not written back to Trakt.'}</p></div>
+      {live && <li className={linking && !person.trakt ? 'stacked' : ''}><div><h3>Trakt</h3><p>{person.trakt ? 'Connected. Watchlist, recommendations and what’s next are on Home.' : 'Brings a watchlist, recommendations and what’s next to Home.'}{hub.scrobble ? '' : ' Plays here are not written back to Trakt.'}</p></div>
         {person.trakt ? <button type="button" className="ghost small" disabled={busy} onClick={() => {setBusy(true); void live.call('DELETE', at).then(() => live.sync()).then(() => live.reload()).then(() => toast('Trakt disconnected'), fail(toast)).finally(() => setBusy(false));}}>Disconnect</button>
           : !linking ? <a className="primary button" href={hub.traktLink} target="_blank" rel="noreferrer" onClick={() => setLinking(true)}>Connect</a>
           : <form className="stack link-back" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call<{username: string}>('POST', at, {tokenId: token}).then(found => live.sync().then(() => live.reload()).then(() => {toast(`Trakt connected as ${found.username}`); setLinking(false); setToken('');}), fail(toast)).finally(() => setBusy(false));}}>
@@ -178,6 +178,7 @@ function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: 
       {!live && <li><div><h3>Trakt</h3><p>{person.trakt ? 'Connected. Watchlist and recommendations are on Home.' : 'Brings a watchlist and recommendations to Home.'}</p></div>
         {person.trakt ? off('Trakt', target => {target.trakt = false; target.rows = target.rows?.filter(row => !isTrakt(row)) ?? null;})
           : mine ? <button type="button" className="primary" onClick={() => edit(target => {target.trakt = true; if (target.rows) target.rows = [...traktRows(), ...target.rows];}, 'Trakt connected')}>Connect</button> : waiting}</li>}
+      {live && hub.scrobble && <History page={page} person={person}/>}
       {live && <li className={keying && !person.lists ? 'stacked' : ''}><div><h3>MDBList</h3><p>{person.lists ? 'Connected. What’s played is recorded to this MDBList account, and “Hide what’s been watched” reads from it.' : 'Records what’s played and how far, in the person’s own MDBList account, and lets Home hide what’s been watched. Free.'}</p></div>
         {person.lists ? <button type="button" className="ghost small" disabled={busy} onClick={() => {setBusy(true); void live.call('DELETE', `/api/people/${person.id}/mdblist`).then(() => live.sync()).then(() => live.reload()).then(() => toast('MDBList disconnected'), fail(toast)).finally(() => setBusy(false));}}>Disconnect</button>
           : !keying ? <button type="button" className="primary small" onClick={() => setKeying(true)}>Connect</button>
@@ -188,8 +189,71 @@ function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: 
       {!live && <li><div><h3>MDBList</h3><p>{person.lists ? 'Connected. Keeps what’s been watched and how far, and its lists can be added as rows.' : 'Remembers what’s been watched and how far, across every device. Its lists can be added as rows.'}</p></div>
         {person.lists ? off('MDBList', target => {target.lists = false; target.rows = target.rows?.filter(row => !row.source.startsWith('MDBList')) ?? null;})
           : live ? later : mine ? <button type="button" className="primary" onClick={() => edit(target => {target.lists = true;}, 'MDBList connected')}>Connect</button> : waiting}</li>}
+      {live && mine && person.lists && <Carry page={page} person={person}/>}
+      {live && !mine && person.lists && <li><div><h3>What they watched here</h3><p>{person.name} can copy it to MDBList from their own page, under Accounts. It’s theirs, so it isn’t shown here.</p></div></li>}
     </ul>
   </section>;
+}
+/* Trakt history: Trakt shows a short code to type on its own page, and this page waits until it has been typed. */
+function History({page, person}: {page: PageProps; person: Person}) {
+  const {toast, live} = page, at = `/api/people/${person.id}/scrobble`, link = person.history;
+  const [shown, setShown] = useState<{code: string; url: string; interval: number} | null>(null), [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!shown || !live) return;
+    let gone = false;
+    const timer = setInterval(() => void live.call<{state: string; username?: string}>('POST', `${at}/check`, {}).then(got => {
+      if (gone || got.state === 'waiting') return;
+      setShown(null);
+      if (got.state === 'connected') void live.reload().then(() => toast(got.username ? `Trakt history connected as ${got.username}` : 'Trakt history connected'));
+      else toast('That code ran out. Connect again for a new one.');
+    }, () => {}), shown.interval * 1000);
+    return () => {gone = true; clearInterval(timer);};
+  }, [shown]);
+  if (!live) return null;
+  const connect = () => {setBusy(true); void live.call<{code: string; url: string; interval: number}>('POST', at, {}).then(setShown, fail(toast)).finally(() => setBusy(false));};
+  const on = !!link && !link.again;
+  return <li className={shown ? 'stacked' : ''}><div><h3>Trakt history</h3>
+    <p>{on ? `Connected${link!.username ? ` as ${link!.username}` : ''}. What’s played here goes to Trakt as it happens.` : link?.again ? 'Trakt asked to be connected again.' : 'Sends what’s played here to Trakt as it happens: what’s on now, how far in, and what’s finished. Recommendations stay fresh.'}</p>
+    {shown && <div className="stack link-back">
+      <p className="muted small">On <a className="link" href={shown.url} target="_blank" rel="noreferrer">{shown.url.replace(/^https?:\/\//, '')}</a>, sign in to Trakt and type this code. This page carries on by itself.</p>
+      <div className="code-show"><code>{shown.code}</code><button type="button" className="ghost small" onClick={() => {void navigator.clipboard?.writeText(shown.code).catch(() => {}); toast('Copied');}}>Copy</button></div>
+    </div>}</div>
+    {on ? <button type="button" className="ghost small" disabled={busy} onClick={() => {setBusy(true); void live.call('DELETE', at).then(() => live.reload()).then(() => toast('Trakt history disconnected'), fail(toast)).finally(() => setBusy(false));}}>Disconnect</button>
+      : shown ? <button type="button" className="ghost small" onClick={() => setShown(null)}>Not now</button>
+      : <button type="button" className="primary small" disabled={busy} onClick={connect}>Connect</button>}
+  </li>;
+}
+/* Copying what someone watched here to their MDBList: they see exactly what would go, then it is done in a few short steps. */
+interface CarryEntry {key: string; title: string; detail: string; at: string; pct?: number}
+interface CarryPlan {watched: CarryEntry[]; partway: CarryEntry[]; already: number; unknown: number; more: boolean}
+function Carry({page, person}: {page: PageProps; person: Person}) {
+  const {toast, live} = page, at = `/api/people/${person.id}/carry`;
+  const [plan, setPlan] = useState<CarryPlan | null>(null), [phase, setPhase] = useState<'idle' | 'looking' | 'shown' | 'copying' | 'done'>('idle'), [copied, setCopied] = useState(0);
+  if (!live) return null;
+  const look = () => {setPhase('looking'); void live.call<CarryPlan>('GET', at).then(found => {setPlan(found); setPhase('shown');}, (error: Error) => {toast(error.message); setPhase('idle');});};
+  const go = async () => {
+    setPhase('copying'); let total = 0;
+    try {
+      for (let pass = 0; pass < 20; pass++) {const got = await live.call<{watched: number; partway: number; more: boolean}>('POST', at, {}); total += got.watched + got.partway; if (!got.more) break;}
+      setCopied(total); setPhase('done');
+    } catch (error) {toast((error as Error).message); setPhase('shown');}
+  };
+  const items = plan ? [...plan.watched, ...plan.partway] : [], count = items.length;
+  const when = (entry: CarryEntry) => entry.pct != null ? `${entry.pct}% in` : new Date(entry.at).toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'});
+  return <li className="stacked"><div><h3>What you watched here</h3>
+    {phase === 'idle' && <p>It stays in your apps either way. Copy it to MDBList too, so anything else that reads MDBList knows what you’ve seen.</p>}
+    {phase === 'looking' && <p>Looking…</p>}
+    {phase === 'shown' && plan && (count ? <>
+      <p>{[plan.watched.length && `${plan.watched.length} watched`, plan.partway.length && `${plan.partway.length} partway`].filter(Boolean).join(' and ')} will be copied, each with the date you watched it.{plan.already ? ` ${plan.already} already in MDBList, left as they are.` : ''}{plan.unknown ? ` ${plan.unknown} couldn’t be matched and stay here only.` : ''}{plan.more ? ' There’s more after these; it carries on by itself.' : ''}</p>
+      <ul className="feed compact">{items.slice(0, 12).map(entry => <li key={entry.key}><div><strong>{entry.title}</strong> <span className="muted">{entry.detail} · {when(entry)}</span></div></li>)}</ul>
+      {count > 12 && <p className="muted small">And {count - 12} more.</p>}
+    </> : <p>Nothing to copy. MDBList already has everything you watched here.{plan.unknown ? ` ${plan.unknown} couldn’t be matched and stay here only.` : ''}</p>)}
+    {phase === 'copying' && <p>Copying. This takes a few seconds.</p>}
+    {phase === 'done' && <p>Done. {copied} copied to MDBList.</p>}
+  </div>
+    {phase === 'idle' && <button type="button" className="ghost small" onClick={look}>See what would be copied</button>}
+    {phase === 'shown' && plan && count > 0 && <div className="field-row"><button type="button" className="primary small" onClick={() => void go()}>Copy {count}</button><button type="button" className="ghost small" onClick={() => setPhase('idle')}>Not now</button></div>}
+  </li>;
 }
 function PersonSections({page, person, tab, mine}: {page: PageProps; person: Person; tab: string; mine: boolean}) {
   const {hub, update, toast} = page, group = hub.groups.find(item => item.id === person.groupId)!;
@@ -324,7 +388,7 @@ export function HubPage(page: PageProps & {tab: string}) {
 /* Which AIOStreams and AIOMetadata servers the hub's setups live on. The site checks an address before keeping it. */
 /* The way into the hub's own setups on AIOStreams and AIOMetadata, behind the manager's password. */
 interface Door {open: string; id: string; password: string}
-interface Doors {aiostreams: Door | null; aiometadata: Door | null; own?: (Door & {name: string; group: boolean})[]}
+interface Doors {aiostreams: Door | null; aiometadata: Door | null; own?: (Door & {name: string; group: boolean; player?: boolean})[]; front?: boolean}
 function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
   const [asking, setAsking] = useState(false), [pass, setPass] = useState(''), [busy, setBusy] = useState(false), [doors, setDoors] = useState<Doors | null>(null);
   const copy = (text: string) => () => {void navigator.clipboard?.writeText(text).catch(() => {}); toast('Copied');};
@@ -339,10 +403,10 @@ function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
         <input type="password" aria-label="Your password" placeholder="Your password" autoComplete="current-password" autoFocus value={pass} onChange={event => setPass(event.target.value)}/><button className="primary" disabled={busy || !pass}>Show</button></form>
         : <button type="button" className="ghost small" onClick={() => setAsking(true)}>Show</button>}</Setting></div>
     : <div className="card settings">
-      {door('AIOStreams', doors.aiostreams, 'Sources, filters, sorting and the stream label. If it asks, use this ID and password.')}
-      {door('AIOMetadata', doors.aiometadata, 'Catalogs, collections and posters for the shared Home. It asks for this password.')}
-      {(doors.own ?? []).map(found => door(`AIOMetadata for ${found.name}`, found, `${found.group ? `The ${found.name} group’s` : `${found.name}’s`} own Home, looks and accounts. The hub made it because they differ from the shared one, and removes it once they don’t.`))}
-      <Setting column title="What the hub keeps putting back" hint="The hub rewrites the things it manages each time you change something here: debrid account, the sources it lists, quality and size, languages, the stream label, people, Home rows and collections. Anything else you add there is left alone. A group’s or a person’s own Home lives in its own AIOMetadata setup, listed above when there is one."><button type="button" className="ghost small" onClick={() => setDoors(null)}>Hide</button></Setting>
+      {door('AIOStreams', doors.aiostreams, doors.front ? 'Sources, filters, sorting and the stream label. It finds the streams; browsing happens on each person’s own AIOMetadata. If it asks, use this ID and password.' : 'Sources, filters, sorting and the stream label. If it asks, use this ID and password.')}
+      {door('AIOMetadata', doors.aiometadata, doors.front ? 'The hub’s own setup. It draws the posters everyone sees. It asks for this password.' : 'Catalogs, collections and posters for the shared Home. It asks for this password.')}
+      {(doors.own ?? []).map(found => door(`AIOMetadata for ${found.name}`, found, found.player ? `${found.name}’s own server: their Home, looks, accounts and what they’ve watched. Their apps reach it through the hub, which keeps it in step with the hub and their group.` : `${found.group ? `The ${found.name} group’s` : `${found.name}’s`} own Home, looks and accounts. The hub made it because they differ from the shared one, and removes it once they don’t.`))}
+      <Setting column title="What the hub keeps putting back" hint={`The hub rewrites the things it manages each time you change something here: debrid account, the sources it lists, quality and size, languages, the stream label, people, Home rows and collections. Anything else you add there is left alone. ${doors.front ? 'Each person’s Home lives on their own AIOMetadata setup, listed above.' : 'A group’s or a person’s own Home lives in its own AIOMetadata setup, listed above when there is one.'}`}><button type="button" className="ghost small" onClick={() => setDoors(null)}>Hide</button></Setting>
     </div>}
   </section>;
 }

@@ -17,7 +17,7 @@ const SOURCE: Record<string, {type: string; name: string; options: Record<string
   torz: {type: 'stremthruTorz', name: 'StremThru Torz', options: {includeP2P: false, useMultipleInstances: false}},
 };
 const HOME = 'h01';
-interface Home {uuid: string; password: string; at?: string}
+interface Home {uuid: string; password: string; at?: string; enc?: string}
 interface HubData {hostUrl?: string; metaUrl?: string; missing?: string[]; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]}
 interface Persona {id: string; name: string; [key: string]: unknown}
 interface Preset {type: string; instanceId: string; enabled: boolean; options: Record<string, unknown>}
@@ -87,7 +87,7 @@ const extrasOf = (data: HubData) => data.addons.filter(addon => addon.custom && 
 /* Changes only what the hub owns, in place. Everything else in the stored setup, and every user's other fields, is left exactly as found. */
 interface Variant {id: string; name: string; enabled: boolean; script: string}
 const OURS = 'hub-';
-function patch(stored: Stored, data: HubData, key: string, people: {id: string; name: string; variants?: string[]; tracks?: boolean}[], home: string | null, variants: Variant[] = [], tmdb: string | null = null) {
+function patch(stored: Stored, data: HubData, key: string, people: {id: string; name: string; variants?: string[]; tracks?: boolean}[], home: string | null, variants: Variant[] = [], tmdb: string | null = null, front = false) {
   if (tmdb) stored[tmdb.length > 40 ? 'tmdbAccessToken' : 'tmdbApiKey'] = tmdb;
   stored.services = [{id: SERVICE[data.defaults.debrid], enabled: true, credentials: {apiKey: key}}];
   // Every source the hub knows is kept in the setup, on or off, so a group or a person can switch one on for themselves.
@@ -107,6 +107,11 @@ function patch(stored: Stored, data: HubData, key: string, people: {id: string; 
     else presets.push({type: 'custom', instanceId: HOME, enabled: true, options: {name: 'Home', manifestUrl: home, timeout: 30000, resources: ['catalog', 'meta', 'watch_state'], mediaTypes: [], libraryAddon: false, resultPassthrough: false, forceToTop: false}});
     stored.upstreamCatalogOrder = [ADDON];
     stored.catalogModifications = [...MODIFICATIONS, ...((stored.catalogModifications as {id?: string}[] | undefined) ?? []).filter(item => !item.id?.startsWith(`${ADDON}.`))];
+  } else if (front) {
+    // With AIOMetadata in front, nobody browses through AIOStreams: it only finds streams, so the hub's Home there is switched off.
+    const found = presets.find(item => item.type === 'custom' && item.instanceId === HOME);
+    if (found) found.enabled = false;
+    stored.catalogModifications = ((stored.catalogModifications as {id?: string}[] | undefined) ?? []).filter(item => !item.id?.startsWith(`${ADDON}.`));
   }
   const subs = codes(data.defaults.subtitles), captions = presets.find(item => item.type === SUBTITLES);
   if (captions) {captions.enabled = !!subs.length; if (subs.length) captions.options.language = subs;}
@@ -122,8 +127,9 @@ function patch(stored: Stored, data: HubData, key: string, people: {id: string; 
   stored.formatter = label(data.defaults);
   // What a group or a person has changed for themselves travels as a variant: a short list of changes applied only for them.
   stored.variants = [...variants, ...((stored.variants as Variant[] | undefined) ?? []).filter(item => !item.id?.startsWith(OURS))];
-  const users = stored.jellyfin?.personas ?? [], keep = new Set(people.map(person => person.id));
-  for (const person of people) {
+  // With AIOMetadata in front, people sign in to their own AIOMetadata setup, so AIOStreams keeps no users for them.
+  const users = stored.jellyfin?.personas ?? [], keep = new Set(front ? [] : people.map(person => person.id));
+  for (const person of front ? [] : people) {
     let found = users.find(user => user.id === person.id);
     if (found) found.name = person.name; else users.push(found = {id: person.id, name: person.name, history: 'own', trackers: []});
     // AIOStreams records plays for a person with no tracker list of their own (it finds their Home setup); an empty list means never.
@@ -204,7 +210,10 @@ const TRAKT_ROW: Record<string, Record<string, unknown> & {id: string; type: str
   'recommended-movies': {id: 'trakt.recommendations.movies', type: 'movie'}, 'recommended-series': {id: 'trakt.recommendations.shows', type: 'series'},
   'up-next': {id: 'trakt.upnext', type: 'series', cacheTTL: 300}, 'recently-aired': {id: 'trakt.unwatched', type: 'series', cacheTTL: 300},
 };
-interface Catalogs {uuid: string; password: string; v: number; sent: string; at?: string}
+interface Catalogs {uuid: string; password: string; v: number; sent: string; at?: string; client?: string}
+/* With FRONT=aiometadata each person has one more AIOMetadata setup: their own Jellyfin server, which their player apps reach
+   through the hub. It holds their Home, their Trakt and MDBList, and points at their own stream setup on AIOStreams. */
+export const PLAYER = 'aiom', VIA = 'upstream-aiom';
 interface Catalog {id: string; type: string; [key: string]: unknown}
 interface Folder {id: string; title: string; image: string; cover: string; hideTitle: boolean; shape: string; source: Record<string, string>; catalog: Catalog}
 interface Shipped {row: string; id: string; title: string; viewMode: string; folders: Folder[]}
@@ -268,32 +277,32 @@ type Vault = Map<string, string>;
 const vaultOf = async (env: Env, hub: string): Promise<Vault> => new Map((await env.DB.prepare('SELECT owner, kind, value FROM secrets WHERE hub = ?').bind(hub).all<{owner: string; kind: string; value: string}>()).results.map(row => [`${row.owner}/${row.kind}`, row.value]));
 const held = <T>(env: Env, vault: Vault, hub: string, owner: string, kind: string) => unseal<T>(env, `${hub}/${owner}/${kind}`, vault.get(`${owner}/${kind}`));
 /* One Home setup on AIOMetadata: the hub's, or a group's or a person's own when theirs differs. Made once per owner, then kept in step. */
-async function syncHome(env: Env, vault: Vault, hub: string, owner: string, wanted: Wanted, keys: Keys, budget: {left: number}): Promise<{address: string} | {message: string; more?: boolean}> {
+async function syncHome(env: Env, vault: Vault, hub: string, owner: string, wanted: Wanted, keys: Keys, budget: {left: number}, kind = 'catalogs', keep: Record<string, unknown> = {}): Promise<{address: string; made: Catalogs} | {message: string; more?: boolean}> {
   const {$trakt, $lists, ...rest} = wanted as Wanted & {$trakt?: string | null; $lists?: string | null};
   const apiKeys = {tmdb: keys.tmdb, ...($lists || keys.mdblist ? {mdblist: ($lists || keys.mdblist) as string} : {}), ...($trakt ? {traktTokenId: $trakt} : {})}, sent = await sha(JSON.stringify([apiKeys, wanted]));
-  let made = await held<Catalogs>(env, vault, hub, owner, 'catalogs');
+  let made = await held<Catalogs>(env, vault, hub, owner, kind);
   // The hub moved to another AIOMetadata server: the setup on the old one is removed, and a new one is made here.
-  if (made?.at && made.at !== env.AIOM_ORIGIN) {if ((budget.left -= 1) < 0 || !await dropHome({...env, AIOM_ORIGIN: made.at}, hub, owner)) return {message: LATER, more: budget.left < 0}; made = null;}
-  if (made?.sent === sent) return {address: address(env, made)};
+  if (made?.at && made.at !== env.AIOM_ORIGIN) {if ((budget.left -= 1) < 0 || !await dropHome({...env, AIOM_ORIGIN: made.at}, hub, owner, kind)) return {message: LATER, more: budget.left < 0}; made = null;}
+  if (made?.sent === sent) return {address: address(env, made), made};
   // A Worker may only make so many calls for one request. What does not fit is done on the next pass, which the site asks for.
   if ((budget.left -= 2) < 0) return {message: 'Still bringing everyone’s Home in step.', more: true};
   if (!made) {
-    const claim = await env.DB.prepare("INSERT INTO ops (hub, kind, target, state, created, updated) VALUES (?, 'create-catalogs', ?, 'requested', ?, ?) ON CONFLICT DO NOTHING").bind(hub, owner, now(), now()).run();
+    const claim = await env.DB.prepare("INSERT INTO ops (hub, kind, target, state, created, updated) VALUES (?, ?, ?, 'requested', ?, ?) ON CONFLICT DO NOTHING").bind(hub, `create-${kind}`, owner, now(), now()).run();
     if (!claim.meta.changes) return {message: STUCK.message!};
     const password = newToken('c');
-    await (await putSecret(env, hub, owner, 'catalogs-pending', {password})).run();
+    await (await putSecret(env, hub, owner, `${kind}-pending`, {password})).run();
     const answer = await fetch(`${env.AIOM_ORIGIN}/api/config/save`, {method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({config: {apiKeys, ...SEARCH_SETUP, ...rest}, password})}).catch(() => null);
     if (!answer) return {message: STUCK.message!};
     const body = await answer.json().catch(() => null) as {userUUID?: string} | null;
     if (answer.status !== 200 || !body?.userUUID) {
       if (answer.status < 400 || answer.status >= 500) return {message: STUCK.message!};
       // Refused outright: nothing was created, so the claim is released and it can be tried again.
-      await env.DB.batch([env.DB.prepare("DELETE FROM ops WHERE hub = ? AND kind = 'create-catalogs' AND target = ?").bind(hub, owner), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'catalogs-pending'").bind(hub, owner)]);
+      await env.DB.batch([env.DB.prepare('DELETE FROM ops WHERE hub = ? AND kind = ? AND target = ?').bind(hub, `create-${kind}`, owner), env.DB.prepare('DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(hub, owner, `${kind}-pending`)]);
       return {message: 'AIOMetadata refused the Home setup. Check the TMDB and MDBList keys under Hub, Sources.'};
     }
-    made = {uuid: body.userUUID, password, v: now(), sent, at: env.AIOM_ORIGIN};
-    await env.DB.batch([await putSecret(env, hub, owner, 'catalogs', made), env.DB.prepare("UPDATE ops SET state = 'done', updated = ? WHERE hub = ? AND kind = 'create-catalogs' AND target = ?").bind(now(), hub, owner), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'catalogs-pending'").bind(hub, owner)]);
-    return {address: address(env, made)};
+    made = {uuid: body.userUUID, password, v: now(), sent, at: env.AIOM_ORIGIN, ...keep};
+    await env.DB.batch([await putSecret(env, hub, owner, kind, made), env.DB.prepare("UPDATE ops SET state = 'done', updated = ? WHERE hub = ? AND kind = ? AND target = ?").bind(now(), hub, `create-${kind}`, owner), env.DB.prepare('DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(hub, owner, `${kind}-pending`)]);
+    return {address: address(env, made), made};
   }
   // Read, change only what the hub owns (its rows, its collections, its settings, the keys), write back against the version that was read.
   const read = await fetch(`${env.AIOM_ORIGIN}/api/config/load/${made.uuid}`, {method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({password: made.password})}).catch(() => null);
@@ -309,16 +318,17 @@ async function syncHome(env: Env, vault: Vault, hub: string, owner: string, want
   stored.apiKeys = {...others, ...apiKeys};
   const write = await fetch(`${env.AIOM_ORIGIN}/api/config/update/${made.uuid}`, {method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({config: stored, password: made.password, baseVersion: stored.configVersion})}).catch(() => null);
   if (write?.status !== 200) return {message: LATER};
-  made = {...made, v: now() <= made.v ? made.v + 1 : now(), sent};
-  await (await putSecret(env, hub, owner, 'catalogs', made)).run();
-  return {address: address(env, made)};
+  made = {...made, v: now() <= made.v ? made.v + 1 : now(), sent, ...keep};
+  await (await putSecret(env, hub, owner, kind, made)).run();
+  return {address: address(env, made), made};
 }
 /* Removes one owner's Home setup from AIOMetadata. What the hub remembers of it goes only once AIOMetadata confirms. */
-async function dropHome(env: Env, hub: string, owner: string): Promise<boolean> {
-  const made = await getSecret<Catalogs>(env, hub, owner, 'catalogs');
+async function dropHome(env: Env, hub: string, owner: string, kind = 'catalogs'): Promise<boolean> {
+  const made = await getSecret<Catalogs>(env, hub, owner, kind);
   const status = made ? (await fetch(`${env.AIOM_ORIGIN}/api/config/delete-user/${made.uuid}`, {method: 'DELETE', headers: JSON_HEADERS, body: JSON.stringify({password: made.password})}).catch(() => null))?.status : 200;
   if (status !== 200 && status !== 404) return false;
-  await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind IN ('catalogs', 'catalogs-pending')").bind(hub, owner), env.DB.prepare("DELETE FROM ops WHERE hub = ? AND kind = 'create-catalogs' AND target = ?").bind(hub, owner)]);
+  // A person's own player setup also takes the sign-in the hub kept for it.
+  await env.DB.batch([env.DB.prepare('DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind IN (?, ?, ?)').bind(hub, owner, kind, `${kind}-pending`, kind === PLAYER ? VIA : kind), env.DB.prepare('DELETE FROM ops WHERE hub = ? AND kind = ? AND target = ?').bind(hub, `create-${kind}`, owner)]);
   return true;
 }
 
@@ -336,8 +346,9 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
     const mine = JSON.parse(found.mine) as {rows: Row[] | null; trakt?: boolean}, shared = (JSON.parse(found.theirs) as {rows: Row[] | null}).rows ?? data.rows;
     rows = mine.rows ?? [...(mine.trakt ? traktRows() : []), ...shared]; owners = [person, groupOwner(found.grp), HUB_OWNER];
   }
-  let made: Catalogs | null = null;
-  for (const owner of owners) if ((made = await getSecret<Catalogs>(env, hub.id, owner, 'catalogs'))) break;
+  // With AIOMetadata in front, a person's rows are on their own setup there.
+  let made: Catalogs | null = person && env.FRONT === 'aiometadata' ? await getSecret<Catalogs>(env, hub.id, person, PLAYER) : null;
+  if (!made) for (const owner of owners) if ((made = await getSecret<Catalogs>(env, hub.id, owner, 'catalogs'))) break;
   if (!made) return {};
   const key = `${hub.id}/${made.uuid}/${made.v}`, known = shown.get(key);
   if (known && Date.now() - known.at < 600_000) return known.rows;
@@ -376,18 +387,20 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
   // Home. The hub has one setup on AIOMetadata; a group or a person gets their own only while theirs differs from the one above.
   const known = await held<string>(env, vault, hub.id, HUB_OWNER, 'key:tmdb'), tmdb = env.AIOM_ORIGIN ? known : null, budget = {left: 30};
   let note = !env.AIOM_ORIGIN ? 'Home rows are not set up on this site.' : !tmdb ? 'Add a TMDB key under Hub, Sources, so Home has rows in the player apps.' : '', more = false, base: string | null = null;
-  if (tmdb) {
-    const keys: Keys = {tmdb, mdblist: await held<string>(env, vault, hub.id, HUB_OWNER, 'key:mdblist')}, needed = new Set([HUB_OWNER]);
+  const keys: Keys | null = tmdb ? {tmdb, mdblist: await held<string>(env, vault, hub.id, HUB_OWNER, 'key:mdblist')} : null, front = env.FRONT === 'aiometadata';
+  if (keys) {
+    const needed = new Set([HUB_OWNER]);
     const make = async (owner: string, wanted: Wanted) => {const got = await syncHome(env, vault, hub.id, owner, wanted, keys, budget); if ('address' in got) return got.address; note ||= got.message; more ||= !!got.more; return null;};
     const wanted = wantedOf(top, keys), sig = JSON.stringify(wanted);
     if ((base = await make(HUB_OWNER, wanted))) {
       for (const group of groups) {
         const theirs = wantedOf(group.want, keys); group.sig = JSON.stringify(theirs);
-        if (group.sig !== sig && people.some(person => person.group === group)) {needed.add(groupOwner(group.id)); group.home = await make(groupOwner(group.id), theirs);}
+        // With each person on their own player setup, AIOStreams' Home is not what apps show, so only the hub's is kept.
+        if (!front && group.sig !== sig && people.some(person => person.group === group)) {needed.add(groupOwner(group.id)); group.home = await make(groupOwner(group.id), theirs);}
       }
       for (const person of people) {
         const theirs = wantedOf(person.want, keys);
-        if (JSON.stringify(theirs) !== (person.group?.sig ?? sig)) {needed.add(person.id); person.home = await make(person.id, theirs);}
+        if (!front && JSON.stringify(theirs) !== (person.group?.sig ?? sig)) {needed.add(person.id); person.home = await make(person.id, theirs);}
       }
       // A setup nobody needs any more (its owner follows the level above again, or is gone) is removed.
       for (const name of vault.keys()) {
@@ -397,7 +410,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     }
   }
   const variants: Variant[] = [], hubReach = limited(base, top.settings), extras = extrasOf(data);
-  for (const group of groups) {
+  for (const group of front ? [] : groups) {
     // A group with nobody in it has nobody to apply its changes to.
     const reach = limited(group.home ?? base, group.want.settings);
     group.reach = reach;
@@ -405,6 +418,13 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     if (lines.length) variants.push({id: `${OURS}g-${group.id}`, name: `Group: ${group.name}`, enabled: true, script: lines.join('\n')});
   }
   for (const person of people) {
+    // With AIOMetadata in front, a person's streams come from one address, and an address names one variant: so each person has
+    // at most one, everything they change compared with the hub (their group's changes and their own), and none if nothing differs.
+    if (front) {
+      const lines = differences(top.settings, person.want.settings, accounts, null, extras, !!known);
+      if (lines.length) variants.push({id: `${OURS}c-${person.id}`, name: `Streams: ${person.name}`, enabled: true, script: lines.join('\n')});
+      continue;
+    }
     const over = person.group?.reach ?? hubReach, reach = limited(person.home ?? person.group?.home ?? base, person.want.settings);
     const lines = differences(person.above.settings, person.want.settings, accounts, reach !== over ? reach : null, extras, !!known);
     if (lines.length) variants.push({id: `${OURS}p-${person.id}`, name: `Person: ${person.name}`, enabled: true, script: lines.join('\n')});
@@ -420,7 +440,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     players = null;
   }
   if (!players) {
-    const first = fresh(); patch(first, data, key, people, hubReach, variants, known);
+    const first = fresh(); patch(first, data, key, people, front ? null : hubReach, variants, known, front);
     const made = await create(env, hub.id, first, service);
     if ('state' in made) return made;
     players = made;
@@ -428,7 +448,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     const read = await fetch(`${env.UP_ORIGIN}/api/v1/user?raw=true`, {headers: basic(players)}).catch(() => null);
     const stored = read?.status === 200 ? ((await read.json().catch(() => null)) as {data?: {userData?: Stored}} | null)?.data?.userData : null;
     if (!stored) return {state: 'error', message: 'AIOStreams did not answer. Your changes are saved here and will be sent on the next try.'};
-    const before = JSON.stringify(stored); patch(stored, data, key, people, hubReach, variants, known);
+    const before = JSON.stringify(stored); patch(stored, data, key, people, front ? null : hubReach, variants, known, front);
     if (JSON.stringify(stored) !== before) {
       const write = await fetch(`${env.UP_ORIGIN}/api/v1/user`, {method: 'PUT', headers: {...basic(players), 'content-type': 'application/json'}, body: JSON.stringify({config: stored})}).catch(() => null);
       if (write?.status !== 200) {
@@ -438,13 +458,53 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     }
   }
   // Each person signs in upstream under this setup with their own name. The kept sign-in answer, if any, is left in place.
+  // With AIOMetadata in front they sign in to their own AIOMetadata setup instead, so no AIOStreams sign-in is kept.
   const writes = [];
-  for (const person of people) {
+  if (front) writes.push(env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND kind = 'upstream'").bind(hub.id));
+  for (const person of front ? [] : people) {
     const user = `${players.uuid}/${person.name}`, had = await held<{user: string; pass: string; auth?: string}>(env, vault, hub.id, person.id, 'upstream');
     if (!had || had.user !== user || had.pass !== players.password) writes.push(await putSecret(env, hub.id, person.id, 'upstream', {...(had?.user.split('/')[0] === players.uuid ? had : {}), user, pass: players.password}));
   }
   if (writes.length) await env.DB.batch(writes);
+  if (front && keys) {
+    const got = await syncFronts(env, vault, hub.id, people, players, variants, keys, budget);
+    note ||= got.note; more ||= got.more;
+  }
   return note ? {state: 'partial', message: note, ...(more ? {more: true} : {})} : {state: 'ok'};
+}
+
+/* Each person's own Jellyfin server on AIOMetadata. Worked out again on every sync from the hub, their group and themselves, and
+   saved only when the result changed, so a change at the hub reaches everyone who has not changed that setting for themselves.
+   Their streams come from the hub's one AIOStreams setup, through their own variant. */
+async function syncFronts(env: Env, vault: Vault, hub: string, people: {id: string; name: string; want: Want}[], players: Home, variants: Variant[], keys: Keys, budget: {left: number}): Promise<{note: string; more: boolean}> {
+  let note = '', more = false, streams = players.enc ? players : null;
+  if (!streams) {
+    // The stream address carries AIOStreams' own form of the setup's password, which only AIOStreams can make. Asked for once.
+    const read = await fetch(`${env.UP_ORIGIN}/api/v1/user`, {headers: basic(players)}).catch(() => null);
+    const enc = read?.status === 200 ? ((await read.json().catch(() => null)) as {data?: {encryptedPassword?: string}} | null)?.data?.encryptedPassword : null;
+    if (!enc) return {note: 'AIOStreams did not answer, so the players were not brought in step. It will be tried again on your next change.', more: false};
+    streams = {...players, enc}; await (await putSecret(env, hub, HUB_OWNER, 'players', streams)).run();
+  }
+  const base = `${env.UP_ORIGIN}/stremio/${players.uuid}/${encodeURIComponent(streams.enc!)}`, writes = [];
+  for (const person of people) {
+    const kept = await held<Catalogs>(env, vault, hub, person.id, PLAYER), client = kept?.client ?? newToken('a');
+    const variant = variants.some(item => item.id === `${OURS}c-${person.id}`) ? `/v/${OURS}c-${person.id}` : '';
+    const wanted: Wanted = {...wantedOf(person.want, keys), jellyfinUserName: person.name, jellyfinAppPassword: client, jellyfinStreamUrl: `${base}${variant}/manifest.json`, jellyfinResumeSource: 'auto', jellyfinUsers: [],
+      // What production carries on AIOStreams' Home address and in its personas, here set on the person's own server.
+      ageRating: RATING[person.want.settings.limit] ?? 'None', jellyfinSkipSource: person.want.settings.skip ? 'auto' : 'off'};
+    const got = await syncHome(env, vault, hub, person.id, wanted, keys, budget, PLAYER, {client});
+    if (!('made' in got)) {note ||= got.message; more ||= !!got.more; continue;}
+    const at = `${got.made.at ?? env.AIOM_ORIGIN}/jellyfin/${got.made.uuid}`, had = await held<{user: string; pass: string; base: string}>(env, vault, hub, person.id, VIA);
+    if (!had || had.user !== person.name || had.pass !== client || had.base !== at) writes.push(await putSecret(env, hub, person.id, VIA, {user: person.name, pass: client, base: at}));
+  }
+  // A setup whose person is gone is removed.
+  const here = new Set(people.map(person => person.id));
+  for (const name of vault.keys()) {
+    const owner = name.endsWith(`/${PLAYER}`) ? name.slice(0, -PLAYER.length - 1) : ''; if (!owner || here.has(owner) || (budget.left -= 1) < 0) continue;
+    await dropHome({...env, AIOM_ORIGIN: (await held<Catalogs>(env, vault, hub, owner, PLAYER))?.at ?? env.AIOM_ORIGIN}, hub, owner, PLAYER);
+  }
+  if (writes.length) await env.DB.batch(writes);
+  return {note, more: more || budget.left < 0};
 }
 
 /* Removes one setup from AIOStreams. AIOStreams answers 400 "invalid details" for a setup that is already gone (seen on staging), so a
@@ -458,10 +518,10 @@ async function removeSetup(env: Env, players: Home): Promise<boolean> {
 export async function removePlayers(site: Env, hub: {id: string; data: string}): Promise<boolean> {
   const env = hosted(site, JSON.parse(hub.data) as HubData), players = await getSecret<Home>(env, hub.id, HUB_OWNER, 'players');
   if (players && !await removeSetup({...env, UP_ORIGIN: players.at ?? env.UP_ORIGIN}, players)) return false;
-  const made = env.AIOM_ORIGIN ? (await env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind = 'catalogs'").bind(hub.id).all<{owner: string}>()).results : [];
+  const made = env.AIOM_ORIGIN ? (await env.DB.prepare("SELECT owner, kind FROM secrets WHERE hub = ? AND kind IN ('catalogs', ?)").bind(hub.id, PLAYER).all<{owner: string; kind: string}>()).results : [];
   for (const row of made) {
-    const at = (await getSecret<Catalogs>(env, hub.id, row.owner, 'catalogs'))?.at;
-    if (!await dropHome({...env, AIOM_ORIGIN: at ?? env.AIOM_ORIGIN}, hub.id, row.owner)) return false;
+    const at = (await getSecret<Catalogs>(env, hub.id, row.owner, row.kind))?.at;
+    if (!await dropHome({...env, AIOM_ORIGIN: at ?? env.AIOM_ORIGIN}, hub.id, row.owner, row.kind)) return false;
   }
   return true;
 }
