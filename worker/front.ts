@@ -37,6 +37,18 @@ interface Answer {AccessToken: string; User: {Id: string; Name?: string}; Sessio
 interface Seat {person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string; base: string; kind: string}
 // Kept for a few seconds per running copy of the Worker, so a page of posters is one lookup, not fifty.
 const hubs = new Map<string, {id: string; up: string; at: number; pictures: string}>(), seats = new Map<string, Seat>();
+/* A person's top-level libraries on their own server, asked for once and kept ten minutes per running copy. */
+const libraries = new Map<string, {ids: Set<string>; at: number}>();
+async function librariesOf(seat: Seat): Promise<Set<string>> {
+  const key = `${seat.base}/${seat.upId}`, known = libraries.get(key);
+  if (known && Date.now() - known.at < 600_000) return known.ids;
+  const answer = await fetch(`${seat.base}/UserViews?userId=${encodeURIComponent(seat.upId)}`, {headers: {accept: 'application/json', authorization: `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`}})
+    .then(found => found.ok ? found.json() : null).catch(() => null) as {Items?: {Id?: string}[]} | null;
+  const ids = new Set((answer?.Items ?? []).map(item => String(item.Id ?? '')).filter(Boolean));
+  if (libraries.size > 2000) libraries.clear();
+  if (ids.size) libraries.set(key, {ids, at: Date.now()});
+  return ids;
+}
 
 /* With FRONT=aiometadata the hub keeps one AIOMetadata setup per person (see native.ts), and a person with one ('upstream-aiom')
    is served by it; anyone without one yet is served by AIOStreams as before. Its base is that setup's Jellyfin address. In
@@ -210,10 +222,20 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
   // Ticked as watched in an app without playing it: kept like a finished play, so it can be copied to MDBList later too.
   const ticked = seat && request.method === 'POST' ? /^\/(?:users\/[^/]+\/playeditems|userplayeditems)\/([\w-]{1,80})$/i.exec(path) : null;
   if (seat && ticked) ctx.waitUntil(note(env, hub, seat, 'mark', JSON.stringify({ItemId: ticked[1]})).catch(() => {}));
+  // AIOMetadata's libraries are its catalog rows, so "watched, in this library" only covers what the row shows today. In a real
+  // Jellyfin server a library holds everything, which is what history readers (Trakt's own Jellyfin sync) rely on: they ask
+  // library by library. So a watched list asked for under one of the person's own top-level libraries is answered from all of
+  // what they have watched. Anything else under a parent (a show, a season, a folder) is passed on as asked.
+  let search = url.search;
+  if (seat?.kind === VIA && reading && /^\/(users\/[^/]+\/)?items$/.test(lower)) {
+    const params = new URLSearchParams(url.search), named = (name: string) => [...params.keys()].filter(key => key.toLowerCase() === name);
+    const parent = named('parentid').map(key => params.get(key))[0], played = named('isplayed').map(key => params.get(key)?.toLowerCase())[0];
+    if (parent && played === 'true' && (await librariesOf(seat)).has(parent)) {for (const key of named('parentid')) params.delete(key); search = `?${params}`;}
+  }
   const send = (live: Seat | null) => {
     const headers = new Headers(), inbound: [string, string][] = live ? [[token, live.up], [live.jf, live.upId]] : [];
     for (const name of [...AUTH_HEADERS, 'content-type', 'accept', 'user-agent', 'range', 'accept-language']) {const value = request.headers.get(name); if (value) headers.set(name, swap(value, AUTH_HEADERS.includes(name) ? inbound : []));}
-    const target = (live?.base ?? env.UP_ORIGIN + MOUNT) + swap(path, inbound) + swap(url.search, inbound);
+    const target = (live?.base ?? env.UP_ORIGIN + MOUNT) + swap(path, inbound) + swap(search, inbound);
     if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') return fetch(target, {headers: {upgrade: 'websocket'}});
     return fetch(target, {method: request.method, headers, body: body === undefined ? undefined : swap(body, inbound), redirect: 'manual'});
   };

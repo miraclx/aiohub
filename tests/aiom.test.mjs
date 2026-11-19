@@ -16,7 +16,7 @@ function client() {
 const fake = {configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: []};
 const uuidOf = n => `${String(n).padStart(8, '0')}-0000-4000-8000-0000000000aa`, ITEM = 'a1110100-0000-eaf7-78ff-ffffff010000';
 // What Ada's own server holds: a film she watched, an episode she is partway through, one MDBList already has, and their show.
-const EP = 'a1110100-0000-eaf7-78ff-ffffff020000', EP_HELD = 'a1110100-0000-eaf7-78ff-ffffff030000', SHOW = 'a1210200-0000-eaf7-78ff-ffffff040000';
+const VIEW = 'b220f707-f7e5-0b8e-9314-1314e52c6304', EP = 'a1110100-0000-eaf7-78ff-ffffff020000', EP_HELD = 'a1110100-0000-eaf7-78ff-ffffff030000', SHOW = 'a1210200-0000-eaf7-78ff-ffffff040000';
 const HELD = {
   [ITEM]: {Id: ITEM, Type: 'Movie', Name: 'Meta Movie', ProviderIds: {Tmdb: '603', Imdb: 'tt0133093'}, UserData: {Played: true, LastPlayedDate: '2026-11-01T20:00:00.000Z'}},
   [EP]: {Id: EP, Type: 'Episode', Name: 'Two', SeriesId: SHOW, SeriesName: 'Meta Show', ParentIndexNumber: 1, IndexNumber: 2, ProviderIds: {}, UserData: {PlayedPercentage: 40}},
@@ -64,6 +64,7 @@ http.createServer(async (request, answer) => {
     if (rest === '/System/Info') return send(200, {Id: uuid, ServerName: 'AIOMetadata', LocalAddress: `${UP}/jellyfin/${uuid}`});
     if (rest === '/Users') return send(200, [{Id: uuid, Name: home.config.jellyfinUserName}]);
     if (rest.startsWith('/Sessions/Playing')) return send(204, {});
+    if (rest.startsWith('/UserViews')) return send(200, {Items: [{Id: VIEW, Name: 'Trending Movies', CollectionType: 'movies'}]});
     if (rest.startsWith(`/Users/${uuid}/Items?Ids=`)) return send(200, {Items: decodeURIComponent(rest.split('Ids=')[1].split('&')[0]).split(',').map(id => HELD[id]).filter(Boolean)});
     if (rest.startsWith(`/Users/${uuid}/Items/`)) return send(200, {Id: ITEM, Name: 'Meta Movie', ServerId: uuid, UserData: {Key: uuid}, Poster: `${UP}/jellyfin/${uuid}/Items/${ITEM}/Images/Primary`});
     return send(200, {Seen: rest});
@@ -171,6 +172,15 @@ test('a person copies what they watched here to their MDBList, after seeing the 
   const again = await ada('GET', '/api/people/ada/carry');
   assert.equal(again.body.watched.length + again.body.partway.length, 0);
   await ada('POST', '/api/people/ada/carry', {}); assert.equal(fake.watched.length, 1); assert.equal(fake.pauses.length, 1);
+});
+test('watched titles asked for library by library come from everything watched, as in a real Jellyfin library', async () => {
+  // Trakt's own Jellyfin sync asks this way. A library here is a catalog row, which only holds what it shows today.
+  const asked = async query => JSON.parse((await raw(`/Items?${query}`, token)).text).Seen;
+  const byLibrary = await asked(`userId=${jf}&parentId=${VIEW}&isPlayed=true&recursive=true&includeItemTypes=Movie`);
+  assert.ok(!byLibrary.toLowerCase().includes('parentid') && byLibrary.includes('isPlayed=true'), byLibrary);
+  // Under a show, or when not asking for what was watched, the question goes on exactly as asked.
+  assert.ok((await asked(`userId=${jf}&parentId=${SHOW}&isPlayed=true&recursive=true`)).includes(`parentId=${SHOW}`));
+  assert.ok((await asked(`userId=${jf}&parentId=${VIEW}&recursive=true`)).includes(`parentId=${VIEW}`));
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);
