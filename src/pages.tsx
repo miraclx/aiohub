@@ -199,7 +199,7 @@ function History({page, person}: {page: PageProps; person: Person}) {
   const {toast, live} = page, at = `/api/people/${person.id}/scrobble`, link = person.history;
   const [shown, setShown] = useState<{code: string; url: string; interval: number} | null>(null), [busy, setBusy] = useState(false);
   useEffect(() => {
-    if (!shown || !live) return;
+    if (!shown || !live || !shown.interval) return;
     let gone = false;
     const timer = setInterval(() => void live.call<{state: string; username?: string}>('POST', `${at}/check`, {}).then(got => {
       if (gone || got.state === 'waiting') return;
@@ -210,7 +210,40 @@ function History({page, person}: {page: PageProps; person: Person}) {
     return () => {gone = true; clearInterval(timer);};
   }, [shown]);
   if (!live) return null;
-  const connect = () => {setBusy(true); void live.call<{code: string; url: string; interval: number}>('POST', at, {}).then(setShown, fail(toast)).finally(() => setBusy(false));};
+  // The page talks to Trakt itself (the hub's own calls to Trakt can be turned away for a while by Trakt's rate limits); if
+  // Trakt cannot be reached from here, the hub does it as before.
+  const trakt = (path: string, body: unknown, token = '') => fetch(`https://api.trakt.tv${path}`, {method: body === undefined ? 'GET' : 'POST', headers: {'content-type': 'application/json', 'trakt-api-version': '2', 'trakt-api-key': page.hub.traktClient ?? '', ...(token ? {authorization: `Bearer ${token}`} : {})}, body: body === undefined ? undefined : JSON.stringify(body)});
+  const [direct, setDirect] = useState<{device: string; interval: number; until: number} | null>(null);
+  useEffect(() => {
+    if (!direct || !live) return;
+    let gone = false, wait = direct.interval;
+    const ask = async () => {
+      if (gone) return;
+      if (Date.now() > direct.until) {setShown(null); setDirect(null); toast('That code ran out. Connect again for a new one.'); return;}
+      const answer = await trakt('/oauth/device/token', {code: direct.device, client_id: page.hub.traktClient}).catch(() => null);
+      if (answer?.status === 200) {
+        const got = await answer.json() as {access_token: string; refresh_token: string; expires_in?: number; created_at?: number};
+        const me = await trakt('/users/settings', undefined, got.access_token).then(found => found.ok ? found.json() : null).catch(() => null) as {user?: {username?: string}} | null;
+        await live.call('POST', `${at}/link`, {access: got.access_token, refresh: got.refresh_token, lasts: got.expires_in, created: got.created_at, username: me?.user?.username ?? ''}).then(() => live.reload()).then(() => toast(me?.user?.username ? `Trakt history connected as ${me.user.username}` : 'Trakt history connected'), fail(toast));
+        setShown(null); setDirect(null); return;
+      }
+      if (answer && answer.status !== 400 && answer.status !== 429) {setShown(null); setDirect(null); toast('That code ran out. Connect again for a new one.'); return;}
+      if (answer?.status === 429) wait += 5;
+      setTimeout(() => void ask(), wait * 1000);
+    };
+    setTimeout(() => void ask(), wait * 1000);
+    return () => {gone = true;};
+  }, [direct]);
+  const connect = async () => {
+    setBusy(true);
+    const answer = page.hub.traktClient ? await trakt('/oauth/device/code', {client_id: page.hub.traktClient}).catch(() => null) : null;
+    const got = answer?.ok ? await answer.json().catch(() => null) as {device_code?: string; user_code?: string; verification_url?: string; expires_in?: number; interval?: number} | null : null;
+    if (got?.device_code && got.user_code) {
+      setDirect({device: got.device_code, interval: Math.max(1, Number(got.interval ?? 5)), until: Date.now() + Number(got.expires_in ?? 600) * 1000});
+      setShown({code: got.user_code, url: got.verification_url ?? 'https://trakt.tv/activate', interval: 0}); setBusy(false); return;
+    }
+    void live.call<{code: string; url: string; interval: number}>('POST', at, {}).then(setShown, fail(toast)).finally(() => setBusy(false));
+  };
   const on = !!link && !link.again;
   return <li className={shown ? 'stacked' : ''}><div><h3>Trakt history</h3>
     <p>{on ? `Connected${link!.username ? ` as ${link!.username}` : ''}. What’s played here goes to Trakt as it happens.` : link?.again ? 'Trakt asked to be connected again.' : 'Sends what’s played here to Trakt as it happens: what’s on now, how far in, and what’s finished. Recommendations stay fresh.'}</p>
@@ -219,8 +252,8 @@ function History({page, person}: {page: PageProps; person: Person}) {
       <div className="code-show"><code>{shown.code}</code><button type="button" className="ghost small" onClick={() => {void navigator.clipboard?.writeText(shown.code).catch(() => {}); toast('Copied');}}>Copy</button></div>
     </div>}</div>
     {on ? <button type="button" className="ghost small" disabled={busy} onClick={() => {setBusy(true); void live.call('DELETE', at).then(() => live.reload()).then(() => toast('Trakt history disconnected'), fail(toast)).finally(() => setBusy(false));}}>Disconnect</button>
-      : shown ? <button type="button" className="ghost small" onClick={() => setShown(null)}>Not now</button>
-      : <button type="button" className="primary small" disabled={busy} onClick={connect}>Connect</button>}
+      : shown ? <button type="button" className="ghost small" onClick={() => {setShown(null); setDirect(null);}}>Not now</button>
+      : <button type="button" className="primary small" disabled={busy} onClick={() => void connect()}>Connect</button>}
   </li>;
 }
 /* Copying what someone watched here to their MDBList: they see exactly what would go, then it is done in a few short steps. */
