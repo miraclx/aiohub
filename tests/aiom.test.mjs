@@ -129,7 +129,6 @@ test('each person gets their own AIOMetadata setup, pointed at their own streams
   assert.ok(combined.script.includes('set preferredEncodes = ["HEVC","AV1"]')); assert.ok(!combined.script.includes('manifestUrl'));
   // AIOStreams only finds streams here: one variant per person who differs and nothing else of ours, no users, no Home.
   assert.deepEqual(players().variants.map(item => item.id), ['hub-c-ben']);
-  assert.deepEqual(players().jellyfin?.personas ?? [], []);
   assert.ok(!(players().presets ?? []).some(item => item.instanceId === 'h01' && item.enabled));
   assert.ok(!(players().catalogModifications ?? []).length);
   // What production carries on AIOStreams (the content limit, skipping intros) is set on each person's own server.
@@ -141,6 +140,8 @@ test('each person gets their own AIOMetadata setup, pointed at their own streams
   // Nothing changed, so a second sync writes nothing.
   const versions = [...fake.homes.values()].map(home => home.config.configVersion);
   assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual([...fake.homes.values()].map(home => home.config.configVersion), versions);
+  // People move over one by one: once their own setup's sign-in is kept, AIOStreams keeps no user for them.
+  assert.deepEqual(players().jellyfin?.personas ?? [], []);
 });
 test('a change at the hub reaches everyone who has not changed it for themselves', async () => {
   const state = (await owner('GET', '/api/state')).body.hub;
@@ -171,6 +172,12 @@ test('an app signs in through the hub and never sees the setup, its address or i
   assert.deepEqual(JSON.parse((await raw('/Users', token)).text).map(user => user.Id), [jf]);
   for (const path of ['/AIOStreams/Users', '/AIOStreams/Activity', '/AIOStreams/History/Export', '/AIOStreams/Token']) assert.equal((await raw(path, token)).status, 403, path);
   assert.equal((await raw('/Sessions/Playing', token, {method: 'POST', body: JSON.stringify({ItemId: ITEM, PositionTicks: 0})})).status, 204);
+});
+test('an app signed in before its person’s sign-in changed carries on without signing in again', async () => {
+  const rename = async name => {const ada = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada'); assert.equal((await owner('PUT', '/api/people/ada', {name, groupId: ada.groupId, rows: ada.rows, settings: ada.settings, can: ada.can, trakt: ada.trakt, lists: ada.lists, v: ada.v})).status, 200); await syncAll();};
+  // A new name means a new sign-in on her own server, kept without a session: the app's next request makes one.
+  await rename('Ada Lovelace'); assert.equal((await raw('/System/Info', token)).status, 200);
+  await rename('Ada'); assert.equal((await raw('/System/Info', token)).status, 200);
 });
 test('a person copies what they watched here to their MDBList, after seeing the plan', async () => {
   // A film played, an episode stopped partway, another ticked as watched: all through the hub, which keeps a note of each.
