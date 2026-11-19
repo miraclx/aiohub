@@ -123,6 +123,17 @@ test('a debrid key goes in and never comes back', async () => {
   const state = (await owner('GET', '/api/state')).body;
   assert.deepEqual(state.hub.services, ['TorBox']); assert.ok(!JSON.stringify(state).includes('tb-secret'));
 });
+test('the hub has a name apps and Trakt show, the same for everyone', async () => {
+  const at = `/h/${hub.code}`, ask = async () => (await (await fetch(BASE + at + '/System/Info/Public')).json()).ServerName;
+  assert.equal(await ask(), 'AIOHub');
+  const state = (await owner('GET', '/api/state')).body.hub;
+  assert.equal((await owner('PUT', '/api/hub', {...state, serverName: '  Our <b>place</b>  '})).status, 200);
+  assert.equal((await owner('GET', '/api/state')).body.hub.serverName, 'Our bplace/b');
+  assert.equal(await ask(), 'Our bplace/b');
+  const again = (await owner('GET', '/api/state')).body.hub;
+  assert.equal((await owner('PUT', '/api/hub', {...again, serverName: ''})).status, 200);
+  assert.equal((await owner('GET', '/api/state')).body.hub.serverName, '');
+});
 test('the TMDB key is checked, stored, and never comes back', async () => {
   assert.equal((await owner('GET', '/api/state')).body.hub.tmdb, false);
   assert.equal((await owner('PUT', '/api/keys/tmdb', {key: 'a-wrong-key'})).status, 400);

@@ -36,7 +36,7 @@ interface Upstream {user: string; pass: string; auth?: string; base?: string}
 interface Answer {AccessToken: string; User: {Id: string; Name?: string}; SessionInfo?: Record<string, unknown>}
 interface Seat {person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string; base: string; kind: string}
 // Kept for a few seconds per running copy of the Worker, so a page of posters is one lookup, not fifty.
-const hubs = new Map<string, {id: string; up: string; at: number; pictures: string}>(), seats = new Map<string, Seat>();
+const hubs = new Map<string, {id: string; up: string; at: number; pictures: string; name: string}>(), seats = new Map<string, Seat>();
 /* A person's top-level libraries on their own server, asked for once and kept ten minutes per running copy. */
 const libraries = new Map<string, {ids: Set<string>; at: number}>();
 async function librariesOf(seat: Seat): Promise<Set<string>> {
@@ -72,14 +72,18 @@ function outward(text: string, upId: string, jf: string, server: string, info: b
   return upId.includes('-') ? text.split(upId.replace(/-/g, '')).join(jf) : text;
 }
 
+// What apps and Trakt call the hub. They read it before anyone signs in, so it is the hub's, set under Hub, General.
+const DEFAULT_NAME = 'AIOHub';
+/* A saved hub is looked up again on its next request here; other running copies catch up within the minute. */
+export const forgetHub = (code: string) => hubs.delete(code);
 async function hubOf(env: Env, code: string) {
   const known = hubs.get(code); if (known && Date.now() - known.at < 60_000) return known;
   const row = await env.DB.prepare('SELECT id, data FROM hubs WHERE code = ?').bind(code).first<{id: string; data: string}>();
   if (!row) return null;
   // Each hub can use its own AIOStreams server; everything below talks to that one.
-  const data = JSON.parse(row.data) as {hostUrl?: string; metaUrl?: string}, home = env.FRONT === 'aiometadata' ? await getSecret<{uuid: string; at?: string}>(env, row.id, '#hub', 'catalogs') : null;
+  const data = JSON.parse(row.data) as {hostUrl?: string; metaUrl?: string; serverName?: string}, home = env.FRONT === 'aiometadata' ? await getSecret<{uuid: string; at?: string}>(env, row.id, '#hub', 'catalogs') : null;
   const pictures = home ? `${home.at ?? data.metaUrl ?? env.AIOM_ORIGIN}/jellyfin/${home.uuid}` : '';
-  const found = {id: row.id, up: data.hostUrl || env.UP_ORIGIN, at: Date.now(), pictures};
+  const found = {id: row.id, up: data.hostUrl || env.UP_ORIGIN, at: Date.now(), pictures, name: data.serverName || DEFAULT_NAME};
   hubs.set(code, found); return found;
 }
 /* Signs in to AIOStreams as this person and keeps the answer, so it happens once and not on every app sign-in. */
@@ -276,7 +280,7 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
   // And it must not say sign-in is by a setup's id: here people sign in with their own name.
   if (lower.startsWith('/system/info') && text.includes('configSignIn')) {try {const info = JSON.parse(text) as {aiostreams?: {features?: Record<string, unknown>}}; if (info.aiostreams?.features) delete info.aiostreams.features.configSignIn; text = JSON.stringify(info);} catch {/* leave as is */}}
   // The app names the server after what it says it is: here that is the hub, whichever setup answered.
-  if (env.FRONT === 'aiometadata' && lower.startsWith('/system/info') && type.includes('json')) {try {const info = JSON.parse(text) as {ServerName?: string}; if (info.ServerName) {info.ServerName = 'AIOHub'; text = JSON.stringify(info);}} catch {/* leave as is */}}
+  if (lower.startsWith('/system/info') && type.includes('json')) {try {const info = JSON.parse(text) as {ServerName?: string}; if ('ServerName' in info) {info.ServerName = found.name; text = JSON.stringify(info);}} catch {/* leave as is */}}
   const hosts = [env.UP_ORIGIN, ...(live?.kind === VIA ? [new URL(live.base).origin] : [])];
   if (lower.startsWith('/system/info') && hosts.some(host => text.includes(host))) {
     const strip = (value: unknown): unknown => typeof value === 'string' ? (hosts.some(host => value.includes(host)) ? undefined : value) : Array.isArray(value) ? value.map(strip) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([name, item]) => [name, strip(item)])) : value;
