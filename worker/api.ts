@@ -6,7 +6,7 @@ import type {Addon, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './native';
 import {forgetHub, forgetSeats} from './front';
-import {LINK, begin, check, disconnect, links} from './trakt';
+import {LINK, begin, check, disconnect, links, keepLink} from './trakt';
 import {rows} from './rows';
 import type {Env} from './util';
 import {blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp} from './util';
@@ -132,7 +132,7 @@ async function state(env: Env, who: Who) {
   return {
     role: mine ? 'person' : 'owner', personId: mine ?? null,
     hub: {
-      name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID,
+      name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID, traktClient: env.TRAKT_CLIENT_ID ?? '',
       groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id))),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
@@ -284,6 +284,14 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     // Trakt history, connected by the person or by the manager with them: Trakt shows a code to type on its own page, and the page
     // asks here until it has been. The device code Trakt hands out is kept here, never sent to the page.
     if (request.method === 'POST' && !rest) return await begin(env, hub, id) ?? bad(502, 'Trakt did not answer. Try again in a moment.');
+    // Connecting from the page itself: Trakt rate limits the shared addresses Workers call it from, so the page asks Trakt for the
+    // code and waits for it, then hands the login over to be kept and renewed here. It is the person's own login either way.
+    if (request.method === 'POST' && rest === 'link') {
+      const access = text(body.access, 200, 'Login').trim(), refresh = text(body.refresh, 200, 'Login').trim();
+      if (!access || !refresh) bad(400, 'Trakt did not finish connecting. Try again.');
+      await keepLink(env, hub, id, {access, refresh, expires: Math.floor(Number(body.created) || now()) + Math.floor(Number(body.lasts) || 7 * 86400), username: text(body.username ?? '', 80, 'Name').trim()});
+      forgetSeats(id); return {state: 'connected'};
+    }
     // Once connected, the hub also serves their Trakt rows on Home (rows.ts): the rows are added to a Home of their own, if they have one.
     if (request.method === 'POST' && rest === 'check') {
       const got = await check(env, hub, id);

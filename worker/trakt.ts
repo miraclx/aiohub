@@ -21,12 +21,24 @@ export const taken = (status: number | null) => status !== null && status !== 0 
 
 /* ---------- connecting ---------- */
 export async function begin(env: Env, hub: string, person: string) {
-  const answer = await post(env, '/oauth/device/code', {client_id: env.TRAKT_CLIENT_ID});
+  // Trakt sometimes turns the first asks away (too many calls from the shared addresses Workers send from, or a moment's fault):
+  // asked again a couple of times, waiting as long as it says, before telling the person.
+  let answer: Response | null = null;
+  for (let tries = 0; tries < 3; tries++) {
+    answer = await post(env, '/oauth/device/code', {client_id: env.TRAKT_CLIENT_ID});
+    if (answer && answer.status !== 429 && answer.status < 500) break;
+    if (tries < 2) await new Promise(resolve => setTimeout(resolve, Math.min(3000, 1000 * Math.max(1, Number(answer?.headers.get('retry-after') ?? 1)))));
+  }
+  if (!answer?.ok) console.error('trakt device code', answer?.status ?? 'no answer', (await answer?.text().catch(() => '') ?? '').slice(0, 160));
   const got = answer?.ok ? await answer.json().catch(() => null) as {device_code?: string; user_code?: string; verification_url?: string; expires_in?: number; interval?: number} | null : null;
   if (!got?.device_code || !got.user_code) return null;
   const interval = Math.max(1, Number(got.interval ?? 5)), expires = Number(got.expires_in ?? 600);
   await (await putSecret(env, hub, person, PENDING, {device: got.device_code, expires: now() + expires, interval, asked: 0} satisfies Pending)).run();
   return {code: got.user_code, url: got.verification_url ?? 'https://trakt.tv/activate', interval, expires};
+}
+/* A login finished on the person's own page (see api.ts, 'link'). */
+export async function keepLink(env: Env, hub: string, person: string, link: Link) {
+  await env.DB.batch([await putSecret(env, hub, person, LINK, link), drop(env, hub, person, PENDING)]);
 }
 async function connected(env: Env, hub: string, person: string) {
   const link = await getSecret<Link>(env, hub, person, LINK);
