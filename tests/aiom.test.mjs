@@ -245,6 +245,9 @@ test('a film played, paused, carried on and finished reaches Trakt as start, pau
     {path: '/scrobble/start', body: {...film, progress: 10}}, {path: '/scrobble/stop', body: {...film, progress: 90}},
   ]);
   assert.ok(trakt.calls.every(call => call.auth === 'trakt-access-1'));
+  // The app then ticks it as watched, as many do: Trakt already counted the stop, so nothing more is sent.
+  await say(`/Users/${jf}/PlayedItems/${FILM}`, {}); await pause(800);
+  assert.equal(trakt.calls.length, 4);
 });
 test('an episode goes by its show’s ids with its season and number, and a repeated stop (409) counts as done', async () => {
   trakt.calls = []; trakt.stop = 409;
@@ -285,7 +288,7 @@ test('a connection near its end is renewed once, and the new pair is kept', asyn
   assert.deepEqual(trakt.refreshed, [{refresh_token: 'trakt-refresh-2', client_id: 'local-trakt-client', redirect_uri: 'urn:ietf:wg:oauth:2.0:oob', grant_type: 'refresh_token'}]);
   assert.deepEqual(trakt.calls.map(call => call.path).sort(), ['/scrobble/start', '/scrobble/start']);
   // The renewed pair is what is used from then on, and it is not renewed again.
-  trakt.calls = []; await say(`/Users/${jf}/PlayedItems/${ITEM}`, {}); await heard(1);
+  trakt.calls = []; await say(`/Users/${jf}/PlayedItems/${LEFT}`, {}); await heard(1);
   assert.equal(trakt.calls[0].auth, 'trakt-access-3'); assert.equal(trakt.refreshed.length, 1);
   assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').history, {username: 'adatrakt', again: false});
 });

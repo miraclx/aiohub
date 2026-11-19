@@ -151,18 +151,22 @@ const told = new Map<string, string>();
 async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', item: string, position: number, paused: boolean) {
   const key = `${hub}/${seat.person}/${item}`, want = kind === 'start' ? 'playing' : kind === 'progress' ? (paused ? 'paused' : 'playing') : 'stopped';
   if (told.size > 5000) told.clear(); told.set(key, want);
-  const row = await env.DB.prepare('SELECT duration, ids, scrobbled FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{duration: number; ids: string | null; scrobbled: string | null}>();
+  const row = await env.DB.prepare('SELECT duration, ids, scrobbled, scrobbled_at FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{duration: number; ids: string | null; scrobbled: string | null; scrobbled_at: number | null}>();
   // A pause or carrying on only counts inside a play Trakt was told about; a report that arrives after stop starts nothing.
   if (!row || (kind === 'progress' && (row.scrobbled === want || (row.scrobbled !== 'playing' && row.scrobbled !== 'paused')))) return;
   const ids = row.ids ?? await idsOf(env, hub, seat, item);
   if (!ids) return;
   const target = JSON.parse(ids) as Target, progress = row.duration ? progressOf(position, row.duration) : 0;
   let status: number | null = 200;
+  // Many apps tick a title as watched right after a stop that Trakt already counted: that would be a second play.
+  if (kind === 'mark' && row.scrobbled === 'watched' && now() - (row.scrobbled_at ?? 0) < 12 * 3600) return;
   if (kind === 'mark') status = await send(env, hub, seat.person, '/sync/history', history(target, new Date().toISOString()));
   // Without a length there is no telling how far in; and under 1% there is nothing for Trakt to keep.
   else if (!row.duration) return;
   else if (kind !== 'stop' || progress >= 1) status = await send(env, hub, seat.person, `/scrobble/${want === 'playing' ? 'start' : want === 'paused' ? 'pause' : 'stop'}`, {...target, progress});
-  if (taken(status)) await env.DB.prepare('UPDATE plays SET scrobbled = ?, scrobbled_at = ? WHERE hub = ? AND person = ? AND item = ?').bind(want, now(), hub, seat.person, item).run();
+  // A stop at 80% or more is a watch on Trakt's side, as is a tick: remembered as such, so a tick straight after adds nothing.
+  const kept = kind === 'mark' || (kind === 'stop' && progress >= 80) ? 'watched' : want;
+  if (taken(status)) await env.DB.prepare('UPDATE plays SET scrobbled = ?, scrobbled_at = ? WHERE hub = ? AND person = ? AND item = ?').bind(kept, now(), hub, seat.person, item).run();
 }
 /* What Trakt knows a title by, asked of the person's own server once and kept with the play ('' when there is nothing usable).
    A film by its own ids; an episode by its show's, with its season and number (AIOMetadata episodes carry no ids of their own). */
