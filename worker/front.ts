@@ -92,8 +92,9 @@ async function hubOf(env: Env, code: string) {
 }
 /* Signs in to AIOStreams as this person and keeps the answer, so it happens once and not on every app sign-in. */
 async function mint(env: Env, hub: string, person: string, jf: string, upstream: Upstream, kind = 'upstream'): Promise<Answer | null> {
-  // A brake: AIOStreams allows only a few sign-ins per address, so one person gets at most two in ten minutes, however often it says no.
-  const brake: [string, number][] = [[`mint:${hub}:${person}`, 2]];
+  // A brake: AIOStreams allows only a few sign-ins per address, so one person gets at most two there in ten minutes, however often
+  // it says no. Their own AIOMetadata setup has no such limit, so a few more are allowed (each device may need one after a change).
+  const brake: [string, number][] = [[`mint:${hub}:${person}`, kind === VIA ? 6 : 2]];
   if (await blocked(env, brake)) return null;
   await failed(env, brake);
   const answer = await fetch(`${upstream.base ?? env.UP_ORIGIN + MOUNT}/Users/AuthenticateByName`, {method: 'POST', headers: {'content-type': 'application/json', authorization: `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${jf}", Version="1"`}, body: JSON.stringify({Username: upstream.user, Pw: upstream.pass})});
@@ -107,7 +108,10 @@ async function seatOf(env: Env, hub: string, id: string): Promise<Seat | null> {
   const row = await env.DB.prepare("SELECT d.person, d.seen, d.app, d.name, p.paused OR coalesce(json_extract(g.data, '$.paused'), 0) AS paused, p.jf, s.value, m.value AS via, EXISTS (SELECT 1 FROM secrets t WHERE t.hub = d.hub AND t.owner = d.person AND t.kind = ?) AS scrobble FROM devices d JOIN people p ON p.hub = d.hub AND p.id = d.person LEFT JOIN groups g ON g.hub = p.hub AND g.id = p.grp LEFT JOIN secrets s ON s.hub = d.hub AND s.owner = d.person AND s.kind = 'upstream' LEFT JOIN secrets m ON m.hub = d.hub AND m.owner = d.person AND m.kind = ? WHERE d.id = ? AND d.hub = ?")
     .bind(LINK, VIA, id, hub).first<{person: string; seen: number; app: string; name: string; paused: number; jf: string; value: string | null; via: string | null; scrobble: number}>();
   seats.delete(id); if (!row) return null;
-  const kind = row.via ? VIA : 'upstream', upstream = await unseal<Upstream>(env, `${hub}/${row.person}/${kind}`, row.via ?? row.value), answer = upstream?.auth ? JSON.parse(upstream.auth) as Answer : null;
+  // A device signed in before its person's sign-in changed (moved to their own AIOMetadata setup, renamed) has no session there
+  // yet: one is made now, so the app carries on without being signed out.
+  const kind = row.via ? VIA : 'upstream', upstream = await unseal<Upstream>(env, `${hub}/${row.person}/${kind}`, row.via ?? row.value);
+  const answer = upstream?.auth ? JSON.parse(upstream.auth) as Answer : upstream ? await mint(env, hub, row.person, row.jf, upstream, kind) : null;
   if (!answer) return null;
   const seat = {person: row.person, jf: row.jf, paused: !!row.paused, seen: row.seen, up: answer.AccessToken, upId: answer.User.Id, at: Date.now(), on: [row.app, row.name].filter(Boolean).join(' · '), base: upstream?.base ?? env.UP_ORIGIN + MOUNT, kind, scrobble: !!row.scrobble && !!env.TRAKT_CLIENT_ID};
   if (seats.size > 2000) seats.clear(); seats.set(id, seat); return seat;

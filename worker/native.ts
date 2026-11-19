@@ -127,9 +127,10 @@ function patch(stored: Stored, data: HubData, key: string, people: {id: string; 
   stored.formatter = label(data.defaults);
   // What a group or a person has changed for themselves travels as a variant: a short list of changes applied only for them.
   stored.variants = [...variants, ...((stored.variants as Variant[] | undefined) ?? []).filter(item => !item.id?.startsWith(OURS))];
-  // With AIOMetadata in front, people sign in to their own AIOMetadata setup, so AIOStreams keeps no users for them.
-  const users = stored.jellyfin?.personas ?? [], keep = new Set(front ? [] : people.map(person => person.id));
-  for (const person of front ? [] : people) {
+  // With AIOMetadata in front, people sign in to their own AIOMetadata setup, so AIOStreams keeps a user only for someone whose
+  // own setup is not there yet (the caller passes just them): they keep signing in as before until it is.
+  const users = stored.jellyfin?.personas ?? [], keep = new Set(people.map(person => person.id));
+  for (const person of people) {
     let found = users.find(user => user.id === person.id);
     if (found) found.name = person.name; else users.push(found = {id: person.id, name: person.name, history: 'own', trackers: []});
     // AIOStreams records plays for a person with no tracker list of their own (it finds their Home setup); an empty list means never.
@@ -431,6 +432,10 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     person.variants = [`${OURS}g-${person.group?.id}`, `${OURS}p-${person.id}`].filter(id => variants.some(item => item.id === id));
   }
 
+  // Moving to AIOMetadata in front happens person by person: whoever has their own setup's sign-in is over; everyone else stays
+  // on AIOStreams as before, so a setup AIOMetadata refused never leaves someone unable to sign in.
+  const moved = new Set(front ? [...vault.keys()].filter(name => name.endsWith(`/${VIA}`)).map(name => name.slice(0, -VIA.length - 1)) : []);
+  const staying = people.filter(person => !moved.has(person.id));
   let players = await held<Home>(env, vault, hub.id, HUB_OWNER, 'players');
   // The hub moved to another AIOStreams server: its setup on the old one is removed first, then a new one is made here.
   if (players?.at && players.at !== env.UP_ORIGIN) {
@@ -440,7 +445,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     players = null;
   }
   if (!players) {
-    const first = fresh(); patch(first, data, key, people, front ? null : hubReach, variants, known, front);
+    const first = fresh(); patch(first, data, key, staying, front ? null : hubReach, variants, known, front);
     const made = await create(env, hub.id, first, service);
     if ('state' in made) return made;
     players = made;
@@ -448,7 +453,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     const read = await fetch(`${env.UP_ORIGIN}/api/v1/user?raw=true`, {headers: basic(players)}).catch(() => null);
     const stored = read?.status === 200 ? ((await read.json().catch(() => null)) as {data?: {userData?: Stored}} | null)?.data?.userData : null;
     if (!stored) return {state: 'error', message: 'AIOStreams did not answer. Your changes are saved here and will be sent on the next try.'};
-    const before = JSON.stringify(stored); patch(stored, data, key, people, front ? null : hubReach, variants, known, front);
+    const before = JSON.stringify(stored); patch(stored, data, key, staying, front ? null : hubReach, variants, known, front);
     if (JSON.stringify(stored) !== before) {
       const write = await fetch(`${env.UP_ORIGIN}/api/v1/user`, {method: 'PUT', headers: {...basic(players), 'content-type': 'application/json'}, body: JSON.stringify({config: stored})}).catch(() => null);
       if (write?.status !== 200) {
@@ -458,10 +463,9 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
     }
   }
   // Each person signs in upstream under this setup with their own name. The kept sign-in answer, if any, is left in place.
-  // With AIOMetadata in front they sign in to their own AIOMetadata setup instead, so no AIOStreams sign-in is kept.
+  // With AIOMetadata in front, only those not moved yet keep one; the rest sign in to their own AIOMetadata setup.
   const writes = [];
-  if (front) writes.push(env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND kind = 'upstream'").bind(hub.id));
-  for (const person of front ? [] : people) {
+  for (const person of staying) {
     const user = `${players.uuid}/${person.name}`, had = await held<{user: string; pass: string; auth?: string}>(env, vault, hub.id, person.id, 'upstream');
     if (!had || had.user !== user || had.pass !== players.password) writes.push(await putSecret(env, hub.id, person.id, 'upstream', {...(had?.user.split('/')[0] === players.uuid ? had : {}), user, pass: players.password}));
   }
@@ -469,6 +473,8 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}): P
   if (front && keys) {
     const got = await syncFronts(env, vault, hub.id, people, players, variants, keys, budget);
     note ||= got.note; more ||= got.more;
+    // Whoever now has their own setup's sign-in no longer needs the AIOStreams one (their AIOStreams user goes on the next sync).
+    await env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND kind = 'upstream' AND owner IN (SELECT owner FROM secrets WHERE hub = ? AND kind = ?)").bind(hub.id, hub.id, VIA).run();
   }
   return note ? {state: 'partial', message: note, ...(more ? {more: true} : {})} : {state: 'ok'};
 }
