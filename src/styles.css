@@ -367,3 +367,10 @@ a.primary.button { display: inline-flex; align-items: center; min-height: 34px; 
 .group-order li span { flex: 1; font-weight: 600; }
 .page-head .title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
 .page-head .title-row .link { font-size: 14px; }
+/* Accounts: a card whose heading row sits above what opens under it (a code, a key form, a note). */
+.accounts .account-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.accounts .account-row .segments { flex-shrink: 0; }
+.accounts .quiet-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.accounts .quiet-note p { margin: 0; }
+.below-head { margin: -4px 0 10px; }
+@media (max-width: 520px) { .accounts .account-row:has(> .segments) { flex-direction: column; align-items: stretch; } }

@@ -7,6 +7,7 @@ import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './native';
 import {forgetHub, forgetSeats} from './front';
 import {LINK, begin, check, disconnect, links} from './trakt';
+import {rows} from './rows';
 import type {Env} from './util';
 import {blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp} from './util';
 
@@ -77,9 +78,11 @@ function ago(seen: number) {
   return gap < 300 ? 'Now' : gap < 3600 ? `${Math.floor(gap / 60)} min ago` : gap < 86400 ? `${Math.floor(gap / 3600)} h ago` : gap < 172800 ? 'Yesterday' : `${Math.floor(gap / 86400)} days ago`;
 }
 const groupDto = (row: GroupRow) => ({id: row.id, name: row.name, ...(JSON.parse(row.data) as GroupData), v: row.version});
-const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null) => ({
+const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null, aiomTrakt: boolean) => ({
   ready, history,
   id: row.id, name: row.name, groupId: row.grp, joined: !!row.joined, paused: !!row.paused, ...(JSON.parse(row.data) as PersonData), v: row.version,
+  // AIOMetadata's own Trakt connection (a Token ID). Once Trakt is connected to the hub it is no longer used and can go.
+  aiomTrakt,
   // Sign-in details are never part of what a page loads; they are asked for one person at a time.
   pin: null, password: '', devices: devices.filter(device => device.person === row.id).map(device => ({id: device.ref, app: device.app || 'Player app', name: device.name || 'A device', seen: ago(device.seen), where: [device.place, device.net].filter(Boolean).join(' · ')})),
 });
@@ -107,7 +110,7 @@ async function startSession(env: Env, subject: {account: string} | {hub: string;
 /* ---------- what a page loads ---------- */
 async function state(env: Env, who: Who) {
   const hub = who.hub, data = JSON.parse(hub.data) as HubData, mine = who.person;
-  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks] = await env.DB.batch([
+  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt] = await env.DB.batch([
     env.DB.prepare('SELECT id, name, data, version FROM groups WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? AND id = ?').bind(hub.id, mine) : env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? AND person = ? ORDER BY seen DESC').bind(hub.id, mine) : env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? ORDER BY seen DESC').bind(hub.id),
@@ -116,7 +119,9 @@ async function state(env: Env, who: Who) {
     env.DB.prepare("SELECT kind FROM secrets WHERE hub = ? AND owner = ? AND kind IN ('key:tmdb', 'key:mdblist', 'key:posters')").bind(hub.id, HUB_OWNER),
     env.DB.prepare('SELECT substr(id, 1, 16) AS id, name, created FROM passkeys WHERE account = ? ORDER BY created').bind(who.account?.id ?? ''),
     env.DB.prepare('SELECT owner, value FROM secrets WHERE hub = ? AND kind = ? AND owner = coalesce(?, owner)').bind(hub.id, LINK, mine ?? null),
+    env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind = 'trakt'").bind(hub.id),
   ]);
+  const aiomTrakt = new Set((oldTrakt.results as {owner: string}[]).map(row => row.owner));
   const history = env.TRAKT_CLIENT_ID ? await links(env, hub.id, traktLinks.results as {owner: string; value: string}[]) : {};
   const linked = new Set((ready.results as {owner: string}[]).map(row => row.owner));
   const persons = people.results as unknown as PersonRow[];
@@ -128,7 +133,7 @@ async function state(env: Env, who: Who) {
     role: mine ? 'person' : 'owner', personId: mine ?? null,
     hub: {
       name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID,
-      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null)),
+      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id))),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
   };
@@ -213,8 +218,17 @@ const forget = (env: Env, hub: string, id: string) => [
   env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare('DELETE FROM sessions WHERE hub = ? AND person = ?').bind(hub, id),
 ];
 async function removePerson(env: Env, who: Who, id: string) {
-  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
+  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_keys WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
   return {};
+}
+/* A person's stored choices, read fresh, and written back as a new version. */
+const personData = async (env: Env, hub: string, id: string) => JSON.parse((await env.DB.prepare('SELECT data FROM people WHERE hub = ? AND id = ?').bind(hub, id).first<{data: string}>())!.data) as PersonData;
+const savePersonData = (env: Env, hub: string, id: string, next: PersonData) => env.DB.prepare('UPDATE people SET data = ?, version = version + 1 WHERE hub = ? AND id = ?').bind(JSON.stringify(next), hub, id);
+const hasSecret = async (env: Env, hub: string, id: string, kind: string) => !!await env.DB.prepare('SELECT 1 FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(hub, id, kind).first();
+/* Trakt rows on or off. Someone with a Home of their own gets the rows added at the top, or taken out again. */
+function withTraktRows(data: PersonData, on: boolean): PersonData {
+  const shipped = traktRows().map(item => item.id);
+  return {...data, trakt: on, rows: data.rows ? on ? [...traktRows().filter(item => !data.rows!.some(row => row.id === item.id)), ...data.rows] : data.rows.filter(row => !shipped.includes(row.id)) : null};
 }
 /* Checks a person's own password. People who joined before the two passwords were split are checked against the old shared one. */
 const ownPassword = (given: string, stored: string, signin: SignIn) => stored ? checkPassword(given, stored) : same(given, signin.password);
@@ -232,8 +246,8 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
   }
   if (action === 'trakt') {
     // Trakt is connected on AIOMetadata's own page, which hands the person a Token ID. Here it is checked and kept for their Home.
-    const stored = await env.DB.prepare('SELECT data FROM people WHERE hub = ? AND id = ?').bind(hub, id).first<{data: string}>(), data = JSON.parse(stored!.data) as PersonData, shipped = traktRows().map(item => item.id);
-    const save = (next: PersonData) => env.DB.prepare('UPDATE people SET data = ?, version = version + 1 WHERE hub = ? AND id = ?').bind(JSON.stringify(next), hub, id);
+    // (The way it used to be done. Connecting Trakt to the hub, under 'scrobble', does all of it now.)
+    const data = await personData(env, hub, id), save = (next: PersonData) => savePersonData(env, hub, id, next);
     if (request.method === 'POST') {
       const tokenId = /^[\w-]{16,80}$/.test(String(body.tokenId ?? '').trim()) ? String(body.tokenId).trim() : bad(400, 'Paste the Token ID from the “Trakt connected” page');
       const answer = await fetch(`${hosted(env, JSON.parse(who.hub.data) as HubData).AIOM_ORIGIN}/api/oauth/token/info`, {method: 'POST', headers: {'content-type': 'application/json', accept: 'application/json', 'user-agent': 'AIOHub/1.0'}, body: JSON.stringify({tokenId})}).catch(() => null);
@@ -241,11 +255,13 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       if (!answer || answer.status >= 500) bad(502, 'AIOMetadata did not answer. Try again in a moment.');
       if (!info || info.provider !== 'trakt') bad(400, 'That Token ID is not a Trakt connection on this hub’s AIOMetadata server. Copy it again from the “Trakt connected” page.');
       const username = String(info!.username ?? '').slice(0, 80);
-      await env.DB.batch([await putSecret(env, hub, id, 'trakt', {tokenId, username}), save({...data, trakt: true, rows: data.rows ? [...traktRows().filter(item => !data.rows!.some(row => row.id === item.id)), ...data.rows] : null})]);
+      await env.DB.batch([await putSecret(env, hub, id, 'trakt', {tokenId, username}), save(withTraktRows(data, true))]);
       return {username};
     }
     if (request.method === 'DELETE') {
-      await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'trakt'").bind(hub, id), save({...data, trakt: false, rows: data.rows ? data.rows.filter(row => !shipped.includes(row.id)) : null})]);
+      // The Trakt rows stay while Trakt is still connected to the hub.
+      const kept = await hasSecret(env, hub, id, LINK);
+      await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'trakt'").bind(hub, id), save(withTraktRows(data, kept))]);
       return {};
     }
   }
@@ -268,8 +284,18 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     // Trakt history, connected by the person or by the manager with them: Trakt shows a code to type on its own page, and the page
     // asks here until it has been. The device code Trakt hands out is kept here, never sent to the page.
     if (request.method === 'POST' && !rest) return await begin(env, hub, id) ?? bad(502, 'Trakt did not answer. Try again in a moment.');
-    if (request.method === 'POST' && rest === 'check') {const got = await check(env, hub, id); if (got.state === 'connected') forgetSeats(id); return got;}
-    if (request.method === 'DELETE') {await disconnect(env, hub, id); forgetSeats(id); return {};}
+    // Once connected, the hub also serves their Trakt rows on Home (rows.ts): the rows are added to a Home of their own, if they have one.
+    if (request.method === 'POST' && rest === 'check') {
+      const got = await check(env, hub, id);
+      if (got.state === 'connected') {forgetSeats(id); const data = await personData(env, hub, id); if (!data.trakt) await savePersonData(env, hub, id, withTraktRows(data, true)).run();}
+      return got;
+    }
+    if (request.method === 'DELETE') {
+      await disconnect(env, hub, id); forgetSeats(id);
+      // The Trakt rows stay only while AIOMetadata's own Trakt connection is still there to fill them.
+      if (!await hasSecret(env, hub, id, 'trakt')) await savePersonData(env, hub, id, withTraktRows(await personData(env, hub, id), false)).run();
+      return {};
+    }
   }
   if (action === 'carry') {
     // Someone's own watching: only they can look at it or move it, from their own page.
@@ -511,7 +537,7 @@ async function removeHub(request: Request, env: Env, who: Who, body: Body) {
   if (!await checkPassword(String(body.password ?? ''), stored!.pass)) {await failed(env, key); bad(403, 'That is not your password');}
   if (!await removePlayers(env, who.hub)) bad(502, 'The streaming server did not confirm the removal, so nothing was deleted. Try again in a moment.');
   const hub = who.hub.id;
-  await env.DB.batch([...['devices', 'plays', 'starts', 'quick', 'secrets', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
+  await env.DB.batch([...['devices', 'plays', 'starts', 'quick', 'secrets', 'rows_keys', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
     env.DB.prepare('DELETE FROM hubs WHERE id = ?').bind(hub), env.DB.prepare('DELETE FROM passkeys WHERE account = ?').bind(who.account!.id), env.DB.prepare('DELETE FROM accounts WHERE id = ?').bind(who.account!.id)]);
   return {};
 }
@@ -537,13 +563,15 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
       if (!held || !await signed(env, url.origin, body, held.key, held.alg)) {await failed(env, key); bad(403, 'That passkey is not one this site knows');}
       return reply({}, 200, await startSession(env, {account: held!.account}));
     }
+    // A person's Trakt rows, read by their AIOMetadata setup. The token in the address is the only key (see rows.ts).
+    if (first === 'rows' && method === 'GET') return await rows(env, path.slice(1));
     const who = await whoIs(request, env);
     if (first === 'join' && method === 'POST') return await join(request, env, body, who);
     if (first === 'signout' && method === 'POST') {if (who) await env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(who.session).run(); return reply({}, 200, cookie('', 0));}
     if (!who) return reply({message: 'Sign in first'}, 401);
     // Anyone signed in may ask for the players to be brought in step; what is sent comes only from what the hub has stored.
     if (first === 'lists' && method === 'POST') return reply(await findList(env, who, body));
-    if (first === 'sync' && method === 'POST') return reply(await syncPlayers(env, who.hub));
+    if (first === 'sync' && method === 'POST') return reply(await syncPlayers(env, who.hub, url.origin));
     // An invited person gets their own rows; the manager can ask for anyone's.
     if (first === 'previews' && method === 'GET') return reply({rows: await previews(env, who.hub, who.person ?? (url.searchParams.get('person') || undefined))});
     if (first === 'activity' && method === 'GET') {

@@ -6,6 +6,8 @@ export interface Env {
   FRONT?: string;
   // Trakt history (see trakt.ts). Without a client id it stays off: nothing offered, nothing sent.
   TRAKT_CLIENT_ID?: string; TRAKT_API?: string;
+  // This site's own public address. AIOMetadata reads each person's Trakt rows from it (see rows.ts). Unset: the address the sync was asked on.
+  SITE_ORIGIN?: string;
 }
 export const enc = new TextEncoder(), dec = new TextDecoder();
 /* The same settings, pointed at the servers this hub uses. A hub that has not chosen its own uses the site's. */

@@ -102,6 +102,17 @@ export async function send(env: Env, hub: string, person: string, path: string, 
   if (answer?.status === 401) {token = await access(env, hub, person, token); if (!token) return null; answer = await post(env, path, body, token);}
   return answer?.status ?? 0;
 }
+/* One read as this person, renewed and retried like `send`. null when not connected, Trakt wants connecting again, or it did not answer. */
+export async function read<T>(env: Env, hub: string, person: string, path: string): Promise<T | null> {
+  let token = await access(env, hub, person);
+  if (!token) return null;
+  const get = (access: string) => fetch(api(env) + path, {headers: head(env, access)}).catch(() => null);
+  let answer = await get(token);
+  if (answer?.status === 401) {token = await access(env, hub, person, token); if (!token) return null; answer = await get(token);}
+  // Only the path and Trakt's answer are noted, never who asked or with what.
+  if (!answer?.ok) console.error('trakt read', path.split('?')[0], answer?.status ?? 0, answer?.headers.get('x-ratelimit') ?? '', answer?.headers.get('retry-after') ?? '');
+  return answer?.ok ? await answer.json().catch(() => null) as T | null : null;
+}
 export const history = (target: Target, at: string) => 'movie' in target ? {movies: [{ids: target.movie.ids, watched_at: at}]}
   : {shows: [{ids: target.show.ids, seasons: [{number: target.episode.season, episodes: [{number: target.episode.number, watched_at: at}]}]}]};
 export const progressOf = (position: number, duration: number) => Math.min(100, Math.round(position / duration * 10000) / 100);

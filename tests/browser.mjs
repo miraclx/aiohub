@@ -2,11 +2,26 @@
 // Usage: node tests/browser.mjs <chromium path> [screenshot dir]
 import {chromium} from 'playwright-core';
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import {execFileSync} from 'node:child_process';
 const BASE = process.env.BASE ?? 'http://localhost:8799', shots = process.argv[3];
 const browser = await chromium.launch({executablePath: process.argv[2]}), errors = [];
 const open = async () => {const context = await browser.newContext({viewport: {width: 390, height: 844}}), page = await context.newPage(); page.on('pageerror', error => errors.push(error.message)); return page;};
 const shot = async (page, name) => {if (shots) await page.screenshot({path: `${shots}/real-${name}.png`, fullPage: true});};
 const toast = page => page.locator('.toast span');
+// Stand-ins for the accounts a person connects: Trakt's code flow (typed on the second ask), AIOMetadata's description of its own
+// Trakt Token ID, and MDBList's check of a key. Nothing else answers, so the players never get set up here; that is not tested here.
+let polls = 0;
+http.createServer(async (request, answer) => {
+  const send = (status, body) => {answer.writeHead(status, {'content-type': 'application/json'}); answer.end(JSON.stringify(body));};
+  let raw = ''; for await (const chunk of request) raw += chunk;
+  if (request.url === '/trakt/oauth/device/code') {polls = 0; return send(200, {device_code: 'device', user_code: 'ABCD1234', verification_url: 'https://trakt.tv/activate', expires_in: 600, interval: 1});}
+  if (request.url === '/trakt/oauth/device/token') return ++polls < 2 ? send(400, {}) : send(200, {access_token: 'access', refresh_token: 'refresh', expires_in: 7 * 86400, created_at: Math.floor(Date.now() / 1000)});
+  if (request.url === '/trakt/users/settings') return send(200, {user: {username: 'adatrakt'}});
+  if (request.url === '/trakt/oauth/revoke') return send(200, {});
+  if (request.url.startsWith('/mdblist/user')) return send(request.url.includes('apikey=ada-mdblist-key') ? 200 : 403, {username: 'adalists'});
+  request.socket.destroy(); // as if nothing were there
+}).listen(8798, '127.0.0.1').unref();
 
 const owner = await open();
 await owner.goto(BASE + '/'); await owner.getByRole('heading', {name: 'Sign in'}).waitFor(); await shot(owner, '1-signin');
@@ -45,6 +60,34 @@ await guest.goto(BASE + '/#/me/you'); await guest.getByRole('button', {name: 'Si
 // Coming back through the link now asks for the password.
 await guest.goto(link); await guest.getByText('Type your password').waitFor();
 await guest.getByLabel('Password').fill('my own password'); await guest.getByRole('button', {name: 'Continue'}).click(); await guest.getByRole('heading', {name: 'Ada', exact: true}).waitFor();
+
+// Accounts, on her own page. Trakt is one card with one Connect; progress is kept here until she picks MDBList.
+await guest.goto(BASE + '/#/me/accounts'); const trakt = guest.locator('.accounts li', {has: guest.getByRole('heading', {name: 'Trakt', exact: true})});
+await trakt.getByText('Trakt follows along as things are watched here').waitFor(); assert.equal(await guest.getByText('Trakt history').count(), 0);
+assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
+await guest.getByText('Hiding what’s been watched needs MDBList').waitFor(); await shot(guest, '12-accounts');
+// Picking MDBList asks for her key; going back to Here before saving leaves nothing changed.
+await guest.getByRole('radio', {name: 'MDBList'}).click(); await guest.getByLabel('MDBList API key').waitFor();
+await guest.getByRole('radio', {name: 'Here'}).click(); assert.equal(await guest.getByLabel('MDBList API key').count(), 0);
+// Connecting Trakt: Trakt's code is shown, and the page carries on by itself once it has been typed.
+await trakt.getByRole('button', {name: 'Connect'}).click(); await trakt.getByText('ABCD1234').waitFor();
+await toast(guest).filter({hasText: 'Trakt connected as adatrakt'}).waitFor(); await trakt.getByText('Connected as adatrakt.').waitFor();
+// An older Trakt link made through AIOMetadata shows as a quiet note she can remove (made here directly in the local database).
+execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', "INSERT INTO secrets (hub, owner, kind, value) SELECT id, 'ada', 'trakt', 'x' FROM hubs"], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
+await guest.reload(); await trakt.getByText('Nothing uses it any more').waitFor(); await shot(guest, '13-accounts-connected');
+await trakt.getByRole('button', {name: 'Disconnect it'}).click(); await toast(guest).filter({hasText: 'Older Trakt link removed'}).waitFor();
+assert.equal(await trakt.getByText('Nothing uses it any more').count(), 0); await trakt.getByText('Connected as adatrakt.').waitFor();
+// MDBList: with her key saved, progress is kept there, and copying what she watched here is offered on her own page.
+await guest.getByRole('radio', {name: 'MDBList'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key'); await guest.getByRole('button', {name: 'Save'}).click();
+await toast(guest).filter({hasText: 'MDBList connected as adalists'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'MDBList'}).getAttribute('aria-checked'), 'true');
+await guest.getByText('What you watched here').waitFor(); assert.equal(await guest.getByText('Hiding what’s been watched needs MDBList').count(), 0);
+// The manager sees the same states, without the copy step: that is hers alone.
+await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Connected as adatrakt.').waitFor();
+await owner.getByText('can copy it to MDBList from their own page').waitFor(); assert.equal(await owner.getByText('What you watched here').count(), 0); await shot(owner, '14-accounts-manager');
+// Back to Here asks first, then MDBList is let go.
+await guest.getByRole('radio', {name: 'Here'}).click(); await guest.getByRole('button', {name: 'Keep it here'}).click();
+await toast(guest).filter({hasText: 'Progress kept here'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
+await owner.goto(BASE + '/#/hub/playback'); await owner.getByText('It needs progress kept in MDBList').waitFor();
 
 // Back as the manager: Ada shows as joined, and the playback change stuck.
 await owner.goto(BASE + '/#/person/ada/settings'); await owner.reload(); await owner.getByText(/Family · joined/).waitFor();

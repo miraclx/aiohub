@@ -30,7 +30,17 @@ const HELD = {
   [EP3]: {Id: EP3, Type: 'Episode', Name: 'Three', SeriesId: SHOW, SeriesName: 'Meta Show', ParentIndexNumber: 1, IndexNumber: 3, ProviderIds: {}},
 };
 // Trakt: the device code flow, single-use refresh tokens, and every call as Ada logged. Each title above runs 6000 seconds.
-const trakt = {calls: [], polls: 0, issued: 0, valid: new Set(), refresh: '', expiresIn: 7 * 86400, refreshed: [], revoked: [], stop: 201};
+const trakt = {calls: [], reads: [], polls: 0, issued: 0, valid: new Set(), refresh: '', expiresIn: 7 * 86400, refreshed: [], revoked: [], stop: 201};
+// What Ada's Trakt holds, for the rows the hub serves: a watchlist with a film, a show (twice: once by an episode) and a film known
+// only by its TMDB id; 45 recommended films; one show with an episode to watch.
+const film = n => ({title: `Film ${n}`, year: 2000, ids: {trakt: n, imdb: `tt${String(9000000 + n)}`, tmdb: 9000 + n}});
+const READS = {
+  '/sync/watchlist/all/added/desc': [{type: 'movie', movie: {title: 'Meta Movie', ids: {imdb: 'tt0133093', tmdb: 603}}}, {type: 'show', show: {title: 'Meta Show', ids: {imdb: 'tt0944947', tmdb: 1399}}},
+    {type: 'episode', episode: {season: 1, number: 1}, show: {title: 'Meta Show', ids: {imdb: 'tt0944947', tmdb: 1399}}}, {type: 'movie', movie: {title: 'Fight Club', ids: {imdb: null, tmdb: 550}}}, {type: 'movie', movie: {title: 'No ids', ids: {}}}],
+  '/recommendations/movies': Array.from({length: 45}, (_, n) => film(n + 1)),
+  '/recommendations/shows': [{title: 'Breaking Bad', ids: {imdb: 'tt0903747', tmdb: 1396}}],
+  '/sync/progress/up_next': [{show: {title: 'Breaking Bad', ids: {imdb: 'tt0903747', tmdb: 1396}}, progress: {aired: 62, completed: 10}}],
+};
 const issue = () => {const n = ++trakt.issued; trakt.valid.add(`trakt-access-${n}`); trakt.refresh = `trakt-refresh-${n}`; return {access_token: `trakt-access-${n}`, refresh_token: trakt.refresh, expires_in: trakt.expiresIn, created_at: Math.floor(Date.now() / 1000), token_type: 'bearer', scope: 'public'};};
 function traktAnswer(request, path, body, send) {
   if (request.headers['trakt-api-key'] !== 'local-trakt-client' || request.headers['trakt-api-version'] !== '2' || !request.headers['user-agent'] || request.headers['content-type'] !== 'application/json') return send(403, {});
@@ -42,6 +52,9 @@ function traktAnswer(request, path, body, send) {
   const auth = (request.headers.authorization ?? '').replace('Bearer ', '');
   if (!trakt.valid.has(auth)) return send(401, {});
   if (path === '/users/settings') return send(200, {user: {username: 'adatrakt'}});
+  // Reads for the rows the hub serves. Kept apart from the calls that write, which the tests below count exactly.
+  const [where, query] = path.split('?');
+  if (request.method === 'GET' && READS[where]) {trakt.reads.push({where, query, auth}); return send(200, READS[where]);}
   trakt.calls.push({path, body, auth});
   return send(path === '/scrobble/stop' ? trakt.stop : 201, {});
 }
@@ -52,6 +65,8 @@ http.createServer(async (request, answer) => {
   const mine = () => fake.configs.get(id)?.password === pass ? fake.configs.get(id) : null;
   if (request.url.startsWith('/trakt/')) return traktAnswer(request, request.url.slice(6), body, send);
   if (request.url.startsWith('/tmdb')) return send(request.url.includes('api_key=good-tmdb-key') ? 200 : 401, {});
+  // AIOMetadata's own Trakt connection, as it describes a Token ID.
+  if (request.url === '/api/oauth/token/info') return body.tokenId === 'aiom-trakt-token-id-1' ? send(200, {provider: 'trakt', username: 'adatrakt'}) : send(404, {});
   if (request.url.startsWith('/mdblist/user')) return send(request.url.includes('apikey=ada-mdblist-key') ? 200 : 403, {username: 'adalists'});
   if (request.url.startsWith('/mdblist/') && !request.url.includes('apikey=ada-mdblist-key')) return send(403, {});
   if (request.url.startsWith('/mdblist/sync/history/movie/tmdb/603')) return send(200, {plays: fake.watched.some(body => body.movies?.length) ? [{season_num: null}] : []});
@@ -226,6 +241,16 @@ const connect = async () => {
   await pause(1100);
   assert.deepEqual((await owner('POST', '/api/people/ada/scrobble/check', {})).body, {state: 'connected', username: 'adatrakt'}); assert.equal(trakt.polls, 2);
 };
+const rowsOf = config => config.catalogs.filter(item => /^(trakt|custom)\./.test(item.id)).map(item => [item.id, item.type, item.name, item.enabled]);
+test('Trakt connected on AIOMetadata, as before: its own Trakt rows and Token ID in her setup', async () => {
+  assert.deepEqual((await owner('POST', '/api/people/ada/trakt', {tokenId: 'aiom-trakt-token-id-1'})).body, {username: 'adatrakt'});
+  assert.deepEqual(await syncAll(), {state: 'ok'});
+  const [, ada] = playerOf('Ada');
+  assert.equal(ada.config.apiKeys.traktTokenId, 'aiom-trakt-token-id-1');
+  assert.deepEqual(rowsOf(ada.config).map(([id]) => id), ['trakt.watchlist', 'trakt.recommendations.movies', 'trakt.recommendations.shows', 'trakt.upnext', 'trakt.unwatched']);
+  const shown = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
+  assert.equal(shown.trakt, true); assert.equal(shown.aiomTrakt, true);
+});
 test('Trakt history connects with the code Trakt shows, and the device code stays with the hub', async () => {
   const before = (await owner('GET', '/api/state')).body.hub;
   assert.equal(before.scrobble, true); assert.equal(before.people.find(person => person.id === 'ada').history, null);
@@ -236,6 +261,35 @@ test('Trakt history connects with the code Trakt shows, and the device code stay
   // Asking once it is done says so, and never hands out the device code either.
   const late = await owner('POST', '/api/people/ada/scrobble/check', {});
   assert.deepEqual(late.body, {state: 'connected', username: 'adatrakt'});
+});
+let served;
+test('with Trakt connected to the hub, her setup reads her Trakt rows from the hub, and AIOMetadata’s own Trakt is no longer used', async () => {
+  assert.deepEqual(await syncAll(), {state: 'ok'});
+  const [, ada] = playerOf('Ada'), [, ben] = playerOf('Ben');
+  // The same rows, in the same order and under the same names, now imported from the hub's own addon; Up Next and Recently aired stay off.
+  assert.deepEqual(rowsOf(ada.config), [['custom.aiohub_rows.all.watchlist', 'all', 'Watchlist', true], ['custom.aiohub_rows.movie.recommended', 'movie', 'Recommended Movies', true],
+    ['custom.aiohub_rows.series.recommended', 'series', 'Recommended Shows', true], ['custom.aiohub_rows.series.up_next', 'series', 'Up Next', false], ['custom.aiohub_rows.series.recently_aired', 'series', 'Recently Aired for You', false]]);
+  served = ada.config.catalogs.filter(item => item.id.startsWith('custom.'));
+  for (const item of served) {
+    assert.equal(item.source, 'custom'); assert.ok(item.cacheTTL > 0 && item.cacheTTL <= 900); assert.equal(item.showInHome, true);
+    assert.match(item.sourceUrl, new RegExp(`^${BASE}/api/rows/r[\\w-]{20,}/catalog/${item.type}/[a-z_]+\\.json$`));
+  }
+  // Ahead of the shared rows, as before, and nothing of AIOMetadata's own Trakt left: no Token ID, no hiding by it.
+  assert.equal(ada.config.catalogs.findIndex(item => item.id.startsWith('custom.')), 0);
+  assert.equal(ada.config.apiKeys.traktTokenId, undefined); assert.equal(ada.config.hideWatchedTrakt, false);
+  // Ben has no Trakt: nothing changes for him.
+  assert.deepEqual(rowsOf(ben.config), []);
+  // The address is made once: a second sync sends nothing.
+  const version = ada.config.configVersion; assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Ada')[1].config.configVersion, version);
+  // The site says the older link is still there and no longer needed; removing it keeps her Trakt rows.
+  let shown = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
+  assert.equal(shown.aiomTrakt, true); assert.equal(shown.trakt, true);
+  assert.equal((await owner('DELETE', '/api/people/ada/trakt')).status, 200);
+  shown = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
+  assert.equal(shown.aiomTrakt, false); assert.equal(shown.trakt, true);
+  assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(rowsOf(playerOf('Ada')[1].config).map(([id]) => id), served.map(item => item.id));
+  assert.equal(trakt.reads.length, 0, 'nothing is read from Trakt until AIOMetadata asks');
 });
 test('a film played, paused, carried on, skipped ahead and finished reaches Trakt as start, pause, start, start, stop', async () => {
   const film = {movie: {ids: {tmdb: 27205, imdb: 'tt1375666'}}};
@@ -301,6 +355,41 @@ test('a connection near its end is renewed once, and the new pair is kept', asyn
   trakt.calls = []; await say(`/Users/${jf}/PlayedItems/${LEFT}`, {}); await heard(1);
   assert.equal(trakt.calls[0].auth, 'trakt-access-3'); assert.equal(trakt.refreshed.length, 1);
   assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').history, {username: 'adatrakt', again: false});
+});
+test('the rows address answers with IMDb ids from her Trakt, page by page, renewing the connection when Trakt refuses it', async () => {
+  const get = async url => {const answer = await fetch(url); return {status: answer.status, body: await answer.json().catch(() => null)};};
+  const address = served[0].sourceUrl.split('/catalog/')[0];
+  const manifest = (await get(`${address}/manifest.json`)).body;
+  assert.deepEqual(manifest.resources, ['catalog']);
+  assert.deepEqual(manifest.catalogs.map(item => `${item.type}/${item.id}`), ['all/watchlist', 'movie/recommended', 'series/recommended', 'series/up_next', 'series/recently_aired']);
+  // Trakt no longer takes the access token it has: the first read renews the connection once, then carries on.
+  const renewed = trakt.refreshed.length; trakt.valid.clear(); trakt.reads = [];
+  const list = await get(served[0].sourceUrl);
+  assert.equal(list.status, 200);
+  assert.deepEqual(list.body.metas, [{id: 'tt0133093', type: 'movie', name: 'Meta Movie'}, {id: 'tt0944947', type: 'series', name: 'Meta Show'}, {id: 'tmdb:550', type: 'movie', name: 'Fight Club'}]);
+  assert.equal(trakt.refreshed.length, renewed + 1); assert.equal(trakt.reads.at(-1).auth, `trakt-access-${trakt.issued}`);
+  // Recommendations leave out what is on the watchlist or collected, and come twenty at a time, the way AIOMetadata pages.
+  const films = served.find(item => item.id === 'custom.aiohub_rows.movie.recommended').sourceUrl;
+  const first = (await get(films)).body.metas, last = (await get(films.replace(/\.json$/, '/skip=40.json'))).body.metas, past = (await get(films.replace(/\.json$/, '/skip=60.json'))).body.metas;
+  assert.equal(first.length, 20); assert.deepEqual(first[0], {id: 'tt9000001', type: 'movie', name: 'Film 1'}); assert.deepEqual(last.map(item => item.id), ['tt9000041', 'tt9000042', 'tt9000043', 'tt9000044', 'tt9000045']); assert.deepEqual(past, []);
+  const asked = trakt.reads.filter(read => read.where === '/recommendations/movies');
+  assert.equal(asked.length, 1, 'later pages come from what was just read'); assert.match(asked[0].query, /ignore_collected=true/); assert.match(asked[0].query, /ignore_watchlisted=true/);
+  const next = (await get(served.find(item => item.id === 'custom.aiohub_rows.series.up_next').sourceUrl)).body.metas;
+  assert.deepEqual(next, [{id: 'tt0903747', type: 'series', name: 'Breaking Bad'}]);
+  assert.match(trakt.reads.filter(read => read.where === '/sync/progress/up_next')[0].query ?? '', /limit=50/);
+  const aired = (await get(served.find(item => item.id === 'custom.aiohub_rows.series.recently_aired').sourceUrl)).body.metas;
+  assert.deepEqual(aired.map(item => item.id), ['tt0903747']); assert.match(trakt.reads.at(-1).query, /sort_by=recently-aired/);
+  // Asked again within minutes, Trakt is not asked again.
+  const reads = trakt.reads.length; await get(served[0].sourceUrl); assert.equal(trakt.reads.length, reads);
+  // Without the token, or with a made-up one, there is nothing here.
+  assert.equal((await get(`${BASE}/api/rows/rnotarealtokenatallnotreal/manifest.json`)).status, 404);
+  assert.equal((await get(`${address}/catalog/movie/nothing.json`)).status, 404);
+  // Disconnected from the hub with no other Trakt: the rows leave her Home on the next sync, and the address answers with nothing.
+  assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200);
+  assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(rowsOf(playerOf('Ada')[1].config), []);
+  assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').trakt, false);
+  assert.deepEqual((await get(served[0].sourceUrl)).body, {metas: []});
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);

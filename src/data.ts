@@ -16,7 +16,7 @@ export interface Settings {
 }
 export type Overrides = Partial<Settings>;
 export interface Device {id: string; app: string; name: string; seen: string; where?: string}
-export interface Person {v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
+export interface Person {v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
 export interface Hub {
@@ -95,7 +95,9 @@ export function resolve(hub: Hub, group?: Group, person?: Person): Resolved {
   return {values, from};
 }
 export const groupRows = (hub: Hub, group: Group) => group.rows ?? hub.rows;
-export const personRows = (hub: Hub, person: Person) => person.rows ?? [...(person.trakt ? traktRows() : []), ...groupRows(hub, hub.groups.find(item => item.id === person.groupId)!)];
+// Trakt rows come with either Trakt connection: the hub's own (history), or the older one made through AIOMetadata (trakt).
+export const hasTrakt = (person: Person) => person.trakt || (!!person.history && !person.history.again);
+export const personRows = (hub: Hub, person: Person) => person.rows ?? [...(hasTrakt(person) ? traktRows() : []), ...groupRows(hub, hub.groups.find(item => item.id === person.groupId)!)];
 
 const words = ['maple', 'river', 'copper', 'lantern', 'meadow', 'harbor', 'ember', 'willow', 'pebble', 'comet'];
 function seed(text: string) {let h = 11; for (const c of text) h = (h * 33 + c.charCodeAt(0)) >>> 0; return h;}
