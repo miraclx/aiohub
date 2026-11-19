@@ -116,14 +116,18 @@ async function seatOf(env: Env, hub: string, id: string): Promise<Seat | null> {
    reports pass through: on start, on stop, and at most once a minute in between. Nothing is sent on a person's behalf unless
    they connected Trakt history (scrobble, below). */
 const REPORTS: Record<string, 'start' | 'progress' | 'stop'> = {'/sessions/playing': 'start', '/sessions/playing/progress': 'progress', '/sessions/playing/stopped': 'stop'};
-const noted = new Map<string, number>();
+const noted = new Map<string, number>(), seen = new Map<string, {pos: number; at: number; paused: boolean}>();
 async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', text: string) {
   let report: {ItemId?: string; PositionTicks?: number; IsPaused?: boolean};
   try {report = JSON.parse(text);} catch {return;}
   const item = String(report.ItemId ?? '').slice(0, 200), key = `${hub}/${seat.person}/${item}`, last = noted.get(key) ?? 0, paused = report.IsPaused === true;
   // For Trakt, a pause (or carrying on after one) counts as it happens, not at the next once-a-minute note.
   const turned = kind === 'progress' && seat.scrobble && told.get(key) !== (paused ? 'paused' : 'playing');
-  if (!item || (kind === 'progress' && !turned && Date.now() - last < 60_000)) return;
+  // So does a jump forward or back: Trakt counts on from where it was last told, so a skip leaves it behind until told again.
+  const at = Math.max(0, Number(report.PositionTicks ?? 0) / 1e7), before = seen.get(key);
+  const jumped = kind === 'progress' && !!seat.scrobble && !paused && !!before && Math.abs(at - before.pos - (before.paused ? 0 : (Date.now() - before.at) / 1000)) > 60;
+  if (kind === 'stop' || kind === 'mark') seen.delete(key); else {if (seen.size > 5000) seen.clear(); seen.set(key, {pos: at, at: Date.now(), paused});}
+  if (!item || (kind === 'progress' && !turned && !jumped && Date.now() - last < 60_000)) return;
   if (noted.size > 5000) noted.clear(); noted.set(key, Date.now());
   if (kind === 'start') {
     await env.DB.prepare('INSERT INTO starts (hub, person, item, device, at) VALUES (?, ?, ?, ?, ?)').bind(hub, seat.person, item, seat.on, now()).run();
@@ -142,18 +146,20 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
     await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, device = excluded.device, updated = excluded.updated, art = excluded.art')
       .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), kind === 'mark' ? Math.round(Number(about.RunTimeTicks ?? 0) / 1e7) : position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art).run();
   }
-  if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused);
+  if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused, jumped);
 }
 const asPerson = (seat: Seat) => `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`;
 /* Trakt history, for a person who connected it (see trakt.ts). Starting, pausing, carrying on, stopping and ticking as watched are
    passed on as they happen, in the background; the app's own request never waits. Progress in between is not sent. */
 const told = new Map<string, string>();
-async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', item: string, position: number, paused: boolean) {
+async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', item: string, position: number, paused: boolean, jumped = false) {
   const key = `${hub}/${seat.person}/${item}`, want = kind === 'start' ? 'playing' : kind === 'progress' ? (paused ? 'paused' : 'playing') : 'stopped';
   if (told.size > 5000) told.clear(); told.set(key, want);
   const row = await env.DB.prepare('SELECT duration, ids, scrobbled, scrobbled_at FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{duration: number; ids: string | null; scrobbled: string | null; scrobbled_at: number | null}>();
   // A pause or carrying on only counts inside a play Trakt was told about; a report that arrives after stop starts nothing.
-  if (!row || (kind === 'progress' && (row.scrobbled === want || (row.scrobbled !== 'playing' && row.scrobbled !== 'paused')))) return;
+  // A skip while playing is told as a fresh start from the new place.
+  const skipped = jumped && want === 'playing' && row?.scrobbled === 'playing';
+  if (!row || (kind === 'progress' && !skipped && (row.scrobbled === want || (row.scrobbled !== 'playing' && row.scrobbled !== 'paused')))) return;
   const ids = row.ids ?? await idsOf(env, hub, seat, item);
   if (!ids) return;
   const target = JSON.parse(ids) as Target, progress = row.duration ? progressOf(position, row.duration) : 0;

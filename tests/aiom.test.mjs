@@ -230,24 +230,27 @@ test('Trakt history connects with the code Trakt shows, and the device code stay
   const late = await owner('POST', '/api/people/ada/scrobble/check', {});
   assert.deepEqual(late.body, {state: 'connected', username: 'adatrakt'});
 });
-test('a film played, paused, carried on and finished reaches Trakt as start, pause, start, stop', async () => {
+test('a film played, paused, carried on, skipped ahead and finished reaches Trakt as start, pause, start, start, stop', async () => {
   const film = {movie: {ids: {tmdb: 27205, imdb: 'tt1375666'}}};
   await say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}); await heard(1);
   // Plain progress is not passed on; a pause is, at once, and only once however often the app says it is still paused.
-  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 300e7, IsPaused: false});
+  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 30e7, IsPaused: false});
   await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: true}); await heard(2);
   await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: true});
   await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: false}); await heard(3);
-  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 900e7, IsPaused: false});
+  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 620e7, IsPaused: false});
+  // Skipped ahead half an hour: Trakt is told the new place.
+  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 2400e7, IsPaused: false}); await heard(4);
   await say('/Sessions/Playing/Stopped', {ItemId: FILM, PositionTicks: 5400e7});
-  assert.deepEqual(await heard(4), [
+  assert.deepEqual(await heard(5), [
     {path: '/scrobble/start', body: {...film, progress: 0}}, {path: '/scrobble/pause', body: {...film, progress: 10}},
-    {path: '/scrobble/start', body: {...film, progress: 10}}, {path: '/scrobble/stop', body: {...film, progress: 90}},
+    {path: '/scrobble/start', body: {...film, progress: 10}}, {path: '/scrobble/start', body: {...film, progress: 40}},
+    {path: '/scrobble/stop', body: {...film, progress: 90}},
   ]);
   assert.ok(trakt.calls.every(call => call.auth === 'trakt-access-1'));
   // The app then ticks it as watched, as many do: Trakt already counted the stop, so nothing more is sent.
   await say(`/Users/${jf}/PlayedItems/${FILM}`, {}); await pause(800);
-  assert.equal(trakt.calls.length, 4);
+  assert.equal(trakt.calls.length, 5);
 });
 test('an episode goes by its show’s ids with its season and number, and a repeated stop (409) counts as done', async () => {
   trakt.calls = []; trakt.stop = 409;
