@@ -6,7 +6,7 @@ import {Activity} from './activity';
 import {GroupOrder, HomeEditor, moved} from './home';
 import {PlaybackEditor, SourcesEditor} from './settings';
 import type {EditorProps} from './settings';
-import {addPasskey, canPasskey, usePasskey} from './live';
+import {addPasskey, beAs, canPasskey, leaveAs, usePasskey} from './live';
 import type {Live} from './live';
 import {Avatar, NameField, Secret, Segments, Setting, Sheet, Switch, Tabs, addReal} from './ui';
 
@@ -166,6 +166,7 @@ function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: 
     <ul className="accounts">
       <li><div><h3>Streams</h3><p>Played through the shared {resolve(hub, group, person).values.debrid} account. Nothing to set up.</p></div><span className="pill ok">Shared</span></li>
       <Trakt page={page} person={person} mine={mine}/>
+      <MdbList page={page} person={person} mine={mine}/>
     </ul>
     <Progress page={page} person={person} mine={mine}/>
   </section>;
@@ -258,55 +259,78 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
       <button type="button" className="link small" disabled={busy} onClick={() => work(live.call('DELETE', `/api/people/${person.id}/trakt`), 'Older Trakt link removed')}>Disconnect it</button></div>}
   </li>;
 }
+/* MDBList, an account like Trakt: optional and free. Connecting only saves their own key (checked with MDBList, kept in the
+   vault); it reads their lists from then on. Keeping progress there is chosen below it (Progress). A key not keeping progress can
+   be removed; one that is can only be replaced, until progress is kept Here again. */
+function MdbList({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
+  const {update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
+  const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [dropping, setDropping] = useState(false);
+  const their = mine ? 'your' : 'their', moving = person.moving ?? null, connected = person.lists || (!!live && (!!person.listsKept || !!moving));
+  const about = `Optional and free. It can keep ${their} progress in ${their} own MDBList account, where other apps read it too, and it lets rows hide what’s been watched.`;
+  if (!live) {
+    const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
+    return <li><div><h3>MDBList</h3><p>{person.lists ? `Connected. Keeps ${their} progress.` : about}</p></div>
+      {person.lists ? null : mine ? <button type="button" className="primary small" onClick={() => edit(target => {target.lists = true;}, 'MDBList connected')}>Connect</button>
+        : <span className="pill" title={`Send ${person.name} their link from the Settings tab`}>Waiting for {person.name}</span>}</li>;
+  }
+  const save = () => {
+    setBusy(true); void live.call<{username: string}>('POST', at, {key: own, ...(person.lists ? {} : {keep: true})}).then(found => {
+      toast(connected ? 'MDBList key replaced' : found.username ? `MDBList connected as ${found.username}` : 'MDBList connected');
+      setKeying(false); setOwn(''); live.apps(); return live.reload();
+    }, fail(toast)).finally(() => setBusy(false));
+  };
+  const forget = () => {setDropping(false); setBusy(true); void live.call('DELETE', `${at}/key`).then(() => {toast('MDBList disconnected'); live.apps(); return live.reload();}, fail(toast)).finally(() => setBusy(false));};
+  const named = person.listsName ? ` as ${person.listsName}` : '';
+  const state = !connected ? about : person.lists ? `Connected${named}. Keeps ${their} progress.` : moving ? `Connected${named}.` : `Connected${named}. Not keeping progress; it reads ${their} lists.`;
+  return <li className="stacked"><div className="account-row"><div><h3>MDBList</h3><p>{state}</p>
+      {connected && !keying && <p className="quiet-links"><button type="button" className="link small" disabled={busy} onClick={() => setKeying(true)}>Replace key</button></p>}</div>
+    {connected ? <button type="button" className="ghost small" disabled={busy} onClick={() => setDropping(true)}>Disconnect</button>
+      : !keying && <button type="button" className="primary small" disabled={busy} onClick={() => setKeying(true)}>Connect</button>}</div>
+    {keying && <form className="stack link-back" onSubmit={event => {event.preventDefault(); save();}}>
+      <p className="muted small">{person.lists ? 'A key from another MDBList account moves where new progress goes; what is already in the old one stays there. ' : ''}Paste {their} own MDBList API key. It is at <a className="link" href="https://mdblist.com/preferences/" target="_blank" rel="noreferrer">mdblist.com, Preferences, API Access</a>. One key per person: a shared key would mix everyone’s watching together.</p>
+      <div className="field-row"><input type="password" aria-label="MDBList API key" placeholder="API key" autoComplete="off" value={own} onChange={event => setOwn(event.target.value)}/><button className="primary" disabled={busy || !own.trim()}>Save</button><button type="button" className="ghost" onClick={() => {setKeying(false); setOwn('');}}>Cancel</button></div>
+    </form>}
+    {dropping && <Confirm title="Disconnect MDBList?" body={person.lists || moving ? `Progress goes back to being kept here, and ${their} MDBList lists stop showing. Plays only in MDBList stay there; to bring them here first, choose Here under Where progress is kept.` : `${mine ? 'Your' : 'Their'} MDBList lists stop showing here. Nothing in ${their} MDBList account changes.`} action="Disconnect" onYes={forget} onClose={() => setDropping(false)}/>}
+  </li>;
+}
 /* Where someone's progress is kept: Continue Watching, what's ticked as watched, Next Up. Here (AIOMetadata keeps it, nothing to
-   connect) or in their own MDBList account, where other apps can read it too. Hiding watched titles only works with MDBList:
+   connect), or their own MDBList account once MDBList is connected above. Hiding watched titles only works with MDBList:
    AIOMetadata hides only by what a connected tracker says, and here it has none. */
 function Progress({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
-  const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [leaving, setLeaving] = useState(false), [back, setBack] = useState(false);
+  const [busy, setBusy] = useState(false), [leaving, setLeaving] = useState(false), [back, setBack] = useState(false);
   // On their own page a switch is a move (the card below), and it happens only once their plays are across.
   const self = mine && !!live, moving = person.moving ?? null;
-  // A key saved before and kept while progress is Here: picking MDBList again takes it up, with nothing to paste.
-  const kept = !!live && !!person.listsKept && !person.lists && !moving;
-  const their = mine ? 'your' : 'their', choice = person.lists ? (back || moving === 'here' ? 'here' : 'mdblist') : keying || moving === 'mdblist' ? 'mdblist' : 'here';
+  const chooses = person.lists || (!!live && (!!person.listsKept || !!moving));
+  const their = mine ? 'your' : 'their', choice = person.lists ? (back || moving === 'here' ? 'here' : 'mdblist') : moving === 'mdblist' ? 'mdblist' : 'here';
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
+  // MDBList again, with the key saved above: on their own page it opens the move; anyone else's choice switches at once.
+  const take = () => {
+    const move = self, as = (found: {username: string}) => found.username ? ` as ${found.username}` : '';
+    setBusy(true); void live!.call<{username: string}>('POST', at, {reuse: true, ...(move ? {moving: true} : {})}).then(found => {
+      toast(move ? 'Move your plays across to switch to MDBList.' : `Back on MDBList${as(found)}`); live!.apps(); return live!.reload();
+    }, fail(toast)).finally(() => setBusy(false));
+  };
   const pick = (value: 'here' | 'mdblist') => {
-    if (self && value === 'mdblist' && person.lists) return setBack(false);
-    if (value === 'mdblist' && !person.lists) {if (moving !== 'mdblist') {if (kept) save(true); else if (live) setKeying(true); else if (mine) edit(target => {target.lists = true;}, 'MDBList connected');} return;}
-    if (value === 'here') {setKeying(false); if (person.lists) {if (self) setBack(true); else setLeaving(true);}}
+    if (busy) return;
+    if (value === 'mdblist') {if (person.lists) setBack(false); else if (moving !== 'mdblist') {if (live) take(); else if (mine) edit(target => {target.lists = true;}, 'Progress kept in MDBList');} return;}
+    if (person.lists) {if (self) setBack(true); else setLeaving(true);}
   };
   const leave = () => {
     setLeaving(false);
     if (!live) return edit(target => {target.lists = false; target.rows = target.rows?.filter(row => !row.source.startsWith('MDBList')) ?? null;}, 'Progress kept here');
     setBusy(true); void live.call('DELETE', at).then(() => {toast('Progress kept here'); live.apps(); return live.reload();}, fail(toast)).finally(() => setBusy(false));
   };
-  const save = (reuse = false) => {
-    const move = self && !person.lists, as = (found: {username: string}) => found.username ? ` as ${found.username}` : '';
-    setBusy(true); void live!.call<{username: string}>('POST', at, {...(reuse ? {reuse: true} : {key: own}), ...(move ? {moving: true} : {})}).then(found => {
-      toast(reuse ? move ? 'Move your plays across to switch to MDBList.' : `Back on MDBList${as(found)}` : move ? `MDBList connected${as(found)}. Move your plays across to switch.` : found.username ? `MDBList connected as ${found.username}` : person.lists ? 'MDBList key replaced' : 'MDBList connected');
-      setKeying(false); setOwn(''); live!.apps(); return live!.reload();
-    }, fail(toast)).finally(() => setBusy(false));
-  };
-  const forget = () => {setBusy(true); void live!.call('DELETE', `${at}/key`).then(() => {toast('MDBList key removed'); live!.apps(); return live!.reload();}, fail(toast)).finally(() => setBusy(false));};
-  const canChoose = !!live || mine || person.lists;
+  const canChoose = chooses && (!!live || mine);
   return <>
-    <h3 className="sub">Where progress is kept</h3>
-    <p className="muted small below-head">Continue Watching, what’s ticked as watched, Next Up, and hiding what’s been watched.</p>
-    <ul className="accounts">
-      <li className="stacked"><div className="account-row"><div><h3>{choice === 'here' ? 'Here' : 'MDBList'}</h3>
-        <p>{choice === 'here' ? 'Kept on this hub, in the player apps. Nothing to connect.' : person.lists ? `${person.listsName ? `Connected as ${person.listsName}. ` : ''}In ${their} own MDBList account, so other apps that read MDBList see it too.` : `In ${their} own MDBList account, so other apps that read MDBList see it too. Free.`}</p>
-          {live && person.lists && !keying && !moving && !back && <button type="button" className="link small" onClick={() => setKeying(true)}>Replace key</button>}</div>
-        {canChoose ? <Segments label="Where progress is kept" value={choice} onChange={pick} options={[{value: 'here', label: 'Here'}, {value: 'mdblist', label: 'MDBList'}]}/>
-          : <span className="pill" title={`Send ${person.name} their link from the Settings tab`}>Waiting for {person.name}</span>}</div>
-        {choice === 'here' && <p className="muted small">Hiding what’s been watched needs MDBList. With progress kept here, watched titles stay in rows.</p>}
-        {choice === 'here' && kept && <p className="muted small kept-key">{mine ? 'Your' : `${person.name}’s`} MDBList key{person.listsName ? ` (${person.listsName})` : ''} is saved but not in use. It still reads {their} lists. <button type="button" className="link small" disabled={busy} onClick={forget}>Remove key</button></p>}
-        {live && keying && <form className="stack link-back" onSubmit={event => {event.preventDefault(); save();}}>
-          <p className="muted small">{person.lists ? 'A key from another MDBList account moves where new progress goes; what is already in the old one stays there. ' : ''}Paste {their} own MDBList API key. It is at <a className="link" href="https://mdblist.com/preferences/" target="_blank" rel="noreferrer">mdblist.com, Preferences, API Access</a>. One key per person: a shared key would mix everyone’s watching together.</p>
-          <div className="field-row"><input type="password" aria-label="MDBList API key" placeholder="API key" autoComplete="off" value={own} onChange={event => setOwn(event.target.value)}/><button className="primary" disabled={busy || !own.trim()}>Save</button>{person.lists && <button type="button" className="ghost" onClick={() => {setKeying(false); setOwn('');}}>Cancel</button>}</div>
-        </form>}
+    <ul className="accounts progress">
+      <li className="stacked"><div className="account-row"><div><h3>Where progress is kept</h3>
+        <p>Continue Watching, what’s ticked as watched and Next Up. {choice === 'here' ? chooses ? 'Kept on this hub, in the player apps.' : 'Kept on this hub, in the player apps. Connect MDBList to keep it there instead.' : `Kept in ${their} own MDBList account, where other apps read it too.`}</p></div>
+        {canChoose && <Segments label="Where progress is kept" value={choice} onChange={pick} options={[{value: 'here', label: 'Here'}, {value: 'mdblist', label: 'MDBList'}]}/>}</div>
+        {choice === 'here' && chooses && <p className="muted small">Hiding what’s been watched needs MDBList. With progress kept here, watched titles stay in rows.</p>}
       </li>
       {live && self && <Trackers page={page} person={person} back={back} onBack={setBack}/>}
-      {live && !self && person.lists && <li><div><h3>What they watched here</h3><p>{person.name} can copy it to MDBList from their own page, under Accounts. It’s theirs, so it isn’t shown here.</p></div></li>}
+      {live && !self && (person.lists || person.history) && <li><div><h3>What they watched</h3><p>{person.name}’s own page, under Accounts, shows what’s missing between where {their} progress is kept and Trakt. It’s theirs, so it isn’t shown here.</p></div></li>}
     </ul>
     {leaving && <Confirm title="Keep progress here?" body={`MDBList stops keeping ${mine ? 'your' : `${person.name}’s`} progress. The key stays saved, unused, for picking MDBList again later, and whatever is already in that account stays there.`} action="Keep it here" onYes={leave} onClose={() => setLeaving(false)}/>}
   </>;
@@ -660,7 +684,7 @@ export function AccountPage({hub, update, toast, go, live}: PageProps) {
     <div className="card settings"><Setting title="Theme"><Segments label="Theme" value={hub.me.theme} onChange={value => update(next => {next.me.theme = value;})} options={[{value: 'dark', label: 'Dark'}, {value: 'light', label: 'Light'}, {value: 'auto', label: 'Match device'}]}/></Setting></div>
     {SAMPLE && <><h3 className="sub">Preview</h3>
     <div className="card settings"><Setting title="First-time setup" hint="Walk through what a new manager sees."><button type="button" className="ghost small" onClick={() => go('/setup')}>Open</button></Setting></div></>}
-    <button type="button" className="danger" onClick={() => live ? void live.call('POST', '/api/signout', {}).then(() => {go('/'); return live.reload();}, fail(toast)) : toast('Preview: this signs you out')}>Sign out</button>
+    <button type="button" className="danger" onClick={() => live ? void live.call('POST', '/api/signout', {}).then(() => {leaveAs(); go('/'); return live.reload();}, fail(toast)) : toast('Preview: this signs you out')}>Sign out</button>
     {codes && <Sheet title="Recovery codes" onClose={() => setCodes(null)}><p className="muted sheet-lead">{live ? 'Any one of these, with your hub code, gets you back in. Each works once. Save them now: they are not shown again.' : 'Each works once. Keep them somewhere safe. These are samples.'}</p><ul className="codes">{codes.map(code => <li key={code}><code>{code}</code></li>)}</ul></Sheet>}
     {changing && live && <PasswordSheet toast={toast} onClose={() => setChanging(false)} onSave={(old, password) => live.call('POST', '/api/account/password', {old, password})}/>}
     {live && <><h3 className="sub">Danger</h3><div className="card settings"><Setting title="Delete this hub" hint="Removes the hub, everyone in it and its setup on the streaming server. There is no undo."><button type="button" className="ghost small" onClick={() => {setEnding(true); setPass('');}}>Delete</button></Setting></div></>}
@@ -772,7 +796,7 @@ export function JoinPage(page: PageProps & {id: string; tab: string; base?: stri
         <Setting title="Password" hint={live ? 'For this page. Player apps use their own password, under Devices.' : 'The same one signs you in to the player apps.'}><button type="button" className="ghost small" onClick={() => live ? setChanging(true) : toast('Preview: this asks for the old and a new password')}>Change</button></Setting>
         {SAMPLE && <Setting title="Passkey" hint="Sign in here with a fingerprint or face. Optional."><button type="button" className="ghost small" onClick={() => toast('Preview: this adds a passkey on this device')}>Add</button></Setting>}
       </div>
-      {live && <button type="button" className="danger" onClick={() => void live.call('POST', '/api/signout', {}).then(() => {go('/'); return live.reload();}, fail(toast))}>Sign out</button>}
+      {live && <button type="button" className="danger" onClick={() => void live.call('POST', '/api/signout', {}).then(() => {leaveAs(); go('/'); return live.reload();}, fail(toast))}>Sign out</button>}
     </section>}
     {changing && live && <PasswordSheet toast={toast} onClose={() => setChanging(false)} onSave={(old, password) => live.call('POST', `/api/people/${id}/password`, {old, password}).then(() => live.reload())}/>}
   </>;
@@ -783,7 +807,8 @@ interface Asked {name: string; username: string; owner: string; joined: boolean}
 /* An invite link. Opened by their manager in the same browser, it goes straight to their own view once they have joined. */
 export function JoinGate({token, live, toast, manager, onIn}: {token: string; live: Live; toast: (text: string) => void; manager: boolean; onIn: () => void}) {
   const [info, setInfo] = useState<Asked | 'gone' | null>(null), [waiting, setWaiting] = useState(false), [pass, setPass] = useState(''), [busy, setBusy] = useState(false);
-  useEffect(() => {void live.call<{gone?: boolean; ok?: boolean; ask?: Asked; waiting?: Asked}>('POST', '/api/join', {token}).then(found => {
+  useEffect(() => {void live.call<{gone?: boolean; ok?: boolean; as?: string; ask?: Asked; waiting?: Asked}>('POST', '/api/join', {token}).then(found => {
+    if (found.as) beAs(found.as);
     if (found.ok) return onIn();
     setWaiting(!!found.waiting); setInfo(found.waiting ?? found.ask ?? 'gone');
   }, fail(toast));}, [token]);

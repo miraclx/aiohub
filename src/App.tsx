@@ -3,7 +3,7 @@ import type {ReactNode} from 'react';
 import {SAMPLE, sampleHub} from './data';
 import type {Hub} from './data';
 import {Activity} from './activity';
-import {call, changes, settle} from './live';
+import {asWho, call, changes, leaveAs, settle} from './live';
 import type {Live, Refused} from './live';
 import {AccountPage, GroupPage, HubPage, JoinGate, JoinPage, PeoplePage, PersonPage, SetupPage, SignInPage, backFromTrakt, lostTrakt} from './pages';
 import type {PageProps} from './pages';
@@ -25,7 +25,7 @@ function Frame({page, parts, mine, bar, toastView, children}: {page?: PageProps;
   const [at, id, tab] = parts, people = !at || at === 'person' || at === 'group', hub = page?.hub;
   return <div className="app">
     <header className="top"><a className="brand" href={mine ?? '#/'}><span className="logo" aria-hidden="true"/>AIOHub</a>
-      {page && hub && mine && hub.manager && <button type="button" className="link small" onClick={() => void call('POST', '/api/back', {}).then(() => {location.hash = '#/'; location.reload();}, () => {})}>Back to manager</button>}
+      {page && hub && mine && hub.manager && <button type="button" className="link small" onClick={() => {const home = () => {location.hash = '#/'; location.reload();}; if (asWho()) {leaveAs(); home();} else void call('POST', '/api/back', {}).then(home, () => {});}}>Back to manager</button>}
       {page && hub && !mine && <nav><a href="#/" className={people ? 'on' : ''}>People</a><a href="#/activity" className={at === 'activity' ? 'on' : ''}>Activity</a><a href="#/hub" className={at === 'hub' ? 'on' : ''}>Hub</a><a href="#/account" className={`me${at === 'account' ? ' on' : ''}`} aria-label="Your account"><Avatar name={hub.me.name} size={26}/></a></nav>}
     </header>
     {bar}

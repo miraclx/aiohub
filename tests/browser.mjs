@@ -111,11 +111,14 @@ await guest.getByLabel('Password').fill('my own password'); await guest.getByRol
 // Accounts, on her own page. Trakt is one card with one Connect; progress is kept here until she picks MDBList.
 await guest.goto(BASE + '/#/me/accounts'); const trakt = guest.locator('.accounts li', {has: guest.getByRole('heading', {name: 'Trakt', exact: true})});
 await trakt.getByText('Trakt follows along as things are watched here').waitFor(); assert.equal(await guest.getByText('Trakt history').count(), 0);
-assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
-await guest.getByText('Hiding what’s been watched needs MDBList').waitFor(); await shot(guest, '12-accounts');
-// Picking MDBList asks for her key; going back to Here before saving leaves nothing changed.
-await guest.getByRole('radio', {name: 'MDBList'}).click(); await guest.getByLabel('MDBList API key').waitFor();
-await guest.getByRole('radio', {name: 'Here'}).click(); assert.equal(await guest.getByLabel('MDBList API key').count(), 0);
+// MDBList is an account like Trakt, optional; with none connected there is nothing to choose for progress.
+const mdb = guest.locator('.accounts li', {has: guest.getByRole('heading', {name: 'MDBList', exact: true})}).first();
+await mdb.getByText('Optional and free.', {exact: false}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).count(), 0);
+await guest.getByText('Connect MDBList to keep it there instead.', {exact: false}).waitFor();
+await shot(guest, '12-accounts');
+// Connect asks for her key; Cancel before saving leaves nothing changed.
+await mdb.getByRole('button', {name: 'Connect'}).click(); await guest.getByLabel('MDBList API key').waitFor();
+await mdb.getByRole('button', {name: 'Cancel'}).click(); assert.equal(await guest.getByLabel('MDBList API key').count(), 0);
 // Connecting Trakt: off to Trakt's sign-in and back to this page, which finishes it with Trakt (busy at first) and says so.
 await traktIn(guest.context());
 await trakt.getByRole('button', {name: 'Connect'}).click(); await trakt.getByText('Trakt is busy, trying again…').waitFor();
@@ -180,24 +183,28 @@ assert.equal(await columns(), 'Here | Trakt'); await card.getByText('· watched 
 const andor = card.getByRole('button', {name: 'Add Andor S2E4'}); await andor.click(); assert.equal(await andor.getAttribute('aria-pressed'), 'false'); await card.getByRole('button', {name: 'Add 2 plays'}).waitFor();
 await both(guest, '13a-card-here-trakt'); await andor.click();
 holds('here-trakt', []); await guest.reload(); await guest.getByText('Here and Trakt · all in step', {exact: false}).waitFor(); await both(guest, '13h-card-here-trakt-in-step');
-// Choosing MDBList on her own page keeps the key and opens the move: nothing switches until her plays are across.
-await guest.getByRole('radio', {name: 'MDBList'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key');
-await guest.getByRole('button', {name: 'Save'}).click(); await toast(guest).filter({hasText: 'Move your plays across to switch'}).waitFor();
+// Connecting MDBList only saves the key: progress stays Here, and the choice appears.
+await mdb.getByRole('button', {name: 'Connect'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key');
+await guest.getByRole('button', {name: 'Save'}).click(); await toast(guest).filter({hasText: 'MDBList connected'}).waitFor();
+await mdb.getByText('Not keeping progress; it reads your lists.', {exact: false}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
+await both(guest, '12b-mdblist-connected');
+// Choosing MDBList on her own page opens the move: nothing switches until her plays are across.
+await guest.getByRole('radio', {name: 'MDBList'}).click(); await toast(guest).filter({hasText: 'Move your plays across to switch'}).waitFor();
 holds('here-mdblist', [play('p:show/194764:1:6', 'The Penguin', 'Season 1 · Episode 6', 2, {here: 'has', lists: 'add'}, {pct: 42}), play('w:show/66276:6:6', 'Slow Horses', 'Season 6 · Episode 6', 15, {here: 'has', lists: 'add'}), play('w:show/1407:5:5', 'Homeland', 'Season 5 · Episode 5', 18, {here: 'has', lists: 'add'})]);
 await guest.reload();
 await card.getByRole('heading', {name: 'Moving to MDBList'}).waitFor(); await card.getByText('3 plays to move').waitFor(); assert.equal(await columns(), 'Here | MDBList');
 await card.getByRole('button', {name: 'Move 3 plays and switch'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'MDBList'}).getAttribute('aria-checked'), 'true');
 assert.equal((await guest.evaluate(async () => (await (await fetch('/api/state')).json()).hub.people[0])).lists, false, 'not switched yet');
 await both(guest, '13e-card-moving-to-mdblist');
-// Staying on Here keeps the key, saved but not in use, with a quiet way to remove it. Her card pairs Here and Trakt.
+// Staying on Here keeps MDBList connected, not keeping progress, with Disconnect beside it. Her card pairs Here and Trakt.
 await card.getByRole('button', {name: 'Stay on Here'}).click(); await toast(guest).filter({hasText: 'Staying on Here'}).waitFor();
 assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true'); await guest.locator('li.trackers', {hasText: 'Here and Trakt'}).waitFor();
-await guest.getByText('Your MDBList key (adalists) is saved but not in use.').waitFor(); await guest.getByRole('button', {name: 'Remove key'}).waitFor();
+await mdb.getByText('Connected as adalists. Not keeping progress; it reads your lists.').waitFor(); await mdb.getByRole('button', {name: 'Disconnect'}).waitFor();
 await both(guest, '13i-kept-key');
 // The manager connects it for her instead (from the manager's view it switches at once). Plays from before stay Here until she
 // finishes moving them: the card shows that first.
 // Her saved key is taken up again: nothing to paste.
-await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Ada’s MDBList key (adalists) is saved but not in use.').waitFor();
+await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Connected as adalists. Not keeping progress; it reads their lists.').waitFor();
 await owner.getByRole('radio', {name: 'MDBList'}).click(); assert.equal(await owner.getByLabel('MDBList API key').count(), 0);
 await toast(owner).filter({hasText: 'Back on MDBList as adalists'}).waitFor();
 holds('here-mdblist', [play('w:show/66276:6:6', 'Slow Horses', 'Season 6 · Episode 6', 15, {here: 'has', lists: 'add'}), play('w:movie/603', 'The Matrix', 'Movie', 20, {here: 'has', lists: 'add'})]);
@@ -229,11 +236,19 @@ assert.equal(await guest.getByRole('radio', {name: 'MDBList'}).getAttribute('ari
 sqlLocal('DELETE FROM drift');
 // The manager sees none of it: what she watched is hers alone.
 await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Connected as adatrakt.').waitFor();
-await owner.getByText('can copy it to MDBList from their own page').waitFor(); assert.equal(await owner.locator('li.trackers').count(), 0); await shot(owner, '14-accounts-manager');
+await owner.getByText('It’s theirs, so it isn’t shown here.').waitFor(); assert.equal(await owner.locator('li.trackers').count(), 0); await shot(owner, '14-accounts-manager');
 // The manager who is Ada too opens her link once she has joined: straight into her own view, as if she had signed in, with her
 // own things there. "Back to manager" returns to the manager's view, which was kept aside meanwhile.
 await owner.goto(link); await owner.waitForURL(/#\/me/); await owner.getByText('Shared with you').waitFor(); await owner.getByRole('button', {name: 'Back to manager'}).waitFor();
-await owner.goto(BASE + '/#/me/accounts'); await owner.getByText('Where progress is kept').waitFor(); assert.equal(await owner.getByText('can copy it to MDBList from their own page').count(), 0); await shot(owner, '14b-accounts-as-ada');
+await owner.goto(BASE + '/#/me/accounts'); await owner.getByText('Where progress is kept').waitFor(); assert.equal(await owner.getByText('It’s theirs, so it isn’t shown here.').count(), 0); await shot(owner, '14b-accounts-as-ada');
+// Side by side: another tab in the same browser is still the manager's, and stays so while Ada's tab is used and reloaded.
+const beside = await owner.context().newPage(); await beside.goto(BASE + '/#/'); await beside.getByText('Add someone to Family').waitFor();
+await owner.reload(); await owner.getByText('Where progress is kept').waitFor(); await beside.reload(); await beside.getByText('Add someone to Family').waitFor();
+await beside.goto(BASE + '/#/person/ada/accounts'); await beside.getByText('It’s theirs, so it isn’t shown here.').waitFor(); await owner.reload(); await owner.getByText('Where progress is kept').waitFor();
+// Signing out of Ada's view ends only hers; the manager's tab stays signed in.
+await owner.goto(BASE + '/#/me/you'); await owner.getByRole('button', {name: 'Sign out'}).click(); await owner.getByText('Add someone to Family').waitFor();
+await beside.reload(); await beside.getByText('It’s theirs, so it isn’t shown here.').waitFor(); await beside.close();
+await owner.goto(link); await owner.waitForURL(/#\/me/); await owner.getByText('Shared with you').waitFor();
 await owner.getByRole('button', {name: 'Back to manager'}).click(); await owner.getByText('Add someone to Family').waitFor();
 // Her rows' posters stay on her page: the hub's Home shows only blanks where her Trakt rows would go.
 await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later').first().waitFor(); assert.equal(await owner.locator('.rows .row.later .posters span:not(.blank)').count(), 0);

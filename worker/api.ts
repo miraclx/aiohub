@@ -18,9 +18,13 @@ const TAKEN = 'Someone in this hub already has that name';
 class Bad extends Error {constructor(public status: number, message: string) {super(message);}}
 const bad = (status: number, message: string): never => {throw new Bad(status, message);};
 const reply = (body: unknown, status = 200, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), {status, headers: {'content-type': 'application/json', 'cache-control': 'no-store', ...headers}});
-// KEPT: the manager's own session, set aside while they are in a person's view (opened from that person's link), to go back to.
-const COOKIE = 'hub_s', KEPT = 'hub_m', MONTH = 30 * 86400;
+// AS + person id: a person's session that their manager opened from that person's link, held beside the manager's own (COOKIE), so
+// the manager's view and the person's view can be open side by side. A tab in the person's view says so with the x-as header.
+// KEPT: older browsers that swapped the manager's session aside instead, to go back to.
+const COOKIE = 'hub_s', KEPT = 'hub_m', AS = 'hub_p_', MONTH = 30 * 86400;
 const cookieOf = (request: Request, name: string) => new RegExp(`(?:^|;\\s*)${name}=([^;]+)`).exec(request.headers.get('cookie') ?? '')?.[1];
+const asOf = (request: Request) => {const id = request.headers.get('x-as') ?? ''; return /^[a-z0-9][a-z0-9-]{0,63}$/.test(id) ? id : '';};
+const heldOf = (request: Request) => [...(request.headers.get('cookie') ?? '').matchAll(/(?:^|;\s*)hub_p_([a-z0-9-]+)=([^;]+)/g)].map(m => ({person: m[1], token: m[2]}));
 const cookie = (value: string, age: number, name = COOKIE) => ({'set-cookie': `${name}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${age}`});
 
 /* ---------- what may be stored ---------- */
@@ -101,9 +105,13 @@ const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history
 
 /* ---------- who is asking ---------- */
 // manager: in a person's view, the manager's own session set aside in this browser (and its cookie value, to go back with).
-interface Who {session: string; account?: {id: string; username: string; name: string; theme: string}; hub: HubRow; person?: string; manager?: {session: string; token: string}}
+// beside: the person's session is held next to the manager's (AS), rather than having swapped it aside (KEPT).
+interface Who {session: string; account?: {id: string; username: string; name: string; theme: string}; hub: HubRow; person?: string; manager?: {session: string; token: string; beside?: boolean}}
 async function whoIs(request: Request, env: Env): Promise<Who | null> {
-  const token = new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`).exec(request.headers.get('cookie') ?? '')?.[1];
+  // A tab in a person's view asks as that person, and only with the session held for them; without it, it is not signed in.
+  const as = asOf(request), held = as ? cookieOf(request, AS + as) : undefined;
+  if (as && !held) return null;
+  const token = held ?? cookieOf(request, COOKIE);
   if (!token) return null;
   // The session, its account and its hub in one trip to the database: every request starts here, and each trip is slow from afar.
   const session = await sha(token), at = now(), [rows, accounts, hubs] = await env.DB.batch([
@@ -116,10 +124,10 @@ async function whoIs(request: Request, env: Env): Promise<Who | null> {
   if (!row) return null;
   if (row.account) return accounts.results[0] && hubs.results[0] ? {session, account: accounts.results[0] as Who['account'], hub: hubs.results[0] as HubRow} : null;
   const hub = hubs.results[0] as HubRow | undefined;
-  if (!hub || !row.person) return null;
+  if (!hub || !row.person || (as && row.person !== as)) return null;
   // Only this hub's own manager's session counts as one to go back to.
-  const kept = cookieOf(request, KEPT), manager = kept ? await env.DB.prepare('SELECT id FROM sessions WHERE id = ? AND account = ? AND expires > ?').bind(await sha(kept), hub.owner, now()).first<{id: string}>() : null;
-  return {session, hub, person: row.person, ...(manager ? {manager: {session: manager.id, token: kept!}} : {})};
+  const kept = held ? cookieOf(request, COOKIE) : cookieOf(request, KEPT), manager = kept ? await env.DB.prepare('SELECT id FROM sessions WHERE id = ? AND account = ? AND expires > ?').bind(await sha(kept), hub.owner, now()).first<{id: string}>() : null;
+  return {session, hub, person: row.person, ...(manager ? {manager: {session: manager.id, token: kept!, ...(held ? {beside: true} : {})}} : {})};
 }
 async function startSession(env: Env, subject: {account: string} | {hub: string; person: string}) {
   return cookie(await newSession(env, subject), MONTH);
@@ -322,8 +330,9 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       const username = String(((await answer!.json().catch(() => null)) as {username?: string} | null)?.username ?? '').slice(0, 80);
       // Someone on Here choosing MDBList on their own page: the key is kept, and progress moves over only once their plays have
       // (the card on their page, places.ts). Anyone else's choice, or a new key for someone already on MDBList, takes effect at once.
-      const moving = body.moving === true && who.person === id && !data.lists;
-      await env.DB.batch([await putSecret(env, hub, id, 'mdblist', {key, username, ...(moving ? {moving: 'mdblist'} : {})}), save(!moving), env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id)]);
+      // `keep`: connecting MDBList from the accounts list only saves the key; where progress is kept is chosen apart from it.
+      const moving = body.moving === true && who.person === id && !data.lists, keep = body.keep === true && !data.lists;
+      await env.DB.batch([await putSecret(env, hub, id, 'mdblist', {key, username, ...(moving ? {moving: 'mdblist'} : {})}), save(!moving && !keep),env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id)]);
       return {username};
     }
     // Removing the key itself: nothing of MDBList is kept or read for them any more.
@@ -540,13 +549,12 @@ async function join(request: Request, env: Env, body: Body, who: Who | null) {
   const about = {name: row.name, username: row.name, owner: row.owner, joined: !!row.joined};
   if (who?.person === row.id && who.hub.id === row.hub) return reply({ok: true});
   // Their manager, in the same browser: once they have joined, the link opens their own view as if they had signed in (the
-  // manager could set their password anyway), with the manager's sign-in set aside to go back to. Before they join it waits for
-  // them, so their password stays theirs to choose.
+  // manager could set their password anyway). Their session is held beside the manager's, so the manager's own view stays signed
+  // in, in other tabs too; the tab that opened the link asks as them (as). Before they join it waits for them, so their password
+  // stays theirs to choose.
   if (who?.account && who.hub.id === row.hub) {
     if (!row.joined) return reply({waiting: about});
-    const out = reply({ok: true}, 200, cookie(await newSession(env, {hub: row.hub, person: row.id}), MONTH));
-    out.headers.append('set-cookie', cookie(cookieOf(request, COOKIE)!, MONTH, KEPT)['set-cookie']);
-    return out;
+    return reply({ok: true, as: row.id}, 200, cookie(await newSession(env, {hub: row.hub, person: row.id}), MONTH, AS + row.id));
   }
   if (body.password === undefined) return reply({ask: about});
   if (await blocked(env, key)) bad(429, 'Too many tries. Wait ten minutes.');
@@ -776,8 +784,14 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     const who = await whoIs(request, env);
     if (first === 'join' && method === 'POST') return await join(request, env, body, who);
     if (first === 'signout' && method === 'POST') {
-      if (who) await env.DB.prepare('DELETE FROM sessions WHERE id IN (?, ?)').bind(who.session, who.manager?.session ?? '').run();
-      const out = reply({}, 200, cookie('', 0)); out.headers.append('set-cookie', cookie('', 0, KEPT)['set-cookie']); return out;
+      // From a person's view held beside the manager's: only that person's session ends; the manager stays signed in.
+      if (who?.manager?.beside) {await env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(who.session).run(); return reply({}, 200, cookie('', 0, AS + who.person));}
+      // Otherwise this browser signs out altogether, with any person's view it was holding.
+      const held = heldOf(request), ends = [who?.session ?? '', who?.manager?.session ?? '', ...await Promise.all(held.map(h => sha(h.token)))];
+      await env.DB.batch(ends.map(id => env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(id)));
+      const out = reply({}, 200, cookie('', 0)); out.headers.append('set-cookie', cookie('', 0, KEPT)['set-cookie']);
+      for (const h of held) out.headers.append('set-cookie', cookie('', 0, AS + h.person)['set-cookie']);
+      return out;
     }
     // From a person's view back to the manager's own, which was set aside when their link was opened.
     if (first === 'back' && method === 'POST') {

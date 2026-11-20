@@ -442,3 +442,7 @@ a.primary.button { display: inline-flex; align-items: center; min-height: 34px; 
 .picks.compact small { text-align: right; }
 /* A key kept while progress is Here: the way to remove it stays quiet. */
 .kept-key .link { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
+/* Replace key and Remove key under the MDBList account: quiet, side by side. */
+.quiet-links { display: flex; gap: 18px; margin-top: 6px; }
+/* Where progress is kept: its own card under the accounts. */
+.accounts.progress { margin-top: 20px; }
