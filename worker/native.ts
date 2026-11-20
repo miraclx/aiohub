@@ -474,8 +474,8 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
     if (link && !link.again) viaHub.add(owner);
   }
   for (const name of vault.keys()) if (name.endsWith('/mdblist') && (await held<{key?: string}>(env, vault, hub.id, name.slice(0, -8), 'mdblist'))?.key) keyed.add(name.slice(0, -8));
-  for (const row of rowsAt ? personRows.results as {id: string}[] : []) {
-    if (env.FRONT !== 'aiometadata' && !viaHub.has(row.id) && !watching.has(row.id)) continue;
+  for (const row of rowsAt ? personRows.results as {id: string; data: string}[] : []) {
+    if (env.FRONT !== 'aiometadata' && !viaHub.has(row.id) && !((JSON.parse(row.data) as {lists?: boolean}).lists && watching.has(row.id))) continue;
     const got = await addressOf(env, hub.id, row.id, rowsAt, await held<string>(env, vault, hub.id, row.id, ROWS));
     served.set(row.id, got.address); minted.push(...got.writes);
   }

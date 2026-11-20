@@ -53,7 +53,7 @@ function Confirm({title, body, action, onYes, onClose, plain}: {title: string; b
 function copyOf(hub: Hub, source: Person, name: string, groupId = source.groupId): Person {
   const copy = newPerson(hub, name, groupId);
   // Layout, settings and permissions come along. Connections, sign-in and devices never do.
-  copy.rows = source.rows ? source.rows.filter(row => !isTrakt(row) && !row.source.endsWith('your list')) : null;
+  copy.rows = source.rows ? source.rows.filter(row => !TRAKT_IDS.has(row.id) && !isTrakt(row) && !row.source.endsWith('your list')) : null;
   copy.settings = structuredClone(source.settings); copy.can = {...source.can};
   return copy;
 }
