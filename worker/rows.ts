@@ -11,8 +11,9 @@ import {LINK, read} from './trakt';
 
 export const ROWS = 'rows';
 const MANIFEST = 'aiohub.rows', PAGE = 20;
-type Kind = 'watchlist' | 'movies' | 'shows' | 'next' | 'aired' | 'history';
-interface Served {id: string; type: 'movie' | 'series' | 'all'; name: string; ttl: number; kind: Kind}
+type Kind = 'watchlist' | 'movies' | 'shows' | 'next' | 'aired' | 'history' | 'list';
+// `ask` and `cache`: for one of their own Trakt lists, where Trakt has it and what it is kept as here (by list).
+interface Served {id: string; type: 'movie' | 'series' | 'all'; name: string; ttl: number; kind: Kind; ask?: string; cache?: string}
 // Each Home row the hub can serve, by the site's row id. Names are only defaults; the person's own row titles are what AIOMetadata shows.
 // AIOMetadata leaves watched titles in any row whose id says watchlist, up next or history, as it does with its own Trakt rows.
 export const SERVED: Record<string, Served> = {
@@ -23,12 +24,22 @@ export const SERVED: Record<string, Served> = {
   'up-next': {id: 'up_next', type: 'series', name: 'Up Next', ttl: 300, kind: 'next'},
   'recently-aired': {id: 'recently_aired', type: 'series', name: 'Recently Aired for You', ttl: 300, kind: 'aired'},
 };
+/* One of the person's own Trakt lists, or one they liked, as a row: `trakt-mine.<Trakt list id>` or `trakt-liked.<id>`. Their own
+   are read through their login, so a private list works too; a liked list is someone else's public one. In list order. */
+export const LIST_ROW = /^trakt-(mine|liked)\.(\d{1,12})$/;
+const listServed = (whose: string, id: string): Served => ({id: `list_${whose}_${id}`, type: 'all', name: 'Trakt list', ttl: 900, kind: 'list', cache: `list_${whose}_${id}`,
+  ask: whose === 'mine' ? `/users/me/lists/${id}/items?limit=100` : `/lists/${id}/items?limit=100`});
+/* What the hub serves for a Home row, if it does. */
+export function servedOf(rowId: string): Served | undefined {
+  const list = LIST_ROW.exec(rowId);
+  return list ? listServed(list[1], list[2]) : SERVED[rowId];
+}
 /* The id AIOMetadata gives a catalog imported from another addon: custom.<addon id>.<type>.<catalog id>, anything else as _. */
 export const customId = (row: Served) => `custom.${MANIFEST.replace(/[^a-zA-Z0-9]/g, '_')}.${row.type}.${row.id}`;
 export const CUSTOM = new RegExp(`^custom\\.${MANIFEST.replace(/[^a-zA-Z0-9]/g, '_')}\\.`);
 /* One row as AIOMetadata stores an imported catalog (the shape its own import makes), here kept on a short cache time. */
 export function catalogOf(address: string, rowId: string, name: string, on: boolean) {
-  const row = SERVED[rowId];
+  const row = servedOf(rowId)!;
   return {id: customId(row), type: row.type, name, enabled: on, showInHome: true, source: 'custom', sourceUrl: `${address}/catalog/${row.type}/${row.id}.json`,
     genres: ['None'], cacheTTL: row.ttl, enableRatingPosters: true, manifestData: {type: row.type, id: row.id, name, extra: [{name: 'skip'}], idPrefixes: ['tt', 'tmdb']}};
 }
@@ -49,8 +60,8 @@ const itemOf = (media: Media | undefined, type: Item['type']): Item | null => {
 };
 const once = (items: (Item | null)[]) => {const seen = new Set<string>(); return items.filter((item): item is Item => !!item && !seen.has(item.id) && !!seen.add(item.id));};
 // Long lists are read a hundred at a time, a further page only once someone scrolls that far, up to this many pages.
-const PAGES: Partial<Record<Kind, number>> = {watchlist: 10, history: 10};
-const ASK: Record<Kind, string> = {
+const PAGES: Partial<Record<Kind, number>> = {watchlist: 10, history: 10, list: 10};
+const ASK: Record<Exclude<Kind, 'list'>, string> = {
   // Newest first, as AIOMetadata's own Trakt watchlist row was set up. An episode or season on the list stands for its show.
   watchlist: '/sync/watchlist/all/added/desc?limit=100',
   // What was watched, newest first: a show once, where its latest episode puts it.
@@ -65,7 +76,7 @@ const ASK: Record<Kind, string> = {
 type Answer = (Media & {type?: string; movie?: Media; show?: Media})[];
 const titles = (got: Answer) => once(got.map(entry => entry.type === 'movie' ? itemOf(entry.movie, 'movie') : itemOf(entry.show, 'series')));
 const ITEMS: Record<Kind, (got: Answer) => Item[]> = {
-  watchlist: titles, history: titles,
+  watchlist: titles, history: titles, list: titles,
   movies: got => once(got.map(media => itemOf(media, 'movie'))),
   shows: got => once(got.map(media => itemOf(media, 'series'))),
   next: got => once(got.map(entry => itemOf(entry.show, 'series'))),
@@ -76,7 +87,7 @@ interface Held {at: number; items: Item[]}
 /* The first `want` titles of a row (the whole of a short one), from what was read lately; Trakt is asked for a page only when it is
    needed and what was kept of it is older than the row's time. Each page is kept on its own: `watchlist`, `watchlist.2`, … */
 async function itemsOf(env: Env, hub: string, person: string, row: Served, want: number): Promise<Item[]> {
-  const most = PAGES[row.kind] ?? 1, kinds = Array.from({length: most}, (_, n) => n ? `${row.kind}.${n + 1}` : row.kind);
+  const base = row.cache ?? row.kind, most = PAGES[row.kind] ?? 1, kinds = Array.from({length: most}, (_, n) => n ? `${base}.${n + 1}` : base);
   const stored = await env.DB.prepare(`SELECT kind, at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind IN (${kinds.map(() => '?').join(', ')})`).bind(hub, person, ...kinds).all<{kind: string; at: number; items: string}>();
   const held = new Map(stored.results.map(page => [page.kind, {at: page.at, items: JSON.parse(page.items) as Item[]}])), out: Item[] = [], seen = new Set<string>();
   let reads = READS;
@@ -99,7 +110,7 @@ async function itemsOf(env: Env, hub: string, person: string, row: Served, want:
    every scroll; null for a further page never read. */
 async function readPage(env: Env, hub: string, person: string, row: Served, page: number, kinds: string[], last?: Held): Promise<Held & {ok: boolean; end: boolean} | null> {
   const paging = {pages: 0}, paged = !!PAGES[row.kind], next = kinds[page];
-  const got = await read<Answer>(env, hub, person, paged ? `${ASK[row.kind]}&page=${page}` : ASK[row.kind], paging);
+  const ask = row.ask ?? ASK[row.kind as Exclude<Kind, 'list'>], got = await read<Answer>(env, hub, person, paged ? `${ask}&page=${page}` : ask, paging);
   if (!Array.isArray(got) && page > 1 && !last) return null;
   const ok = Array.isArray(got), at = ok ? now() : now() - row.ttl + RETRY, items = ok ? ITEMS[row.kind](got) : last?.items ?? [];
   const keep = (kind: string, list: Item[]) => env.DB.prepare('INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, ?, ?) ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at, items = excluded.items')
@@ -123,7 +134,8 @@ export async function rows(env: Env, path: string[]): Promise<Response> {
   if (what === 'manifest.json' && !type) return answer(200, {id: MANIFEST, version: '1.0.0', name: 'AIOHub Trakt rows', description: 'Your Trakt watchlist, what you watched lately, recommendations and what’s next, from the hub.',
     resources: ['catalog'], types: ['movie', 'series'], idPrefixes: ['tt', 'tmdb'], catalogs: Object.values(SERVED).map(row => ({type: row.type, id: row.id, name: row.name, extra: [{name: 'skip'}]}))});
   const name = (extra ?? id ?? '').replace(/\.json$/, ''), catalog = extra ? id : name;
-  const row = what === 'catalog' ? Object.values(SERVED).find(item => item.type === type && item.id === catalog) : undefined;
+  const list = /^list_(mine|liked)_(\d{1,12})$/.exec(catalog ?? '');
+  const row = what !== 'catalog' ? undefined : list ? (type === 'all' ? listServed(list[1], list[2]) : undefined) : Object.values(SERVED).find(item => item.type === type && item.id === catalog);
   if (!row) return answer(404, {err: 'Not found'});
   const skip = Math.max(0, Number(new URLSearchParams(extra ? name : '').get('skip') ?? 0) || 0);
   // Trakt disconnected from the hub: nothing, even if it was read a moment ago. Never an error, which AIOMetadata would keep.

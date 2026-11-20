@@ -9,7 +9,8 @@ import {getSecret, now} from './util';
 import {LINK, read, send, taken} from './trakt';
 import {mdblist} from './carry';
 
-const DAY = 86400, SPAN = 14 * DAY, SAME = 12 * 3600;
+const DAY = 86400, SPAN = 14 * DAY;
+export const SAME = 12 * 3600;
 // The last hour is left out: a play may still be on its way to one of them. The day's look starts with the first cron run after
 // HOUR (UTC); each run makes up to STEP outside calls, and a look that keeps failing is let go after TRIES runs.
 const FRESH = 3600, HOUR = 4, STEP = 6, TRIES = 12, PAGES = 10, KEPT = 200, CHECK = 15;
@@ -43,7 +44,7 @@ function fromTrakt(entry: Entry, titles: Record<string, Title>): Play | null {
   return season == null || number == null ? null : {t, s: season, e: number, at};
 }
 /* Trakt's history between two moments, page by page. null when Trakt did not answer. */
-async function traktPlays(env: Env, hub: string, person: string, from: number, to: number, page: number, titles: Record<string, Title>) {
+export async function traktPlays(env: Env, hub: string, person: string, from: number, to: number, page: number, titles: Record<string, Title>) {
   const paging = {pages: 0}, got = await read<Entry[]>(env, hub, person, `/sync/history?start_at=${iso(from)}&end_at=${iso(to)}&page=${page}&limit=100`, paging);
   if (!Array.isArray(got)) return null;
   return {plays: got.map(entry => fromTrakt(entry, titles)).filter((play): play is Play => !!play), more: got.length > 0 && (!paging.pages || page < paging.pages)};

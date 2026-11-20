@@ -1,14 +1,15 @@
 // The site's own API: managers' accounts, the hub they run, and what an invited person may change about themselves.
 // What reaches the streaming server goes through ./native.
-import {carry, plan} from './carry';
+import {carry, mdblist, plan} from './carry';
 import {fix, looked, skip, skippedOf} from './drift';
 import {defaultAddons, defaultRows, defaultSettings, slug, traktRows} from '../src/data';
 import type {Addon, Hub, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './native';
 import {forgetHub, forgetSeats} from './front';
-import {LINK, disconnect, forgetTrakt, keepLink, links} from './trakt';
+import {LINK, disconnect, forgetTrakt, keepLink, links, read} from './trakt';
 import {rows} from './rows';
+import {because} from './suggest';
 import type {Env} from './util';
 import {blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp, unseal} from './util';
 
@@ -250,13 +251,15 @@ const forget = (env: Env, hub: string, id: string) => [
 ];
 async function removePerson(env: Env, who: Who, id: string) {
   forgetSeats(who.hub.id, id);
-  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_keys WHERE hub = ? AND person = ?').bind(who.hub.id, id), ...forgetTrakt(env, who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
+  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_keys WHERE hub = ? AND person = ?').bind(who.hub.id, id), ...forgetTrakt(env, who.hub.id, id), env.DB.prepare("DELETE FROM ops WHERE hub = ? AND target = ? AND kind = 'carry'").bind(who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
   return {};
 }
 /* A person's stored choices, read fresh, and written back as a new version. */
 const personData = async (env: Env, hub: string, id: string) => JSON.parse((await env.DB.prepare('SELECT data FROM people WHERE hub = ? AND id = ?').bind(hub, id).first<{data: string}>())!.data) as PersonData;
 const savePersonData = (env: Env, hub: string, id: string, next: PersonData) => env.DB.prepare('UPDATE people SET data = ?, version = version + 1 WHERE hub = ? AND id = ?').bind(JSON.stringify(next), hub, id);
 const hasSecret = async (env: Env, hub: string, id: string, kind: string) => !!await env.DB.prepare('SELECT 1 FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(hub, id, kind).first();
+/* Trakt connected to the hub, and Trakt has not asked for it to be connected again. */
+const tracked = async (env: Env, hub: string, id: string) => !!env.TRAKT_CLIENT_ID && !((await getSecret<{again?: boolean}>(env, hub, id, LINK)) ?? {again: true}).again;
 /* Trakt rows on or off. Someone with a Home of their own gets the rows added at the top, or taken out again. */
 function withTraktRows(data: PersonData, on: boolean): PersonData {
   const shipped = traktRows().map(item => item.id);
@@ -307,10 +310,10 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       if (!answer || answer.status >= 500) bad(502, 'MDBList did not answer. Try again in a moment.');
       if (answer!.status !== 200) bad(400, 'MDBList did not accept that key. Copy it from Preferences, API Access.');
       const username = String(((await answer!.json().catch(() => null)) as {username?: string} | null)?.username ?? '').slice(0, 80);
-      await env.DB.batch([await putSecret(env, hub, id, 'mdblist', {key, username}), save(true)]);
+      await env.DB.batch([await putSecret(env, hub, id, 'mdblist', {key, username}), save(true), env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id)]);
       return {username};
     }
-    if (request.method === 'DELETE') {await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'mdblist'").bind(hub, id), env.DB.prepare('DELETE FROM drift WHERE hub = ? AND person = ?').bind(hub, id), save(false)]); return {};}
+    if (request.method === 'DELETE') {await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'mdblist'").bind(hub, id), env.DB.prepare('DELETE FROM drift WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id), save(false)]); return {};}
   }
   if (action === 'scrobble' && env.TRAKT_CLIENT_ID) {
     // Trakt, connected by the person or by the manager with them, on Trakt's own sign-in page. The page does the sign-in with
@@ -321,6 +324,8 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       if (!access || !refresh || (redirect && !/^https?:\/\/[^/]+\/api\/trakt\/callback$/.test(redirect))) bad(400, 'Trakt did not finish connecting. Try again.');
       await keepLink(env, hub, id, {access, refresh, expires: Math.floor(Number(body.created) || now()) + Math.floor(Number(body.lasts) || 7 * 86400), username: text(body.username ?? '', 80, 'Name').trim(), ...(redirect ? {redirect} : {})});
       forgetSeats(hub, id);
+      // What was watched here before is worked out again against Trakt too, the next time their card looks.
+      await env.DB.batch([env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id)]);
       const data = await personData(env, hub, id); if (!data.trakt) await savePersonData(env, hub, id, withTraktRows(data, true)).run();
       return {state: 'connected'};
     }
@@ -340,14 +345,25 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     if (body.skip !== undefined) return {};
     const fixed = await fix(env, hub, id);
     if ('error' in fixed) return bad(409, fixed.error);
-    let here = {watched: 0, partway: 0, more: false};
-    if (await hasSecret(env, hub, id, 'mdblist') && await hasSecret(env, hub, id, 'upstream-aiom')) {
+    let here = {watched: 0, partway: 0, trakt: 0, more: false};
+    // What was watched here goes to whichever of the two they have connected.
+    if ((await hasSecret(env, hub, id, 'mdblist') || await tracked(env, hub, id)) && await hasSecret(env, hub, id, 'upstream-aiom')) {
       const got = await carry(env, hub, id, await skippedOf(env, hub, id));
       if ('error' in got) return bad(409, got.error);
       here = got;
     }
     await env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, id).run();
-    return {trakt: fixed.trakt, mdblist: fixed.mdblist + here.watched + here.partway, more: here.more};
+    return {trakt: fixed.trakt + here.trakt, mdblist: fixed.mdblist + here.watched + here.partway, more: here.more};
+  }
+  if (action === 'because' && request.method === 'GET') {
+    // Suggested rows their own watching points to: on their own page only, from their own plays and Trakt pages.
+    if (who.person !== id) bad(403, 'Only they can see these, from their own page');
+    return {because: await because(env, hub, id)};
+  }
+  if (action === 'lists' && request.method === 'GET') {
+    // Their own lists, to add as Home rows: on their own page only, never shown to anyone else.
+    if (who.person !== id) bad(403, 'Only they can see these, from their own page');
+    return {lists: await ownLists(env, hub, id)};
   }
   if (action === 'carry') {
     // Someone's own watching: only they can look at it or move it, from their own page.
@@ -358,8 +374,8 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       if ('error' in got) bad(409, got.error);
       return got;
     }
-    // What was watched here and MDBList lacks, worked out when their page asks and kept for a few hours: MDBList allows a person
-    // 1,000 calls a day, and one look costs about twenty.
+    // What was watched here and their Trakt or MDBList lacks, worked out when their page asks and kept for a few hours: MDBList
+    // allows a person 1,000 calls a day, and one look costs about twenty.
     const kept = await env.DB.prepare('SELECT here, here_at FROM drift WHERE hub = ? AND person = ?').bind(hub, id).first<{here: string | null; here_at: number | null}>();
     if (kept?.here && now() - (kept.here_at ?? 0) < HERE) return JSON.parse(kept.here);
     const got = await plan(env, hub, id, await skippedOf(env, hub, id));
@@ -404,6 +420,37 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
   if (action === 'devices' && rest && request.method === 'PUT') {const name = text(body.name, 60, 'Name').trim() || bad(400, 'Give it a name'); await env.DB.prepare('UPDATE devices SET name = ? WHERE hub = ? AND person = ? AND ref = ?').bind(name, hub, id, rest).run(); return {};}
   if (action === 'devices' && rest && request.method === 'DELETE') {await env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ? AND ref = ?').bind(hub, id, rest).run(); return {};}
   return bad(404, 'Not found');
+}
+
+/* A person's own lists: on their Trakt (theirs, and ones they liked) through the hub's Trakt connection, and on their MDBList with
+   their own key. Kept for a quarter of an hour, by hub and person, so opening Add row again asks neither. */
+const LISTS_KEPT = 900;
+interface OwnList {id: string; title: string; kind: string; source: string}
+async function ownLists(env: Env, hub: string, id: string): Promise<OwnList[]> {
+  const kept = await env.DB.prepare("SELECT at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id).first<{at: number; items: string}>();
+  if (kept && now() - kept.at < LISTS_KEPT) return JSON.parse(kept.items) as OwnList[];
+  const out: OwnList[] = [], count = (n: unknown) => `List · ${Number(n) || 0} ${Number(n) === 1 ? 'title' : 'titles'}`, name = (text: unknown) => String(text ?? 'A list').slice(0, 80);
+  let whole = true;
+  if (await tracked(env, hub, id)) {
+    type TraktList = {name?: string; item_count?: number; ids?: {trakt?: number}};
+    const mine = await read<TraktList[]>(env, hub, id, '/users/me/lists'), liked = await read<{list?: TraktList}[]>(env, hub, id, '/users/likes/lists?limit=50');
+    whole &&= Array.isArray(mine) && Array.isArray(liked);
+    for (const list of Array.isArray(mine) ? mine : []) if (Number.isInteger(list.ids?.trakt)) out.push({id: `trakt-mine.${list.ids!.trakt}`, title: name(list.name), kind: count(list.item_count), source: 'Trakt · your list'});
+    for (const like of Array.isArray(liked) ? liked : []) if (Number.isInteger(like.list?.ids?.trakt) && !out.some(item => item.id.endsWith(`.${like.list!.ids!.trakt}`))) out.push({id: `trakt-liked.${like.list!.ids!.trakt}`, title: name(like.list!.name), kind: count(like.list!.item_count), source: 'Trakt · liked'});
+  }
+  const lists = await getSecret<{key: string}>(env, hub, id, 'mdblist');
+  if (lists?.key) {
+    const got = await mdblist(env, lists.key)('/lists/user');
+    whole &&= got.status === 200 && Array.isArray(got.body);
+    for (const list of (Array.isArray(got.body) ? got.body : []) as {id?: number; name?: string; items?: number; mediatype?: string | null}[]) {
+      if (!Number.isInteger(list.id)) continue;
+      const type = list.mediatype === 'movie' ? 'movie' : list.mediatype === 'show' ? 'series' : 'all';
+      out.push({id: `mdblist.${list.id}.${type}`, title: name(list.name), kind: count(list.items), source: 'MDBList · your list'});
+    }
+  }
+  // Only a complete answer is kept; one where Trakt or MDBList did not answer is asked again next time.
+  if (whole) await env.DB.prepare("INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, 'lists', ?, ?) ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at, items = excluded.items").bind(hub, id, now(), JSON.stringify(out.slice(0, 100))).run();
+  return out.slice(0, 100);
 }
 
 /* ---------- signing in ---------- */
@@ -535,15 +582,55 @@ async function catalogKey(env: Env, who: Who, name: string, body: Body) {
   await (await putSecret(env, who.hub.id, HUB_OWNER, `key:${name}`, key)).run();
   return {};
 }
-/* A list someone pastes the link of, looked up with the hub's MDBList key, so it can be a Home row. */
+/* A list someone pastes the link of, checked with the service it is on, so it can be a Home row. MDBList with the hub's MDBList key
+   (or the person's own); Trakt with the site's Trakt app (public lists only); Letterboxd through the hub's AIOMetadata server, which
+   is what fills it later; TMDB with the hub's TMDB key. Each answer is a row id homeOf (native.ts) knows how to build. */
+const PASTE = 'Paste the link of a public list on Trakt, Letterboxd, MDBList or TMDB.';
+const kindOf = (type: string) => type === 'movie' ? 'Movies' : type === 'series' ? 'Series' : 'Movies & shows';
 async function findList(env: Env, who: Who, body: Body) {
-  const at = /mdblist\.com\/lists\/([\w.-]+)\/([\w.-]+)/.exec(text(body.link, 400, 'Link')) ?? bad(400, 'Paste the link of an MDBList list, like mdblist.com/lists/someone/a-list');
-  const key = await getSecret<string>(env, who.hub.id, HUB_OWNER, 'key:mdblist') ?? bad(400, 'Lists need the hub’s MDBList key first. It goes under Hub, Sources.');
-  const answer = await fetch(`${env.MDBLIST_API ?? 'https://api.mdblist.com'}/lists/${at[1]}/${at[2]}?apikey=${encodeURIComponent(key)}`, {headers: {accept: 'application/json', 'user-agent': 'AIOHub/1.0'}}).catch(() => null);
-  const found = answer?.status === 200 ? await answer.json().catch(() => null) as {id?: number; name?: string; mediatype?: string | null}[] | {id?: number; name?: string; mediatype?: string | null} | null : null, list = Array.isArray(found) ? found[0] : found;
-  if (!list || !Number.isInteger(list.id)) bad(404, 'MDBList has no public list at that link');
-  const type = list!.mediatype === 'movie' ? 'movie' : list!.mediatype === 'show' ? 'series' : 'all';
-  return {id: `mdblist.${list!.id}.${type}`, title: String(list!.name ?? 'A list').slice(0, 80), kind: type === 'movie' ? 'Movies' : type === 'series' ? 'Series' : 'Movies & shows', source: 'MDBList'};
+  const link = text(body.link, 400, 'Link').trim(), site = hosted(env, JSON.parse(who.hub.data) as HubData);
+  const ask = async (url: string, init: RequestInit = {}) => {const answer = await fetch(url, {...init, headers: {accept: 'application/json', 'user-agent': 'AIOHub/1.0', ...(init.headers ?? {})}}).catch(() => null); return {status: answer?.status ?? 0, body: answer?.ok ? await answer.json().catch(() => null) as Record<string, any> | Record<string, any>[] | null : null};};
+  const mdb = /mdblist\.com\/lists\/([\w.-]+)\/([\w.-]+)/.exec(link);
+  if (mdb) {
+    const key = await getSecret<string>(env, who.hub.id, HUB_OWNER, 'key:mdblist') ?? (who.person ? (await getSecret<{key: string}>(env, who.hub.id, who.person, 'mdblist'))?.key : null) ?? bad(400, 'MDBList lists need the hub’s MDBList key first. It goes under Hub, Sources.');
+    const got = await ask(`${env.MDBLIST_API ?? 'https://api.mdblist.com'}/lists/${mdb[1]}/${mdb[2]}?apikey=${encodeURIComponent(key)}`), list = Array.isArray(got.body) ? got.body[0] : got.body;
+    if (got.status >= 500 || !got.status) bad(502, 'MDBList isn’t answering just now. Try again in a moment.');
+    if (!list || !Number.isInteger(list.id)) bad(404, 'MDBList has no public list at that link.');
+    const type = list!.mediatype === 'movie' ? 'movie' : list!.mediatype === 'show' ? 'series' : 'all';
+    return {id: `mdblist.${list!.id}.${type}`, title: String(list!.name ?? 'A list').slice(0, 80), kind: kindOf(type), source: 'MDBList'};
+  }
+  const trakt = /trakt\.tv\/users\/([\w.-]+)\/lists\/([\w.-]+)/.exec(link) ?? /trakt\.tv\/lists\/(\d+)/.exec(link);
+  if (trakt) {
+    if (!env.TRAKT_CLIENT_ID) bad(400, 'Trakt lists can’t be added on this site.');
+    const path = trakt[2] ? `/users/${trakt[1]}/lists/${trakt[2]}` : `/lists/${trakt[1]}`;
+    const got = await ask(`${env.TRAKT_API ?? 'https://api.trakt.tv'}${path}`, {headers: {'content-type': 'application/json', 'trakt-api-version': '2', 'trakt-api-key': env.TRAKT_CLIENT_ID!}}), list = got.body as {name?: string; privacy?: string; ids?: {trakt?: number}} | null;
+    if (got.status === 429 || got.status === 420 || got.status >= 500 || !got.status) bad(502, 'Trakt isn’t answering just now. Try again in a few minutes.');
+    if (got.status === 401 || got.status === 403 || (list && list.privacy && list.privacy !== 'public')) bad(400, 'That Trakt list isn’t public. Its owner can add it from their own lists, once their Trakt is connected here.');
+    if (!list || !Number.isInteger(list.ids?.trakt)) bad(404, 'Trakt has no list at that link.');
+    return {id: `trakt.list.${list!.ids!.trakt}`, title: String(list!.name ?? 'A list').slice(0, 80), kind: 'Movies & shows', source: 'Trakt'};
+  }
+  if (/letterboxd\.com\/[\w.-]+\/list\/[\w.-]+/.test(link)) {
+    if (!site.AIOM_ORIGIN) bad(400, 'Letterboxd lists can’t be added on this site.');
+    const url = `https://${/letterboxd\.com\/[\w.-]+\/list\/[\w.-]+/.exec(link)![0]}/`, post = {method: 'POST', headers: {'content-type': 'application/json'}};
+    const found = await ask(`${site.AIOM_ORIGIN}/api/letterboxd/extract-identifier`, {...post, body: JSON.stringify({url})}), identifier = String((found.body as {identifier?: string} | null)?.identifier ?? '');
+    if (found.status === 404 || (found.status === 400)) bad(404, 'Letterboxd has no public list at that link.');
+    if (!/^[\w-]{1,60}$/.test(identifier)) bad(502, 'Letterboxd isn’t answering just now. Try again in a moment.');
+    const list = await ask(`${site.AIOM_ORIGIN}/api/letterboxd/list`, {...post, body: JSON.stringify({identifier, isWatchlist: false})}), data = (list.body as {data?: {title?: string; items?: unknown[]}} | null)?.data;
+    if (!data) bad(502, 'Letterboxd isn’t answering just now. Try again in a moment.');
+    if (!data!.items?.length) bad(400, 'That Letterboxd list is empty.');
+    return {id: `letterboxd.${identifier}`, title: String(data!.title ?? 'A list').slice(0, 80), kind: 'Movies', source: 'Letterboxd'};
+  }
+  const tmdb = /themoviedb\.org\/list\/(\d{1,12})/.exec(link);
+  if (tmdb) {
+    const key = await getSecret<string>(env, who.hub.id, HUB_OWNER, 'key:tmdb') ?? bad(400, 'TMDB lists need the hub’s TMDB key first. It goes under Hub, Sources.');
+    const got = await ask(`${env.TMDB_API ?? 'https://api.themoviedb.org/3'}/list/${tmdb[1]}?api_key=${encodeURIComponent(key)}`), list = got.body as {name?: string; item_count?: number} | null;
+    if (got.status >= 500 || !got.status) bad(502, 'TMDB isn’t answering just now. Try again in a moment.');
+    if (!list) bad(404, 'TMDB has no public list at that link.');
+    if (!list!.item_count) bad(400, 'That TMDB list is empty.');
+    return {id: `tmdb.list.${tmdb[1]}`, title: String(list!.name ?? 'A list').slice(0, 80), kind: 'Movies & shows', source: 'TMDB'};
+  }
+  if (/trakt\.tv|letterboxd\.com|themoviedb\.org|mdblist\.com/.test(link)) bad(400, `That’s not a list link. ${PASTE}`);
+  return bad(400, PASTE);
 }
 /* Which AIOStreams and AIOMetadata servers the hub uses. Each address is asked what it is before it is kept, and the sources the
    AIOStreams server does not offer are noted so they are never asked of it. Blank means the site's own choice. */

@@ -1,7 +1,7 @@
 /// <reference types="@cloudflare/workers-types" />
 export interface Env {
   ASSETS: Fetcher; DB: D1Database;
-  UP_ORIGIN: string; VAULT_KEY: string; CLAIM_CODE?: string; TMDB_CHECK?: string; MDBLIST_API?: string; AIOM_ORIGIN?: string; MAX_HUBS?: string;
+  UP_ORIGIN: string; VAULT_KEY: string; CLAIM_CODE?: string; TMDB_CHECK?: string; TMDB_API?: string; MDBLIST_API?: string; AIOM_ORIGIN?: string; MAX_HUBS?: string;
   // 'aiometadata': every person's player apps are served by their own AIOMetadata config (streams still come from AIOStreams).
   FRONT?: string;
   // Trakt history (see trakt.ts). Without a client id it stays off: nothing offered, nothing sent.

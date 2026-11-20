@@ -17,6 +17,9 @@ http.createServer(async (request, answer) => {
   const send = (status, body) => {answer.writeHead(status, {'content-type': 'application/json'}); answer.end(JSON.stringify(body));};
   let raw = ''; for await (const chunk of request) raw += chunk;
   if (request.url === '/trakt/oauth/revoke') return send(200, {});
+  // Ada's own Trakt lists (one private) and one she liked, read through the hub's Trakt link once she connects it.
+  if (request.url.startsWith('/trakt/users/me/lists')) return send(200, [{name: 'Heist nights', privacy: 'private', item_count: 12, ids: {trakt: 501}}]);
+  if (request.url.startsWith('/trakt/users/likes/lists')) return send(200, [{type: 'list', list: {name: 'Sunday westerns', item_count: 8, ids: {trakt: 777}}}]);
   if (request.url.startsWith('/mdblist/user')) return send(request.url.includes('apikey=ada-mdblist-key') ? 200 : 403, {username: 'adalists'});
   request.socket.destroy(); // as if nothing were there
 }).listen(8798, '127.0.0.1').unref();
@@ -79,7 +82,16 @@ await job('Trakt sync').getByText(/^Ran today at \d/).waitFor(); await job('Trak
 await job('Trakt and MDBList check').getByText(/^every day at \d/).waitFor(); await job('Trakt and MDBList check').getByText('Not run yet').waitFor(); await job('Trakt and MDBList check').getByText(/^next (today|tomorrow)$/).waitFor();
 await work.scrollIntoViewIfNeeded(); await shot(owner, '5b-background');
 // The hub's Home keeps a place for each Trakt row, marked as one that appears once someone connects Trakt.
-await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later', {hasText: 'Watchlist'}).getByText('Appears once someone connects Trakt').waitFor(); await shot(owner, '5c-hub-home');
+await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later', {hasText: 'Watchlist'}).getByText('Appears once someone connects Trakt').waitFor();
+// All six, Recently Watched among those on Home (it is on by default); the Not on Home ones keep Show at the right edge.
+assert.deepEqual(await owner.locator('.rows .row.later h3').allTextContents(), ['Watchlist', 'Recommended Movies', 'Recommended Shows', 'Recently Watched']);
+assert.deepEqual(await owner.locator('.off li.later h3').allTextContents(), ['Up Next', 'Recently Aired for You']);
+for (const width of [390, 1280]) {
+  await owner.setViewportSize({width, height: 900}); await owner.locator('.off summary').scrollIntoViewIfNeeded();
+  const edges = await owner.locator('.off li').evaluateAll(lines => lines.map(line => {const button = line.querySelector('button'); return Math.round(line.getBoundingClientRect().right - button.getBoundingClientRect().right);}));
+  assert.equal(new Set(edges).size, 1, `every Show sits at the same edge (${width}): ${edges}`);
+}
+await owner.setViewportSize({width: 390, height: 844}); await shot(owner, '5c-hub-home');
 await owner.goto(BASE + '/#/'); await owner.getByText('Add someone to Family').waitFor(); await shot(owner, '6-people');
 // The manager opening the invite link before Ada has joined is told to send it on, and stays signed in.
 await owner.goto(link); await owner.getByText('Ada hasn’t joined yet. Send them this link', {exact: false}).waitFor();
@@ -121,7 +133,35 @@ await guest.goto(BASE + '/#/me/home'); const onHome = guest.locator('.rows li h3
 assert.deepEqual((await onHome.allTextContents()).slice(0, 4), ['Watchlist', 'Recommended Movies', 'Recommended Shows', 'Recently Watched']);
 await guest.getByRole('switch', {name: 'Show Recently Watched on Home'}).click(); await toast(guest).filter({hasText: '“Recently Watched” is off Home'}).waitFor();
 const followed = await guest.evaluate(async () => {for (let i = 0; i < 40; i++) {const me = (await (await fetch('/api/state')).json()).hub.people[0]; if (me.picks) return me; await new Promise(done => setTimeout(done, 250));} return null;});
-assert.equal(followed.rows, null, 'still following the group Home'); assert.deepEqual(followed.picks, {'recently-watched': false}); await shot(guest, '13d-recently-watched-off'); await guest.goto(BASE + '/#/me/accounts'); await trakt.getByText('Connected as adatrakt.').waitFor();
+assert.equal(followed.rows, null, 'still following the group Home'); assert.deepEqual(followed.picks, {'recently-watched': false}); await shot(guest, '13d-recently-watched-off');
+// Add row on her own Home: her own Trakt lists first, then the picks. Picking one makes it a row of her own.
+const adding = async (page, name, phone = true) => {
+  await page.getByRole('button', {name: '+ Add row'}).click(); const sheet = page.getByRole('dialog', {name: 'Add a row'}); await sheet.getByText('Or pick one').waitFor();
+  if (shots) {await page.waitForTimeout(300); await page.screenshot({path: `${shots}/real-${name}-phone.png`}); await page.setViewportSize({width: 1280, height: 900}); await page.waitForTimeout(300); await page.screenshot({path: `${shots}/real-${name}-wide.png`}); await page.setViewportSize({width: 390, height: 844});}
+  return sheet;
+};
+let sheet = await adding(guest, '6a-add-row-own');
+await sheet.getByRole('heading', {name: 'Your lists'}).waitFor(); await sheet.getByText('Heist nights').waitFor(); await sheet.getByText('Sunday westerns').waitFor();
+await sheet.getByText('Trakt · 12 titles').waitFor();
+// Without an MDBList key only the TMDB picks are offered, and the rest are said to be waiting for one.
+const picks = await sheet.locator('.suggested li strong').allTextContents();
+assert.deepEqual(picks, ['Marvel Cinematic Universe', 'Wizarding World', 'Middle-earth', 'James Bond', 'Pixar', 'Studio Ghibli']);
+await sheet.getByText(/more picks read MDBList lists/).waitFor();
+await sheet.getByRole('button', {name: /^Heist nights/}).click(); await toast(guest).filter({hasText: 'Added “Heist nights”'}).waitFor();
+assert.equal((await onHome.allTextContents())[0], 'Heist nightsYours');
+const mine = await guest.evaluate(async () => {for (let i = 0; i < 40; i++) {const me = (await (await fetch('/api/state')).json()).hub.people[0]; if (me.rows) return me.rows[0]; await new Promise(done => setTimeout(done, 250));} return null;});
+assert.deepEqual([mine.id, mine.origin], ['trakt-mine.501', 'own']);
+await guest.getByRole('button', {name: '+ Add row'}).click(); sheet = guest.getByRole('dialog', {name: 'Add a row'}); await sheet.getByRole('button', {name: /^Heist nights/}).and(guest.locator(':disabled')).waitFor();
+await sheet.getByRole('button', {name: 'Close'}).click();
+// Hers alone: the hub's Home, her group's and the manager's view of her own Home never list her lists.
+for (const where of ['/#/hub', '/#/group/family', '/#/person/ada/home']) {
+  await owner.goto(BASE + where); await owner.reload();
+  const theirs = await adding(owner, where === '/#/hub' ? '6b-add-row-hub' : where === '/#/group/family' ? '6c-add-row-group' : '6d-add-row-manager-view');
+  assert.equal(await theirs.getByText('Heist nights').count(), 0, where); assert.equal(await theirs.getByText('Sunday westerns').count(), 0, where);
+  assert.equal(await theirs.getByRole('heading', {name: /lists$/}).count(), 0, where);
+  if (where === '/#/hub') await theirs.getByText(/more picks? reads? MDBList lists/).waitFor();
+  await theirs.getByRole('button', {name: 'Close'}).click();
+} await guest.goto(BASE + '/#/me/accounts'); await trakt.getByText('Connected as adatrakt.').waitFor();
 // MDBList: with her key saved, progress is kept there, and copying what she watched here is offered on her own page.
 await guest.getByRole('radio', {name: 'MDBList'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key'); await guest.getByRole('button', {name: 'Save'}).click();
 await toast(guest).filter({hasText: 'MDBList connected as adalists'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'MDBList'}).getAttribute('aria-checked'), 'true');

@@ -78,15 +78,57 @@ export function rowsOf(own: Row[] | null, shared: Row[], trakt: boolean, picks?:
   return placed(shared).filter(row => trakt || !TRAKT_IDS.has(row.id)).map(row => TRAKT_IDS.has(row.id) && picks?.[row.id] !== undefined ? {...row, on: picks[row.id]} : row);
 }
 export const isTrakt = (item: Row) => item.source === 'Trakt' || item.source.startsWith('Trakt ·');
-export const suggestions = [
-  {id: 'sg-nollywood', title: 'Nollywood', kind: 'Movies', source: 'TMDB'},
-  {id: 'sg-anime', title: 'Anime This Season', kind: 'Series', source: 'TMDB'},
-  {id: 'sg-docs', title: 'Documentaries', kind: 'Movies & shows', source: 'TMDB'},
-  {id: 'sg-kids', title: 'Kids & Family', kind: 'Movies & shows', source: 'TMDB'},
-  {id: 'sg-4k', title: 'Best in 4K', kind: 'Movies', source: 'TMDB'},
-  {id: 'sg-mcu', title: 'Marvel Cinematic Universe', kind: 'Collection', source: 'TMDB'},
-  {id: 'sg-starwars', title: 'Star Wars', kind: 'Collection', source: 'TMDB'},
+/* ---------- suggested rows ("Or pick one" in Add row) ----------
+   Each is a real row: its id is the Home row it makes, so one already on a Home is not offered again. A part is one source:
+   a public MDBList list (read with the hub's MDBList key, or the person's own), a TMDB collection or a TMDB search (the TMDB key
+   only). A row with tabs is a collection, one tab per part. Ids and lists were checked on 2026-11-20. */
+export type Part = {mdblist: number; type: 'movie' | 'series'} | {collection: number} | {discover: string; type: 'movie' | 'series'; params: Record<string, string>};
+export type Limit = Settings['limit'];
+export interface Suggestion {
+  id: string; title: string; kind: string; source: string; parts: {title: string; part: Part}[];
+  // hide: limits under which most of it would be filtered out; kids: a row for children, first under a limit; season: [from, to] as MM-DD.
+  hide?: Limit[]; kids?: boolean; season?: [string, string];
+}
+// AIOMetadata works this out each day (tmdbDiscoverDateTokens.ts): only what is out already.
+const TODAY = '__tmdb_date__:today:to';
+const tmdbOnly = (parts: Suggestion['parts']) => parts.every(item => !('mdblist' in item.part));
+const one = (id: string, title: string, kind: string, part: Part, extra: Partial<Suggestion> = {}): Suggestion => ({id, title, kind, source: 'mdblist' in part ? 'MDBList' : 'TMDB', parts: [{title, part}], ...extra});
+const tabs = (id: string, title: string, parts: Suggestion['parts'], extra: Partial<Suggestion> = {}): Suggestion => ({id, title, kind: `Collection · ${parts.length} tabs`, source: tmdbOnly(parts) ? 'TMDB' : 'mdblist' in parts[0].part && parts.every(item => 'mdblist' in item.part) ? 'MDBList' : 'TMDB and MDBList', parts, ...extra});
+const list = (id: number, type: 'movie' | 'series', title: string, extra: Partial<Suggestion> = {}) => one(`mdblist.${id}.${type}`, title, type === 'movie' ? 'Movies' : 'Series', {mdblist: id, type}, extra);
+// The order is the fixed popularity order: what most households reach for first.
+export const SUGGESTED: Suggestion[] = [
+  list(8113, 'movie', 'Christmas Movies', {season: ['11-15', '12-31']}),
+  list(41422, 'movie', 'Halloween Movies', {season: ['10-01', '11-01'], hide: ['kids', 'teen']}),
+  tabs('sg.star-wars', 'Star Wars', [{title: 'Films', part: {mdblist: 198749, type: 'movie'}}, {title: 'Shows', part: {mdblist: 202585, type: 'series'}}], {hide: ['kids']}),
+  tabs('sg.mcu', 'Marvel Cinematic Universe', [{title: 'Films', part: {discover: 'mcu', type: 'movie', params: {with_keywords: '180547', sort_by: 'primary_release_date.asc', 'primary_release_date.lte': TODAY}}}, {title: 'Shows', part: {mdblist: 32047, type: 'series'}}], {hide: ['kids']}),
+  tabs('sg.wizarding-world', 'Wizarding World', [{title: 'Harry Potter', part: {collection: 1241}}, {title: 'Fantastic Beasts', part: {collection: 435259}}], {hide: ['kids']}),
+  tabs('sg.middle-earth', 'Middle-earth', [{title: 'The Lord of the Rings', part: {collection: 119}}, {title: 'The Hobbit', part: {collection: 121938}}], {hide: ['kids']}),
+  one('sg.bond', 'James Bond', 'Movies, in order', {collection: 645}, {hide: ['kids']}),
+  one('sg.pixar', 'Pixar', 'Movies', {discover: 'pixar', type: 'movie', params: {with_companies: '3', sort_by: 'popularity.desc', 'with_runtime.gte': '40', 'primary_release_date.lte': TODAY}}),
+  one('sg.ghibli', 'Studio Ghibli', 'Movies', {discover: 'ghibli', type: 'movie', params: {with_companies: '10342', sort_by: 'popularity.desc', 'primary_release_date.lte': TODAY}}),
+  list(33459, 'movie', 'Best Picture Winners', {hide: ['kids', 'teen']}),
+  list(101881, 'movie', 'IMDb Top 250 Movies', {hide: ['kids', 'teen']}),
+  list(101882, 'series', 'IMDb Top 250 Shows', {hide: ['kids', 'teen']}),
+  list(86934, 'movie', 'New on Digital', {hide: ['kids']}),
+  // For children. Suggested only, never on by default. (The hub's "Popular Animated Shows" list is not for children.)
+  list(13621, 'movie', 'Kids’ Movies, around 7', {kids: true}),
+  list(154863, 'series', 'Kids’ Shows, around 7', {kids: true}),
+  list(185001, 'movie', 'Movies for 9 to 12', {kids: true}),
+  list(65386, 'series', 'Kids’ Shows, up to 12', {kids: true}),
 ];
+export const suggestionOf = (id: string) => SUGGESTED.find(item => item.id === id);
+/* Whether a suggestion reads an MDBList list: all of it ('all'), some tabs ('some'), or none. */
+export const needsLists = (item: Suggestion) => item.parts.every(part => 'mdblist' in part.part) ? 'all' : item.parts.some(part => 'mdblist' in part.part) ? 'some' : 'none';
+/* The suggestions for one Home, in order: what is not on it yet, in season, and suited to its content limit. Under a limit the rows
+   for children come first. `because`: suggestion id -> a title the person watched (their own Home only); those lead. */
+export function suggestedFor(has: (id: string) => boolean, limit: Limit, lists: boolean, today = new Date(), because: Record<string, string> = {}) {
+  const day = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const shown = SUGGESTED.filter(item => !has(item.id) && !item.hide?.includes(limit) && (!item.season || (day >= item.season[0] && day <= item.season[1])) && (lists || needsLists(item) !== 'all'));
+  const rank = (item: Suggestion) => because[item.id] ? 0 : item.kids ? (limit !== 'all' ? 1 : 3) : 2;
+  return {picks: shown.map((item, at) => ({item, at})).sort((a, b) => rank(a.item) - rank(b.item) || a.at - b.at).map(({item}) => item),
+    // How many are held back only for want of an MDBList key.
+    locked: lists ? 0 : SUGGESTED.filter(item => !has(item.id) && !item.hide?.includes(limit) && (!item.season || (day >= item.season[0] && day <= item.season[1])) && needsLists(item) === 'all').length};
+}
 // What a connected account would list. Invented names.
 export const ownLists = (person: {trakt: boolean; lists: boolean}) => [
   ...(person.trakt ? [{id: 'tl-rewatch', title: 'Weekend rewatches', kind: 'List · 24 titles', source: 'Trakt · your list'}, {id: 'tl-heist', title: 'Heist nights', kind: 'List · 12 titles', source: 'Trakt · your list'}] : []),

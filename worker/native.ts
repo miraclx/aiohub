@@ -1,11 +1,11 @@
 // The hub's own setup on the streaming server (AIOStreams): created once per hub, then kept in step with what the site holds.
 // The hub only ever talks to a setup it created itself, whose id and password it keeps in the vault. Nothing here names an id in an
 // error or a log line. Each request shape was proven by script against a live server first.
-import {rowsOf} from '../src/data';
-import type {Addon, Row, Settings} from '../src/data';
+import {rowsOf, suggestionOf} from '../src/data';
+import type {Addon, Part, Row, Settings} from '../src/data';
 import type {Env} from './util';
 import {getSecret, hosted, newToken, now, putSecret, sha, unseal} from './util';
-import {CUSTOM, ROWS, SERVED, addressOf, catalogOf, customId} from './rows';
+import {CUSTOM, ROWS, addressOf, catalogOf, servedOf} from './rows';
 import {LINK} from './trakt';
 import shipped from './collections.json';
 
@@ -29,6 +29,11 @@ export interface Synced {state: 'ok' | 'partial' | 'needs-key' | 'stuck' | 'erro
 const basic = (home: Home) => ({authorization: `Basic ${btoa(`${home.uuid}:${home.password}`)}`, accept: 'application/json', 'user-agent': 'AIOHub/1.0'});
 const short = () => [...crypto.getRandomValues(new Uint8Array(2))].map(n => n.toString(16).padStart(2, '0')).join('').slice(0, 3);
 const STUCK: Synced = {state: 'stuck', message: 'Setting up the players did not finish last time, and it is not safe to simply try again. It needs a look.'};
+/* Another request holds the claim to create this setup. Claimed in the last two minutes: that request is most likely still at it
+   (the site syncs on opening and after each save, and two tabs or two people can overlap), so this pass says nothing and the site
+   asks again. Older: it never finished, which is what STUCK is for. */
+const BUSY = 120;
+const claimedLately = async (env: Env, hub: string, kind: string, target: string) => !!await env.DB.prepare("SELECT 1 FROM ops WHERE hub = ? AND kind = ? AND target = ? AND state = 'requested' AND created > ?").bind(hub, kind, target, now() - BUSY).first();
 
 /* Playback choices, as AIOStreams settings. The three "how long to look" conditions were checked on staging. */
 const RESOLUTIONS = ['2160p', '1440p', '1080p', '720p', '576p', '480p', '360p', '240p', '144p', 'Unknown'];
@@ -172,7 +177,7 @@ const fresh = (): Stored => ({addonName: 'AIOHub', excludedStreamTypes: ['p2p'],
 async function create(env: Env, hub: string, config: Stored, service: string): Promise<Home | Synced> {
   // Claim the step first. Only the request that wins the claim creates; the password is in the vault before anything is sent.
   const claim = await env.DB.prepare("INSERT INTO ops (hub, kind, target, state, created, updated) VALUES (?, 'create-players', 'hub', 'requested', ?, ?) ON CONFLICT DO NOTHING").bind(hub, now(), now()).run();
-  if (!claim.meta.changes) return STUCK;
+  if (!claim.meta.changes) return await claimedLately(env, hub, 'create-players', 'hub') ? {state: 'partial', message: '', more: true} : STUCK;
   const password = newToken('p');
   await (await putSecret(env, hub, HUB_OWNER, 'players-pending', {password})).run();
   const release = () => env.DB.batch([env.DB.prepare("DELETE FROM ops WHERE hub = ? AND kind = 'create-players'").bind(hub), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'players-pending'").bind(hub, HUB_OWNER)]);
@@ -234,28 +239,58 @@ function foldersOf(item: Shipped, covers: Row['covers']) {
   for (const cover of covers ?? []) {const folder = known.get(cover.image); if (folder && !seen.has(folder.id)) {seen.add(folder.id); picked.push({folder, title: cover.title});}}
   return [...picked, ...item.folders.filter(folder => !seen.has(folder.id)).map(folder => ({folder, title: folder.title}))];
 }
+/* A part of a suggested row (SUGGESTED in data.ts) as the catalog AIOMetadata serves it. Shapes from AIOMetadata 4.1.0 (getCatalog.ts):
+   a TMDB collection is read by its id and always comes in release order; a TMDB search by its params; an MDBList list by its id. */
+const DISCOVER = (part: {discover: string; type: string}) => `tmdb.discover.${part.type}.${part.discover}.aiohub`;
+function partOf(part: Part, name: string): Catalog {
+  if ('mdblist' in part) return {id: `mdblist.${part.mdblist}`, type: part.type, name, source: 'mdblist', sort: 'default'};
+  if ('collection' in part) return {id: `tmdb.collection.${part.collection}`, type: 'movie', name, source: 'tmdb', metadata: {listId: String(part.collection), sortDirection: 'asc', hideUnreleased: true}};
+  return {id: DISCOVER(part), type: part.type, name, source: 'tmdb', metadata: {discover: {version: 2, source: 'tmdb', mediaType: part.type === 'movie' ? 'movie' : 'tv', params: part.params}}};
+}
+/* A Home row that is one catalog: its catalog, or null when it is not one (a collection, or a row this Home cannot fill). `lists`:
+   MDBList can be read for this Home; `trakt`: AIOMetadata's own Trakt fills the Trakt rows; `served`: the hub serves them. */
+function plainOf(row: Row, lists: boolean, trakt: boolean, served: string | null): Catalog | null {
+  const at = {name: row.title, enabled: row.on, showInHome: true};
+  if (TMDB_ROW[row.id]) return {...TMDB_ROW[row.id], ...at, source: 'tmdb'};
+  if (served && servedOf(row.id)) return catalogOf(served, row.id, row.title, row.on);
+  if (trakt && !served && TRAKT_ROW[row.id]) return {...TRAKT_ROW[row.id], ...at, source: 'trakt'};
+  const list = /^mdblist\.(\d+)\.(movie|series|all)$/.exec(row.id);
+  if (list) return lists ? {id: `mdblist.${list[1]}`, type: list[2], ...at, source: 'mdblist', sort: 'default'} : null;
+  // Pasted public lists (see findList in api.ts): TMDB and Trakt in list order, Letterboxd through AIOMetadata's own lookup.
+  if (/^tmdb\.list\.\d{1,12}$/.test(row.id)) return {id: row.id, type: 'all', ...at, source: 'tmdb', metadata: {listId: row.id.slice(10)}};
+  if (/^trakt\.list\.\d{1,12}$/.test(row.id)) return {id: row.id, type: 'all', ...at, source: 'trakt', sort: 'default', metadata: {privacy: 'public'}};
+  const boxd = /^letterboxd\.([\w-]{1,60})$/.exec(row.id);
+  if (boxd) return {id: row.id, type: 'all', ...at, source: 'letterboxd', enableRatingPosters: true, metadata: {isWatchlist: false, identifier: boxd[1]}};
+  const picked = suggestionOf(row.id);
+  if (picked?.parts.length === 1 && (lists || !('mdblist' in picked.parts[0].part))) return {...partOf(picked.parts[0].part, row.title), ...at};
+  return null;
+}
+/* The collections the hub makes are known by this start, so they can be told from any made elsewhere. */
+const MINE = 'aiohub-';
 /* Home as AIOMetadata holds it. A collection sits right after the plain row above it, which is how AIOMetadata places one.
    `served` is the person's rows address on the hub, when the hub serves their Trakt rows. */
 export function homeOf(rows: Row[], lists: boolean, trakt = false, served: string | null = null): {catalogs: Catalog[]; collections: {id: string; [key: string]: unknown}[]} {
   const catalogs: Catalog[] = [], collections: {id: string; [key: string]: unknown}[] = [], sources = new Map<string, Catalog>();
   let above: {id: string; type: string} | undefined;
   for (const row of rows) {
-    const plain = TMDB_ROW[row.id], item = COLLECTIONS.get(row.id);
-    const list = lists ? /^mdblist\.(\d+)\.(movie|series|all)$/.exec(row.id) : null;
-    // Trakt rows: from the hub when it serves them (some only it has), else AIOMetadata's own.
-    const own = trakt && !served ? TRAKT_ROW[row.id] : undefined;
-    if (plain) {catalogs.push({...plain, name: row.title, source: 'tmdb', enabled: row.on, showInHome: true}); above = plain;}
-    else if (served && SERVED[row.id]) {const made = catalogOf(served, row.id, row.title, row.on); above = {id: made.id, type: made.type}; catalogs.push(made);}
-    else if (own) {above = {id: own.id, type: own.type}; catalogs.push({...own, name: row.title, source: 'trakt', enabled: row.on, showInHome: true});}
-    else if (list) {above = {id: `mdblist.${list[1]}`, type: list[2]}; catalogs.push({...above, name: row.title, source: 'mdblist', sort: 'default', enabled: row.on, showInHome: true});}
+    const plain = plainOf(row, lists, trakt, served), item = COLLECTIONS.get(row.id), picked = !plain ? suggestionOf(row.id) : undefined;
+    if (plain) {catalogs.push(plain); above = {id: plain.id, type: plain.type};}
     else if (item && lists && row.on) {
       const folders = foldersOf(item, row.covers);
       collections.push({kind: 'collection', id: item.id, title: row.title, hideTitle: false, backdropImageUrl: '', pinToTop: false, viewMode: item.viewMode, showAllTab: true, focusGlowEnabled: true, ...(above ? {after: above} : {}),
         folders: folders.map(({folder, title}) => ({id: folder.id, title, shape: folder.shape, hideTitle: folder.hideTitle, coverImageUrl: folder.cover, coverEmoji: '', sources: [folder.source]}))});
       for (const {folder} of folders) sources.set(`${folder.catalog.id}/${folder.catalog.type}`, {...folder.catalog, enabled: true, showInHome: false});
+    } else if (picked && row.on) {
+      // A suggested row with tabs: a collection, one tab per part. Without MDBList only its TMDB tabs come; with none left, nothing.
+      const parts = picked.parts.filter(({part}) => lists || !('mdblist' in part)).map(({title, part}) => ({title, catalog: partOf(part, `${picked.title}: ${title}`)}));
+      if (!parts.length) continue;
+      const id = `${MINE}${row.id.replace(/[^a-z0-9-]/g, '-')}`;
+      collections.push({kind: 'collection', id, title: row.title, hideTitle: false, backdropImageUrl: '', pinToTop: false, viewMode: 'TABBED_GRID', showAllTab: false, focusGlowEnabled: true, ...(above ? {after: above} : {}),
+        folders: parts.map(({title, catalog}, n) => ({id: `${id}-${n + 1}`, title, shape: 'POSTER', hideTitle: false, coverImageUrl: '', coverEmoji: '', sources: [{name: catalog.name, type: catalog.type, genre: 'None', baseType: catalog.type, catalogId: catalog.id}]}))});
+      for (const {catalog} of parts) sources.set(`${catalog.id}/${catalog.type}`, {...catalog, enabled: true, showInHome: false});
     }
   }
-  return {catalogs: [...catalogs, ...sources.values()], collections};
+  return {catalogs: [...catalogs, ...[...sources.values()].filter(item => !catalogs.some(made => made.id === item.id && made.type === item.type))], collections};
 }
 const address = (env: Env, made: Catalogs) => `${env.AIOM_ORIGIN}/stremio/${made.uuid}/manifest.json?v=${made.v}`;
 interface Want {rows: Row[]; settings: Settings; trakt?: string | null; lists?: string | null; served?: string | null}
@@ -297,7 +332,7 @@ async function syncHome(env: Env, vault: Vault, hub: string, owner: string, want
   if ((budget.left -= 2) < 0) return {message: 'Still bringing everyone’s Home in step.', more: true};
   if (!made) {
     const claim = await env.DB.prepare("INSERT INTO ops (hub, kind, target, state, created, updated) VALUES (?, ?, ?, 'requested', ?, ?) ON CONFLICT DO NOTHING").bind(hub, `create-${kind}`, owner, now(), now()).run();
-    if (!claim.meta.changes) return {message: STUCK.message!};
+    if (!claim.meta.changes) return await claimedLately(env, hub, `create-${kind}`, owner) ? {message: '', more: true} : {message: STUCK.message!};
     const password = newToken('c');
     await (await putSecret(env, hub, owner, `${kind}-pending`, {password})).run();
     const answer = await fetch(`${env.AIOM_ORIGIN}/api/config/save`, {method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({config: {apiKeys, ...SEARCH_SETUP, ...rest}, password})}).catch(() => null);
@@ -323,8 +358,9 @@ async function syncHome(env: Env, vault: Vault, hub: string, owner: string, want
   // Titles without a rating are left out only for the Kids limit; any other limit lets them back in (AIOMetadata's default).
   if (!('allowUnratedContent' in settings) && stored.allowUnratedContent === false) delete stored.allowUnratedContent;
   if (!(stored.search as {providers?: unknown} | undefined)?.providers) stored.search = SEARCH_SETUP.search;
-  stored.catalogs = [...catalogs, ...(stored.catalogs ?? []).filter(item => !ours.has(`${item.id}/${item.type}`) && !/^(mdblist|letterboxd|trakt)\./.test(item.id) && !CUSTOM.test(item.id))];
-  stored.collections = [...collections, ...(stored.collections ?? []).filter(item => !folders.has(item.id))];
+  // Every catalog and collection of the kinds the hub makes is the hub's: what the site no longer has goes.
+  stored.catalogs = [...catalogs, ...(stored.catalogs ?? []).filter(item => !ours.has(`${item.id}/${item.type}`) && !/^(mdblist|letterboxd|trakt)\./.test(item.id) && !/^tmdb\.(collection|list)\./.test(item.id) && !/^tmdb\.discover\..*\.aiohub$/.test(item.id) && !CUSTOM.test(item.id))];
+  stored.collections = [...collections, ...(stored.collections ?? []).filter(item => !folders.has(item.id) && !item.id.startsWith(MINE))];
   const others = {...(stored.apiKeys ?? {})}; delete others.mdblist; delete others.traktTokenId;
   stored.apiKeys = {...others, ...apiKeys};
   const write = await fetch(`${env.AIOM_ORIGIN}/api/config/update/${made.uuid}`, {method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({config: stored, password: made.password, baseVersion: stored.configVersion})}).catch(() => null);
@@ -366,7 +402,7 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
   const key = `${hub.id}/${person ?? ''}/${made.uuid}/${made.v}`, known = shown.get(key);
   if (known && Date.now() - known.at < 600_000) return known.rows;
   const at = made.at ?? env.AIOM_ORIGIN, out: Record<string, string[]> = {};
-  const where = (row: Row) => {const list = /^mdblist\.(\d+)\.(movie|series|all)$/.exec(row.id); return TMDB_ROW[row.id] ?? (served && SERVED[row.id] ? {id: customId(SERVED[row.id]), type: SERVED[row.id].type} : TRAKT_ROW[row.id]) ?? (list ? {id: `mdblist.${list[1]}`, type: list[2]} : null);};
+  const where = (row: Row) => plainOf(row, true, !served, served ? 'https://hub.invalid' : null);
   // A hub or group Home keeps places for Trakt rows; only a person with Trakt has anything in them.
   await Promise.all(rows.filter(row => row.on && where(row) && (person || !TRAKT_ROW[row.id])).slice(0, 16).map(async row => {
     const from = where(row)!, answer = await fetch(`${at}/stremio/${made!.uuid}/catalog/${from.type}/${from.id}.json`, {headers: {accept: 'application/json', 'user-agent': 'AIOHub/1.0'}}).catch(() => null);
@@ -502,7 +538,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
     // Whoever now has their own setup's sign-in no longer needs the AIOStreams one (their AIOStreams user goes on the next sync).
     await env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND kind = 'upstream' AND owner IN (SELECT owner FROM secrets WHERE hub = ? AND kind = ?)").bind(hub.id, hub.id, VIA).run();
   }
-  return note ? {state: 'partial', message: note, ...(more ? {more: true} : {})} : {state: 'ok'};
+  return note || more ? {state: 'partial', message: note, ...(more ? {more: true} : {})} : {state: 'ok'};
 }
 
 /* Each person's own Jellyfin server on AIOMetadata. Worked out again on every sync from the hub, their group and themselves, and

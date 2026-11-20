@@ -144,6 +144,8 @@ section + section { margin-top: 44px; }
 .off li { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
 .off li + li { border-top: 1px solid var(--line); }
 .off li div:nth-child(2) { flex: 1; min-width: 0; }
+/* A Trakt place has no poster strip: its Show still sits at the right edge, like every other line's. */
+.off li > button { margin-left: auto; flex-shrink: 0; }
 .off li p { color: var(--muted); font-size: 14px; }
 
 /* switch, segments, chips */

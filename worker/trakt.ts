@@ -10,7 +10,8 @@ export const LINK = 'trakt-scrobble', PENDING = 'trakt-scrobble-pending';
 // Workers Free allows about fifty database queries and fifty outside calls per run, so the cron takes a few at a time.
 const DAY = 86400, CLAIM = 60, QUIET = 1800, SWEEP = 4, OOB = 'urn:ietf:wg:oauth:2.0:oob';
 // `redirect` is the address the sign-in came back to; Trakt wants the same one when the login is renewed.
-export interface Link {access: string; refresh: string; expires: number; username: string; redirect?: string; again?: boolean; renewing?: number}
+// `since`: when it was connected. A play here from before then never reached Trakt, so it can be copied over from the person's page.
+export interface Link {access: string; refresh: string; expires: number; username: string; redirect?: string; again?: boolean; renewing?: number; since?: number}
 type Ids = {tmdb?: number; imdb?: string};
 export type Target = {movie: {ids: Ids}} | {show: {ids: Ids}; episode: {season: number; number: number}};
 
@@ -29,7 +30,7 @@ export const taken = (status: number | null) => status !== null && status !== 0 
 /* ---------- connecting ---------- */
 /* A login finished on the person's page (see api.ts, 'link'). Anything left from the older code flow goes with it. */
 export async function keepLink(env: Env, hub: string, person: string, link: Link) {
-  await env.DB.batch([await putSecret(env, hub, person, LINK, link), drop(env, hub, person, PENDING)]);
+  await env.DB.batch([await putSecret(env, hub, person, LINK, {...link, since: link.since ?? now()}), drop(env, hub, person, PENDING)]);
 }
 export async function disconnect(env: Env, hub: string, person: string) {
   const link = await getSecret<Link>(env, hub, person, LINK);
@@ -67,7 +68,7 @@ async function access(env: Env, hub: string, person: string, failed = ''): Promi
   const answer = await signin(env, '/oauth/token', {refresh_token: link.refresh, client_id: env.TRAKT_CLIENT_ID, redirect_uri: link.redirect || OOB, grant_type: 'refresh_token'});
   const got = answer?.ok ? await answer.json().catch(() => null) as {access_token?: string; refresh_token?: string; expires_in?: number; created_at?: number} | null : null;
   if (got?.access_token && got.refresh_token) {
-    await swap(env, hub, person, mine, {access: got.access_token, refresh: got.refresh_token, expires: Number(got.created_at ?? now()) + Number(got.expires_in ?? 7 * DAY), username: link.username, redirect: link.redirect});
+    await swap(env, hub, person, mine, {access: got.access_token, refresh: got.refresh_token, expires: Number(got.created_at ?? now()) + Number(got.expires_in ?? 7 * DAY), username: link.username, redirect: link.redirect, since: link.since});
     return got.access_token;
   }
   // Trakt no longer takes this connection (taken back on Trakt, or long unused): it has to be made again. Anything else is a blip.

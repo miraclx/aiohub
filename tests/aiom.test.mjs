@@ -49,7 +49,13 @@ const READS = {
   '/recommendations/movies': Array.from({length: 45}, (_, n) => film(n + 1)),
   '/recommendations/shows': [{title: 'Breaking Bad', ids: {imdb: 'tt0903747', tmdb: 1396}}],
   '/sync/progress/up_next': [{show: {title: 'Breaking Bad', ids: {imdb: 'tt0903747', tmdb: 1396}}, progress: {aired: 62, completed: 10}}],
+  // Her own lists (one private), one she liked, and what her private list holds, in its own order.
+  '/users/me/lists': [{name: 'Heist nights', privacy: 'private', item_count: 2, ids: {trakt: 501, slug: 'heist-nights'}}],
+  '/users/likes/lists': [{type: 'list', list: {name: 'Liked one', privacy: 'public', item_count: 1, ids: {trakt: 777}}}],
+  '/users/me/lists/501/items': [{type: 'movie', movie: MOVIE.pulp}, {type: 'show', show: BB}],
 };
+// Lists anyone may look up on Trakt with the site's app alone: one public, one private.
+const PUBLIC = {'/users/someone/lists/heist': {name: 'Heist classics', privacy: 'public', item_count: 9, ids: {trakt: 9001}}, '/users/someone/lists/secret': {name: 'Secret', privacy: 'private', item_count: 3, ids: {trakt: 9002}}};
 const issue = () => {const n = ++trakt.issued; trakt.valid.add(`trakt-access-${n}`); trakt.refresh = `trakt-refresh-${n}`; return {access_token: `trakt-access-${n}`, refresh_token: trakt.refresh, expires_in: trakt.expiresIn, created_at: Math.floor(Date.now() / 1000), token_type: 'bearer', scope: 'public'};};
 function traktAnswer(request, path, body, send, answer) {
   // Renewing and revoking, on Trakt's sign-in host: plain JSON. Renewing takes a moment, so reports that arrive together find it under way.
@@ -61,6 +67,8 @@ function traktAnswer(request, path, body, send, answer) {
   }
   if (request.headers['trakt-api-key'] !== 'local-trakt-client' || request.headers['trakt-api-version'] !== '2' || !request.headers['user-agent'] || request.headers['content-type'] !== 'application/json') return send(403, {});
   const auth = (request.headers.authorization ?? '').replace('Bearer ', '');
+  if (!auth && PUBLIC[path]) {trakt.reads.push({where: path}); return send(200, PUBLIC[path]);}
+  if (!auth && path.startsWith('/users/')) return send(404, {});
   if (!trakt.valid.has(auth)) return send(401, {});
   if (path === '/users/settings') return send(200, {user: {username: 'adatrakt'}});
   // Reads for the rows the hub serves. Kept apart from the calls that write, which the tests below count exactly.
@@ -84,11 +92,19 @@ http.createServer(async (request, answer) => {
   const [id, pass] = request.headers.authorization?.startsWith('Basic ') ? atob(request.headers.authorization.slice(6)).split(':') : [];
   const mine = () => fake.configs.get(id)?.password === pass ? fake.configs.get(id) : null;
   if (request.url.startsWith('/trakt/')) return traktAnswer(request, request.url.slice(6), body, send, answer);
+  // TMDB's public lists, by number: one with titles, one empty.
+  if (request.url.startsWith('/tmdb3/list/')) {const id = request.url.split('/')[3].split('?')[0]; return !request.url.includes('api_key=good-tmdb-key') ? send(401, {}) : id === '8300' ? send(200, {name: 'Festival picks', item_count: 14}) : id === '8301' ? send(200, {name: 'Empty', item_count: 0}) : send(404, {});}
   if (request.url.startsWith('/tmdb')) return send(request.url.includes('api_key=good-tmdb-key') ? 200 : 401, {});
+  // AIOMetadata's own Letterboxd lookup: the list's Letterboxd identifier, then the list through StremThru.
+  if (request.url === '/api/letterboxd/extract-identifier') return /letterboxd\.com\/someone\/list\/noir\/$/.test(body.url) ? send(200, {identifier: 'aBc12', isWatchlist: false}) : send(404, {error: 'not found'});
+  if (request.url === '/api/letterboxd/list') return body.identifier === 'aBc12' ? send(200, {data: {title: 'Noir essentials', items: [{id: 1}, {id: 2}]}}) : send(404, {});
   // AIOMetadata's own Trakt connection, as it describes a Token ID.
   if (request.url === '/api/oauth/token/info') return body.tokenId === 'aiom-trakt-token-id-1' ? send(200, {provider: 'trakt', username: 'adatrakt'}) : send(404, {});
   if (request.url.startsWith('/mdblist/user')) return send(request.url.includes('apikey=ada-mdblist-key') ? 200 : 403, {username: 'adalists'});
   if (request.url.startsWith('/mdblist/') && !request.url.includes('apikey=ada-mdblist-key')) return send(403, {});
+  // Her own MDBList lists, and a public one looked up by its link.
+  if (request.url.startsWith('/mdblist/lists/user?')) return send(200, [{id: 4242, name: 'Award winners', slug: 'award-winners', items: 60, mediatype: 'movie'}]);
+  if (request.url.startsWith('/mdblist/lists/someone/a-list?')) return send(200, [{id: 5151, name: 'A list', mediatype: 'show'}]);
   if (request.url.startsWith('/mdblist/sync/history/movie/tmdb/603')) return send(200, {plays: fake.watched.some(body => body.movies?.length) ? [{season_num: null}] : []});
   if (request.url.startsWith('/mdblist/sync/history/show/tmdb/1399')) return send(200, {plays: [{season_num: 1, episode_num: 1}]});
   if (request.url.startsWith('/mdblist/sync/playback')) return send(200, []);
@@ -243,7 +259,7 @@ test('a person copies what they watched here to their MDBList, after seeing the 
   assert.deepEqual(shown.body.partway.map(entry => [entry.title, entry.detail, entry.pct]), [['Meta Show', 'Season 1 · Episode 2', 40]]);
   assert.equal(shown.body.already, 1); assert.equal(fake.watched.length, 0, 'looking writes nothing');
   const done = await ada('POST', '/api/people/ada/carry', {});
-  assert.deepEqual(done.body, {watched: 1, partway: 1, missed: 0, more: false});
+  assert.deepEqual(done.body, {watched: 1, partway: 1, trakt: 0, missed: 0, more: false});
   assert.deepEqual(fake.watched, [{movies: [{ids: {tmdb: 603, imdb: 'tt0133093'}, watched_at: '2026-11-01T20:00:00.000Z'}]}]);
   assert.deepEqual(fake.pauses, [{show: {ids: {tmdb: 1399}, season: {number: 1, episode: {number: 2}}}, progress: 40}]);
   // Done once: a second look offers nothing, and nothing is sent twice.
@@ -477,6 +493,11 @@ test('once a day her Trakt and MDBList are compared over two weeks, a few steps 
   assert.equal((await owner('POST', '/api/people/ada/drift', {skip: pulp.key})).status, 403);
   assert.equal((await adaSite('POST', '/api/people/ada/drift', {skip: pulp.key})).status, 200);
   assert.deepEqual((await adaSite('GET', '/api/state')).body.hub.people[0].drift.toTrakt.map(line), [['Breaking Bad', 1, 3, T.e3]]);
+  // What she watched here before (some of it before Trakt was connected) is offered to Trakt too; here she leaves it out, so Fix
+  // below is only the day's look. (Copying watched-here plays is tested on its own, further down.)
+  const here = (await adaSite('GET', '/api/people/ada/carry')).body;
+  assert.ok(here.trakt && here.lists && here.watched.some(entry => entry.trakt === 'add'), JSON.stringify(here));
+  for (const entry of [...here.watched, ...here.partway]) assert.equal((await adaSite('POST', '/api/people/ada/drift', {skip: entry.key})).status, 200);
   // Fix, pressed twice at once: exactly the missing plays, each with its own date, sent once.
   const [one, two] = await Promise.all([adaSite('POST', '/api/people/ada/drift', {}), adaSite('POST', '/api/people/ada/drift', {})]);
   assert.deepEqual([one.body, two.body].sort((a, b) => b.trakt - a.trakt), [{trakt: 1, mdblist: 2, more: false}, {trakt: 0, mdblist: 0, more: false}]);
@@ -550,6 +571,91 @@ test('the rows address answers with IMDb ids from her Trakt, page by page, renew
   assert.deepEqual(rowsOf(playerOf('Ada')[1].config), []);
   assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').trakt, false);
   assert.deepEqual((await get(served[0].sourceUrl)).body, {metas: []});
+});
+const hubRows = async rows => {const state = (await owner('GET', '/api/state')).body.hub; assert.equal((await owner('PUT', '/api/hub', {...state, rows})).status, 200); return syncAll();};
+const catalogsOf = name => playerOf(name)[1].config.catalogs, collectionsOf = name => playerOf(name)[1].config.collections ?? [];
+test('suggested rows reach the player apps: TMDB ones with the TMDB key alone, MDBList ones where a key reads them', async () => {
+  const before = (await owner('GET', '/api/state')).body.hub.rows, add = (id, title, kind = 'Collection') => ({id, title, kind, source: 'TMDB', origin: 'hub', on: true});
+  // Bond (one TMDB collection), Wizarding World (two, as tabs), Marvel (a TMDB search and an MDBList list), Star Wars (MDBList only),
+  // and a single MDBList list. The hub has no MDBList key; Ada has her own, Ben has none.
+  await hubRows([add('sg.bond', 'James Bond', 'Movies, in order'), add('sg.wizarding-world', 'Wizarding World'), add('sg.mcu', 'Marvel Cinematic Universe'), add('sg.star-wars', 'Star Wars'), add('mdblist.33459.movie', 'Best Picture Winners', 'Movies'), ...before]);
+  const bond = catalogsOf('Ben').find(item => item.id === 'tmdb.collection.645');
+  assert.deepEqual({...bond}, {id: 'tmdb.collection.645', type: 'movie', name: 'James Bond', source: 'tmdb', metadata: {listId: '645', sortDirection: 'asc', hideUnreleased: true}, enabled: true, showInHome: true});
+  const tabs = name => Object.fromEntries(collectionsOf(name).filter(item => item.id.startsWith('aiohub-')).map(item => [item.id, item.folders.map(folder => [folder.title, folder.sources[0].catalogId])]));
+  assert.deepEqual(tabs('Ben'), {'aiohub-sg-wizarding-world': [['Harry Potter', 'tmdb.collection.1241'], ['Fantastic Beasts', 'tmdb.collection.435259']], 'aiohub-sg-mcu': [['Films', 'tmdb.discover.movie.mcu.aiohub']]});
+  assert.deepEqual(tabs('Ada'), {'aiohub-sg-wizarding-world': [['Harry Potter', 'tmdb.collection.1241'], ['Fantastic Beasts', 'tmdb.collection.435259']], 'aiohub-sg-mcu': [['Films', 'tmdb.discover.movie.mcu.aiohub'], ['Shows', 'mdblist.32047']], 'aiohub-sg-star-wars': [['Films', 'mdblist.198749'], ['Shows', 'mdblist.202585']]});
+  // A tab's source is in the setup, on, and kept off Home; the search carries its params, the content limit applies as everywhere.
+  const mcu = catalogsOf('Ben').find(item => item.id === 'tmdb.discover.movie.mcu.aiohub');
+  assert.equal(mcu.enabled, true); assert.equal(mcu.showInHome, false); assert.deepEqual(mcu.metadata.discover.params, {with_keywords: '180547', sort_by: 'primary_release_date.asc', 'primary_release_date.lte': '__tmdb_date__:today:to'});
+  assert.equal(catalogsOf('Ben').some(item => item.id.startsWith('mdblist.')), false, 'nothing that needs MDBList without a key');
+  assert.ok(catalogsOf('Ada').some(item => item.id === 'mdblist.33459' && item.showInHome));
+  // Taken off Home again: gone from both setups, and nothing else of theirs changed.
+  await hubRows(before);
+  for (const name of ['Ada', 'Ben']) {assert.deepEqual(tabs(name), {}); assert.equal(catalogsOf(name).some(item => /^tmdb\.(collection|discover)\.|^mdblist\.(33459|32047|198749)$/.test(item.id)), false);}
+});
+test('a pasted link is checked where the list lives; one that can’t be used says why', async () => {
+  const find = (who, link) => who('POST', '/api/lists', {link});
+  assert.deepEqual((await find(owner, 'https://trakt.tv/users/someone/lists/heist?sort=rank')).body, {id: 'trakt.list.9001', title: 'Heist classics', kind: 'Movies & shows', source: 'Trakt'});
+  assert.match((await find(owner, 'https://trakt.tv/users/someone/lists/secret')).body.message, /isn’t public/);
+  assert.deepEqual((await find(owner, 'https://www.themoviedb.org/list/8300-festival')).body, {id: 'tmdb.list.8300', title: 'Festival picks', kind: 'Movies & shows', source: 'TMDB'});
+  assert.match((await find(owner, 'themoviedb.org/list/8301')).body.message, /empty/);
+  assert.deepEqual((await find(owner, 'https://letterboxd.com/someone/list/noir/')).body, {id: 'letterboxd.aBc12', title: 'Noir essentials', kind: 'Movies', source: 'Letterboxd'});
+  assert.equal((await find(owner, 'https://letterboxd.com/someone/list/nothing-here/')).status, 404);
+  // MDBList: the hub has no key, so the manager is told; Ada's own key reads it from her page.
+  assert.match((await find(owner, 'https://mdblist.com/lists/someone/a-list')).body.message, /MDBList key first/);
+  assert.deepEqual((await find(adaSite, 'https://mdblist.com/lists/someone/a-list')).body, {id: 'mdblist.5151.series', title: 'A list', kind: 'Series', source: 'MDBList'});
+  assert.match((await find(owner, 'https://trakt.tv/shows/breaking-bad')).body.message, /not a list link/);
+  assert.match((await find(owner, 'https://example.com/list')).body.message, /Trakt, Letterboxd, MDBList or TMDB/);
+  // Each becomes a row the player apps get, in the list's own order.
+  const before = (await owner('GET', '/api/state')).body.hub.rows, row = (id, title) => ({id, title, kind: 'List', source: 'Link', origin: 'hub', on: true});
+  await hubRows([row('trakt.list.9001', 'Heist classics'), row('tmdb.list.8300', 'Festival picks'), row('letterboxd.aBc12', 'Noir essentials'), ...before]);
+  const got = id => {const item = catalogsOf('Ben').find(catalog => catalog.id === id); return item && [item.type, item.source, item.showInHome, item.metadata];};
+  assert.deepEqual([got('trakt.list.9001'), got('tmdb.list.8300'), got('letterboxd.aBc12')], [['all', 'trakt', true, {privacy: 'public'}], ['all', 'tmdb', true, {listId: '8300'}], ['all', 'letterboxd', true, {isWatchlist: false, identifier: 'aBc12'}]]);
+  await hubRows(before);
+  assert.equal(catalogsOf('Ben').some(item => /^(trakt|tmdb)\.list\.|^letterboxd\./.test(item.id)), false);
+});
+test('her own lists and what her watching suggests are hers alone, from her own page', async () => {
+  trakt.expiresIn = 7 * 86400; await connect();
+  // Never the manager's to see, even for her.
+  assert.equal((await owner('GET', '/api/people/ada/lists')).status, 403); assert.equal((await owner('GET', '/api/people/ada/because')).status, 403);
+  const got = (await adaSite('GET', '/api/people/ada/lists')).body.lists;
+  assert.deepEqual(got, [{id: 'trakt-mine.501', title: 'Heist nights', kind: 'List · 2 titles', source: 'Trakt · your list'}, {id: 'trakt-liked.777', title: 'Liked one', kind: 'List · 1 title', source: 'Trakt · liked'}, {id: 'mdblist.4242.movie', title: 'Award winners', kind: 'List · 60 titles', source: 'MDBList · your list'}]);
+  // Kept a while, for her alone: asking again reads neither service.
+  const reads = trakt.reads.length; assert.deepEqual((await adaSite('GET', '/api/people/ada/lists')).body.lists, got); assert.equal(trakt.reads.length, reads);
+  assert.deepEqual(sql("SELECT person FROM rows_cache WHERE kind = 'lists'"), [{person: 'ada'}]);
+  // "Because you watched": from her own Trakt pages and plays only. Ben watching Pixar never reaches her suggestions.
+  const id = sql('SELECT id FROM hubs')[0].id;
+  sql(`INSERT INTO rows_cache (hub, person, kind, at, items) VALUES ('${id}', 'ada', 'history.9', 0, '[{"id":"tt0076759","type":"movie","name":"Star Wars"},{"id":"tmdb:120","type":"movie","name":"The Fellowship of the Ring"}]'), ('${id}', 'ben', 'history', 0, '[{"id":"tt0114709","type":"movie","name":"Toy Story"}]')`);
+  assert.deepEqual((await adaSite('GET', '/api/people/ada/because')).body.because, {'sg.star-wars': 'Star Wars', 'sg.middle-earth': 'The Fellowship of the Ring'});
+  // Her private Trakt list on her Home: served by the hub through her own login, in the list's order, like her watchlist.
+  const ada = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
+  assert.equal((await owner('PUT', '/api/people/ada', {...ada, rows: [{id: 'trakt-mine.501', title: 'Heist nights', kind: 'List', source: 'Trakt · your list', origin: 'own', on: true}, ...(await owner('GET', '/api/state')).body.hub.rows]})).status, 200);
+  await syncAll();
+  const served = catalogsOf('Ada').find(item => item.id === 'custom.aiohub_rows.all.list_mine_501');
+  assert.ok(served?.showInHome && served.enabled, 'her list is a row in her setup');
+  const metas = await (await fetch(served.sourceUrl)).json();
+  assert.deepEqual(metas.metas.map(meta => meta.id), ['tt0110912', 'tt0903747']);
+  assert.ok(trakt.reads.some(read => read.where === '/users/me/lists/501/items' && /page=1/.test(read.query ?? '')));
+  assert.deepEqual(sql("SELECT person, kind FROM rows_cache WHERE kind LIKE 'list_mine_501%' ORDER BY kind"), [{person: 'ada', kind: 'list_mine_501'}, {person: 'ada', kind: 'list_mine_501.2'}]);
+  // Nobody else's setup has it.
+  assert.equal(catalogsOf('Ben').some(item => /list_mine/.test(item.id)), false);
+  assert.equal((await owner('PUT', '/api/people/ada', {...ada, rows: null, v: (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').v})).status, 200);
+  await syncAll(); assert.equal(catalogsOf('Ada').some(item => /list_mine/.test(item.id)), false);
+  // Trakt disconnected: her lists, like everything read from her Trakt, are forgotten.
+  assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200); assert.deepEqual(sql("SELECT kind FROM rows_cache WHERE person = 'ada' AND kind NOT LIKE 'history%'"), []);
+});
+test('a setup another request is still making is waited for quietly; one that never finished is said once', async () => {
+  const person = {rows: null, settings: {}, can: {arrange: false, add: false, playback: false}, trakt: false, lists: false};
+  assert.equal((await owner('PUT', '/api/people/cy', {...person, name: 'Cy', groupId: 'mein'})).status, 200);
+  // Another sync claimed Cy's setup a moment ago (the site syncs on opening and after each save, and two can overlap).
+  sql("INSERT INTO ops (hub, kind, target, state, created, updated) SELECT id, 'create-aiom', 'cy', 'requested', unixepoch(), unixepoch() FROM hubs");
+  const busy = (await owner('POST', '/api/sync', {})).body;
+  assert.deepEqual(busy, {state: 'partial', message: '', more: true});
+  // Claimed long ago and never finished: that is said, and nothing is made twice.
+  sql("UPDATE ops SET created = created - 600 WHERE target = 'cy'"); const made = fake.made;
+  assert.match((await owner('POST', '/api/sync', {})).body.message, /needs a look/); assert.equal(fake.made, made);
+  sql("DELETE FROM ops WHERE target = 'cy'"); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.ok(playerOf('Cy'));
+  assert.equal((await owner('DELETE', '/api/people/cy')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Cy'), undefined);
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);

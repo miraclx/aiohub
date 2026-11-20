@@ -1,8 +1,9 @@
 import {useState} from 'react';
+import type React from 'react';
 import {DragDropProvider} from '@dnd-kit/react';
 import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
-import {TRAKT_IDS, countries, suggestions, tongues} from './data';
-import type {Cover, Level, Row} from './data';
+import {TRAKT_IDS, countries, suggestedFor, tongues} from './data';
+import type {Cover, Level, Limit, Row} from './data';
 import {Art, Chips, NameField, Posters, Segments, Sheet, Switch, hash} from './ui';
 
 type Pick = {id: string; title: string; kind: string; source: string};
@@ -44,8 +45,11 @@ export interface HomeProps {
   person?: string;
   /* On a real hub: looks a pasted link up, and only what really reaches the player apps is offered. */
   find?: (link: string) => Promise<Pick>; fail?: (text: string) => void;
+  /* The content limit this Home is seen under, whether MDBList lists can be read for it, and (a person's own Home, in their own
+     view only) which suggestions their watching points to. `keyHint`: what to say when picks wait for an MDBList key. */
+  limit?: Limit; listsOk?: boolean; because?: Record<string, string>; keyHint?: React.ReactNode;
 }
-export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, onBuild, canAdd = true, canArrange = true, mine = false, person, find, fail}: HomeProps) {
+export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, onBuild, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint}: HomeProps) {
   const [country, setCountry] = useState(''), [tongue, setTongue] = useState(''), [kinds, setKinds] = useState(['Movies']), [adding, setAdding] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
   const on = rows.filter(row => row.on), off = rows.filter(row => !row.on);
   const set = (id: string, next: Partial<Row>, note: string) => onChange(rows.map(row => row.id === id ? {...row, ...next} : row), note);
@@ -54,6 +58,8 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
     onChange([{...item, origin: level, on: true}, ...rows], `Added “${item.title}”`); setAdding(false); setLink('');
   }
   const has = (item: Pick) => rows.some(row => row.id === item.id);
+  // A person's own lists belong on their own Home only: a hub or group Home never lists anyone's.
+  const theirs = level === 'own' ? lists : [], picked = suggestedFor(id => rows.some(row => row.id === id), limit, !find || listsOk, new Date(), level === 'own' ? because : {});
   const folder = rows.find(row => row.id === arranging);
   return <section>
     <div className="section-head"><div><h2>Home</h2><p className="muted">{mine ? 'What you see first when you open the player.' : level === 'own' ? 'What they see first when they open the player.' : 'The Home everyone here starts with.'}{canArrange ? ' Drag to reorder.' : ''}</p></div>{canAdd && <button type="button" className="primary" onClick={() => setAdding(true)}>+ Add row</button>}</div>
@@ -80,12 +86,18 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
         const name = text.replace(/^https?:\/\/(www\.)?/, '').split(/[/?#]/).filter(Boolean);
         add({id: `link-${hash(text)}`, title: name.slice(-1)[0]?.replace(/[-_]/g, ' ') || 'My list', kind: 'List', source: name[0]?.split('.')[0] ?? 'Link'});
       }}>
-        <label htmlFor="add-link">{find ? 'Paste the link of an MDBList list' : 'Paste a list link'}</label>
-        <div className="field-row"><input id="add-link" value={link} onChange={event => setLink(event.target.value)} placeholder={find ? 'mdblist.com/lists/someone/a-list' : 'Trakt, Letterboxd, MDBList, TMDB…'} autoComplete="off"/><button className="primary" disabled={!link.trim()}>Add</button></div>
+        <label htmlFor="add-link">Paste a list link</label>
+        <div className="field-row"><input id="add-link" value={link} onChange={event => setLink(event.target.value)} placeholder="Trakt, Letterboxd, MDBList, TMDB…" autoComplete="off"/><button className="primary" disabled={!link.trim()}>Add</button></div>
+        {find && <p className="muted small">Any public list from Trakt, Letterboxd, MDBList or TMDB.</p>}
       </form>
-      {!find && (!!lists.length || listsHint) && <><h3 className="sheet-sub">{mine ? 'Your lists' : 'Their lists'}</h3>
-        {lists.length ? <ul className="picks compact">{lists.map(item => <li key={item.id}><button type="button" disabled={has(item)} onClick={() => add(item)}><span><strong>{item.title}</strong><small>{has(item) ? 'Added' : item.source.split(' · ')[0]}</small></span></button></li>)}</ul>
+      {(!!theirs.length || (!find && listsHint && level === 'own')) && <><h3 className="sheet-sub">{mine ? 'Your lists' : 'Their lists'}</h3>
+        {theirs.length ? <ul className="picks compact mine">{theirs.map(item => <li key={item.id}><button type="button" disabled={has(item)} onClick={() => add(item)}><span><strong>{item.title}</strong><small>{has(item) ? 'Added' : `${item.source.split(' · ')[0]} · ${item.kind.replace(/^List · /, '')}`}</small></span></button></li>)}</ul>
           : <p className="muted small">{listsHint}</p>}</>}
+      {find && <><h3 className="sheet-sub">Or pick one</h3>
+        {picked.picks.length ? <ul className="picks compact suggested">{picked.picks.map(item => <li key={item.id}><button type="button" onClick={() => add({id: item.id, title: item.title, kind: item.kind, source: item.source})}><span><strong>{item.title}</strong><small>{because[item.id] && level === 'own' ? `Because you watched ${because[item.id]}` : item.kind}</small></span></button></li>)}</ul>
+          : <p className="muted small">Every pick is already on this Home.</p>}
+        {!!picked.locked && <p className="muted small note">{picked.locked} more {picked.locked === 1 ? 'pick reads' : 'picks read'} MDBList lists, so {picked.locked === 1 ? 'it shows' : 'they show'} once there’s an MDBList key. {keyHint}</p>}
+      </>}
       {!find && <><h3 className="sheet-sub">From a country or language</h3>
       <form className="region" onSubmit={event => {
         event.preventDefault(); if ((!country && !tongue) || !kinds.length) return;
@@ -98,7 +110,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
         <div className="region-go"><Chips all={['Movies', 'Shows']} value={kinds} onChange={setKinds}/><button className="primary" disabled={(!country && !tongue) || !kinds.length}>Add</button></div>
       </form>
       <h3 className="sheet-sub">Or pick one</h3>
-      <ul className="picks">{suggestions.filter(item => !has(item)).map(item => <li key={item.id}><button type="button" onClick={() => add(item)}><Posters seed={item.id}/><span><strong>{item.title}</strong><small>{item.kind}</small></span></button></li>)}</ul>
+      <ul className="picks">{picked.picks.map(item => <li key={item.id}><button type="button" onClick={() => add({id: item.id, title: item.title, kind: item.kind, source: item.source})}><Posters seed={item.id}/><span><strong>{item.title}</strong><small>{item.kind}</small></span></button></li>)}</ul>
       </>}
       {!mine && onBuild && <p className="muted small foot">Want one that isn’t here? <button type="button" className="link" onClick={onBuild}>Build it in AIOMetadata</button> and it shows up in this list.</p>}
     </Sheet>}

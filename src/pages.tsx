@@ -298,10 +298,10 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
     {leaving && <Confirm title="Keep progress here?" body={`MDBList is disconnected from ${mine ? 'you' : person.name}. Whatever is already in that MDBList account stays there.`} action="Keep it here" onYes={leave} onClose={() => setLeaving(false)}/>}
   </>;
 }
-interface CarryEntry {key: string; title: string; detail: string; at: string; pct?: number; season?: number; episode?: number}
+interface CarryEntry {key: string; title: string; detail: string; at: string; pct?: number; season?: number; episode?: number; trakt?: Cell; lists?: Cell}
 interface CarryPlan {watched: CarryEntry[]; partway: CarryEntry[]; already: number; unknown: number; more: boolean}
 /* One card for plays one of a person's trackers is missing: Trakt and MDBList from the hub's daily look, and what was watched here
-   that MDBList doesn't have yet (worked out when the card opens, kept a few hours). Every play starts included; tapping one leaves
+   that their Trakt or MDBList doesn't have yet (worked out when the card opens, kept a few hours). Every play starts included; tapping one leaves
    it out, and once the rest are added it stays out of later looks. Nothing is ever removed from either tracker. */
 type Cell = 'has' | 'add' | 'none';
 interface Line {key: string; title: string; detail: string; at?: string; pct?: number; here?: boolean; trakt: Cell; lists: Cell}
@@ -309,14 +309,14 @@ const episode = (season?: number, number?: number) => season != null ? `S${seaso
 function Trackers({page, person}: {page: PageProps; person: Person}) {
   const {toast, live} = page, found = person.drift, trakt = !!person.history && !person.history.again, lists = person.lists;
   const [here, setHere] = useState<CarryPlan | null>(null), [out, setOut] = useState<Set<string>>(new Set()), [busy, setBusy] = useState(false);
-  useEffect(() => {if (live && lists) void live.call<CarryPlan>('GET', `/api/people/${person.id}/carry`).then(setHere, () => setHere(null));}, [person.id, lists, person.v]);
+  useEffect(() => {if (live && (lists || trakt)) void live.call<CarryPlan>('GET', `/api/people/${person.id}/carry`).then(setHere, () => setHere(null)); else setHere(null);}, [person.id, lists, trakt, person.v]);
   if (!live || (!trakt && !lists)) return null;
   const when = (ms: number) => {const date = new Date(ms), today = new Date().toDateString() === date.toDateString(); return `${today ? 'today' : date.toLocaleDateString(undefined, {day: 'numeric', month: 'short'})} at ${date.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;};
   const stamp = (ms: number) => `${new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'})}, ${new Date(ms).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;
   const lines: Line[] = [
     ...(trakt && lists ? (found?.toTrakt ?? []).map(miss => ({key: miss.key, title: miss.name || 'Untitled', detail: episode(miss.season, miss.episode), at: stamp(miss.at * 1000), trakt: 'add' as Cell, lists: 'has' as Cell})) : []),
     ...(trakt && lists ? (found?.toMdblist ?? []).map(miss => ({key: miss.key, title: miss.name || 'Untitled', detail: episode(miss.season, miss.episode), at: stamp(miss.at * 1000), trakt: 'has' as Cell, lists: 'add' as Cell})) : []),
-    ...(lists && here ? [...here.watched, ...here.partway].map(entry => ({key: entry.key, title: entry.title, detail: episode(entry.season, entry.episode), at: entry.pct == null ? stamp(Date.parse(entry.at)) : undefined, pct: entry.pct, here: true, trakt: 'none' as Cell, lists: 'add' as Cell})) : []),
+    ...(here ? [...here.watched, ...here.partway].map(entry => ({key: entry.key, title: entry.title, detail: episode(entry.season, entry.episode), at: entry.pct == null ? stamp(Date.parse(entry.at)) : undefined, pct: entry.pct, here: true, trakt: trakt ? entry.trakt ?? 'none' : 'none', lists: lists ? entry.lists ?? 'add' : 'none'})) : []),
   ];
   const kept = lines.filter(line => !out.has(line.key)), checked = found ? `Checked ${when(found.checked * 1000)}` : '';
   const flip = (key: string) => setOut(was => {const next = new Set(was); if (!next.delete(key)) next.add(key); return next;});
@@ -327,7 +327,7 @@ function Trackers({page, person}: {page: PageProps; person: Person}) {
       setOut(new Set()); setHere(null); await live.reload(); toast(added ? `Added ${added} ${added === 1 ? 'play' : 'plays'}` : 'Both already had them');
     } catch (error) {toast((error as Error).message);} finally {setBusy(false);}
   };
-  if (!lines.length) return lists && !here && !found ? null : <li className="trackers quiet"><span className="dot ok" aria-hidden="true"/><p><strong>{trakt && lists ? 'Trakt and MDBList' : trakt ? 'Trakt' : 'MDBList'}</strong> <span className="muted">· all in step{found ? ` · checked ${when(found.checked * 1000)}` : ''}</span></p></li>;
+  if (!lines.length) return !here && !found ? null : <li className="trackers quiet"><span className="dot ok" aria-hidden="true"/><p><strong>{trakt && lists ? 'Trakt and MDBList' : trakt ? 'Trakt' : 'MDBList'}</strong> <span className="muted">· all in step{found ? ` · checked ${when(found.checked * 1000)}` : ''}</span></p></li>;
   const cell = (state: Cell, left: boolean) => state === 'none' ? <span className="cell none" aria-hidden="true">–</span> : <span className={`cell ${state}${left ? ' off' : ''}`} aria-hidden="true">{state === 'has' ? '✓' : '+'}</span>;
   const arrow = (line: Line) => line.trakt === 'add' && line.lists === 'add' ? '← →' : line.trakt === 'add' ? '←' : '→';
   return <li className="stacked trackers">
@@ -344,15 +344,31 @@ function Trackers({page, person}: {page: PageProps; person: Person}) {
     <p className="muted small center-text">Tap a play to leave it out. Nothing is ever removed.</p>
   </li>;
 }
+type Found = {id: string; title: string; kind: string; source: string};
+/* What only the person themselves sees in Add row on their own Home: their own Trakt and MDBList lists, and the suggestions their
+   watching points to. Kept with whose they are, so a view of someone else never shows them. */
+function useOwnPicks(page: PageProps, person: Person, mine: boolean) {
+  const [own, setOwn] = useState<{who: string; lists: Found[]; because: Record<string, string>}>({who: '', lists: [], because: {}});
+  const connected = (!!person.history && !person.history.again) || person.lists, who = `${page.hub.code}/${person.id}`;
+  useEffect(() => {
+    if (!page.live || !mine) return;
+    let gone = false;
+    void Promise.all([connected ? page.live.call<{lists: Found[]}>('GET', `/api/people/${person.id}/lists`).then(got => got.lists, () => []) : Promise.resolve([]), page.live.call<{because: Record<string, string>}>('GET', `/api/people/${person.id}/because`).then(got => got.because, () => ({}))])
+      .then(([lists, because]) => {if (!gone) setOwn({who, lists, because});});
+    return () => {gone = true;};
+  }, [who, mine, connected]);
+  return own.who === who && mine ? own : {lists: [] as Found[], because: {} as Record<string, string>};
+}
 function PersonSections({page, person, tab, mine}: {page: PageProps; person: Person; tab: string; mine: boolean}) {
-  const {hub, update, toast} = page, group = hub.groups.find(item => item.id === person.groupId)!;
+  const {hub, update, toast} = page, group = hub.groups.find(item => item.id === person.groupId)!, own = useOwnPicks(page, person, mine);
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
   const props = editor(page, group, person, mine), rows = personRows(hub, person);
   const canArrange = !mine || person.can.arrange, canAdd = !mine || person.can.add;
   return <>
     {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} mine={mine} person={person.id} level="own" rows={rows} canAdd={canAdd} canArrange={canArrange}
       tag={row => row.origin === 'own' && !row.core ? (mine ? 'Yours' : 'Personal') : undefined}
-      lists={ownLists(person)} listsHint={mine ? 'Connect Trakt or MDBList under Accounts to pick from your own lists.' : `Shows up once ${person.name} connects Trakt or MDBList.`}
+      lists={page.live ? own.lists : ownLists(person)} listsHint={page.live ? undefined : mine ? 'Connect Trakt or MDBList under Accounts to pick from your own lists.' : `Shows up once ${person.name} connects Trakt or MDBList.`}
+      because={own.because} limit={props.resolved.values.limit} listsOk={!!hub.mdblist || person.lists} keyHint={mine ? 'Your own MDBList key, under Accounts, works too.' : <>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>}
       onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined}
       onChange={(next: Row[], note) => edit(target => {
         // Only a Trakt row switched on or off while following the Home above: kept as their choice, so they still follow it.
@@ -432,7 +448,7 @@ export function GroupPage(page: PageProps & {id: string; tab: string}) {
     <a className="back" href="#/">← People</a>
     <div className="page-head"><h1>{group.name}</h1><p className="muted">Everyone in this group starts here. {members.length} {members.length === 1 ? 'person' : 'people'}{custom ? `, ${custom} with their own changes` : ''}.</p></div>
     <Tabs base={`/group/${id}`} tab={tab} tabs={[['home', 'Home'], ['playback', 'Playback'], ['sources', 'Sources'], ['activity', 'Activity'], ['settings', 'Settings']]}/>
-    {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="group" rows={placed(groupRows(hub, group))} tag={row => row.origin === 'group' ? 'This group' : undefined} onChange={(rows, note) => edit(target => {target.rows = rows;}, note)}
+    {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="group" limit={props.resolved.values.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} rows={placed(groupRows(hub, group))} tag={row => row.origin === 'group' ? 'This group' : undefined} onChange={(rows, note) => edit(target => {target.rows = rows;}, note)}
       onFollow={group.rows ? () => edit(target => {target.rows = null;}, `Following ${HUB} again`) : undefined} followLabel="Use the default Home again"/>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
@@ -461,7 +477,7 @@ export function HubPage(page: PageProps & {tab: string}) {
     <a className="back" href="#/">← People</a>
     <div className="page-head"><h1>Hub</h1><p className="muted">What every group starts with, where things play from, and the hub’s own setup. A group or a person can change anything for themselves.</p></div>
     <Tabs base="/hub" tab={tab} tabs={[['home', 'Home'], ['playback', 'Playback'], ['sources', 'Sources'], ['general', 'General']]}/>
-    {tab === 'home' && <><HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="hub" rows={placed(hub.rows)} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{page.live && !hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p></>}
+    {tab === 'home' && <><HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="hub" limit={hub.defaults.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} rows={placed(hub.rows)} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{page.live && !hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p></>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
     {tab === 'general' && page.live && <><ServerName hub={hub} update={update} toast={toast}/><Servers hub={hub} live={page.live} toast={toast}/><Advanced live={page.live} toast={toast}/><Background hub={hub}/></>}
