@@ -306,6 +306,12 @@ button.from.own:hover { text-decoration: underline; }
 .title { font-weight: 650; text-align: left; }
 .title:hover { text-decoration: underline; }
 .on-device { opacity: .75; font-size: 13px !important; }
+/* Where a play was reported from: a quiet pin after the device that unfolds the place inline when pressed (or hovered). */
+.where-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; margin: -5px 0 -5px 1px; vertical-align: -6px; border-radius: 6px; color: var(--muted); opacity: .7; transition: opacity .15s, color .15s; }
+.where-pin:hover, .where.open .where-pin { opacity: 1; color: var(--text); }
+.where-text { display: inline-block; vertical-align: bottom; max-width: 0; opacity: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: max-width .28s ease, opacity .2s ease; }
+.where.open .where-text { max-width: 100%; opacity: 1; }
+@media (hover: hover) { .where:hover .where-text { max-width: 100%; opacity: 1; } }
 @media (max-width: 480px) {
   .share { flex-direction: column; align-items: flex-start; }
   .setting input:not([type=range]), .setting select { max-width: 100%; }

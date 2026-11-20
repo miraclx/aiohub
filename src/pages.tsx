@@ -1,7 +1,7 @@
 import {useEffect, useState} from 'react';
 import {QRCodeSVG} from 'qrcode.react';
 import {SAMPLE, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, ownLists, personRows, resolve, samplePassword, samplePin, slug, traktRows} from './data';
-import type {Group, Hub, Person, Row, Settings} from './data';
+import type {Device, Group, Hub, Person, Row, Settings} from './data';
 import {Activity} from './activity';
 import {GroupOrder, HomeEditor, moved} from './home';
 import {PlaybackEditor, SourcesEditor} from './settings';
@@ -114,6 +114,11 @@ export function PeoplePage(page: PageProps) {
 }
 
 /* ---------- a person: shared by the manager's view and the person's own page ---------- */
+/* Where a device was last seen from, said after when it was last used: " · last seen in Lagos, NG · SpaceX Services, Inc." */
+const seenAt = (device: Device) => {
+  const at = device.place ? [`in ${device.place}`, device.net].filter(Boolean).join(' · ') : device.net ? `on ${device.net}` : '';
+  return at ? ` · ${device.seen === 'Now' ? '' : 'last seen '}${at}` : '';
+};
 function Devices({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {update, toast, live} = page;
   const [code, setCode] = useState(''), [pin, setPin] = useState<string | null>(null);
@@ -149,7 +154,7 @@ function Devices({page, person, mine}: {page: PageProps; person: Person; mine: b
       </Setting>}
     </div></>}
     <h3 className="sub">Signed in</h3>
-    {person.devices.length ? <><ul className="feed">{person.devices.map(device => <li key={device.id}><div className="quiet-name">{live ? <NameField label={`Name of ${device.name}`} value={device.name} onSave={value => act(live.call('PUT', `${at}/devices/${device.id}`, {name: value}), 'Renamed')}/> : <strong>{device.name}</strong>}<small>{device.app} · {device.seen === 'Now' ? 'active now' : `last used ${device.seen.toLowerCase()}`}{device.where ? ` · ${device.where}` : ''}</small></div><button type="button" className="ghost small" onClick={() => live ? act(live.call('DELETE', `${at}/devices/${device.id}`), `${device.name} signed out`) : edit(target => {target.devices = target.devices.filter(item => item.id !== device.id);}, `${device.name} signed out`)}>Sign out</button></li>)}</ul>
+    {person.devices.length ? <><ul className="feed">{person.devices.map(device => <li key={device.id}><div className="quiet-name">{live ? <NameField label={`Name of ${device.name}`} value={device.name} onSave={value => act(live.call('PUT', `${at}/devices/${device.id}`, {name: value}), 'Renamed')}/> : <strong>{device.name}</strong>}<small>{device.app} · {device.seen === 'Now' ? 'active now' : `last used ${device.seen.toLowerCase()}`}{seenAt(device)}</small></div><button type="button" className="ghost small" onClick={() => live ? act(live.call('DELETE', `${at}/devices/${device.id}`), `${device.name} signed out`) : edit(target => {target.devices = target.devices.filter(item => item.id !== device.id);}, `${device.name} signed out`)}>Sign out</button></li>)}</ul>
       <button type="button" className="link below" onClick={() => live ? act(live.call('POST', `${at}/rotate`, {}), 'Signed out everywhere. New password set.') : edit(target => {target.devices = []; target.password = samplePassword(person.id);}, 'Signed out everywhere. New password set.')}>Sign {who} out everywhere</button></>
       : <p className="muted">No device yet.</p>}
   </section>;

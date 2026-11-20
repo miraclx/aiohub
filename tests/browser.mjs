@@ -115,6 +115,22 @@ await guest.getByRole('radio', {name: 'Here'}).click(); await guest.getByRole('b
 await toast(guest).filter({hasText: 'Progress kept here'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
 await owner.goto(BASE + '/#/hub/playback'); await owner.getByText('It needs progress kept in MDBList').waitFor();
 
+// Activity keeps where each play was reported from behind a small pin: folded until pressed, and absent when unknown.
+// (Two plays made here directly in the local database, one with a made-up place and one without.)
+execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', "INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net) SELECT id, 'ada', 'm-1', 'Paper Kites', 'Movie', 600, 6000, 'Strand · Mac', 0, CAST(strftime('%s', 'now') AS INTEGER), '', 'Lagos, NG', 'SpaceX Services, Inc.' FROM hubs; INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) SELECT id, 'ada', 'm-2', 'Small Engines', 'Movie', 300, 6000, 'Odin · Apple TV', 0, CAST(strftime('%s', 'now') AS INTEGER) - 60, '' FROM hubs"], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
+const where = async page => {
+  await page.getByText('Paper Kites').waitFor(); await page.getByText('Small Engines').waitFor();
+  const pin = page.getByRole('button', {name: 'Where'}), text = page.locator('.where-text');
+  assert.equal(await pin.count(), 1, 'a pin only for the play with a place'); assert.equal(await pin.getAttribute('aria-expanded'), 'false');
+  assert.equal((await text.boundingBox())?.width ?? 0, 0, 'the place starts folded');
+  await pin.click(); assert.equal(await pin.getAttribute('aria-expanded'), 'true'); assert.equal(await text.getAttribute('aria-hidden'), 'false');
+  await text.filter({hasText: '· Lagos, NG · SpaceX'}).waitFor({state: 'visible'}); await page.waitForTimeout(400);
+  assert.ok((await text.boundingBox()).width > 60, 'the place unfolds'); assert.ok(!(await text.textContent()).includes('Inc'), 'the network is said briefly');
+  await pin.click(); assert.equal(await pin.getAttribute('aria-expanded'), 'false');
+};
+await guest.goto(BASE + '/#/me/activity'); await where(guest); await shot(guest, '15-activity-own');
+await owner.goto(BASE + '/#/activity'); await where(owner); await owner.getByRole('button', {name: 'Where'}).click(); await shot(owner, '16-activity-where');
+
 // Back as the manager: Ada shows as joined, and the playback change stuck.
 await owner.goto(BASE + '/#/person/ada/settings'); await owner.reload(); await owner.getByText(/Family · joined/).waitFor();
 assert.equal(await owner.getByRole('switch', {name: 'Change playback'}).getAttribute('aria-checked'), 'true');

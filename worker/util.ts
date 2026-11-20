@@ -8,6 +8,8 @@ export interface Env {
   TRAKT_CLIENT_ID?: string; TRAKT_API?: string; TRAKT_AUTH?: string;
   // This site's own public address. AIOMetadata reads each person's Trakt rows from it (see rows.ts). Unset: the address the sync was asked on.
   SITE_ORIGIN?: string;
+  // Only the local test run sets this: where a request came from is then read from test headers (see whereOf in front.ts).
+  TEST_WHERE?: string;
 }
 export const enc = new TextEncoder(), dec = new TextDecoder();
 /* The same settings, pointed at the servers this hub uses. A hub that has not chosen its own uses the site's. */

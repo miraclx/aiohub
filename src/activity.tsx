@@ -5,14 +5,29 @@ import type {Live} from './live';
 import {Avatar, Posters, Segments, Sheet} from './ui';
 
 /* What the hub noted as players reported it, put into the words the screen uses. Times are shown in this device's own time zone. */
-interface Noted {art?: string; person: string; item: string; title: string; detail: string; position: number; duration: number; device: string; playing: number; updated: number}
+interface Noted {art?: string; person: string; item: string; title: string; detail: string; position: number; duration: number; device: string; playing: number; updated: number; place?: string | null; net?: string | null}
 function told(row: Noted, now: number, code: string): Play | null {
   const at = new Date(row.updated * 1000), today = new Date(now * 1000), days = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() - new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime()) / 86400000);
   if (days > 6) return null;
   const live = !!row.playing && now - row.updated < 180, share = row.duration ? Math.min(100, Math.round(row.position / row.duration * 100)) : 0;
   const end = live ? '' : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
-  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}`, personId: row.person, title: row.title, detail: row.detail + end, progress: live || (share && share < 90) ? share : undefined, on: row.device || 'A player app',
+  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}`, personId: row.person, title: row.title, detail: row.detail + end, progress: live || (share && share < 90) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
     when: live ? 'Now' : days > 1 ? at.toLocaleDateString(undefined, {weekday: 'long'}) : at.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'}), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
+}
+/* A network's everyday name: "SpaceX Services, Inc." is SpaceX. Company endings are dropped; a name that would go empty is kept. */
+const ENDINGS = /\s+(inc|llc|ltd|limited|plc|corp|corporation|gmbh|services|communications?|networks?)\.?$/i;
+function brief(net?: string | null) {
+  let name = (net ?? '').split(',')[0].trim();
+  for (let shorter = name.replace(ENDINGS, ''); shorter && shorter !== name; shorter = name.replace(ENDINGS, '')) name = shorter;
+  return name;
+}
+/* Where the device was when it last reported this play, kept folded behind a small pin until asked for. */
+function Where({where}: {where?: string}) {
+  const [open, setOpen] = useState(false);
+  if (!where) return null;
+  return <span className={`where${open ? ' open' : ''}`}><button type="button" className="where-pin" aria-label="Where" aria-expanded={open} onClick={() => setOpen(!open)}>
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 21.5s-7-6.1-7-11.6a7 7 0 0 1 14 0c0 5.5-7 11.6-7 11.6z"/><circle cx="12" cy="9.8" r="2.4"/></svg>
+  </button><span className="where-text" aria-hidden={!open}>· {where}</span></span>;
 }
 /* A week per person, from the same notes: how many titles, roughly how long (each title counts up to where it was last left),
    how many were finished, and the device used most. Rough on purpose; it is for spotting who watches what, not for billing. */
@@ -67,13 +82,13 @@ export function Activity({hub, personId, groupId, pick, toast, live}: {hub: Hub;
         <div><strong>{name(week.person)}</strong><small>{week.titles} {week.titles === 1 ? 'title' : 'titles'} · {hours(week.seconds)}{week.finished ? ` · ${week.finished} finished` : ''}{week.plays > 1 ? ` · pressed play ${week.plays} times` : ''}{week.when ? `, mostly ${week.when}` : ''}</small><small className="on-device">Mostly on {week.mostly}{week.devices > 1 ? ` · ${week.devices} devices` : ''}</small></div></li>)}</ul></>;
     })()}
     {!!now.length && <><h2 className="sub">Watching now</h2><ul className="now">{now.map(play => <li key={play.id}>{play.art ? <Picture url={play.art}/> : <Posters seed={play.title}/>}<div className="now-text">
-      <button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small><small className="on-device">{play.on}{atOnce(play.personId) > 1 ? ` · watching on ${atOnce(play.personId)} devices` : ''}</small>
+      <button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small><small className="on-device">{play.on}<Where where={play.where}/>{atOnce(play.personId) > 1 ? ` · watching on ${atOnce(play.personId)} devices` : ''}</small>
       <span className="bar" role="progressbar" aria-valuenow={play.progress} aria-valuemin={0} aria-valuemax={100} aria-label={`${play.progress}% watched`}><i style={{width: `${play.progress}%`}}/></span></div></li>)}</ul></>}
     {days.map(day => {
       const items = plays.filter(play => play.day === day && play.when !== 'Now');
       return items.length ? <div key={day}><h2 className="sub">{day}</h2><ul className="feed">{items.map(play => <li key={play.id}>
         {personId ? <span className="thumb">{play.art ? <Picture url={play.art}/> : <Posters seed={play.title}/>}</span> : <Avatar name={name(play.personId)} size={36}/>}
-        <div><button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small><small className="on-device">{play.on}</small></div><time>{play.when}</time></li>)}</ul></div> : null;
+        <div><button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small><small className="on-device">{play.on}<Where where={play.where}/></small></div><time>{play.when}</time></li>)}</ul></div> : null;
     })}
     <p className="muted small foot">Shows what each player last reported. It is not a minute-by-minute history.</p>
     {title && <Sheet title={title} onClose={() => setTitle(null)}>

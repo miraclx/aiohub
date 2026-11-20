@@ -84,7 +84,7 @@ const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history
   // AIOMetadata's own Trakt connection (a Token ID). Once Trakt is connected to the hub it is no longer used and can go.
   aiomTrakt,
   // Sign-in details are never part of what a page loads; they are asked for one person at a time.
-  pin: null, password: '', devices: devices.filter(device => device.person === row.id).map(device => ({id: device.ref, app: device.app || 'Player app', name: device.name || 'A device', seen: ago(device.seen), where: [device.place, device.net].filter(Boolean).join(' · ')})),
+  pin: null, password: '', devices: devices.filter(device => device.person === row.id).map(device => ({id: device.ref, app: device.app || 'Player app', name: device.name || 'A device', seen: ago(device.seen), place: device.place, net: device.net})),
 });
 
 /* ---------- who is asking ---------- */
@@ -588,7 +588,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     if (first === 'previews' && method === 'GET') return reply({rows: await previews(env, who.hub, who.person ?? (url.searchParams.get('person') || undefined))});
     if (first === 'activity' && method === 'GET') {
       // The manager sees everyone; an invited person sees only themselves.
-      const rows = await env.DB.prepare(`SELECT person, item, title, detail, position, duration, device, playing, updated, art FROM plays WHERE hub = ?1 ${who.person ? 'AND person = ?2' : ''} ORDER BY updated DESC LIMIT 300`).bind(...(who.person ? [who.hub.id, who.person] : [who.hub.id])).all();
+      const rows = await env.DB.prepare(`SELECT person, item, title, detail, position, duration, device, playing, updated, art, place, net FROM plays WHERE hub = ?1 ${who.person ? 'AND person = ?2' : ''} ORDER BY updated DESC LIMIT 300`).bind(...(who.person ? [who.hub.id, who.person] : [who.hub.id])).all();
       const starts = await env.DB.prepare(`SELECT person, at FROM starts WHERE hub = ?1 AND at > ?2 ${who.person ? 'AND person = ?3' : ''} ORDER BY at DESC LIMIT 2000`).bind(...(who.person ? [who.hub.id, now() - 7 * 86400, who.person] : [who.hub.id, now() - 7 * 86400])).all();
       return reply({now: now(), plays: rows.results, starts: starts.results});
     }

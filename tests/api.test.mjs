@@ -278,7 +278,7 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   assert.deepEqual([...fake.homes.values()][0].config.collections, []); assert.equal([...fake.homes.values()][0].config.apiKeys.mdblist, undefined);
   assert.ok(![...fake.homes.values()][0].config.catalogs.some(item => item.source === 'mdblist'));
   assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').ready, true);
-  const first = await stranger('POST', `${at}/Users/AuthenticateByName`, {Username: 'Ada L', Pw: player}, app());
+  const first = await stranger('POST', `${at}/Users/AuthenticateByName`, {Username: 'Ada L', Pw: player}, {...app(), 'x-test-city': 'Abuja', 'x-test-country': 'NG', 'x-test-net': 'Example Fibre, Inc.'});
   assert.equal(first.status, 200); assert.equal(first.body.User.Name, 'Ada L'); assert.match(first.body.AccessToken, /^hub/); assert.notEqual(first.body.User.Id, 'upstream-user-id'); assert.equal(fake.signIns, 1);
   const second = await stranger('POST', `${at}/Users/AuthenticateByName`, {Username: '  ada-l ', Pw: player}, app('', 'd2'));
   assert.equal(second.status, 200); assert.equal(fake.signIns, 1, 'a second app must not sign in to AIOStreams again');
@@ -286,6 +286,7 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   assert.equal(me.status, 200); assert.equal(me.body.Id, first.body.User.Id); assert.equal(me.body.Via, `${BASE}${at}/thing`);
   assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').devices.length, 2);
   const named = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').devices[0];
+  assert.ok((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').devices.some(device => device.place === 'Abuja, NG' && device.net === 'Example Fibre, Inc.'), 'a device keeps where it signed in from');
   assert.equal((await guest('PUT', `/api/people/ada/devices/${named.id}`, {name: 'Living room'})).status, 200);
   assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').devices.find(device => device.id === named.id).name, 'Living room');
   assert.equal((await owner('PUT', `/api/people/ada/devices/${named.id}`, {name: '  '})).status, 400);
@@ -305,11 +306,12 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   assert.equal((await stranger('POST', `${at}/Users/AuthenticateWithQuickConnect`, {Secret: asked.Secret}, tv)).status, 404, 'a code works once');
   assert.equal((await stranger('GET', `${at}/Users/Me`, undefined, {authorization: `${tv.authorization}, Token="${onTv.body.AccessToken}"`})).status, 200);
   // What the app reports while playing shows up under Activity: for the manager, and for the person themselves, never for someone else.
-  const say = (path, body) => stranger('POST', `${at}${path}`, body, app(first.body.AccessToken));
+  // Each report also notes roughly where the device was (made-up places here, from test headers): the latest one is kept.
+  const say = (path, body, city = 'Ibadan') => stranger('POST', `${at}${path}`, body, {...app(first.body.AccessToken), 'x-test-city': city, 'x-test-country': 'NG', 'x-test-net': 'Example Fibre, Inc.'});
   await say('/Sessions/Playing', {ItemId: 'ep-7', PositionTicks: 0}); await say('/Sessions/Playing/Progress', {ItemId: 'ep-7', PositionTicks: 600 * 1e7});
-  await say('/Sessions/Playing/Stopped', {ItemId: 'ep-7', PositionTicks: 1500 * 1e7});
+  await say('/Sessions/Playing/Stopped', {ItemId: 'ep-7', PositionTicks: 1500 * 1e7}, 'Lagos');
   let seen; for (let i = 0; i < 20 && !(seen = (await owner('GET', '/api/activity')).body.plays[0])?.position; i++) await new Promise(done => setTimeout(done, 150));
-  assert.deepEqual({...seen, updated: 0}, {person: 'ada', item: 'ep-7', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', position: 1500, duration: 3000, device: 'Test · TV', playing: 0, updated: 0, art: 'show-3'}, 'an episode is pictured by its show');
+  assert.deepEqual({...seen, updated: 0}, {person: 'ada', item: 'ep-7', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', position: 1500, duration: 3000, device: 'Test · TV', playing: 0, updated: 0, art: 'show-3', place: 'Lagos, NG', net: 'Example Fibre, Inc.'}, 'an episode is pictured by its show, and kept where it was last reported from');
   assert.equal((await guest('GET', '/api/activity')).body.plays.length, 1); assert.equal((await stranger('GET', '/api/activity')).status, 401);
   // AIOStreams stops accepting the kept sign-in: the hub renews it once and the app never notices.
   fake.valid = 'rotated-away';

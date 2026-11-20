@@ -25,9 +25,10 @@ function clientOf(request: Request) {
   const part = (name: string) => {const found = new RegExp(`${name}="?([^",]+)"?`, 'i').exec(header)?.[1] ?? ''; try {return decodeURIComponent(found).slice(0, 80);} catch {return found.slice(0, 80);}};
   return {device: part('DeviceId'), name: part('Device'), app: part('Client')};
 }
-/* Roughly where a request came from, as Cloudflare places it: city and country, and the network's name. The address is not kept. */
-function whereOf(request: Request) {
-  const cf = (request.cf ?? {}) as {city?: string; country?: string; asOrganization?: string};
+/* Roughly where a request came from, as Cloudflare places it: city and country, and the network's name. The address is not kept.
+   The test run (tests/run.sh) sets TEST_WHERE so made-up places can be sent in headers; nothing else sets it. */
+function whereOf(request: Request, env: Env) {
+  const cf = (env.TEST_WHERE === '1' ? {city: request.headers.get('x-test-city') ?? '', country: request.headers.get('x-test-country') ?? '', asOrganization: request.headers.get('x-test-net') ?? ''} : request.cf ?? {}) as {city?: string; country?: string; asOrganization?: string};
   return {place: [cf.city, cf.country].filter(Boolean).join(', ').slice(0, 60), net: String(cf.asOrganization ?? '').slice(0, 60)};
 }
 
@@ -121,7 +122,7 @@ async function seatOf(env: Env, hub: string, id: string): Promise<Seat | null> {
    they connected Trakt history (scrobble, below). */
 const REPORTS: Record<string, 'start' | 'progress' | 'stop'> = {'/sessions/playing': 'start', '/sessions/playing/progress': 'progress', '/sessions/playing/stopped': 'stop'};
 const noted = new Map<string, number>(), seen = new Map<string, {pos: number; at: number; paused: boolean}>();
-async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', text: string) {
+async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', text: string, where: {place: string; net: string}) {
   let report: {ItemId?: string; PositionTicks?: number; IsPaused?: boolean};
   try {report = JSON.parse(text);} catch {return;}
   const item = String(report.ItemId ?? '').slice(0, 200), key = `${hub}/${seat.person}/${item}`, last = noted.get(key) ?? 0, paused = report.IsPaused === true;
@@ -140,15 +141,15 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   const known = await env.DB.prepare('SELECT art, duration FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{art: string; duration: number}>();
   const position = kind === 'mark' ? known?.duration ?? 0 : Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' || kind === 'mark' ? 0 : 1;
   // Rows from before pictures were kept are looked up once more, on their next start.
-  if (known && (known.art || kind !== 'start')) await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, device = ?, updated = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, seat.on, now(), hub, seat.person, item).run();
+  if (known && (known.art || kind !== 'start')) await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, device = ?, updated = ?, place = ?, net = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, seat.on, now(), where.place, where.net, hub, seat.person, item).run();
   else {
     // First report for this title: ask AIOStreams what it is called, as this person.
     const about = await fetch(`${seat.base}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: asPerson(seat)}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string} | null;
     if (!about?.Name) return;
     const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
     const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
-    await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, device = excluded.device, updated = excluded.updated, art = excluded.art')
-      .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), kind === 'mark' ? Math.round(Number(about.RunTimeTicks ?? 0) / 1e7) : position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art).run();
+    await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, device = excluded.device, updated = excluded.updated, art = excluded.art, place = excluded.place, net = excluded.net')
+      .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), kind === 'mark' ? Math.round(Number(about.RunTimeTicks ?? 0) / 1e7) : position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art, where.place, where.net).run();
   }
   if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused, jumped);
 }
@@ -211,7 +212,7 @@ async function signIn(request: Request, env: Env, hub: string, base: string): Pr
   const person = await env.DB.prepare('SELECT id, jf, name FROM people WHERE hub = ? AND login = ?').bind(hub, username).first<{id: string; jf: string; name: string}>();
   const signin = person ? await getSecret<{password: string}>(env, hub, person.id, 'signin') : null;
   if (!person || !signin || !await same(String(sent.Pw ?? ''), signin.password)) {await failed(env, key); return wrong;}
-  return letIn(env, hub, person, clientOf(request), whereOf(request), base);
+  return letIn(env, hub, person, clientOf(request), whereOf(request, env), base);
 }
 /* Lets one app in as a person: its own token, a line under Devices, and the sign-in answer a Jellyfin app expects. */
 async function letIn(env: Env, hub: string, person: {id: string; jf: string; name: string}, client: {device: string; name: string; app: string}, where: {place: string; net: string}, base: string): Promise<Response> {
@@ -253,7 +254,7 @@ async function quick(request: Request, env: Env, hub: string, url: URL, lower: s
   const person = await env.DB.prepare('SELECT id, jf, name FROM people WHERE hub = ? AND id = ?').bind(hub, row.person).first<{id: string; jf: string; name: string}>();
   if (!person) return json(401, {Message: 'Not approved'});
   await env.DB.prepare('DELETE FROM quick WHERE secret = ?').bind(await sha(secret)).run();
-  return letIn(env, hub, person, {device: row.device, app: row.app, name: row.name}, whereOf(request), base);
+  return letIn(env, hub, person, {device: row.device, app: row.app, name: row.name}, whereOf(request, env), base);
 }
 
 export async function front(request: Request, site: Env, ctx: ExecutionContext, url: URL, code: string, path: string): Promise<Response> {
@@ -282,13 +283,13 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
     // Deliberately unbothered: no reason, no blame, nobody to chase. It just isn't on right now.
     if (seat.paused && PLAYS.test(lower)) return json(403, {Message: 'Not playing right now. Try again later.'});
     if (seat.kind === VIA && AIOM_PRIVATE.test(lower)) return json(403, {Message: 'Not available here'});
-    if (now() - seat.seen > SEEN_EVERY) {const where = whereOf(request); seat.seen = now(); ctx.waitUntil(env.DB.prepare('UPDATE devices SET seen = ?, place = ?, net = ? WHERE id = ?').bind(seat.seen, where.place, where.net, id).run());}
+    if (now() - seat.seen > SEEN_EVERY) {const where = whereOf(request, env); seat.seen = now(); ctx.waitUntil(env.DB.prepare('UPDATE devices SET seen = ?, place = ?, net = ? WHERE id = ?').bind(seat.seen, where.place, where.net, id).run());}
   }
   const body = reading ? undefined : await request.text();
-  if (seat && body && REPORTS[lower]) ctx.waitUntil(note(env, hub, seat, REPORTS[lower], body).catch(() => {}));
+  if (seat && body && REPORTS[lower]) ctx.waitUntil(note(env, hub, seat, REPORTS[lower], body, whereOf(request, env)).catch(() => {}));
   // Ticked as watched in an app without playing it: kept like a finished play, so it can be copied to MDBList later too.
   const ticked = seat && request.method === 'POST' ? /^\/(?:users\/[^/]+\/playeditems|userplayeditems)\/([\w-]{1,80})$/i.exec(path) : null;
-  if (seat && ticked) ctx.waitUntil(note(env, hub, seat, 'mark', JSON.stringify({ItemId: ticked[1]})).catch(() => {}));
+  if (seat && ticked) ctx.waitUntil(note(env, hub, seat, 'mark', JSON.stringify({ItemId: ticked[1]}), whereOf(request, env)).catch(() => {}));
   // AIOMetadata's libraries are its catalog rows, so "watched, in this library" only covers what the row shows today. In a real
   // Jellyfin server a library holds everything, which is what history readers (Trakt's own Jellyfin sync) rely on: they ask
   // library by library. So a watched list asked for under one of the person's own top-level libraries is answered from all of
