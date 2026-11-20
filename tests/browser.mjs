@@ -122,7 +122,7 @@ await mdb.getByRole('button', {name: 'Cancel'}).click(); assert.equal(await gues
 // Connecting Trakt: off to Trakt's sign-in and back to this page, which finishes it with Trakt (busy at first) and says so.
 await traktIn(guest.context());
 await trakt.getByRole('button', {name: 'Connect'}).click(); await trakt.getByText('Trakt is busy, trying again…').waitFor();
-await toast(guest).filter({hasText: 'Trakt connected as adatrakt'}).waitFor(); await trakt.getByText('Connected as adatrakt.').waitFor();
+await toast(guest).filter({hasText: 'Trakt connected as adatrakt'}).waitFor(); await trakt.getByText('Connected as adatrakt').waitFor();
 assert.equal(new URL(guest.url()).hash, '#/me/accounts', 'back where Connect was pressed, with nothing from Trakt left in the address');
 const [asked] = signins; assert.equal(asked.response_type, 'code'); assert.equal(asked.code_challenge_method, 'S256'); assert.equal(asked.prompt, undefined);
 assert.equal(asked.redirect_uri, `${BASE}/api/trakt/callback`); assert.equal(await guest.evaluate(() => sessionStorage.length), 0);
@@ -131,7 +131,8 @@ execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', 
 await guest.reload(); await trakt.getByText('Nothing uses it any more').waitFor(); await shot(guest, '13-accounts-connected');
 await trakt.getByRole('button', {name: 'Disconnect it'}).click(); await toast(guest).filter({hasText: 'Older Trakt link removed'}).waitFor();
 // Said as soon as the hub answers; the card follows a moment later.
-await trakt.getByText('Nothing uses it any more').waitFor({state: 'detached'}); await trakt.getByText('Connected as adatrakt.').waitFor();
+await trakt.getByText('Nothing uses it any more').waitFor({state: 'detached'}); await trakt.getByText('Connected as adatrakt').waitFor();
+await trakt.getByRole('button', {name: 'Disconnect', exact: true}).click(); await guest.getByRole('heading', {name: 'Disconnect Trakt?'}).waitFor(); await guest.getByRole('button', {name: 'Cancel'}).click(); await trakt.getByText('Connected as adatrakt').waitFor();
 // With Trakt connected, Recently Watched is on Home right after Watchlist. Switching it off keeps her following her group's Home.
 await guest.goto(BASE + '/#/me/home'); const onHome = guest.locator('.rows li h3');
 assert.deepEqual((await onHome.allTextContents()).slice(0, 4), ['Watchlist', 'Recommended Movies', 'Recommended Shows', 'Recently Watched']);
@@ -165,7 +166,7 @@ for (const where of ['/#/hub', '/#/group/family', '/#/person/ada/home']) {
   assert.equal(await theirs.getByRole('heading', {name: /lists$/}).count(), 0, where);
   if (where === '/#/hub') await theirs.getByText(/more picks? reads? MDBList lists/).waitFor();
   await theirs.getByRole('button', {name: 'Close'}).click();
-} await guest.goto(BASE + '/#/me/accounts'); await trakt.getByText('Connected as adatrakt.').waitFor();
+} await guest.goto(BASE + '/#/me/accounts'); await trakt.getByText('Connected as adatrakt').waitFor();
 // The Trakt and MDBList card: always two places side by side. What each pair holds is put in the hub's six-hour keep here (no
 // player setups run in this test, so nothing could be looked at); copying across is tested in tests/aiom.test.mjs.
 const sqlLocal = command => execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', command], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
@@ -199,12 +200,12 @@ await both(guest, '13e-card-moving-to-mdblist');
 // Staying on Here keeps MDBList connected, not keeping progress, with Disconnect beside it. Her card pairs Here and Trakt.
 await card.getByRole('button', {name: 'Stay on Here'}).click(); await toast(guest).filter({hasText: 'Staying on Here'}).waitFor();
 assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true'); await guest.locator('li.trackers', {hasText: 'Here and Trakt'}).waitFor();
-await mdb.getByText('Connected as adalists. Not keeping progress; it reads your lists.').waitFor(); await mdb.getByRole('button', {name: 'Disconnect'}).waitFor();
+await mdb.getByText('Not keeping progress; it reads your lists.').waitFor(); await mdb.getByRole('button', {name: 'Disconnect'}).waitFor();
 await both(guest, '13i-kept-key');
 // The manager connects it for her instead (from the manager's view it switches at once). Plays from before stay Here until she
 // finishes moving them: the card shows that first.
 // Her saved key is taken up again: nothing to paste.
-await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Connected as adalists. Not keeping progress; it reads their lists.').waitFor();
+await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Not keeping progress; it reads their lists.').waitFor();
 await owner.getByRole('radio', {name: 'MDBList'}).click(); assert.equal(await owner.getByLabel('MDBList API key').count(), 0);
 await toast(owner).filter({hasText: 'Back on MDBList as adalists'}).waitFor();
 holds('here-mdblist', [play('w:show/66276:6:6', 'Slow Horses', 'Season 6 · Episode 6', 15, {here: 'has', lists: 'add'}), play('w:movie/603', 'The Matrix', 'Movie', 20, {here: 'has', lists: 'add'})]);
@@ -235,7 +236,7 @@ await card.getByRole('button', {name: 'Stay on MDBList'}).click(); await toast(g
 assert.equal(await guest.getByRole('radio', {name: 'MDBList'}).getAttribute('aria-checked'), 'true');
 sqlLocal('DELETE FROM drift');
 // The manager sees none of it: what she watched is hers alone.
-await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Connected as adatrakt.').waitFor();
+await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Connected as adatrakt').waitFor();
 await owner.getByText('It’s theirs, so it isn’t shown here.').waitFor(); assert.equal(await owner.locator('li.trackers').count(), 0); await shot(owner, '14-accounts-manager');
 // The manager who is Ada too opens her link once she has joined: straight into her own view, as if she had signed in, with her
 // own things there. "Back to manager" returns to the manager's view, which was kept aside meanwhile.

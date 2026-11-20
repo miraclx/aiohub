@@ -444,3 +444,7 @@ a.primary.button { display: inline-flex; align-items: center; min-height: 34px; 
 .kept-key .link { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
 /* Where progress is kept: its own card under the accounts. */
 .accounts.progress { margin-top: 20px; }
+/* Connected as …: its own line, cut short with an ellipsis when long. */
+.accounts .who { margin: 2px 0 4px; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.accounts .who strong { color: var(--text); font-weight: 600; }
+.accounts .account-row > div:first-child { min-width: 0; }

@@ -159,6 +159,8 @@ function Devices({page, person, mine}: {page: PageProps; person: Person; mine: b
       : <p className="muted">No device yet.</p>}
   </section>;
 }
+/* Which account is connected, on its own line under the name: a long username is cut short there, not mid-sentence. */
+const Who = ({name}: {name: string}) => <p className="who" title={name || undefined}>{name ? <>Connected as <strong>{name}</strong></> : 'Connected'}</p>;
 function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {hub, live} = page, group = hub.groups.find(item => item.id === person.groupId)!;
   return <section>
@@ -203,7 +205,7 @@ async function patiently(ask: () => Promise<Response>, waiting: () => void): Pro
 }
 function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {hub, update, toast, live} = page, at = `/api/people/${person.id}/scrobble`, link = person.history;
-  const [phase, setPhase] = useState<'' | 'going' | 'connecting' | 'busy'>(''), busy = !!phase;
+  const [phase, setPhase] = useState<'' | 'going' | 'connecting' | 'busy'>(''), busy = !!phase, [dropping, setDropping] = useState(false);
   const their = mine ? 'your' : 'their', client = hub.traktClient ?? '';
   // The sign-in Trakt just sent back here, if it was for this person: the code is exchanged for the login, once.
   useEffect(() => {
@@ -248,15 +250,16 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     const ask = new URLSearchParams({response_type: 'code', client_id: client, redirect_uri: `${location.origin}/api/trakt/callback`, state, code_challenge: challenge, code_challenge_method: 'S256', ...(mine ? {} : {prompt: 'login'})});
     location.assign(`${TRAKT_AUTH}/oauth/authorize?${ask}`);
   };
-  return <li className="stacked"><div className="account-row"><div><h3>Trakt</h3>
-    <p>{on ? `Connected${link!.username ? ` as ${link!.username}` : ''}. ${about}` : link?.again ? `Trakt asked to be connected again. ${about}` : about}</p></div>
+  return <li className="stacked"><div className="account-row"><div><h3>Trakt</h3>{on && <Who name={link!.username}/>}
+    <p>{on ? about : link?.again ? `Trakt asked to be connected again. ${about}` : about}</p></div>
     {!hub.scrobble || !client ? <span className="pill">Not on this site</span>
-      : on ? <button type="button" className="ghost small" disabled={busy} onClick={() => work(live.call('DELETE', at), 'Trakt disconnected')}>Disconnect</button>
+      : on ? <button type="button" className="ghost small" disabled={busy} onClick={() => setDropping(true)}>Disconnect</button>
       : <button type="button" className="primary small" disabled={busy} onClick={() => void connect()}>Connect</button>}</div>
     {phase === 'connecting' || phase === 'busy' ? <p className="muted small" role="status">{phase === 'busy' ? 'Trakt is busy, trying again…' : 'Connecting to Trakt…'}</p>
       : !on && !mine && hub.scrobble && client ? <p className="muted small">Trakt asks who’s signing in, so {person.name} can use their own Trakt account.</p> : null}
     {person.aiomTrakt && <div className="quiet-note"><p className="muted small">{on ? 'An older Trakt link, made through AIOMetadata, is still there. Nothing uses it any more.' : 'Home’s Trakt rows come from an older link made through AIOMetadata for now. Connecting here takes over from it.'}</p>
       <button type="button" className="link small" disabled={busy} onClick={() => work(live.call('DELETE', `/api/people/${person.id}/trakt`), 'Older Trakt link removed')}>Disconnect it</button></div>}
+    {dropping && <Confirm title="Disconnect Trakt?" body={`Trakt stops following along, and ${their} Trakt rows leave Home. Plays still waiting to reach Trakt are dropped. Nothing on Trakt itself changes, and connecting again brings the rows back.`} action="Disconnect" onYes={() => {setDropping(false); work(live.call('DELETE', at), 'Trakt disconnected');}} onClose={() => setDropping(false)}/>}
   </li>;
 }
 /* MDBList, an account like Trakt: optional and free. Connecting only saves their own key (checked with MDBList, kept in the
@@ -280,9 +283,8 @@ function MdbList({page, person, mine}: {page: PageProps; person: Person; mine: b
     }, fail(toast)).finally(() => setBusy(false));
   };
   const forget = () => {setDropping(false); setBusy(true); void live.call('DELETE', `${at}/key`).then(() => {toast('MDBList disconnected'); live.apps(); return live.reload();}, fail(toast)).finally(() => setBusy(false));};
-  const named = person.listsName ? ` as ${person.listsName}` : '';
-  const state = !connected ? about : person.lists ? `Connected${named}. Keeps ${their} progress.` : moving ? `Connected${named}.` : `Connected${named}. Not keeping progress; it reads ${their} lists.`;
-  return <li className="stacked"><div className="account-row"><div><h3>MDBList</h3><p>{state}</p>
+  const state = !connected ? about : person.lists ? `Keeps ${their} progress.` : moving ? '' : `Not keeping progress; it reads ${their} lists.`;
+  return <li className="stacked"><div className="account-row"><div><h3>MDBList</h3>{connected && <Who name={person.listsName ?? ''}/>}{state && <p>{state}</p>}
 </div>
     {connected ? <button type="button" className="ghost small" disabled={busy} onClick={() => setDropping(true)}>Disconnect</button>
       : !keying && <button type="button" className="primary small" disabled={busy} onClick={() => setKeying(true)}>Connect</button>}</div>
