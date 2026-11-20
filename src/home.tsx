@@ -10,15 +10,19 @@ type Pick = {id: string; title: string; kind: string; source: string};
 export function Grip({handleRef, label}: {handleRef: (element: Element | null) => void; label: string}) {
   return <button type="button" ref={handleRef} className="grip" aria-label={label}><i/><i/><i/></button>;
 }
-// On a hub or group Home, a Trakt row is a place kept for it: only someone who connects Trakt gets it.
-const LATER = 'Appears once someone connects Trakt';
+// On a hub or group Home, a person's own row is a place kept for it: it fills for each person from their own accounts.
+const LATER: Record<string, string> = {
+  'recently-watched': 'Fills for each person from Trakt, MDBList or what they play here',
+  'mdblist-watchlist': 'MDBList · Appears once someone connects MDBList. With Trakt too, it starts off',
+};
+const laterOf = (row: Row) => LATER[row.id] ?? `${row.source} · Appears once someone connects Trakt`;
 function RowCard({row, index, tag, locked, later, person, onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; later?: boolean; person?: string; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
   const sortable = useSortable({id: row.id, index, disabled: locked});
   return <li ref={sortable.ref} className={`row${sortable.isDragging ? ' dragging' : ''}${locked ? ' locked' : ''}${later ? ' later' : ''}`}>
     {!locked && <Grip handleRef={sortable.handleRef} label={`Move ${row.title}`}/>}
     <div className="row-main">
       <div className="row-head">
-        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? `${row.source} · ${LATER}` : `${row.kind} · ${row.source}`}</p></div>
+        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? laterOf(row) : `${row.kind} · ${row.source}`}</p></div>
         {!locked && <div className="row-actions">
           {onArrange && <button type="button" className="ghost small" onClick={onArrange}>Edit</button>}
           {onRemove && <button type="button" className="ghost small" onClick={onRemove}>Remove</button>}
@@ -77,7 +81,8 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
     </DragDropProvider>
     {!on.length && <p className="empty">Nothing on Home yet. Add a row or turn one on below.</p>}
     {!!off.length && <details className="off" open={off.length <= 4}><summary>Not on Home <span className="count">{off.length}</span></summary>
-      <ul>{off.map(row => <li key={row.id} className={level !== 'own' && TRAKT_IDS.has(row.id) ? 'later' : undefined}>{!(level !== 'own' && TRAKT_IDS.has(row.id)) && <Art row={row} dim person={person}/>}<div><h3>{row.title}</h3><p>{level !== 'own' && TRAKT_IDS.has(row.id) ? `${row.source} · ${LATER}` : `${row.kind} · ${row.source}`}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>)}</ul>
+      <ul>{off.map(row => {const place = level !== 'own' && TRAKT_IDS.has(row.id);
+        return <li key={row.id} className={place ? 'later' : undefined}><div><h3>{row.title}</h3><p>{place ? laterOf(row) : `${row.kind} · ${row.source}`}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>;})}</ul>
     </details>}
     {adding && <Sheet title="Add a row" onClose={() => setAdding(false)}>
       <form className="link-form" onSubmit={event => {

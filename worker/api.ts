@@ -276,10 +276,11 @@ const savePersonData = (env: Env, hub: string, id: string, next: PersonData) => 
 const hasSecret = async (env: Env, hub: string, id: string, kind: string) => !!await env.DB.prepare('SELECT 1 FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(hub, id, kind).first();
 /* Trakt connected to the hub, and Trakt has not asked for it to be connected again. */
 const tracked = async (env: Env, hub: string, id: string) => !!env.TRAKT_CLIENT_ID && !((await getSecret<{again?: boolean}>(env, hub, id, LINK)) ?? {again: true}).again;
-/* Trakt rows on or off. Someone with a Home of their own gets the rows added at the top, or taken out again. */
+/* Trakt rows on or off. Someone with a Home of their own gets the rows added at the top, or taken out again. Recently Watched and
+   the MDBList watchlist do not need Trakt, so they stay where they are. */
 function withTraktRows(data: PersonData, on: boolean): PersonData {
-  const shipped = traktRows().map(item => item.id);
-  return {...data, trakt: on, rows: data.rows ? on ? [...traktRows().filter(item => !data.rows!.some(row => row.id === item.id)), ...data.rows] : data.rows.filter(row => !shipped.includes(row.id)) : null};
+  const shipped = traktRows().filter(item => item.id !== 'mdblist-watchlist'), needs = shipped.map(item => item.id).filter(id => id !== 'recently-watched');
+  return {...data, trakt: on, rows: data.rows ? on ? [...shipped.filter(item => !data.rows!.some(row => row.id === item.id)), ...data.rows] : data.rows.filter(row => !needs.includes(row.id)) : null};
 }
 /* Checks a person's own password. People who joined before the two passwords were split are checked against the old shared one. */
 const ownPassword = (given: string, stored: string, signin: SignIn) => stored ? checkPassword(given, stored) : same(given, signin.password);
@@ -332,11 +333,11 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       // (the card on their page, places.ts). Anyone else's choice, or a new key for someone already on MDBList, takes effect at once.
       // `keep`: connecting MDBList from the accounts list only saves the key; where progress is kept is chosen apart from it.
       const moving = body.moving === true && who.person === id && !data.lists, keep = body.keep === true && !data.lists;
-      await env.DB.batch([await putSecret(env, hub, id, 'mdblist', {key, username, ...(moving ? {moving: 'mdblist'} : {})}), save(!moving && !keep),env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id)]);
+      await env.DB.batch([await putSecret(env, hub, id, 'mdblist', {key, username, ...(moving ? {moving: 'mdblist'} : {})}), save(!moving && !keep),env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND (kind = 'lists' OR kind LIKE 'mdb_%')").bind(hub, id)]);
       return {username};
     }
     // Removing the key itself: nothing of MDBList is kept or read for them any more.
-    if (request.method === 'DELETE' && rest === 'key') {await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'mdblist'").bind(hub, id), env.DB.prepare('DELETE FROM drift WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id), save(false)]); return {};}
+    if (request.method === 'DELETE' && rest === 'key') {await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'mdblist'").bind(hub, id), env.DB.prepare('DELETE FROM drift WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND (kind = 'lists' OR kind LIKE 'mdb_%')").bind(hub, id), save(false)]); return {};}
     // Progress kept Here: the key stays saved for their lists, and the next sync turns MDBList's tracking and reporting off.
     if (request.method === 'DELETE' && !rest) {await moving(env, hub, id, null); await env.DB.batch([env.DB.prepare('DELETE FROM drift WHERE hub = ? AND person = ?').bind(hub, id), save(false)]); return {};}
   }

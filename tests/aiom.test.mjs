@@ -43,7 +43,7 @@ const DAY = 86400, ago = days => new Date((Math.floor(Date.now() / 1000) - Math.
 const MOVIE = {inception: {title: 'Inception', ids: {imdb: 'tt1375666', tmdb: 27205}}, fight: {title: 'Fight Club', ids: {imdb: 'tt0137523', tmdb: 550}}, pulp: {title: 'Pulp Fiction', ids: {imdb: 'tt0110912', tmdb: 680}},
   gump: {title: 'Forrest Gump', ids: {imdb: 'tt0109830', tmdb: 13}}, knight: {title: 'The Dark Knight', ids: {imdb: 'tt0468569', tmdb: 155}}};
 const BB = {title: 'Breaking Bad', ids: {imdb: 'tt0903747', tmdb: 1396}};
-const lists = {plays: {}, recent: {movies: [], shows: [], episodes: []}, refuse: false, playback: null};
+const lists = {plays: {}, recent: {movies: [], shows: [], episodes: []}, refuse: false, playback: null, watchlist: [], reads: []};
 const READS = {
   '/sync/watchlist/all/added/desc': () => trakt.watchlist ?? WATCHLIST,
   '/sync/history': () => trakt.history,
@@ -114,7 +114,12 @@ http.createServer(async (request, answer) => {
   const history = /^\/mdblist\/sync\/history\/(movie|show)\/tmdb\/(\d+)/.exec(request.url);
   if (history && lists.plays[`${history[1]}/${history[2]}`]) return send(200, {type: history[1], play_count: lists.plays[`${history[1]}/${history[2]}`].length, truncated: false, plays: lists.plays[`${history[1]}/${history[2]}`]});
   if (history) return send(200, {type: history[1], play_count: 0, truncated: false, plays: []});
-  if (request.url.startsWith('/mdblist/sync/watched?') && request.method === 'GET') return send(200, lists.recent);
+  if (request.url.startsWith('/mdblist/sync/watched?') && request.method === 'GET') {lists.reads.push(request.url.split('?')[0]); return send(200, lists.recent);}
+  // Her MDBList watchlist, newest added first, as one list of films and shows (unified), by offset and limit.
+  if (request.url.startsWith('/mdblist/watchlist/items?')) {
+    const ask = new URL(request.url, UP).searchParams, offset = Number(ask.get('offset')) || 0, limit = Number(ask.get('limit')) || 100; lists.reads.push(`/watchlist/items@${offset}`);
+    return ask.get('unified') === 'true' && ask.get('sort') === 'added' && ask.get('order') === 'desc' ? send(200, lists.watchlist.slice(offset, offset + limit)) : send(400, {});
+  }
   if (request.url.startsWith('/mdblist/sync/watched')) {fake.watched.push(body); return send(200, {added: {movies: 1}, not_found: {movies: [], shows: [], episodes: []}});}
   if (request.url.startsWith('/mdblist/scrobble/pause')) {fake.pauses.push(body); return send(201, {action: 'pause'});}
   if (request.url === '/api/config/save') {if (!body.config?.apiKeys?.tmdb) return send(400, {}); const uuid = uuidOf(++fake.made); fake.homes.set(uuid, {password: body.password, config: {...body.config, configVersion: 1}}); return send(200, {success: true, userUUID: uuid});}
@@ -307,7 +312,10 @@ test('Trakt connected on AIOMetadata, as before: its own Trakt rows and Token ID
   assert.deepEqual(await syncAll(), {state: 'ok'});
   const [, ada] = playerOf('Ada');
   assert.equal(ada.config.apiKeys.traktTokenId, 'aiom-trakt-token-id-1');
-  assert.deepEqual(rowsOf(ada.config).map(([id]) => id), ['trakt.watchlist', 'trakt.recommendations.movies', 'trakt.recommendations.shows', 'trakt.upnext', 'trakt.unwatched']);
+  // AIOMetadata's own Trakt rows; her MDBList watchlist (off: Trakt's is on) and Recently Watched come from the hub, which cannot read
+  // a Trakt connected only on AIOMetadata.
+  assert.deepEqual(rowsOf(ada.config).map(([id]) => id), ['trakt.watchlist', 'custom.aiohub_rows.all.mdblist_watchlist', 'trakt.recommendations.movies', 'trakt.recommendations.shows', 'trakt.upnext', 'trakt.unwatched', 'custom.aiohub_rows.all.history']);
+  assert.equal(rowsOf(ada.config)[1][3], false);
   const shown = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
   assert.equal(shown.trakt, true); assert.equal(shown.aiomTrakt, true);
 });
@@ -332,7 +340,8 @@ test('with Trakt connected to the hub, her setup reads her Trakt rows from the h
   assert.deepEqual(await syncAll(), {state: 'ok'});
   const [, ada] = playerOf('Ada'), [, ben] = playerOf('Ben');
   // The same rows, in the same order and under the same names, now imported from the hub's own addon; Up Next and Recently aired stay off.
-  assert.deepEqual(rowsOf(ada.config), [['custom.aiohub_rows.all.watchlist', 'all', 'Watchlist', true], ['custom.aiohub_rows.movie.recommended', 'movie', 'Recommended Movies', true],
+  // With Trakt and MDBList both connected, MDBList's watchlist starts off, and while only one is on each is plainly "Watchlist".
+  assert.deepEqual(rowsOf(ada.config), [['custom.aiohub_rows.all.watchlist', 'all', 'Watchlist', true], ['custom.aiohub_rows.all.mdblist_watchlist', 'all', 'Watchlist', false], ['custom.aiohub_rows.movie.recommended', 'movie', 'Recommended Movies', true],
     ['custom.aiohub_rows.series.recommended', 'series', 'Recommended Shows', true], ['custom.aiohub_rows.series.up_next', 'series', 'Up Next', false], ['custom.aiohub_rows.series.recently_aired', 'series', 'Recently Aired for You', false],
     ['custom.aiohub_rows.all.history', 'all', 'Recently Watched', true]]);
   served = ada.config.catalogs.filter(item => item.id.startsWith('custom.'));
@@ -343,8 +352,9 @@ test('with Trakt connected to the hub, her setup reads her Trakt rows from the h
   // Ahead of the shared rows, as before, and nothing of AIOMetadata's own Trakt left: no Token ID, no hiding by it.
   assert.equal(ada.config.catalogs.findIndex(item => item.id.startsWith('custom.')), 0);
   assert.equal(ada.config.apiKeys.traktTokenId, undefined); assert.equal(ada.config.hideWatchedTrakt, false);
-  // Ben has no Trakt: nothing changes for him.
-  assert.deepEqual(rowsOf(ben.config), []);
+  // Ben has no Trakt and no MDBList: only his own Recently Watched, from the hub, at an address of his own.
+  assert.deepEqual(rowsOf(ben.config), [['custom.aiohub_rows.all.history', 'all', 'Recently Watched', true]]);
+  assert.notEqual(ben.config.catalogs.find(item => item.id === 'custom.aiohub_rows.all.history').sourceUrl, ada.config.catalogs.find(item => item.id === 'custom.aiohub_rows.all.history').sourceUrl);
   // The address is made once: a second sync sends nothing.
   const version = ada.config.configVersion; assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Ada')[1].config.configVersion, version);
   // Switching Recently Watched off keeps her following her group's Home: only that row changes, and a later save leaves it off.
@@ -356,6 +366,14 @@ test('with Trakt connected to the hub, her setup reads her Trakt rows from the h
   assert.equal((await put({})).status, 200);
   const me = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
   assert.equal(me.rows, null); assert.deepEqual(me.picks, {'recently-watched': false});
+  // Both watchlists on: each says whose it is. Back to one, and it is plainly "Watchlist" again.
+  const watchlists = () => rowsOf(playerOf('Ada')[1].config).filter(([id]) => /watchlist$/.test(id)).map(row => row.slice(2));
+  assert.equal((await put({picks: {'recently-watched': false, 'mdblist-watchlist': true}})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(watchlists(), [['Watchlist · Trakt', true], ['Watchlist · MDBList', true]]);
+  assert.equal((await put({picks: {'recently-watched': false, watchlist: false, 'mdblist-watchlist': true}})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(watchlists(), [['Watchlist', false], ['Watchlist', true]]);
+  assert.equal((await put({picks: {'recently-watched': false}})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(watchlists(), [['Watchlist', true], ['Watchlist', false]]);
   // The manager places the Trakt rows in the hub's Home and sets how each starts: Watchlist after Trending Movies, Recently Aired
   // on. Ada follows that, with her own choice on top; Ben, without Trakt, gets nothing of it.
   const hubNow = (await owner('GET', '/api/state')).body.hub, traktRow = id => ({id, title: id, kind: 'Series', source: 'Trakt', origin: 'hub', on: true, core: true});
@@ -365,8 +383,9 @@ test('with Trakt connected to the hub, her setup reads her Trakt rows from the h
   const catalogs = playerOf('Ada')[1].config.catalogs.map(item => item.id), at = id => catalogs.indexOf(id);
   assert.ok(at('tmdb.trending') < at('custom.aiohub_rows.all.watchlist') && at('custom.aiohub_rows.all.watchlist') < at('custom.aiohub_rows.series.recently_aired'), catalogs.join(' '));
   assert.equal(playerOf('Ada')[1].config.catalogs.find(item => item.id === 'custom.aiohub_rows.series.recently_aired').enabled, true);
-  assert.equal(at('custom.aiohub_rows.movie.recommended'), at('custom.aiohub_rows.all.watchlist') + 1, 'a Trakt row the hub did not place follows the one before it');
-  assert.deepEqual(rowsOf(playerOf('Ben')[1].config), []);
+  assert.equal(at('custom.aiohub_rows.all.mdblist_watchlist'), at('custom.aiohub_rows.all.watchlist') + 1, 'a row the hub did not place follows the one before it');
+  assert.equal(at('custom.aiohub_rows.movie.recommended'), at('custom.aiohub_rows.all.mdblist_watchlist') + 1);
+  assert.deepEqual(rowsOf(playerOf('Ben')[1].config).map(([id]) => id), ['custom.aiohub_rows.all.history']);
   const back = (await owner('GET', '/api/state')).body.hub;
   assert.equal((await owner('PUT', '/api/hub', {host: back.host, hostUrl: back.hostUrl, serverName: back.serverName, addons: back.addons, defaults: back.defaults, rows: hubNow.rows, order: back.groups.map(group => group.id), v: back.v})).status, 200);
   assert.deepEqual(await syncAll(), {state: 'ok'});
@@ -534,7 +553,7 @@ test('the rows address answers with IMDb ids from her Trakt, page by page, renew
   const address = served[0].sourceUrl.split('/catalog/')[0];
   const manifest = (await get(`${address}/manifest.json`)).body;
   assert.deepEqual(manifest.resources, ['catalog']);
-  assert.deepEqual(manifest.catalogs.map(item => `${item.type}/${item.id}`), ['all/watchlist', 'all/history', 'movie/recommended', 'series/recommended', 'series/up_next', 'series/recently_aired']);
+  assert.deepEqual(manifest.catalogs.map(item => `${item.type}/${item.id}`), ['all/watchlist', 'all/mdblist_watchlist', 'all/history', 'movie/recommended', 'series/recommended', 'series/up_next', 'series/recently_aired']);
   // Trakt no longer takes the access token it has: the first read renews the connection once, then carries on.
   const renewed = trakt.refreshed.length; trakt.valid.clear(); trakt.reads = [];
   const list = await get(served[0].sourceUrl);
@@ -580,9 +599,59 @@ test('the rows address answers with IMDb ids from her Trakt, page by page, renew
   // Disconnected from the hub with no other Trakt: the rows leave her Home on the next sync, and the address answers with nothing.
   assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200);
   assert.deepEqual(await syncAll(), {state: 'ok'});
-  assert.deepEqual(rowsOf(playerOf('Ada')[1].config), []);
+  assert.ok(!rowsOf(playerOf('Ada')[1].config).some(([id]) => /\.(watchlist|recommended|up_next|recently_aired)$/.test(id)), 'no Trakt rows left');
   assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').trakt, false);
   assert.deepEqual((await get(served[0].sourceUrl)).body, {metas: []});
+});
+test('Recently Watched follows each person’s accounts (Trakt, else MDBList, else what they played here), and nobody sees anyone else’s', async () => {
+  const get = async url => {const answer = await fetch(url); return {status: answer.status, body: await answer.json().catch(() => null)};};
+  const urlOf = (name, id) => playerOf(name)[1].config.catalogs.find(item => item.id === id).sourceUrl, hubId = sql('SELECT id FROM hubs')[0].id;
+  // Trakt gone, her MDBList key still there: its watchlist is her only one, so it is on; Recently Watched keeps its address.
+  assert.deepEqual(rowsOf(playerOf('Ada')[1].config), [['custom.aiohub_rows.all.mdblist_watchlist', 'all', 'Watchlist', true], ['custom.aiohub_rows.all.history', 'all', 'Recently Watched', false]]);
+  const adaWatched = urlOf('Ada', 'custom.aiohub_rows.all.history'), benWatched = urlOf('Ben', 'custom.aiohub_rows.all.history');
+  assert.equal(adaWatched, served.find(item => item.id === 'custom.aiohub_rows.all.history').sourceUrl);
+  // From her MDBList: films and shows together, newest first, a show once however many of its episodes she watched.
+  lists.recent = {movies: [{last_watched_at: ago(3), movie: MOVIE.pulp}, {last_watched_at: ago(1), movie: MOVIE.gump}], shows: [], episodes: [{last_watched_at: ago(2), episode: {season: 1, number: 4, show: BB}}, {last_watched_at: ago(4), episode: {season: 1, number: 3, show: BB}}]};
+  lists.reads = [];
+  const fromLists = [{id: 'tt0109830', type: 'movie', name: 'Forrest Gump'}, {id: 'tt0903747', type: 'series', name: 'Breaking Bad'}, {id: 'tt0110912', type: 'movie', name: 'Pulp Fiction'}];
+  assert.deepEqual((await get(adaWatched)).body.metas, fromLists);
+  // Kept like Trakt's rows: asked again within minutes, MDBList is not asked again.
+  assert.deepEqual((await get(adaWatched)).body.metas, fromLists); assert.deepEqual(lists.reads, ['/mdblist/sync/watched']);
+  // Her MDBList watchlist, newest added first: IMDb ids where MDBList has them, else TMDB.
+  lists.watchlist = [{id: 27205, mediatype: 'movie', imdb_id: 'tt1375666', title: 'Inception', ids: {imdb: 'tt1375666', tmdb: 27205}}, {id: 1396, mediatype: 'show', imdb_id: 'tt0903747', title: 'Breaking Bad'}, {id: 550, mediatype: 'movie', imdb_id: null, title: 'Fight Club', ids: {imdb: null, tmdb: 550}}];
+  const theirList = urlOf('Ada', 'custom.aiohub_rows.all.mdblist_watchlist');
+  assert.deepEqual((await get(theirList)).body.metas, [{id: 'tt1375666', type: 'movie', name: 'Inception'}, {id: 'tt0903747', type: 'series', name: 'Breaking Bad'}, {id: 'tmdb:550', type: 'movie', name: 'Fight Club'}]);
+  // A long one is read a hundred at a time, a further page only once someone scrolls that far, and never past its end.
+  lists.watchlist = Array.from({length: 150}, (_, n) => ({id: 9000 + n, mediatype: 'movie', imdb_id: `tt${9000000 + n}`, title: `Film ${n}`})); sql("DELETE FROM rows_cache WHERE kind LIKE 'mdb_watchlist%'"); lists.reads = [];
+  const at20 = skip => get(theirList.replace(/\.json$/, `/skip=${skip}.json`)).then(got => got.body.metas.map(item => item.id));
+  assert.equal((await get(theirList)).body.metas.length, 20); assert.deepEqual(lists.reads, ['/watchlist/items@0']);
+  assert.deepEqual(await at20(100), Array.from({length: 20}, (_, n) => `tt${9000100 + n}`)); assert.deepEqual(lists.reads, ['/watchlist/items@0', '/watchlist/items@100']);
+  assert.equal((await at20(140)).length, 10); assert.deepEqual(await at20(160), []); assert.equal(lists.reads.length, 2);
+  assert.deepEqual(sql("SELECT person, kind FROM rows_cache WHERE kind LIKE 'mdb%' ORDER BY kind"), [{person: 'ada', kind: 'mdb_history'}, {person: 'ada', kind: 'mdb_watchlist'}, {person: 'ada', kind: 'mdb_watchlist.2'}, {person: 'ada', kind: 'mdb_watchlist.3'}], 'each page kept on its own, and the end after the last');
+  // Ben has neither: what he played here, newest first, a show once, known by its id on his own server. An id it can't place is left out.
+  sql(`INSERT INTO plays (hub, person, item, title, detail, updated) VALUES ('${hubId}', 'ben', '${pack('movie', 'tt0114709')}', 'Toy Story', 'Movie', 100), ('${hubId}', 'ben', '${pack('episode', 'tt0944947', 1, 2)}', 'Meta Show', 'Season 1 · Episode 2', 300),
+    ('${hubId}', 'ben', '${pack('episode', 'tt0944947', 1, 1)}', 'Meta Show', 'Season 1 · Episode 1', 200), ('${hubId}', 'ben', 'not-a-title-id', 'Unknown', 'Movie', 400)`);
+  const bens = [{id: 'tt0944947', type: 'series', name: 'Meta Show'}, {id: 'tt0114709', type: 'movie', name: 'Toy Story'}];
+  assert.deepEqual((await get(benWatched)).body.metas, bens);
+  // His address has nothing else of anyone's: no MDBList watchlist, no Trakt rows. Hers never has his plays, and his never her lists.
+  const benAt = benWatched.split('/catalog/')[0];
+  for (const row of ['all/mdblist_watchlist', 'all/watchlist', 'movie/recommended']) assert.deepEqual((await get(`${benAt}/catalog/${row}.json`)).body, {metas: []}, row);
+  assert.deepEqual((await get(adaWatched)).body.metas, fromLists);
+  // The hub's own Home (no single person) has none of these rows.
+  const hubHome = [...fake.homes.values()].find(home => !home.config.jellyfinUserName);
+  assert.ok(hubHome && !hubHome.config.catalogs.some(item => /^custom\./.test(item.id)), 'the hub’s Home has no one’s own rows');
+  // Without her MDBList key: what she played here, never Ben's, and her MDBList answers are let go.
+  assert.equal((await owner('DELETE', '/api/people/ada/mdblist/key')).status, 200);
+  assert.deepEqual(sql("SELECT kind FROM rows_cache WHERE person = 'ada' AND kind LIKE 'mdb%'"), []);
+  assert.deepEqual((await get(theirList)).body, {metas: []});
+  const hers = (await get(adaWatched)).body.metas, mine = sql("SELECT title FROM plays WHERE person = 'ada' ORDER BY updated DESC").map(row => row.title);
+  assert.ok(hers.length > 0 && hers.every(item => mine.includes(item.name)), JSON.stringify(hers)); assert.equal(hers[0].name, mine[0]);
+  assert.ok(!hers.some(item => item.name === 'Toy Story'));
+  assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(rowsOf(playerOf('Ada')[1].config), [['custom.aiohub_rows.all.history', 'all', 'Recently Watched', false]]);
+  // Her key back, as before.
+  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'});
+  lists.recent = {movies: [], shows: [], episodes: []}; lists.watchlist = [];
 });
 const hubRows = async rows => {const state = (await owner('GET', '/api/state')).body.hub; assert.equal((await owner('PUT', '/api/hub', {...state, rows})).status, 200); return syncAll();};
 const catalogsOf = name => playerOf(name)[1].config.catalogs, collectionsOf = name => playerOf(name)[1].config.collections ?? [];

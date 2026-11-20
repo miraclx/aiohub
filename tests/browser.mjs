@@ -81,15 +81,23 @@ await job('Trakt sync').getByText('every 5 min').waitFor();
 await job('Trakt sync').getByText(/^Ran today at \d/).waitFor(); await job('Trakt sync').getByText(/^next in \d min$/).waitFor();
 await job('Trakt and MDBList check').getByText(/^every day at \d/).waitFor(); await job('Trakt and MDBList check').getByText('Not run yet').waitFor(); await job('Trakt and MDBList check').getByText(/^next (today|tomorrow)$/).waitFor();
 await work.scrollIntoViewIfNeeded(); await shot(owner, '5b-background');
-// The hub's Home keeps a place for each Trakt row, marked as one that appears once someone connects Trakt.
-await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later', {hasText: 'Watchlist'}).getByText('Appears once someone connects Trakt').waitFor();
-// All six, Recently Watched among those on Home (it is on by default); the Not on Home ones keep Show at the right edge.
-assert.deepEqual(await owner.locator('.rows .row.later h3').allTextContents(), ['Watchlist', 'Recommended Movies', 'Recommended Shows', 'Recently Watched']);
+// The hub's Home keeps a place for each of a person's own rows, each saying what fills it: Trakt, MDBList, or for Recently Watched
+// whichever the person has. Both watchlists are on, so their names tell them apart.
+await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later', {hasText: 'Watchlist · Trakt'}).getByText('Trakt · Appears once someone connects Trakt').waitFor();
+await owner.locator('.rows .row.later', {hasText: 'Watchlist · MDBList'}).getByText('MDBList · Appears once someone connects MDBList. With Trakt too, it starts off').waitFor();
+await owner.locator('.rows .row.later', {hasText: 'Recently Watched'}).getByText('Fills for each person from Trakt, MDBList or what they play here').waitFor();
+// All seven, Recently Watched among those on Home (it is on by default); the Not on Home ones keep Show at the right edge.
+assert.deepEqual(await owner.locator('.rows .row.later h3').allTextContents(), ['Watchlist · Trakt', 'Watchlist · MDBList', 'Recommended Movies', 'Recommended Shows', 'Recently Watched']);
 assert.deepEqual(await owner.locator('.off li.later h3').allTextContents(), ['Up Next', 'Recently Aired for You']);
+// Not on Home is names only: no pictures beside any line, so places and plain rows start at the same edge.
+await owner.locator('.off').evaluate(list => {list.open = true;}); await owner.locator('.off li').first().waitFor(); assert.equal(await owner.locator('.off .posters, .off .covers').count(), 0);
 for (const width of [390, 1280]) {
   await owner.setViewportSize({width, height: 900}); await owner.locator('.off summary').scrollIntoViewIfNeeded();
   const edges = await owner.locator('.off li').evaluateAll(lines => lines.map(line => {const button = line.querySelector('button'); return Math.round(line.getBoundingClientRect().right - button.getBoundingClientRect().right);}));
   assert.equal(new Set(edges).size, 1, `every Show sits at the same edge (${width}): ${edges}`);
+  const starts = await owner.locator('.off li h3').evaluateAll(names => names.map(name => Math.round(name.getBoundingClientRect().left)));
+  assert.equal(new Set(starts).size, 1, `every name starts at the same edge (${width}): ${starts}`);
+  if (shots) await owner.locator('.off').screenshot({path: `${shots}/real-5d-hub-not-on-home-${width}.png`});
 }
 await owner.setViewportSize({width: 390, height: 844}); await shot(owner, '5c-hub-home');
 await owner.goto(BASE + '/#/'); await owner.getByText('Add someone to Family').waitFor(); await shot(owner, '6-people');
@@ -189,6 +197,19 @@ await mdb.getByRole('button', {name: 'Connect'}).click(); await guest.getByLabel
 await guest.getByRole('button', {name: 'Save'}).click(); await toast(guest).filter({hasText: 'MDBList connected'}).waitFor();
 await mdb.getByText('Not keeping progress; it reads your lists.', {exact: false}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
 await both(guest, '12b-mdblist-connected');
+// With Trakt and MDBList both connected, on the Home of her own: MDBList's watchlist comes in after Trakt's, off, and each is plainly
+// "Watchlist" while only one is on. Turning MDBList's on names both; turning it off again keeps it there, off.
+await guest.goto(BASE + '/#/me/home'); await guest.locator('.off').evaluate(list => {list.open = true;});
+await guest.locator('.off li', {hasText: 'MDBList'}).getByRole('heading', {name: 'Watchlist', exact: true}).waitFor();
+assert.ok((await onHome.allTextContents()).includes('Watchlist')); assert.ok(!(await onHome.allTextContents()).some(name => name.includes('·')));
+await guest.locator('.off li', {hasText: 'MDBList'}).getByRole('button', {name: 'Show'}).click(); await toast(guest).filter({hasText: 'is on Home'}).waitFor();
+await guest.locator('.rows li h3', {hasText: 'Watchlist · MDBList'}).waitFor(); assert.ok((await onHome.allTextContents()).includes('Watchlist · Trakt'));
+await shot(guest, '12c-both-watchlists-phone'); await guest.setViewportSize({width: 1280, height: 900}); await shot(guest, '12c-both-watchlists-wide'); await guest.setViewportSize({width: 390, height: 844});
+await guest.getByRole('switch', {name: 'Show Watchlist · MDBList on Home'}).click(); await toast(guest).filter({hasText: 'is off Home'}).waitFor();
+await guest.locator('.rows li h3', {hasText: /^Watchlist$/}).waitFor();
+const kept = await guest.evaluate(async () => {for (let i = 0; i < 40; i++) {const me = (await (await fetch('/api/state')).json()).hub.people[0]; const row = me.rows?.find(item => item.id === 'mdblist-watchlist'); if (row && !row.on) return me.rows.map(item => [item.id, item.on]); await new Promise(done => setTimeout(done, 250));} return null;});
+assert.ok(kept, 'saved off'); assert.equal(kept.findIndex(([id]) => id === 'mdblist-watchlist'), kept.findIndex(([id]) => id === 'watchlist') + 1, 'right after Trakt’s watchlist');
+await guest.goto(BASE + '/#/me/accounts');
 // Choosing MDBList on her own page opens the move: nothing switches until her plays are across.
 await guest.getByRole('radio', {name: 'MDBList'}).click(); await toast(guest).filter({hasText: 'Move your plays across to switch'}).waitFor();
 holds('here-mdblist', [play('p:show/194764:1:6', 'The Penguin', 'Season 1 · Episode 6', 2, {here: 'has', lists: 'add'}, {pct: 42}), play('w:show/66276:6:6', 'Slow Horses', 'Season 6 · Episode 6', 15, {here: 'has', lists: 'add'}), play('w:show/1407:5:5', 'Homeland', 'Season 5 · Episode 5', 18, {here: 'has', lists: 'add'})]);

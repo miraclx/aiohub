@@ -23,6 +23,17 @@ export function packed(kind: keyof typeof KIND, ids: Ids, season?: number, episo
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/* The other way: the film or show an id on their own server stands for (an episode, its show), as a row lists it. null for any other id. */
+export function unpacked(id: string): {id: string; type: 'movie' | 'series'} | null {
+  const hex = /^([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})$/.exec(id.toLowerCase());
+  if (!hex) return null;
+  const bytes = hex.slice(1).join('').match(/../g)!.map(pair => parseInt(pair, 16)), kind = bytes[1] >> 4, from = bytes[1] & 15;
+  if (bytes[0] !== 0xa1 || (kind !== 1 && kind !== 2 && kind !== 4) || (from !== 1 && from !== 2)) return null;
+  const numeric = bytes.slice(3, 9).reduce((total, byte) => total * 256 + byte, 0);
+  if (!(numeric > 0)) return null;
+  return {id: from === 1 ? `tt${String(numeric).padStart(7, '0')}` : `tmdb:${numeric}`, type: kind === 1 ? 'movie' : 'series'};
+}
+
 const head = (token = '') => ({accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'AIOHub/1.0', authorization: `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="aiohub-carry", Version="1"${token ? `, Token="${token}"` : ''}`});
 /* The person's own server, signed in to the way an app would, for as long as the work takes. `calls` counts what was asked of it. */
 export async function server(via: Via) {

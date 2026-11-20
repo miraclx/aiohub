@@ -50,10 +50,12 @@ export const defaultRows = (): Row[] => [
   row('popular-movies', 'Popular Movies', 'Movies', 'TMDB', false),
   row('popular-series', 'Popular Shows', 'Series', 'TMDB', false),
 ];
-// A person's Trakt rows sit above the shared ones: saved first, then picked for them.
+// A person's own rows, from the accounts they connect, sit above the shared ones: saved first, then picked for them.
 // Up next is off: nothing writes plays back to Trakt yet, so it would fall behind. The player's own Continue watching covers it.
+// Each watchlist is its own row. Recently Watched is one row whose source follows their accounts (sourceOf, below).
 export const traktRows = (): Row[] => [
   {id: 'watchlist', title: 'Watchlist', kind: 'Movies & shows, newest first', source: 'Trakt', origin: 'own', on: true, core: true},
+  {id: 'mdblist-watchlist', title: 'Watchlist', kind: 'Movies & shows, newest first', source: 'MDBList', origin: 'own', on: true, core: true},
   {id: 'recommended-movies', title: 'Recommended Movies', kind: 'Movies', source: 'Trakt', origin: 'own', on: true, core: true},
   {id: 'recommended-series', title: 'Recommended Shows', kind: 'Series', source: 'Trakt', origin: 'own', on: true, core: true},
   {id: 'up-next', title: 'Up Next', kind: 'Series', source: 'Trakt', origin: 'own', on: false, core: true},
@@ -62,20 +64,39 @@ export const traktRows = (): Row[] => [
   {id: 'recently-watched', title: 'Recently Watched', kind: 'Movies & shows, latest first', source: 'Trakt', origin: 'own', on: true, core: true},
 ];
 export const TRAKT_IDS = new Set(traktRows().map(row => row.id));
-/* A Home's rows with each Trakt row in its place: where this Home put it, else right after the Trakt row before it in traktRows()
-   (the first at the top). A hub or group Home keeps them even though only someone with Trakt connected gets them: that is how
-   the manager places them and chooses whether each starts on. */
+/* Which accounts a person has connected: Trakt (to the hub, or the older way through AIOMetadata), and an MDBList key. */
+export interface Linked {trakt: boolean; lists: boolean}
+/* Whether a person's own row can be filled for them: the MDBList watchlist with MDBList, Recently Watched always (from Trakt, else
+   MDBList, else what they played here), the rest with Trakt. */
+export const reaches = (id: string, has: Linked) => id === 'recently-watched' || (id === 'mdblist-watchlist' ? has.lists : has.trakt);
+/* The two watchlists are told apart by name only while both are on this Home; otherwise the one there is just "Watchlist". */
+export function named(rows: Row[]): Row[] {
+  const trakt = rows.find(row => row.id === 'watchlist'), lists = rows.find(row => row.id === 'mdblist-watchlist'), both = !!trakt?.on && !!lists?.on;
+  return rows.map(row => row === trakt ? {...row, title: both ? 'Watchlist · Trakt' : 'Watchlist'} : row === lists ? {...row, title: both ? 'Watchlist · MDBList' : 'Watchlist'} : row);
+}
+/* A Home's rows with each of a person's own rows in its place: where this Home put it, else right after the one before it in
+   traktRows() (the first at the top). A hub or group Home keeps them even though only someone with the account gets them: that is
+   how the manager places them and chooses whether each starts on. */
 export function placed(rows: Row[]): Row[] {
   const out = [...rows], all = traktRows();
   all.forEach((row, n) => {if (!out.some(item => item.id === row.id)) out.splice(n ? out.findIndex(item => item.id === all[n - 1].id) + 1 : 0, 0, {...row, origin: 'hub'});});
-  return out;
+  return named(out);
 }
-/* A person's rows: their own Home if they made one, else the Home above with its Trakt rows (only once they connect Trakt), each
-   on or off as they last chose (`picks`), so switching one keeps them following the Home above. A Trakt row added to the site
-   after they made a Home of their own comes at its end, off. */
-export function rowsOf(own: Row[] | null, shared: Row[], trakt: boolean, picks?: Record<string, boolean>): Row[] {
-  if (own) return !trakt ? own : [...own, ...traktRows().filter(row => !own.some(item => item.id === row.id)).map(row => ({...row, on: false}))];
-  return placed(shared).filter(row => trakt || !TRAKT_IDS.has(row.id)).map(row => TRAKT_IDS.has(row.id) && picks?.[row.id] !== undefined ? {...row, on: picks[row.id]} : row);
+/* A person's rows: their own Home if they made one, else the Home above with the rows their accounts can fill, each on or off as
+   they last chose (`picks`), so switching one keeps them following the Home above. With both watchlists, the MDBList one starts off.
+   A row they gain after making a Home of their own comes at its end, off; the MDBList watchlist comes after the Trakt one, on when
+   it is their only watchlist. */
+export function rowsOf(own: Row[] | null, shared: Row[], has: Linked, picks?: Record<string, boolean>): Row[] {
+  const fits = (row: Row) => !TRAKT_IDS.has(row.id) || reaches(row.id, has);
+  if (own) {
+    const out = own.filter(fits);
+    for (const row of traktRows()) if (reaches(row.id, has) && !out.some(item => item.id === row.id)) {
+      if (row.id !== 'mdblist-watchlist') {out.push({...row, on: false}); continue;}
+      out.splice(out.findIndex(item => item.id === 'watchlist') + 1, 0, {...row, on: !has.trakt});
+    }
+    return named(out);
+  }
+  return named(placed(shared).filter(fits).map(row => !TRAKT_IDS.has(row.id) ? row : picks?.[row.id] !== undefined ? {...row, on: picks[row.id]} : row.id === 'mdblist-watchlist' && has.trakt ? {...row, on: false} : row));
 }
 export const isTrakt = (item: Row) => item.source === 'Trakt' || item.source.startsWith('Trakt ·');
 /* ---------- suggested rows ("Or pick one" in Add row) ----------
@@ -165,7 +186,13 @@ export function resolve(hub: Hub, group?: Group, person?: Person): Resolved {
 export const groupRows = (hub: Hub, group: Group) => group.rows ?? hub.rows;
 // Trakt rows come with either Trakt connection: the hub's own (history), or the older one made through AIOMetadata (trakt).
 export const hasTrakt = (person: Person) => person.trakt || (!!person.history && !person.history.again);
-export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), hasTrakt(person), person.picks);
+// MDBList rows come with their own key saved, whether or not progress is kept there.
+export const hasLists = (person: Person) => person.lists || !!person.listsKept;
+/* Where a person's Recently Watched comes from: Trakt connected to the hub, else their MDBList, else what they played here. The
+   older Trakt link through AIOMetadata does not count: the hub cannot read it. */
+export const sourceOf = (person: Person) => (person.history ? !person.history.again : SAMPLE && person.trakt) ? 'Trakt' : hasLists(person) ? 'MDBList' : 'Played here';
+export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), {trakt: hasTrakt(person), lists: hasLists(person)}, person.picks)
+  .map(row => row.id === 'recently-watched' ? {...row, source: sourceOf(person)} : row);
 
 const words = ['maple', 'river', 'copper', 'lantern', 'meadow', 'harbor', 'ember', 'willow', 'pebble', 'comet'];
 function seed(text: string) {let h = 11; for (const c of text) h = (h * 33 + c.charCodeAt(0)) >>> 0; return h;}

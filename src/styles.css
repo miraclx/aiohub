@@ -143,8 +143,8 @@ section + section { margin-top: 44px; }
 .off ul { list-style: none; margin: 4px 0 0; padding: 0; background: var(--surface); border-radius: var(--radius); }
 .off li { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
 .off li + li { border-top: 1px solid var(--line); }
-.off li div:nth-child(2) { flex: 1; min-width: 0; }
-/* A Trakt place has no poster strip: its Show still sits at the right edge, like every other line's. */
+.off li > div { flex: 1; min-width: 0; }
+/* No poster strip here: every line is its name and what it holds, with Show at the right edge. */
 .off li > button { margin-left: auto; flex-shrink: 0; }
 .off li p { color: var(--muted); font-size: 14px; }
 
