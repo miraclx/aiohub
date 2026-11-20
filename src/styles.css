@@ -430,3 +430,6 @@ a.primary.button { display: inline-flex; align-items: center; min-height: 34px; 
 .trackers .link.stay { color: var(--muted); text-decoration: underline; font-weight: 400; }
 .trackers .more-plays { display: block; margin: 0 auto 12px; }
 .trackers .dot.wait { background: var(--muted); }
+/* Picks in Add row: the name and its kind never run together on a narrow screen. */
+.picks.compact span:last-child { gap: 12px; }
+.picks.compact small { text-align: right; }
