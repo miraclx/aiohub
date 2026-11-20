@@ -89,8 +89,9 @@ function ago(seen: number) {
 }
 const groupDto = (row: GroupRow) => ({id: row.id, name: row.name, ...(JSON.parse(row.data) as GroupData), v: row.version});
 // moving: their MDBList key is kept while they move where progress is kept, to MDBList or back Here (see places.ts).
-const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null, aiomTrakt: boolean, listsName = '', drift: ReturnType<typeof looked> = null, moving: string | null = null) => ({
-  ready, history, listsName, drift, moving,
+// listsKept: they have an MDBList key saved. With progress kept Here it is kept but not used for progress, only to read their lists.
+const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null, aiomTrakt: boolean, listsName = '', drift: ReturnType<typeof looked> = null, moving: string | null = null, listsKept = false) => ({
+  ready, history, listsName, drift, moving, listsKept,
   id: row.id, name: row.name, groupId: row.grp, joined: !!row.joined, paused: !!row.paused, ...(JSON.parse(row.data) as PersonData), v: row.version,
   // AIOMetadata's own Trakt connection (a Token ID). Once Trakt is connected to the hub it is no longer used and can go.
   aiomTrakt,
@@ -152,8 +153,8 @@ async function state(env: Env, who: Who) {
   ]);
   // Which MDBList account each person's progress goes to (the name only; the key never leaves the vault).
   const listsName: Record<string, string> = {};
-  const moves: Record<string, string> = {};
-  for (const row of listKeys.results as {owner: string; value: string}[]) {const kept = await unseal<{username?: string; moving?: string}>(env, `${hub.id}/${row.owner}/mdblist`, row.value); if (kept?.username) listsName[row.owner] = kept.username; if (kept?.moving) moves[row.owner] = kept.moving;}
+  const moves: Record<string, string> = {}, keyed = new Set<string>();
+  for (const row of listKeys.results as {owner: string; value: string}[]) {const kept = await unseal<{key?: string; username?: string; moving?: string}>(env, `${hub.id}/${row.owner}/mdblist`, row.value); if (kept?.key) keyed.add(row.owner); if (kept?.username) listsName[row.owner] = kept.username; if (kept?.moving) moves[row.owner] = kept.moving;}
   const aiomTrakt = new Set((oldTrakt.results as {owner: string}[]).map(row => row.owner));
   const history = env.TRAKT_CLIENT_ID ? await links(env, hub.id, traktLinks.results as {owner: string; value: string}[]) : {};
   const linked = new Set((ready.results as {owner: string}[]).map(row => row.owner));
@@ -167,7 +168,7 @@ async function state(env: Env, who: Who) {
     hub: {
       name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID, traktClient: env.TRAKT_CLIENT_ID ?? '',
       ...(mine ? {manager: !!who.manager} : {jobs: jobs.results[0] as Hub['jobs']}),
-      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? looked(drifts.results[0] as {result: string | null; skipped: string | null; at: number} | undefined) : null, moves[row.id] ?? null)),
+      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? looked(drifts.results[0] as {result: string | null; skipped: string | null; at: number} | undefined) : null, moves[row.id] ?? null, keyed.has(row.id))),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
   };
@@ -312,7 +313,9 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     const stored = await env.DB.prepare('SELECT data FROM people WHERE hub = ? AND id = ?').bind(hub, id).first<{data: string}>(), data = JSON.parse(stored!.data) as PersonData;
     const save = (lists: boolean) => env.DB.prepare('UPDATE people SET data = ?, version = version + 1 WHERE hub = ? AND id = ?').bind(JSON.stringify({...data, lists}), hub, id);
     if (request.method === 'POST') {
-      const key = text(body.key, 200, 'Key').trim() || bad(400, 'Paste the key');
+      // `reuse`: the key they saved before (kept while progress is Here) is taken up again, so nothing needs pasting.
+      const before = body.reuse === true ? await getSecret<{key: string}>(env, hub, id, 'mdblist') : null;
+      const key = before?.key ?? (text(body.key ?? '', 200, 'Key').trim() || bad(400, body.reuse === true ? 'There’s no MDBList key saved. Paste one.' : 'Paste the key'));
       const answer = await fetch(`${env.MDBLIST_API ?? 'https://api.mdblist.com'}/user?apikey=${encodeURIComponent(key)}`, {headers: {accept: 'application/json', 'user-agent': 'AIOHub/1.0'}}).catch(() => null);
       if (!answer || answer.status >= 500) bad(502, 'MDBList did not answer. Try again in a moment.');
       if (answer!.status !== 200) bad(400, 'MDBList did not accept that key. Copy it from Preferences, API Access.');
@@ -323,7 +326,10 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       await env.DB.batch([await putSecret(env, hub, id, 'mdblist', {key, username, ...(moving ? {moving: 'mdblist'} : {})}), save(!moving), env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id)]);
       return {username};
     }
-    if (request.method === 'DELETE') {await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'mdblist'").bind(hub, id), env.DB.prepare('DELETE FROM drift WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id), save(false)]); return {};}
+    // Removing the key itself: nothing of MDBList is kept or read for them any more.
+    if (request.method === 'DELETE' && rest === 'key') {await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'mdblist'").bind(hub, id), env.DB.prepare('DELETE FROM drift WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id), save(false)]); return {};}
+    // Progress kept Here: the key stays saved for their lists, and the next sync turns MDBList's tracking and reporting off.
+    if (request.method === 'DELETE' && !rest) {await moving(env, hub, id, null); await env.DB.batch([env.DB.prepare('DELETE FROM drift WHERE hub = ? AND person = ?').bind(hub, id), save(false)]); return {};}
   }
   if (action === 'scrobble' && env.TRAKT_CLIENT_ID) {
     // Trakt, connected by the person or by the manager with them, on Trakt's own sign-in page. The page does the sign-in with
@@ -387,7 +393,8 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     // Everything is across: the switch itself. Then the page syncs, which turns MDBList's reporting on (or leaves it off).
     const data = await personData(env, hub, id);
     if (pair === 'here-mdblist') {await moving(env, hub, id, null); await savePersonData(env, hub, id, {...data, lists: true}).run();}
-    else await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'mdblist'").bind(hub, id), env.DB.prepare('DELETE FROM drift WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id), savePersonData(env, hub, id, {...data, lists: false})]);
+    // Back on Here: the key stays saved, used only to read their lists; switching to MDBList again needs no new paste.
+    else {await moving(env, hub, id, null); await env.DB.batch([env.DB.prepare('DELETE FROM drift WHERE hub = ? AND person = ?').bind(hub, id), savePersonData(env, hub, id, {...data, lists: false})]);}
     return {...got, switched: true};
   }
   if (action === 'moving' && request.method === 'POST') {

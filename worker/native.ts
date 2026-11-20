@@ -294,7 +294,7 @@ export function homeOf(rows: Row[], lists: boolean, trakt = false, served: strin
   return {catalogs: [...catalogs, ...[...sources.values()].filter(item => !catalogs.some(made => made.id === item.id && made.type === item.type))], collections};
 }
 const address = (env: Env, made: Catalogs) => `${env.AIOM_ORIGIN}/stremio/${made.uuid}/manifest.json?v=${made.v}`;
-interface Want {rows: Row[]; settings: Settings; trakt?: string | null; lists?: string | null; served?: string | null}
+interface Want {rows: Row[]; settings: Settings; trakt?: string | null; lists?: string | null; reads?: string | null; served?: string | null}
 interface Keys {tmdb: string; mdblist: string | null}
 type Wanted = ReturnType<typeof homeOf> & Record<string, unknown>;
 const groupOwner = (id: string) => `#g:${id}`;
@@ -313,8 +313,9 @@ const art = (settings: Settings, pattern: string = settings.ageBadge ? BETTER.re
 // reads from it. `served` is the hub's own Trakt connection serving their rows instead: then AIOMetadata has no Trakt at all.
 // `$lists` is the person's own MDBList key. With it, what they play is recorded to their MDBList and can be hidden from rows;
 // without it nothing is recorded anywhere (the hub's shared key is one account, so it is never used for that).
-const wantedOf = (want: Want, keys: Keys): Wanted => ({...homeOf(want.rows, !!(keys.mdblist || want.lists), !!want.trakt, want.served ?? null), ...looks(want.settings), ...art(want.settings), hideWatchedTrakt: !!want.trakt && want.settings.hideWatched, $trakt: want.trakt ?? null,
-  playbackReporting: !!want.lists, mdblistWatchTracking: !!want.lists, hideWatchedMdblist: !!want.lists && want.settings.hideWatched, $lists: want.lists ?? null});
+// `$reads` is their MDBList key kept while progress is Here: it only reads their lists, and records and hides nothing.
+const wantedOf = (want: Want, keys: Keys): Wanted => ({...homeOf(want.rows, !!(keys.mdblist || want.lists || want.reads), !!want.trakt, want.served ?? null), ...looks(want.settings), ...art(want.settings), hideWatchedTrakt: !!want.trakt && want.settings.hideWatched, $trakt: want.trakt ?? null,
+  playbackReporting: !!want.lists, mdblistWatchTracking: !!want.lists, hideWatchedMdblist: !!want.lists && want.settings.hideWatched, $lists: want.lists ?? null, ...(want.reads ? {$reads: want.reads} : {})});
 const LATER = 'AIOMetadata did not answer, so Home rows in the player apps were not updated. It will be tried again on your next change.';
 
 /* Everything the hub keeps in the vault, read in one go: a sync touches many records, and a Worker may only ask the database so often. */
@@ -333,8 +334,8 @@ async function shapeOf(wanted: Wanted): Promise<Record<string, string>> {
 const AIOM_AT_ONCE = 2;
 /* One Home setup on AIOMetadata: the hub's, or a group's or a person's own when theirs differs. Made once per owner, then kept in step. */
 async function syncHome(env: Env, vault: Vault, hub: string, owner: string, wanted: Wanted, keys: Keys, budget: {left: number}, kind = 'catalogs', keep: Record<string, unknown> = {}): Promise<{address: string; made: Catalogs} | {message: string; more?: boolean}> {
-  const {$trakt, $lists, ...rest} = wanted as Wanted & {$trakt?: string | null; $lists?: string | null};
-  const apiKeys = {tmdb: keys.tmdb, ...($lists || keys.mdblist ? {mdblist: ($lists || keys.mdblist) as string} : {}), ...($trakt ? {traktTokenId: $trakt} : {})}, sent = await sha(JSON.stringify([apiKeys, wanted]));
+  const {$trakt, $lists, $reads, ...rest} = wanted as Wanted & {$trakt?: string | null; $lists?: string | null; $reads?: string | null};
+  const apiKeys = {tmdb: keys.tmdb, ...($lists || $reads || keys.mdblist ? {mdblist: ($lists || $reads || keys.mdblist) as string} : {}), ...($trakt ? {traktTokenId: $trakt} : {})}, sent = await sha(JSON.stringify([apiKeys, wanted]));
   let made = await held<Catalogs>(env, vault, hub, owner, kind);
   // The hub moved to another AIOMetadata server: the setup on the old one is removed, and a new one is made here.
   if (made?.at && made.at !== env.AIOM_ORIGIN) {if ((budget.left -= 1) < 0 || !await dropHome({...env, AIOM_ORIGIN: made.at}, hub, owner, kind)) return {message: LATER, more: budget.left < 0}; made = null;}
@@ -471,10 +472,12 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
   if (minted.length) await env.DB.batch(minted);
   const groups = (groupRows.results as {id: string; name: string; data: string}[]).map(row => {const own = JSON.parse(row.data) as {rows: Row[] | null; settings: Partial<Settings>}; return {id: row.id, name: row.name, want: {rows: own.rows ?? top.rows, settings: {...top.settings, ...own.settings}} as Want, home: null as string | null, reach: null as string | null, sig: ''};});
   const people = (personRows.results as {id: string; grp: string; name: string; data: string}[]).map(row => {
-    const own = JSON.parse(row.data) as {rows: Row[] | null; settings: Partial<Settings>; trakt?: boolean; picks?: Record<string, boolean>}, group = groups.find(item => item.id === row.grp), above = group?.want ?? top;
-    const mine = served.get(row.id) ?? null, trakt = !mine && own.trakt ? linked.get(row.id) ?? null : null, lists = watching.get(row.id) ?? null;
+    const own = JSON.parse(row.data) as {rows: Row[] | null; settings: Partial<Settings>; trakt?: boolean; picks?: Record<string, boolean>; lists?: boolean}, group = groups.find(item => item.id === row.grp), above = group?.want ?? top;
+    // Their key records and hides only while progress is kept in MDBList; with progress Here it is kept just to read their lists, on
+    // their own setup (AIOMetadata in front). Without that, a kept key would only make them a setup of their own for nothing.
+    const mine = served.get(row.id) ?? null, trakt = !mine && own.trakt ? linked.get(row.id) ?? null : null, lists = own.lists ? watching.get(row.id) ?? null : null, reads = own.lists || env.FRONT !== 'aiometadata' ? null : watching.get(row.id) ?? null;
     // Someone with Trakt connected and no Home of their own gets their Trakt rows above the shared ones.
-    return {id: row.id, name: row.name, group, above, want: {rows: rowsOf(own.rows, above.rows, !!(trakt || mine), own.picks), settings: {...above.settings, ...own.settings}, trakt, lists, served: mine} as Want, tracks: !!lists, home: null as string | null, variants: [] as string[]};
+    return {id: row.id, name: row.name, group, above, want: {rows: rowsOf(own.rows, above.rows, !!(trakt || mine), own.picks), settings: {...above.settings, ...own.settings}, trakt, lists, reads, served: mine} as Want, tracks: !!lists, home: null as string | null, variants: [] as string[]};
   });
 
   // Home. The hub has one setup on AIOMetadata; a group or a person gets their own only while theirs differs from the one above.

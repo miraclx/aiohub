@@ -700,8 +700,14 @@ test('the card compares two places and copies across: paused points both ways, a
   assert.deepEqual(fake.positions.slice(kept).map(point => [HELD[point.id].Name, point.ticks]), [['Inception', 3000e7]]);
   await pause(500); assert.deepEqual({trakt: trakt.calls.length, watched: fake.watched.length, pauses: fake.pauses.length}, before, 'nothing echoed to a tracker');
   const me = (await adaSite('GET', '/api/state')).body.hub.people[0]; assert.equal(me.lists, false); assert.equal(me.moving, null);
-  assert.deepEqual(sql("SELECT kind FROM secrets WHERE owner = 'ada' AND kind = 'mdblist'"), []);
+  // Her key stays saved, unused for progress: her setup records, reports and hides nothing, and only reads her lists with it.
+  assert.equal(me.listsKept, true); assert.equal(me.listsName, 'adalists'); assert.deepEqual(sql("SELECT kind FROM secrets WHERE owner = 'ada' AND kind = 'mdblist'"), [{kind: 'mdblist'}]);
   assert.deepEqual(await syncAll(), {state: 'ok'});
+  const idle = playerOf('Ada')[1].config;
+  assert.deepEqual([idle.playbackReporting, idle.mdblistWatchTracking, idle.hideWatchedMdblist, idle.apiKeys.mdblist], [false, false, false, 'ada-mdblist-key']);
+  assert.ok(!JSON.stringify(idle).includes('$reads'));
+  // Her own lists are still read with it.
+  sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'lists'"); assert.ok((await adaSite('GET', '/api/people/ada/lists')).body.lists.some(item => item.id === 'mdblist.4242.movie'));
 
   // Here and Trakt (Trakt only now). Out: plays here that never reached Trakt, and a spot as a paused point. In: a film watched
   // elsewhere and a spot Trakt holds. A play that reached Trakt as it happened is not offered again.
@@ -721,13 +727,21 @@ test('the card compares two places and copies across: paused points both ways, a
   assert.deepEqual(fake.ticks.slice(ticks).map(tick => HELD[tick.id].Name), ['Pulp Fiction']); assert.equal(fake.positions.at(-1).ticks, 1200e7);
   assert.deepEqual((await compare('GET', 'here-trakt')).body.lines.length, 0, 'done once, nothing offered again');
 
-  // Choosing MDBList from her own page: the key is kept but nothing reports there until her plays have moved over.
-  assert.deepEqual((await adaSite('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key', moving: true})).body, {username: 'adalists'});
+  // Choosing MDBList from her own page takes up the key she saved before, with nothing to paste. Nothing reports there until her
+  // plays have moved over.
+  assert.deepEqual((await adaSite('POST', '/api/people/ada/mdblist', {reuse: true, moving: true})).body, {username: 'adalists'});
   assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Ada')[1].config.playbackReporting, false);
   const moving = (await adaSite('GET', '/api/state')).body.hub.people[0]; assert.equal(moving.lists, false); assert.equal(moving.moving, 'mdblist');
   const to = (await compare('POST', 'here-mdblist', {switch: true})).body; assert.equal(to.switched, true, JSON.stringify(to));
   assert.equal((await adaSite('GET', '/api/state')).body.hub.people[0].lists, true);
   assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Ada')[1].config.playbackReporting, true);
+  // The manager choosing Here for her keeps the key too; Remove key is what lets it go. A key pasted again takes effect at once.
+  assert.equal((await owner('DELETE', '/api/people/ada/mdblist')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.equal(playerOf('Ada')[1].config.mdblistWatchTracking, false); assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').listsKept, true);
+  assert.equal((await owner('DELETE', '/api/people/ada/mdblist/key')).status, 200); assert.deepEqual(sql("SELECT kind FROM secrets WHERE owner = 'ada' AND kind = 'mdblist'"), []);
+  assert.equal((await owner('POST', '/api/people/ada/mdblist', {reuse: true})).status, 400, 'nothing saved to take up');
+  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'});
+  assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Ada')[1].config.mdblistWatchTracking, true);
   lists.playback = null; trakt.playback = null; trakt.history = [];
   assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200);
 });

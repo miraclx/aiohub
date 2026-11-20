@@ -266,11 +266,13 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
   const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [leaving, setLeaving] = useState(false), [back, setBack] = useState(false);
   // On their own page a switch is a move (the card below), and it happens only once their plays are across.
   const self = mine && !!live, moving = person.moving ?? null;
+  // A key saved before and kept while progress is Here: picking MDBList again takes it up, with nothing to paste.
+  const kept = !!live && !!person.listsKept && !person.lists && !moving;
   const their = mine ? 'your' : 'their', choice = person.lists ? (back || moving === 'here' ? 'here' : 'mdblist') : keying || moving === 'mdblist' ? 'mdblist' : 'here';
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
   const pick = (value: 'here' | 'mdblist') => {
     if (self && value === 'mdblist' && person.lists) return setBack(false);
-    if (value === 'mdblist' && !person.lists) {if (moving !== 'mdblist') {if (live) setKeying(true); else if (mine) edit(target => {target.lists = true;}, 'MDBList connected');} return;}
+    if (value === 'mdblist' && !person.lists) {if (moving !== 'mdblist') {if (kept) save(true); else if (live) setKeying(true); else if (mine) edit(target => {target.lists = true;}, 'MDBList connected');} return;}
     if (value === 'here') {setKeying(false); if (person.lists) {if (self) setBack(true); else setLeaving(true);}}
   };
   const leave = () => {
@@ -278,7 +280,14 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
     if (!live) return edit(target => {target.lists = false; target.rows = target.rows?.filter(row => !row.source.startsWith('MDBList')) ?? null;}, 'Progress kept here');
     setBusy(true); void live.call('DELETE', at).then(() => {toast('Progress kept here'); live.apps(); return live.reload();}, fail(toast)).finally(() => setBusy(false));
   };
-  const save = () => {const move = self && !person.lists; setBusy(true); void live!.call<{username: string}>('POST', at, {key: own, ...(move ? {moving: true} : {})}).then(found => {toast(move ? `MDBList connected${found.username ? ` as ${found.username}` : ''}. Move your plays across to switch.` : found.username ? `MDBList connected as ${found.username}` : person.lists ? 'MDBList key replaced' : 'MDBList connected'); setKeying(false); setOwn(''); live!.apps(); return live!.reload();}, fail(toast)).finally(() => setBusy(false));};
+  const save = (reuse = false) => {
+    const move = self && !person.lists, as = (found: {username: string}) => found.username ? ` as ${found.username}` : '';
+    setBusy(true); void live!.call<{username: string}>('POST', at, {...(reuse ? {reuse: true} : {key: own}), ...(move ? {moving: true} : {})}).then(found => {
+      toast(reuse ? move ? 'Move your plays across to switch to MDBList.' : `Back on MDBList${as(found)}` : move ? `MDBList connected${as(found)}. Move your plays across to switch.` : found.username ? `MDBList connected as ${found.username}` : person.lists ? 'MDBList key replaced' : 'MDBList connected');
+      setKeying(false); setOwn(''); live!.apps(); return live!.reload();
+    }, fail(toast)).finally(() => setBusy(false));
+  };
+  const forget = () => {setBusy(true); void live!.call('DELETE', `${at}/key`).then(() => {toast('MDBList key removed'); live!.apps(); return live!.reload();}, fail(toast)).finally(() => setBusy(false));};
   const canChoose = !!live || mine || person.lists;
   return <>
     <h3 className="sub">Where progress is kept</h3>
@@ -290,6 +299,7 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
         {canChoose ? <Segments label="Where progress is kept" value={choice} onChange={pick} options={[{value: 'here', label: 'Here'}, {value: 'mdblist', label: 'MDBList'}]}/>
           : <span className="pill" title={`Send ${person.name} their link from the Settings tab`}>Waiting for {person.name}</span>}</div>
         {choice === 'here' && <p className="muted small">Hiding what’s been watched needs MDBList. With progress kept here, watched titles stay in rows.</p>}
+        {choice === 'here' && kept && <p className="muted small kept-key">{mine ? 'Your' : `${person.name}’s`} MDBList key{person.listsName ? ` (${person.listsName})` : ''} is saved but not in use. It still reads {their} lists. <button type="button" className="link small" disabled={busy} onClick={forget}>Remove key</button></p>}
         {live && keying && <form className="stack link-back" onSubmit={event => {event.preventDefault(); save();}}>
           <p className="muted small">{person.lists ? 'A key from another MDBList account moves where new progress goes; what is already in the old one stays there. ' : ''}Paste {their} own MDBList API key. It is at <a className="link" href="https://mdblist.com/preferences/" target="_blank" rel="noreferrer">mdblist.com, Preferences, API Access</a>. One key per person: a shared key would mix everyone’s watching together.</p>
           <div className="field-row"><input type="password" aria-label="MDBList API key" placeholder="API key" autoComplete="off" value={own} onChange={event => setOwn(event.target.value)}/><button className="primary" disabled={busy || !own.trim()}>Save</button>{person.lists && <button type="button" className="ghost" onClick={() => {setKeying(false); setOwn('');}}>Cancel</button>}</div>
@@ -298,7 +308,7 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
       {live && self && <Trackers page={page} person={person} back={back} onBack={setBack}/>}
       {live && !self && person.lists && <li><div><h3>What they watched here</h3><p>{person.name} can copy it to MDBList from their own page, under Accounts. It’s theirs, so it isn’t shown here.</p></div></li>}
     </ul>
-    {leaving && <Confirm title="Keep progress here?" body={`MDBList is disconnected from ${mine ? 'you' : person.name}. Whatever is already in that MDBList account stays there.`} action="Keep it here" onYes={leave} onClose={() => setLeaving(false)}/>}
+    {leaving && <Confirm title="Keep progress here?" body={`MDBList stops keeping ${mine ? 'your' : `${person.name}’s`} progress. The key stays saved, unused, for picking MDBList again later, and whatever is already in that account stays there.`} action="Keep it here" onYes={leave} onClose={() => setLeaving(false)}/>}
   </>;
 }
 type Cell = 'has' | 'add' | 'none';

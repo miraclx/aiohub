@@ -19,7 +19,7 @@ export interface Device {id: string; app: string; name: string; seen: string; pl
 // Plays one of Trakt and MDBList has and the other lacks, from the daily look (drift.ts on the Worker).
 export interface Miss {kind: 'movie' | 'show'; tmdb: number; name: string; season?: number; episode?: number; at: number; key: string}
 export interface Drift {checked: number; since: number; toMdblist: Miss[]; toTrakt: Miss[]}
-export interface Person {moving?: 'mdblist' | 'here' | null; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
+export interface Person {moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
 export interface Hub {

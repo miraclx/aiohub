@@ -189,13 +189,17 @@ await card.getByRole('heading', {name: 'Moving to MDBList'}).waitFor(); await ca
 await card.getByRole('button', {name: 'Move 3 plays and switch'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'MDBList'}).getAttribute('aria-checked'), 'true');
 assert.equal((await guest.evaluate(async () => (await (await fetch('/api/state')).json()).hub.people[0])).lists, false, 'not switched yet');
 await both(guest, '13e-card-moving-to-mdblist');
-// Staying on Here lets the key go again.
+// Staying on Here keeps the key, saved but not in use, with a quiet way to remove it. Her card pairs Here and Trakt.
 await card.getByRole('button', {name: 'Stay on Here'}).click(); await toast(guest).filter({hasText: 'Staying on Here'}).waitFor();
 assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true'); await guest.locator('li.trackers', {hasText: 'Here and Trakt'}).waitFor();
+await guest.getByText('Your MDBList key (adalists) is saved but not in use.').waitFor(); await guest.getByRole('button', {name: 'Remove key'}).waitFor();
+await both(guest, '13i-kept-key');
 // The manager connects it for her instead (from the manager's view it switches at once). Plays from before stay Here until she
 // finishes moving them: the card shows that first.
-await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByRole('radio', {name: 'MDBList'}).click(); await owner.getByLabel('MDBList API key').fill('ada-mdblist-key'); await owner.getByRole('button', {name: 'Save'}).click();
-await toast(owner).filter({hasText: 'MDBList connected as adalists'}).waitFor();
+// Her saved key is taken up again: nothing to paste.
+await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Ada’s MDBList key (adalists) is saved but not in use.').waitFor();
+await owner.getByRole('radio', {name: 'MDBList'}).click(); assert.equal(await owner.getByLabel('MDBList API key').count(), 0);
+await toast(owner).filter({hasText: 'Back on MDBList as adalists'}).waitFor();
 holds('here-mdblist', [play('w:show/66276:6:6', 'Slow Horses', 'Season 6 · Episode 6', 15, {here: 'has', lists: 'add'}), play('w:movie/603', 'The Matrix', 'Movie', 20, {here: 'has', lists: 'add'})]);
 await guest.reload(); await card.getByRole('heading', {name: 'Finish moving from Here'}).waitFor(); await card.getByRole('button', {name: 'Move 2 plays'}).waitFor(); assert.equal(await columns(), 'Here | MDBList');
 await guest.getByText('Hiding what’s been watched needs MDBList').waitFor({state: 'detached'});

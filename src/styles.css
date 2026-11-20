@@ -440,3 +440,5 @@ a.primary.button { display: inline-flex; align-items: center; min-height: 34px; 
 /* Picks in Add row: the name and its kind never run together on a narrow screen. */
 .picks.compact span:last-child { gap: 12px; }
 .picks.compact small { text-align: right; }
+/* A key kept while progress is Here: the way to remove it stays quiet. */
+.kept-key .link { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
