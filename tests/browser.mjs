@@ -4,24 +4,46 @@ import {chromium} from 'playwright-core';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 const BASE = process.env.BASE ?? 'http://localhost:8799', shots = process.argv[3];
 const browser = await chromium.launch({executablePath: process.argv[2]}), errors = [];
 const open = async () => {const context = await browser.newContext({viewport: {width: 390, height: 844}}), page = await context.newPage(); page.on('pageerror', error => errors.push(error.message)); return page;};
 const shot = async (page, name) => {if (shots) await page.screenshot({path: `${shots}/real-${name}.png`, fullPage: true});};
 const toast = page => page.locator('.toast span');
-// Stand-ins for the accounts a person connects: Trakt's code flow (typed on the second ask), AIOMetadata's description of its own
-// Trakt Token ID, and MDBList's check of a key. Nothing else answers, so the players never get set up here; that is not tested here.
-let polls = 0;
+// Stand-ins for the accounts a person connects: AIOMetadata's description of its own Trakt Token ID, and MDBList's check of a key.
+// Nothing else answers, so the players never get set up here; that is not tested here. Trakt itself is answered inside the browser
+// (traktIn, below), where the page calls it.
 http.createServer(async (request, answer) => {
   const send = (status, body) => {answer.writeHead(status, {'content-type': 'application/json'}); answer.end(JSON.stringify(body));};
   let raw = ''; for await (const chunk of request) raw += chunk;
-  if (request.url === '/trakt/oauth/device/code') {polls = 0; return send(200, {device_code: 'device', user_code: 'ABCD1234', verification_url: 'https://trakt.tv/activate', expires_in: 600, interval: 1});}
-  if (request.url === '/trakt/oauth/device/token') return ++polls < 2 ? send(400, {}) : send(200, {access_token: 'access', refresh_token: 'refresh', expires_in: 7 * 86400, created_at: Math.floor(Date.now() / 1000)});
-  if (request.url === '/trakt/users/settings') return send(200, {user: {username: 'adatrakt'}});
   if (request.url === '/trakt/oauth/revoke') return send(200, {});
   if (request.url.startsWith('/mdblist/user')) return send(request.url.includes('apikey=ada-mdblist-key') ? 200 : 403, {username: 'adalists'});
   request.socket.destroy(); // as if nothing were there
 }).listen(8798, '127.0.0.1').unref();
+
+// Trakt's two hosts, as the page meets them: its sign-in page (signs in at once and goes back with a code), its token exchange
+// (busy once, then the login, only for the proof that matches), and the API's account details. The real sign-in host refuses a
+// page's Trakt API headers, so this one does too.
+const signins = [];
+async function traktIn(context) {
+  let challenge = '', busy = 1;
+  const json = (route, status, body) => route.fulfill({status, headers: {'content-type': 'application/json', 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type,authorization,trakt-api-key,trakt-api-version'}, body: JSON.stringify(body)});
+  await context.route('https://auth.trakt.tv/**', async route => {
+    const request = route.request(), url = new URL(request.url());
+    if (request.method() === 'OPTIONS') return json(route, 204, {});
+    if (url.pathname === '/oauth/authorize') {
+      const ask = Object.fromEntries(url.searchParams); signins.push(ask); challenge = ask.code_challenge;
+      return route.fulfill({status: 302, headers: {location: `${ask.redirect_uri}?code=the-code&state=${ask.state}`}});
+    }
+    if (url.pathname !== '/oauth/token' || request.method() !== 'POST' || request.headers()['trakt-api-key']) return json(route, 403, {});
+    if (busy-- > 0) return json(route, 429, {});
+    const body = request.postDataJSON(), proof = Buffer.from(createHash('sha256').update(body.code_verifier ?? '').digest()).toString('base64url');
+    const right = body.code === 'the-code' && body.grant_type === 'authorization_code' && body.client_id === 'local-trakt-client' && body.redirect_uri === `${BASE}/api/trakt/callback` && proof === challenge && !body.client_secret;
+    return right ? json(route, 200, {access_token: 'access', refresh_token: 'refresh', expires_in: 7 * 86400, created_at: Math.floor(Date.now() / 1000), token_type: 'bearer', scope: 'public'}) : json(route, 400, {error: 'invalid_grant'});
+  });
+  await context.route('https://api.trakt.tv/**', route => route.request().method() === 'OPTIONS' ? json(route, 204, {})
+    : route.request().url().endsWith('/users/settings') && route.request().headers().authorization === 'Bearer access' && route.request().headers()['trakt-api-key'] === 'local-trakt-client' ? json(route, 200, {user: {username: 'adatrakt'}}) : json(route, 401, {}));
+}
 
 const owner = await open();
 await owner.goto(BASE + '/'); await owner.getByRole('heading', {name: 'Sign in'}).waitFor(); await shot(owner, '1-signin');
@@ -69,9 +91,13 @@ await guest.getByText('Hiding what’s been watched needs MDBList').waitFor(); a
 // Picking MDBList asks for her key; going back to Here before saving leaves nothing changed.
 await guest.getByRole('radio', {name: 'MDBList'}).click(); await guest.getByLabel('MDBList API key').waitFor();
 await guest.getByRole('radio', {name: 'Here'}).click(); assert.equal(await guest.getByLabel('MDBList API key').count(), 0);
-// Connecting Trakt: Trakt's code is shown, and the page carries on by itself once it has been typed.
-await trakt.getByRole('button', {name: 'Connect'}).click(); await trakt.getByText('ABCD1234').waitFor();
+// Connecting Trakt: off to Trakt's sign-in and back to this page, which finishes it with Trakt (busy at first) and says so.
+await traktIn(guest.context());
+await trakt.getByRole('button', {name: 'Connect'}).click(); await trakt.getByText('Trakt is busy, trying again…').waitFor();
 await toast(guest).filter({hasText: 'Trakt connected as adatrakt'}).waitFor(); await trakt.getByText('Connected as adatrakt.').waitFor();
+assert.equal(new URL(guest.url()).hash, '#/me/accounts', 'back where Connect was pressed, with nothing from Trakt left in the address');
+const [asked] = signins; assert.equal(asked.response_type, 'code'); assert.equal(asked.code_challenge_method, 'S256'); assert.equal(asked.prompt, undefined);
+assert.equal(asked.redirect_uri, `${BASE}/api/trakt/callback`); assert.equal(await guest.evaluate(() => sessionStorage.length), 0);
 // An older Trakt link made through AIOMetadata shows as a quiet note she can remove (made here directly in the local database).
 execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', "INSERT INTO secrets (hub, owner, kind, value) SELECT id, 'ada', 'trakt', 'x' FROM hubs"], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
 await guest.reload(); await trakt.getByText('Nothing uses it any more').waitFor(); await shot(guest, '13-accounts-connected');

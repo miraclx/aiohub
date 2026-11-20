@@ -14,6 +14,7 @@ export default {
     if (url.pathname.startsWith('/api/')) return api(request, env, url);
     return env.ASSETS.fetch(request);
   },
-  // Every quarter hour: plays whose player went quiet without saying stop are stopped on Trakt for it.
+  // Every five minutes: Trakt calls still waiting are tried again, and plays whose player went quiet without saying stop are
+  // stopped on Trakt for it.
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {ctx.waitUntil(sweep(env).catch(error => console.error('sweep', (error as Error).message)));},
 } satisfies ExportedHandler<Env>;

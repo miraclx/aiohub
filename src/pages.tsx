@@ -165,23 +165,63 @@ function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: 
     <Progress page={page} person={person} mine={mine}/>
   </section>;
 }
-/* Trakt: one connection, the hub's own (Trakt shows a short code to type on its own page, and this page waits until it has been).
-   It keeps Trakt in step with what is watched here, and the hub fills the Trakt rows on Home from it. */
+/* Trakt: one connection, the hub's own. It keeps Trakt in step with what is watched here, and the hub fills the Trakt rows on Home
+   from it. Connecting is Trakt's own sign-in (OAuth with PKCE), done by this page with Trakt directly: Trakt turns away the
+   shared addresses the hub calls from for a while at times, and a browser is not affected. The proof that finishes the sign-in
+   stays in this tab; the hub only gets the finished login, to keep and renew. */
+const TRAKT_AUTH = 'https://auth.trakt.tv', TRAKT_API = 'https://api.trakt.tv', SIGNING = 'trakt-signing';
+interface Signing {state: string; verifier: string; person: string; back: string}
+let returned: {code: string; state: string; error: string} | null = null, lost = '';
+const packed = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const signing = () => {try {return JSON.parse(sessionStorage.getItem(SIGNING) ?? 'null') as Signing | null;} catch {return null;}};
+/* Back from Trakt's sign-in (the hub sends it on to #/trakt?code=…&state=…): what Trakt sent is set aside for the Trakt card and
+   the address goes back to where Connect was pressed, before anything reads it. Run once, as the page loads. */
+export function backFromTrakt() {
+  if (!location.hash.startsWith('#/trakt?')) return;
+  const got = new URLSearchParams(location.hash.slice(8)), saved = signing();
+  if (saved) returned = {code: got.get('code') ?? '', state: got.get('state') ?? '', error: got.get('error') ?? ''};
+  else lost = 'Trakt’s sign-in came back to a different tab or browser. Connect again from here.';
+  history.replaceState(null, '', location.pathname + location.search + (saved?.back || '#/'));
+}
+/* Said once the hub has loaded, if Trakt's sign-in could not be finished here. */
+export const lostTrakt = () => {const note = lost; lost = ''; return note;};
+/* Asks Trakt again while it is busy (429, a fault on its side, no answer), as long as it says to wait, for about a minute. */
+async function patiently(ask: () => Promise<Response>, waiting: () => void): Promise<Response | null> {
+  for (let tries = 0; ; tries++) {
+    const answer = await ask().catch(() => null);
+    if (answer && answer.status !== 429 && answer.status < 500) return answer;
+    if (tries === 4) return null;
+    waiting();
+    await new Promise(resolve => setTimeout(resolve, Math.min(30, Number(answer?.headers.get('retry-after')) || 2 ** (tries + 1)) * 1000));
+  }
+}
 function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {hub, update, toast, live} = page, at = `/api/people/${person.id}/scrobble`, link = person.history;
-  const [shown, setShown] = useState<{code: string; url: string; interval: number} | null>(null), [busy, setBusy] = useState(false);
-  const their = mine ? 'your' : 'their';
+  const [phase, setPhase] = useState<'' | 'going' | 'connecting' | 'busy'>(''), busy = !!phase;
+  const their = mine ? 'your' : 'their', client = hub.traktClient ?? '';
+  // The sign-in Trakt just sent back here, if it was for this person: the code is exchanged for the login, once.
   useEffect(() => {
-    if (!shown || !live) return;
-    let gone = false;
-    const timer = setInterval(() => void live.call<{state: string; username?: string}>('POST', `${at}/check`, {}).then(got => {
-      if (gone || got.state === 'waiting') return;
-      setShown(null);
-      if (got.state === 'connected') void live.sync().then(() => live.reload()).then(() => toast(got.username ? `Trakt connected as ${got.username}` : 'Trakt connected'));
-      else toast('That code ran out. Connect again for a new one.');
-    }, () => {}), shown.interval * 1000);
-    return () => {gone = true; clearInterval(timer);};
-  }, [shown]);
+    const back = returned, saved = signing();
+    if (!live || !back || saved?.person !== person.id) return;
+    returned = null; sessionStorage.removeItem(SIGNING);
+    if (back.error || !back.code) return void toast(back.error === 'access_denied' ? 'Trakt wasn’t connected.' : 'Trakt didn’t finish signing in. Connect again.');
+    if (back.state !== saved.state) return void toast('That Trakt sign-in wasn’t started here. Connect again.');
+    void finish(back.code, saved.verifier);
+  }, []);
+  const finish = async (code: string, verifier: string) => {
+    setPhase('connecting');
+    const redirect = `${location.origin}/api/trakt/callback`, waiting = () => setPhase('busy');
+    // Trakt's sign-in host allows only plain headers from a page; the API host wants its own.
+    const token = await patiently(() => fetch(`${TRAKT_AUTH}/oauth/token`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({code, client_id: client, redirect_uri: redirect, grant_type: 'authorization_code', code_verifier: verifier})}), waiting);
+    const got = token?.ok ? await token.json().catch(() => null) as {access_token?: string; refresh_token?: string; expires_in?: number; created_at?: number} | null : null;
+    if (!got?.access_token || !got.refresh_token) {setPhase(''); return toast(token ? 'Trakt didn’t accept that sign-in. Connect again.' : 'Trakt isn’t answering right now. Connect again in a few minutes.');}
+    const me = await patiently(() => fetch(`${TRAKT_API}/users/settings`, {headers: {'content-type': 'application/json', 'trakt-api-version': '2', 'trakt-api-key': client, authorization: `Bearer ${got.access_token}`}}), waiting);
+    const username = String((me?.ok ? await me.json().catch(() => null) as {user?: {username?: string}} | null : null)?.user?.username ?? '');
+    setPhase('connecting');
+    await live!.call('POST', `${at}/link`, {access: got.access_token, refresh: got.refresh_token, lasts: got.expires_in, created: got.created_at, username, redirect})
+      .then(() => live!.sync()).then(() => live!.reload()).then(() => toast(username ? `Trakt connected as ${username}` : 'Trakt connected'), fail(toast));
+    setPhase('');
+  };
   const about = `Trakt follows along as things are watched here, and ${their} Trakt watchlist, picks and next episodes show up on Home.`;
   if (!live) {
     const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
@@ -191,18 +231,23 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
         : <span className="pill" title={`Send ${person.name} their link from the Settings tab`}>Waiting for {person.name}</span>}</li>;
   }
   const on = !!link && !link.again;
-  const work = (call: Promise<unknown>, note: string) => {setBusy(true); void call.then(() => live.sync()).then(() => live.reload()).then(() => toast(note), fail(toast)).finally(() => setBusy(false));};
-  const connect = () => {setBusy(true); void live.call<{code: string; url: string; interval: number}>('POST', at, {}).then(setShown, fail(toast)).finally(() => setBusy(false));};
+  const work = (call: Promise<unknown>, note: string) => {setPhase('going'); void call.then(() => live.sync()).then(() => live.reload()).then(() => toast(note), fail(toast)).finally(() => setPhase(''));};
+  const connect = async () => {
+    setPhase('going');
+    const verifier = packed(crypto.getRandomValues(new Uint8Array(48))), state = packed(crypto.getRandomValues(new Uint8Array(16)));
+    const challenge = packed(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))));
+    sessionStorage.setItem(SIGNING, JSON.stringify({state, verifier, person: person.id, back: location.hash} satisfies Signing));
+    // Connecting for someone else, this browser may be signed in to Trakt as someone else: Trakt then asks who is signing in.
+    const ask = new URLSearchParams({response_type: 'code', client_id: client, redirect_uri: `${location.origin}/api/trakt/callback`, state, code_challenge: challenge, code_challenge_method: 'S256', ...(mine ? {} : {prompt: 'login'})});
+    location.assign(`${TRAKT_AUTH}/oauth/authorize?${ask}`);
+  };
   return <li className="stacked"><div className="account-row"><div><h3>Trakt</h3>
     <p>{on ? `Connected${link!.username ? ` as ${link!.username}` : ''}. ${about}` : link?.again ? `Trakt asked to be connected again. ${about}` : about}</p></div>
-    {!hub.scrobble ? <span className="pill">Not on this site</span>
+    {!hub.scrobble || !client ? <span className="pill">Not on this site</span>
       : on ? <button type="button" className="ghost small" disabled={busy} onClick={() => work(live.call('DELETE', at), 'Trakt disconnected')}>Disconnect</button>
-      : shown ? <button type="button" className="ghost small" onClick={() => setShown(null)}>Not now</button>
-      : <button type="button" className="primary small" disabled={busy} onClick={connect}>Connect</button>}</div>
-    {shown && <div className="stack link-back">
-      <p className="muted small">On <a className="link" href={shown.url} target="_blank" rel="noreferrer">{shown.url.replace(/^https?:\/\//, '')}</a>, sign in to Trakt and type this code. This page carries on by itself.</p>
-      <div className="code-show"><code>{shown.code}</code><button type="button" className="ghost small" onClick={() => {void navigator.clipboard?.writeText(shown.code).catch(() => {}); toast('Copied');}}>Copy</button></div>
-    </div>}
+      : <button type="button" className="primary small" disabled={busy} onClick={() => void connect()}>Connect</button>}</div>
+    {phase === 'connecting' || phase === 'busy' ? <p className="muted small" role="status">{phase === 'busy' ? 'Trakt is busy, trying again…' : 'Connecting to Trakt…'}</p>
+      : !on && !mine && hub.scrobble && client ? <p className="muted small">Trakt asks who’s signing in, so {person.name} can use their own Trakt account.</p> : null}
     {person.aiomTrakt && <div className="quiet-note"><p className="muted small">{on ? 'An older Trakt link, made through AIOMetadata, is still there. Nothing uses it any more.' : 'Home’s Trakt rows come from an older link made through AIOMetadata for now. Connecting here takes over from it.'}</p>
       <button type="button" className="link small" disabled={busy} onClick={() => work(live.call('DELETE', `/api/people/${person.id}/trakt`), 'Older Trakt link removed')}>Disconnect it</button></div>}
   </li>;

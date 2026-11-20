@@ -2,9 +2,11 @@
    (trakt.ts), as a small Stremio addon that only lists titles. Their AIOMetadata setup reads it as imported catalogs and fills in
    the rest itself (details, art, ratings, the content limit), so AIOMetadata needs no Trakt connection of its own.
    The address carries a random token per person. The token is kept in the vault; only its hash is kept here to find whose it is.
-   Answers are remembered for a few minutes per running copy, and AIOMetadata keeps them as long again, so Trakt is asked rarely. */
+   Answers are kept in the database for a few minutes, and AIOMetadata keeps them as long again, so Trakt is asked rarely. While
+   Trakt is not answering (it turns away the shared addresses Workers call from for a while at times), a row shows the last list
+   Trakt gave rather than nothing. */
 import type {Env} from './util';
-import {newToken, putSecret, sha} from './util';
+import {newToken, now, putSecret, sha} from './util';
 import {LINK, read} from './trakt';
 
 export const ROWS = 'rows';
@@ -63,14 +65,16 @@ const ITEMS: Record<Kind, (got: Answer) => Item[]> = {
   next: got => once(got.map(entry => itemOf(entry.show, 'series'))),
   aired: got => once(got.map(entry => itemOf(entry.show, 'series'))),
 };
-const kept = new Map<string, {at: number; items: Item[]}>();
-async function itemsOf(env: Env, hub: string, person: string, row: Served): Promise<Item[] | null> {
-  const key = `${hub}/${person}/${row.kind}`, known = kept.get(key);
-  if (known && Date.now() - known.at < row.ttl * 1000) return known.items;
+const RETRY = 60;
+async function itemsOf(env: Env, hub: string, person: string, row: Served): Promise<Item[]> {
+  const stored = await env.DB.prepare('SELECT at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, person, row.kind).first<{at: number; items: string}>();
+  const last = stored ? JSON.parse(stored.items) as Item[] : [];
+  if (stored && now() - stored.at < row.ttl) return last;
   const got = await read<Answer>(env, hub, person, ASK[row.kind]);
-  if (!Array.isArray(got)) return null;
-  const items = ITEMS[row.kind](got);
-  if (kept.size > 2000) kept.clear(); kept.set(key, {at: Date.now(), items});
+  const items = Array.isArray(got) ? ITEMS[row.kind](got) : last;
+  // Trakt did not answer: the last list it gave, however old, and Trakt is asked again in a minute rather than on every page.
+  await env.DB.prepare('INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, ?, ?) ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at, items = excluded.items')
+    .bind(hub, person, row.kind, Array.isArray(got) ? now() : now() - row.ttl + RETRY, JSON.stringify(items)).run();
   return items;
 }
 
@@ -89,8 +93,7 @@ export async function rows(env: Env, path: string[]): Promise<Response> {
   const row = what === 'catalog' ? Object.values(SERVED).find(item => item.type === type && item.id === catalog) : undefined;
   if (!row) return answer(404, {err: 'Not found'});
   const skip = Math.max(0, Number(new URLSearchParams(extra ? name : '').get('skip') ?? 0) || 0);
-  // Trakt disconnected from the hub: nothing, even if it was read a moment ago.
+  // Trakt disconnected from the hub: nothing, even if it was read a moment ago. Never an error, which AIOMetadata would keep.
   const items = owner.linked ? await itemsOf(env, owner.hub, owner.person, row) : [];
-  // Trakt did not answer, or this connection is gone: an empty row, said quickly, rather than an error AIOMetadata would keep.
-  return answer(200, {metas: (items ?? []).slice(skip, skip + PAGE)});
+  return answer(200, {metas: items.slice(skip, skip + PAGE)});
 }

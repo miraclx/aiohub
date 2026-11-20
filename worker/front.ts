@@ -8,7 +8,7 @@ import {slug} from '../src/data';
 import type {Env} from './util';
 import {blocked, failed, getSecret, guesses, newId, newToken, now, putSecret, same, sha, unseal} from './util';
 import type {Target} from './trakt';
-import {LINK, history, progressOf, send, taken} from './trakt';
+import {LINK, deliver, history, progressOf, soon} from './trakt';
 
 const MOUNT = '/jellyfin', SEEN_EVERY = 600, REMEMBER = 20_000, MOST_DEVICES = 30;
 // The headers are named one by one: in a browser, `*` does not cover Authorization.
@@ -154,7 +154,8 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
 }
 const asPerson = (seat: Seat) => `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`;
 /* Trakt history, for a person who connected it (see trakt.ts). Starting, pausing, carrying on, stopping and ticking as watched are
-   passed on as they happen, in the background; the app's own request never waits. Progress in between is not sent. */
+   passed on as they happen, in the background; the app's own request never waits. Progress in between is not sent. A call
+   Trakt does not take waits in the outbox; what Trakt was told here counts it as told, so what follows carries on from it. */
 const told = new Map<string, string>();
 async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', item: string, position: number, paused: boolean, jumped = false) {
   const key = `${hub}/${seat.person}/${item}`, want = kind === 'start' ? 'playing' : kind === 'progress' ? (paused ? 'paused' : 'playing') : 'stopped';
@@ -167,16 +168,18 @@ async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'prog
   const ids = row.ids ?? await idsOf(env, hub, seat, item);
   if (!ids) return;
   const target = JSON.parse(ids) as Target, progress = row.duration ? progressOf(position, row.duration) : 0;
-  let status: number | null = 200;
-  // Many apps tick a title as watched right after a stop that Trakt already counted: that would be a second play.
+  // Many apps tick a title as watched right after a stop that Trakt already counted (or has waiting): that would be a second play.
   if (kind === 'mark' && row.scrobbled === 'watched' && now() - (row.scrobbled_at ?? 0) < 12 * 3600) return;
-  if (kind === 'mark') status = await send(env, hub, seat.person, '/sync/history', history(target, new Date().toISOString()));
   // Without a length there is no telling how far in; and under 1% there is nothing for Trakt to keep.
-  else if (!row.duration) return;
-  else if (kind !== 'stop' || progress >= 1) status = await send(env, hub, seat.person, `/scrobble/${want === 'playing' ? 'start' : want === 'paused' ? 'pause' : 'stop'}`, {...target, progress});
+  if (kind !== 'mark' && !row.duration) return;
+  const call = kind === 'mark' ? {kind, path: '/sync/history', body: history(target, new Date().toISOString())}
+    : kind !== 'stop' || progress >= 1 ? {kind: want === 'playing' ? 'start' as const : want === 'paused' ? 'pause' as const : 'stop' as const, path: `/scrobble/${want === 'playing' ? 'start' : want === 'paused' ? 'pause' : 'stop'}`, body: {...target, progress}} : null;
+  const got = call ? await deliver(env, hub, seat.person, item, call) : 'sent';
+  if (got === 'off') return;
   // A stop at 80% or more is a watch on Trakt's side, as is a tick: remembered as such, so a tick straight after adds nothing.
   const kept = kind === 'mark' || (kind === 'stop' && progress >= 80) ? 'watched' : want;
-  if (taken(status)) await env.DB.prepare('UPDATE plays SET scrobbled = ?, scrobbled_at = ? WHERE hub = ? AND person = ? AND item = ?').bind(kept, now(), hub, seat.person, item).run();
+  await env.DB.prepare('UPDATE plays SET scrobbled = ?, scrobbled_at = ? WHERE hub = ? AND person = ? AND item = ?').bind(kept, now(), hub, seat.person, item).run();
+  if (got === 'kept') await soon(env, hub, seat.person);
 }
 /* What Trakt knows a title by, asked of the person's own server once and kept with the play ('' when there is nothing usable).
    A film by its own ids; an episode by its show's, with its season and number (AIOMetadata episodes carry no ids of their own). */

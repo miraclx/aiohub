@@ -29,8 +29,9 @@ const HELD = {
   [LEFT]: {Id: LEFT, Type: 'Movie', Name: 'Left Running', ProviderIds: {Tmdb: '550', Imdb: 'tt0137523'}},
   [EP3]: {Id: EP3, Type: 'Episode', Name: 'Three', SeriesId: SHOW, SeriesName: 'Meta Show', ParentIndexNumber: 1, IndexNumber: 3, ProviderIds: {}},
 };
-// Trakt: the device code flow, single-use refresh tokens, and every call as Ada logged. Each title above runs 6000 seconds.
-const trakt = {calls: [], reads: [], polls: 0, issued: 0, valid: new Set(), refresh: '', expiresIn: 7 * 86400, refreshed: [], revoked: [], stop: 201};
+// Trakt: single-use refresh tokens, and every call as Ada logged. Each title above runs 6000 seconds. `refuse` turns that many
+// writes away with a 429, as Trakt's Cloudflare does to the shared addresses Workers call from; `refuseReads` does it to reads.
+const trakt = {calls: [], reads: [], issued: 0, valid: new Set(), refresh: '', expiresIn: 7 * 86400, refreshed: [], revoked: [], stop: 201, refuse: 0, refused: [], refuseReads: false};
 // What Ada's Trakt holds, for the rows the hub serves: a watchlist with a film, a show (twice: once by an episode) and a film known
 // only by its TMDB id; 45 recommended films; one show with an episode to watch.
 const film = n => ({title: `Film ${n}`, year: 2000, ids: {trakt: n, imdb: `tt${String(9000000 + n)}`, tmdb: 9000 + n}});
@@ -43,18 +44,21 @@ const READS = {
 };
 const issue = () => {const n = ++trakt.issued; trakt.valid.add(`trakt-access-${n}`); trakt.refresh = `trakt-refresh-${n}`; return {access_token: `trakt-access-${n}`, refresh_token: trakt.refresh, expires_in: trakt.expiresIn, created_at: Math.floor(Date.now() / 1000), token_type: 'bearer', scope: 'public'};};
 function traktAnswer(request, path, body, send) {
+  // Renewing and revoking, on Trakt's sign-in host: plain JSON. Renewing takes a moment, so reports that arrive together find it under way.
+  if (path.startsWith('/oauth/')) {
+    if (request.headers['content-type'] !== 'application/json' || !request.headers['user-agent'] || body.client_id !== 'local-trakt-client' || body.client_secret !== undefined) return send(403, {});
+    if (path === '/oauth/token') {trakt.refreshed.push(body); if (body.refresh_token !== trakt.refresh) return send(400, {error: 'invalid_grant'}); trakt.expiresIn = 7 * 86400; return new Promise(done => setTimeout(done, 300)).then(() => send(200, issue()));}
+    if (path === '/oauth/revoke') {trakt.revoked.push(body); trakt.valid.delete(body.token); return send(200, {});}
+    return send(404, {});
+  }
   if (request.headers['trakt-api-key'] !== 'local-trakt-client' || request.headers['trakt-api-version'] !== '2' || !request.headers['user-agent'] || request.headers['content-type'] !== 'application/json') return send(403, {});
-  if (path === '/oauth/device/code') {trakt.polls = 0; return send(200, {device_code: 'trakt-device-code', user_code: 'ABCD1234', verification_url: 'https://trakt.tv/activate', expires_in: 600, interval: 1});}
-  if (path === '/oauth/device/token') return body.code !== 'trakt-device-code' || body.client_secret !== undefined ? send(404, {}) : ++trakt.polls < 2 ? send(400, {}) : send(200, issue());
-  // Renewing takes a moment, so reports that arrive together find it under way.
-  if (path === '/oauth/token') {trakt.refreshed.push(body); if (body.refresh_token !== trakt.refresh) return send(400, {error: 'invalid_grant'}); trakt.expiresIn = 7 * 86400; return new Promise(done => setTimeout(done, 300)).then(() => send(200, issue()));}
-  if (path === '/oauth/revoke') {trakt.revoked.push(body); trakt.valid.delete(body.token); return send(200, {});}
   const auth = (request.headers.authorization ?? '').replace('Bearer ', '');
   if (!trakt.valid.has(auth)) return send(401, {});
   if (path === '/users/settings') return send(200, {user: {username: 'adatrakt'}});
   // Reads for the rows the hub serves. Kept apart from the calls that write, which the tests below count exactly.
   const [where, query] = path.split('?');
-  if (request.method === 'GET' && READS[where]) {trakt.reads.push({where, query, auth}); return send(200, READS[where]);}
+  if (request.method === 'GET' && READS[where]) {trakt.reads.push({where, query, auth}); return trakt.refuseReads ? send(429, {}) : send(200, READS[where]);}
+  if (trakt.refuse > 0) {trakt.refuse--; trakt.refused.push({path, body}); return send(429, {});}
   trakt.calls.push({path, body, auth});
   return send(path === '/scrobble/stop' ? trakt.stop : 201, {});
 }
@@ -231,16 +235,14 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const say = (path, body) => raw(path, token, {method: 'POST', body: JSON.stringify(body)});
 // Reports are passed on in the background, after the app has its answer: wait for Trakt to have heard, then a moment more.
 const heard = async count => {for (let i = 0; i < 50 && trakt.calls.length < count; i++) await pause(100); await pause(300); return trakt.calls.map(({path, body}) => ({path, body}));};
+// What the page does once Trakt's sign-in has come back to it: the login it got from Trakt is handed to the hub.
 const connect = async () => {
-  const started = await owner('POST', '/api/people/ada/scrobble', {});
-  assert.equal(started.status, 200, JSON.stringify(started.body));
-  assert.deepEqual(started.body, {code: 'ABCD1234', url: 'https://trakt.tv/activate', interval: 1, expires: 600});
-  // Not typed yet; asked again at once, Trakt is not asked again.
-  assert.deepEqual((await owner('POST', '/api/people/ada/scrobble/check', {})).body, {state: 'waiting'});
-  assert.deepEqual((await owner('POST', '/api/people/ada/scrobble/check', {})).body, {state: 'waiting'}); assert.equal(trakt.polls, 1);
-  await pause(1100);
-  assert.deepEqual((await owner('POST', '/api/people/ada/scrobble/check', {})).body, {state: 'connected', username: 'adatrakt'}); assert.equal(trakt.polls, 2);
+  const got = issue(), linked = await owner('POST', '/api/people/ada/scrobble/link', {access: got.access_token, refresh: got.refresh_token, lasts: got.expires_in, created: got.created_at, username: 'adatrakt', redirect: `${BASE}/api/trakt/callback`});
+  assert.equal(linked.status, 200, JSON.stringify(linked.body)); assert.deepEqual(linked.body, {state: 'connected'});
 };
+const sql = command => JSON.parse(execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--json', '--command', command], {cwd: new URL('..', import.meta.url), encoding: 'utf8', env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: ['ignore', 'pipe', 'ignore']}))[0].results;
+const waiting = () => sql('SELECT kind, path FROM trakt_outbox ORDER BY id');
+const cron = () => fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/5 * * * *')}`).then(answer => answer.text());
 const rowsOf = config => config.catalogs.filter(item => /^(trakt|custom)\./.test(item.id)).map(item => [item.id, item.type, item.name, item.enabled]);
 test('Trakt connected on AIOMetadata, as before: its own Trakt rows and Token ID in her setup', async () => {
   assert.deepEqual((await owner('POST', '/api/people/ada/trakt', {tokenId: 'aiom-trakt-token-id-1'})).body, {username: 'adatrakt'});
@@ -251,16 +253,21 @@ test('Trakt connected on AIOMetadata, as before: its own Trakt rows and Token ID
   const shown = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
   assert.equal(shown.trakt, true); assert.equal(shown.aiomTrakt, true);
 });
-test('Trakt history connects with the code Trakt shows, and the device code stays with the hub', async () => {
+test('back from Trakt’s sign-in the browser goes straight on to the page; the login the page then hands over is kept, never shown', async () => {
+  const back = await fetch(`${BASE}/api/trakt/callback?code=a1b2c3&state=s-t_9`, {redirect: 'manual'});
+  assert.equal(back.status, 302); assert.equal(back.headers.get('location'), '/#/trakt?code=a1b2c3&state=s-t_9');
   const before = (await owner('GET', '/api/state')).body.hub;
-  assert.equal(before.scrobble, true); assert.equal(before.people.find(person => person.id === 'ada').history, null);
+  assert.equal(before.scrobble, true); assert.equal(before.traktClient, 'local-trakt-client'); assert.equal(before.people.find(person => person.id === 'ada').history, null);
+  // No login, a sign-in that came back somewhere else, or nobody signed in here: nothing is kept.
+  assert.equal((await owner('POST', '/api/people/ada/scrobble/link', {access: '', refresh: 'r'})).status, 400);
+  assert.equal((await owner('POST', '/api/people/ada/scrobble/link', {access: 'a', refresh: 'r', redirect: 'https://elsewhere.example/steal'})).status, 400);
+  assert.equal((await client()('POST', '/api/people/ada/scrobble/link', {access: 'a', refresh: 'r'})).status, 401);
+  // The device code way is gone.
+  assert.equal((await owner('POST', '/api/people/ada/scrobble', {})).status, 404);
   await connect();
   const after = await owner('GET', '/api/state'), text = JSON.stringify(after.body);
   assert.deepEqual(after.body.hub.people.find(person => person.id === 'ada').history, {username: 'adatrakt', again: false});
-  assert.ok(!text.includes('trakt-device-code') && !text.includes('trakt-access') && !text.includes('trakt-refresh'));
-  // Asking once it is done says so, and never hands out the device code either.
-  const late = await owner('POST', '/api/people/ada/scrobble/check', {});
-  assert.deepEqual(late.body, {state: 'connected', username: 'adatrakt'});
+  assert.ok(!text.includes('trakt-access') && !text.includes('trakt-refresh'));
 });
 let served;
 test('with Trakt connected to the hub, her setup reads her Trakt rows from the hub, and AIOMetadata’s own Trakt is no longer used', async () => {
@@ -328,18 +335,43 @@ test('ticking a title as watched adds it to Trakt history', async () => {
   assert.equal(call.path, '/sync/history'); assert.deepEqual(call.body.movies.map(({ids}) => ids), [{tmdb: 603, imdb: 'tt0133093'}]);
   assert.ok(Math.abs(Date.parse(call.body.movies[0].watched_at) - Date.now()) < 60_000); assert.equal(trakt.calls.length, 1);
 });
-test('a play left running by an app that went quiet is stopped on Trakt by the quarter-hourly sweep', async () => {
+test('a play left running by an app that went quiet is stopped on Trakt by the five-minute cron', async () => {
   // One film left at 85%, one at the very start; then half an hour without a report, as if the app was closed.
   trakt.calls = [];
   await say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 5100e7}); await say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}); await heard(2);
-  execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', "UPDATE plays SET updated = updated - 3600 WHERE scrobbled IN ('playing', 'paused')"], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
+  sql("UPDATE plays SET updated = updated - 3600 WHERE scrobbled IN ('playing', 'paused')");
   trakt.calls = [];
-  const sweep = () => fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/15 * * * *')}`).then(answer => answer.text());
-  await sweep();
+  await cron();
   // Only the film left at 85% is sent (Trakt records it as watched). The one left at the very start has nothing to keep, and the
   // episode whose stop Trakt already had (409) was done then, so neither is sent.
   assert.deepEqual(await heard(1), [{path: '/scrobble/stop', body: {movie: {ids: {tmdb: 550, imdb: 'tt0137523'}}, progress: 85}}]);
-  await sweep(); await pause(500); assert.equal(trakt.calls.length, 1);
+  await cron(); await pause(500); assert.equal(trakt.calls.length, 1);
+});
+test('a call Trakt turns away (429) is kept and goes through a few seconds later, after the app has its answer', async () => {
+  trakt.calls = []; trakt.refused = []; trakt.refuse = 1;
+  assert.equal((await say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0})).status, 204);
+  for (let i = 0; i < 100 && !trakt.calls.length; i++) await pause(100);
+  assert.deepEqual(trakt.refused.map(call => call.path), ['/scrobble/start']); assert.deepEqual(trakt.calls.map(call => call.path), ['/scrobble/start']);
+  await pause(300); assert.deepEqual(waiting(), []);
+});
+test('while Trakt keeps refusing, calls wait in order: a stop ends a waiting pause, a tick stays, a start gone stale is let go', async () => {
+  trakt.calls = []; trakt.refused = []; trakt.refuse = 1000;
+  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: true}); await pause(400);
+  await say('/Sessions/Playing/Stopped', {ItemId: FILM, PositionTicks: 5400e7}); await pause(400);
+  await say(`/Users/${jf}/PlayedItems/${EP}`, {}); await pause(400);
+  await say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 0});
+  await pause(12_000); // the tries soon after, in the background, are over
+  assert.deepEqual(waiting().map(row => row.kind), ['stop', 'mark', 'start']); assert.equal(trakt.calls.length, 0);
+  assert.ok(trakt.refused.every(call => ['/scrobble/pause', '/scrobble/stop'].includes(call.path)), 'only the first in line is tried');
+  // Trakt takes calls again an hour on. The finished film goes to history at the time it was stopped; the tick keeps its own
+  // time; the start from an hour ago would be wrong by now, so it is let go.
+  sql("UPDATE trakt_outbox SET next = 0, made = made - 3600"); trakt.refuse = 0;
+  const ticked = JSON.parse(sql("SELECT body FROM trakt_outbox WHERE kind = 'mark'")[0].body);
+  await cron(); const sent = await heard(2);
+  assert.deepEqual(sent.map(call => call.path), ['/sync/history', '/sync/history']);
+  assert.deepEqual(sent[0].body.movies.map(({ids}) => ids), [{tmdb: 27205, imdb: 'tt1375666'}]); assert.ok(Math.abs(Date.parse(sent[0].body.movies[0].watched_at) - (Date.now() - 3600_000)) < 120_000);
+  assert.deepEqual(sent[1].body, ticked); assert.deepEqual(sent[1].body.shows[0].seasons, [{number: 1, episodes: [{number: 2, watched_at: ticked.shows[0].seasons[0].episodes[0].watched_at}]}]);
+  assert.deepEqual(waiting(), []); await cron(); await pause(500); assert.equal(trakt.calls.length, 2);
 });
 test('a connection near its end is renewed once, and the new pair is kept', async () => {
   assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200);
@@ -349,7 +381,7 @@ test('a connection near its end is renewed once, and the new pair is kept', asyn
   trakt.expiresIn = 3600; await connect(); trakt.calls = [];
   await Promise.all([say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}), say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 0})]);
   await heard(2);
-  assert.deepEqual(trakt.refreshed, [{refresh_token: 'trakt-refresh-2', client_id: 'local-trakt-client', redirect_uri: 'urn:ietf:wg:oauth:2.0:oob', grant_type: 'refresh_token'}]);
+  assert.deepEqual(trakt.refreshed, [{refresh_token: 'trakt-refresh-2', client_id: 'local-trakt-client', redirect_uri: `${BASE}/api/trakt/callback`, grant_type: 'refresh_token'}]);
   assert.deepEqual(trakt.calls.map(call => call.path).sort(), ['/scrobble/start', '/scrobble/start']);
   // The renewed pair is what is used from then on, and it is not renewed again.
   trakt.calls = []; await say(`/Users/${jf}/PlayedItems/${LEFT}`, {}); await heard(1);
@@ -381,6 +413,11 @@ test('the rows address answers with IMDb ids from her Trakt, page by page, renew
   assert.deepEqual(aired.map(item => item.id), ['tt0903747']); assert.match(trakt.reads.at(-1).query, /sort_by=recently-aired/);
   // Asked again within minutes, Trakt is not asked again.
   const reads = trakt.reads.length; await get(served[0].sourceUrl); assert.equal(trakt.reads.length, reads);
+  // Later, while Trakt turns the hub away: the last list it gave, and Trakt is not asked again on every page.
+  sql('UPDATE rows_cache SET at = at - 3600'); trakt.refuseReads = true;
+  assert.deepEqual((await get(served[0].sourceUrl)).body.metas.map(item => item.id), ['tt0133093', 'tt0944947', 'tmdb:550']); assert.equal(trakt.reads.length, reads + 1);
+  assert.equal((await get(served[0].sourceUrl)).body.metas.length, 3); assert.equal(trakt.reads.length, reads + 1);
+  trakt.refuseReads = false;
   // Without the token, or with a made-up one, there is nothing here.
   assert.equal((await get(`${BASE}/api/rows/rnotarealtokenatallnotreal/manifest.json`)).status, 404);
   assert.equal((await get(`${address}/catalog/movie/nothing.json`)).status, 404);

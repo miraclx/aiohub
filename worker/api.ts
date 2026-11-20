@@ -6,7 +6,7 @@ import type {Addon, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './native';
 import {forgetHub, forgetSeats} from './front';
-import {LINK, begin, check, disconnect, links, keepLink} from './trakt';
+import {LINK, disconnect, forgetTrakt, keepLink, links} from './trakt';
 import {rows} from './rows';
 import type {Env} from './util';
 import {blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp} from './util';
@@ -218,7 +218,7 @@ const forget = (env: Env, hub: string, id: string) => [
   env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare('DELETE FROM sessions WHERE hub = ? AND person = ?').bind(hub, id),
 ];
 async function removePerson(env: Env, who: Who, id: string) {
-  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_keys WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
+  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_keys WHERE hub = ? AND person = ?').bind(who.hub.id, id), ...forgetTrakt(env, who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
   return {};
 }
 /* A person's stored choices, read fresh, and written back as a new version. */
@@ -281,22 +281,16 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     if (request.method === 'DELETE') {await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'mdblist'").bind(hub, id), save(false)]); return {};}
   }
   if (action === 'scrobble' && env.TRAKT_CLIENT_ID) {
-    // Trakt history, connected by the person or by the manager with them: Trakt shows a code to type on its own page, and the page
-    // asks here until it has been. The device code Trakt hands out is kept here, never sent to the page.
-    if (request.method === 'POST' && !rest) return await begin(env, hub, id) ?? bad(502, 'Trakt did not answer. Try again in a moment.');
-    // Connecting from the page itself: Trakt rate limits the shared addresses Workers call it from, so the page asks Trakt for the
-    // code and waits for it, then hands the login over to be kept and renewed here. It is the person's own login either way.
+    // Trakt, connected by the person or by the manager with them, on Trakt's own sign-in page. The page does the sign-in with
+    // Trakt itself (Trakt turns away the shared addresses Workers call from for a while at times) and hands the login over to be
+    // kept and renewed here. Once connected, the hub also serves their Trakt rows on Home (rows.ts), added to a Home of their own.
     if (request.method === 'POST' && rest === 'link') {
-      const access = text(body.access, 200, 'Login').trim(), refresh = text(body.refresh, 200, 'Login').trim();
-      if (!access || !refresh) bad(400, 'Trakt did not finish connecting. Try again.');
-      await keepLink(env, hub, id, {access, refresh, expires: Math.floor(Number(body.created) || now()) + Math.floor(Number(body.lasts) || 7 * 86400), username: text(body.username ?? '', 80, 'Name').trim()});
-      forgetSeats(id); return {state: 'connected'};
-    }
-    // Once connected, the hub also serves their Trakt rows on Home (rows.ts): the rows are added to a Home of their own, if they have one.
-    if (request.method === 'POST' && rest === 'check') {
-      const got = await check(env, hub, id);
-      if (got.state === 'connected') {forgetSeats(id); const data = await personData(env, hub, id); if (!data.trakt) await savePersonData(env, hub, id, withTraktRows(data, true)).run();}
-      return got;
+      const access = text(body.access, 4000, 'Login').trim(), refresh = text(body.refresh, 4000, 'Login').trim(), redirect = text(body.redirect ?? '', 300, 'Address');
+      if (!access || !refresh || (redirect && !/^https?:\/\/[^/]+\/api\/trakt\/callback$/.test(redirect))) bad(400, 'Trakt did not finish connecting. Try again.');
+      await keepLink(env, hub, id, {access, refresh, expires: Math.floor(Number(body.created) || now()) + Math.floor(Number(body.lasts) || 7 * 86400), username: text(body.username ?? '', 80, 'Name').trim(), ...(redirect ? {redirect} : {})});
+      forgetSeats(id);
+      const data = await personData(env, hub, id); if (!data.trakt) await savePersonData(env, hub, id, withTraktRows(data, true)).run();
+      return {state: 'connected'};
     }
     if (request.method === 'DELETE') {
       await disconnect(env, hub, id); forgetSeats(id);
@@ -545,7 +539,7 @@ async function removeHub(request: Request, env: Env, who: Who, body: Body) {
   if (!await checkPassword(String(body.password ?? ''), stored!.pass)) {await failed(env, key); bad(403, 'That is not your password');}
   if (!await removePlayers(env, who.hub)) bad(502, 'The streaming server did not confirm the removal, so nothing was deleted. Try again in a moment.');
   const hub = who.hub.id;
-  await env.DB.batch([...['devices', 'plays', 'starts', 'quick', 'secrets', 'rows_keys', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
+  await env.DB.batch([...['devices', 'plays', 'starts', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
     env.DB.prepare('DELETE FROM hubs WHERE id = ?').bind(hub), env.DB.prepare('DELETE FROM passkeys WHERE account = ?').bind(who.account!.id), env.DB.prepare('DELETE FROM accounts WHERE id = ?').bind(who.account!.id)]);
   return {};
 }
@@ -570,6 +564,12 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
       const held = await env.DB.prepare('SELECT account, key, alg FROM passkeys WHERE id = ?').bind(String(body.id ?? '')).first<{account: string; key: string; alg: number}>();
       if (!held || !await signed(env, url.origin, body, held.key, held.alg)) {await failed(env, key); bad(403, 'That passkey is not one this site knows');}
       return reply({}, 200, await startSession(env, {account: held!.account}));
+    }
+    // Back from Trakt's sign-in: straight on to the page, which finishes it (see Trakt in pages.tsx). The code is single-use and
+    // worthless without the proof the page kept, and it travels in the fragment, which browsers never send anywhere.
+    if (first === 'trakt' && path[1] === 'callback' && method === 'GET') {
+      const back = new URLSearchParams(); for (const name of ['code', 'state', 'error']) {const value = url.searchParams.get(name); if (value) back.set(name, value.slice(0, 4000));}
+      return new Response(null, {status: 302, headers: {location: `/#/trakt?${back}`, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer'}});
     }
     // A person's Trakt rows, read by their AIOMetadata setup. The token in the address is the only key (see rows.ts).
     if (first === 'rows' && method === 'GET') return await rows(env, path.slice(1));

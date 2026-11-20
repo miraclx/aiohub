@@ -5,7 +5,7 @@ import type {Hub} from './data';
 import {Activity} from './activity';
 import {call, changes, settle} from './live';
 import type {Live, Refused} from './live';
-import {AccountPage, GroupPage, HubPage, JoinGate, JoinPage, PeoplePage, PersonPage, SetupPage, SignInPage} from './pages';
+import {AccountPage, GroupPage, HubPage, JoinGate, JoinPage, PeoplePage, PersonPage, SetupPage, SignInPage, backFromTrakt, lostTrakt} from './pages';
 import type {PageProps} from './pages';
 import {Avatar, showReal, useRoute} from './ui';
 
@@ -50,6 +50,9 @@ function Preview() {
     {at === 'setup' ? <SetupPage {...page}/> : at === 'join' ? <JoinPage {...page} id={id ?? ''} tab={tab ?? 'home'}/> : undefined}
   </Frame>;
 }
+
+// Back from Trakt's sign-in: put aside before the address is read for the first time.
+if (!SAMPLE) backFromTrakt();
 
 /* The real hub. What is on screen is the truth for the page; `saved` is what the hub last confirmed. */
 function Hubbed() {
@@ -110,6 +113,7 @@ function Hubbed() {
   // that nobody is changing anything on. It is a no-op when nothing differs.
   useEffect(() => {void live.reload().then(() => {if (shown.current?.groups.length) void live.sync();});}, []);
   useEffect(() => {document.documentElement.dataset.theme = hub?.me.theme ?? 'dark';}, [hub?.me.theme]);
+  useEffect(() => {if (phase === 'in') {const note = lostTrakt(); if (note) toast(note);}}, [phase]);
   // Other people change things too (someone joins, an app signs in). Pick that up when the tab is looked at again, and now and then while moving around.
   useEffect(() => {const look = () => {if (document.visibilityState === 'visible' && shown.current && Date.now() - loaded.current > 5000) {loaded.current = Date.now(); void live.reload();}}; document.addEventListener('visibilitychange', look); return () => document.removeEventListener('visibilitychange', look);}, []);
   useEffect(() => {if (shown.current && Date.now() - loaded.current > 20_000) {loaded.current = Date.now(); void live.reload();}}, [parts.join('/')]);
