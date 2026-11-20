@@ -111,6 +111,12 @@ await note.getByText('2 plays from the last two weeks are in one but not the oth
 await note.getByRole('button', {name: 'Fix'}).click(); await guest.getByText('1 play to MDBList and 1 play to Trakt, each with the date it was watched.', {exact: false}).waitFor(); await shot(guest, '13b-drift-confirm');
 await guest.getByRole('button', {name: 'Cancel'}).click(); await shot(guest, '13c-drift-note');
 execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', 'DELETE FROM drift'], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
+// With Trakt connected, Recently Watched waits under "Not on Home". Showing it keeps her following her group's Home.
+await guest.goto(BASE + '/#/me/home'); await guest.getByText('Not on Home').click();
+await guest.locator('.off li', {has: guest.getByRole('heading', {name: 'Recently Watched'})}).getByRole('button', {name: 'Show'}).click();
+await toast(guest).filter({hasText: '“Recently Watched” is on Home'}).waitFor(); await guest.locator('.rows li', {has: guest.getByRole('heading', {name: 'Recently Watched'})}).waitFor();
+const followed = await guest.evaluate(async () => {for (let i = 0; i < 40; i++) {const me = (await (await fetch('/api/state')).json()).hub.people[0]; if (me.picks) return me; await new Promise(done => setTimeout(done, 250));} return null;});
+assert.equal(followed.rows, null, 'still following the group Home'); assert.deepEqual(followed.picks, {'recently-watched': true}); await shot(guest, '13d-recently-watched-on'); await guest.goto(BASE + '/#/me/accounts'); await trakt.getByText('Connected as adatrakt.').waitFor();
 // MDBList: with her key saved, progress is kept there, and copying what she watched here is offered on her own page.
 await guest.getByRole('radio', {name: 'MDBList'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key'); await guest.getByRole('button', {name: 'Save'}).click();
 await toast(guest).filter({hasText: 'MDBList connected as adalists'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'MDBList'}).getAttribute('aria-checked'), 'true');

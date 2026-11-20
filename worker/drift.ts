@@ -60,8 +60,9 @@ async function mdblistPlays(ask: ReturnType<typeof mdblist>, title: Title, t: st
 }
 /* Plays of each title paired up across the two within twelve hours; what is left over on either side, in the window. */
 function compare(work: Work): Found {
-  const skip = new Set(work.skipped), inside = (play: Play) => !skip.has(play.t) && play.at <= work.until;
-  const group = (plays: Play[]) => {const out = new Map<string, number[]>(); for (const play of plays.filter(inside)) out.set(keyOf(play), [...(out.get(keyOf(play)) ?? []), play.at]); return out;};
+  // Every play read is paired, but only those inside the window are reported: one just before or after it can still be a pair.
+  const skip = new Set(work.skipped), inside = (at: number) => at >= work.since && at <= work.until;
+  const group = (plays: Play[]) => {const out = new Map<string, number[]>(); for (const play of plays.filter(item => !skip.has(item.t))) out.set(keyOf(play), [...(out.get(keyOf(play)) ?? []), play.at]); return out;};
   const trakt = group(work.trakt), lists = group(work.mdblist), toMdblist: Miss[] = [], toTrakt: Miss[] = [];
   const miss = (key: string, at: number): Miss => {
     const [t, s, e] = key.split(':'), title = work.titles[t];
@@ -71,11 +72,11 @@ function compare(work: Work): Found {
     const one = (trakt.get(key) ?? []).sort((a, b) => a - b), other = (lists.get(key) ?? []).sort((a, b) => a - b), used = new Set<number>();
     for (const at of one) {
       const match = other.findIndex((them, n) => !used.has(n) && Math.abs(them - at) <= SAME);
-      if (match >= 0) used.add(match); else if (at >= work.since) toMdblist.push(miss(key, at));
+      if (match >= 0) used.add(match); else if (inside(at)) toMdblist.push(miss(key, at));
     }
-    other.forEach((at, n) => {if (!used.has(n) && at >= work.since) toTrakt.push(miss(key, at));});
+    other.forEach((at, n) => {if (!used.has(n) && inside(at)) toTrakt.push(miss(key, at));});
   }
-  const count = (plays: Play[]) => plays.filter(play => inside(play) && play.at >= work.since).length, newest = (a: Miss, b: Miss) => b.at - a.at;
+  const count = (plays: Play[]) => plays.filter(play => !skip.has(play.t) && inside(play.at)).length, newest = (a: Miss, b: Miss) => b.at - a.at;
   return {since: work.since, trakt: count(work.trakt), mdblist: count(work.mdblist), toMdblist: toMdblist.sort(newest).slice(0, KEPT), toTrakt: toTrakt.sort(newest).slice(0, KEPT)};
 }
 
@@ -102,17 +103,18 @@ export async function drift(env: Env, time: number) {
   let calls = STEP, failed = false;
   while (calls-- > 0 && !failed) {
     if (work.page) {
-      // Trakt from twelve hours before the window, so a play just inside it can still find its pair.
-      const got = await traktPlays(env, hub, person, work.since - SAME, work.until, work.page, work.titles);
+      // Trakt from twelve hours either side of the window, so a play just inside it can still find its pair.
+      const got = await traktPlays(env, hub, person, work.since - SAME, work.until + SAME, work.page, work.titles);
       if (!got) {failed = true; break;}
       work.trakt.push(...got.plays); work.page = got.more && work.page < PAGES ? work.page + 1 : 0;
     } else if (!work.listed) {
       // What MDBList has had watched lately, so titles only it knows about are looked at too.
-      const got = await ask(`/sync/watched?since=${encodeURIComponent(iso(work.since - SAME))}&limit=1000`), body = got.body as Record<string, {movie?: Media; show?: Media; episode?: {show?: Media}}[]> | null;
+      const got = await ask(`/sync/watched?since=${encodeURIComponent(iso(work.since - SAME))}&limit=1000`), body = got.body as Record<string, {last_watched_at?: string; movie?: Media; show?: Media; episode?: {show?: Media}}[]> | null;
       if (got.status !== 200 || !body || Array.isArray(body)) {failed = true; break;}
-      for (const item of body.movies ?? []) titleOf(work.titles, 'movie', item.movie);
-      for (const item of body.shows ?? []) titleOf(work.titles, 'show', item.show);
-      for (const item of body.episodes ?? []) titleOf(work.titles, 'show', item.episode?.show);
+      // MDBList's `since` is when an entry last changed; only what was watched in the window is looked at.
+      const lately = (item: {last_watched_at?: string}) => !item.last_watched_at || seconds(item.last_watched_at) >= work.since - SAME;
+      for (const item of (body.movies ?? []).filter(lately)) titleOf(work.titles, 'movie', item.movie);
+      for (const item of (body.episodes ?? []).filter(lately)) titleOf(work.titles, 'show', item.episode?.show);
       work.listed = true; work.todo = Object.keys(work.titles);
     } else if (work.todo.length) {
       const t = work.todo[0], plays = await mdblistPlays(ask, work.titles[t], t);
