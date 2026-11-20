@@ -4,6 +4,7 @@ import {front} from './front';
 import {drift} from './drift';
 import {sweep} from './trakt';
 import type {Env} from './util';
+import {now} from './util';
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -18,6 +19,8 @@ export default {
   // Every five minutes: Trakt calls still waiting are tried again, and plays whose player went quiet without saying stop are
   // stopped on Trakt for it. Then a step of the day's look at whether Trakt and MDBList agree, on its own so it never holds those up.
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(sweep(env).catch(error => console.error('sweep', (error as Error).message)).then(() => drift(env, event.scheduledTime)).catch(error => console.error('drift', (error as Error).message)));
+    // Each run is counted, for the Hub page.
+    const counted = env.DB.prepare("INSERT INTO runs (job, at, count) VALUES ('cron', ?, 1) ON CONFLICT (job) DO UPDATE SET at = excluded.at, count = runs.count + 1").bind(now()).run().catch(() => null);
+    ctx.waitUntil(counted.then(() => sweep(env)).catch(error => console.error('sweep', (error as Error).message)).then(() => drift(env, event.scheduledTime)).catch(error => console.error('drift', (error as Error).message)));
   },
 } satisfies ExportedHandler<Env>;

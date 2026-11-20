@@ -25,9 +25,7 @@ function brief(net?: string | null) {
 function Where({where}: {where?: string}) {
   const [open, setOpen] = useState(false);
   if (!where) return null;
-  return <span className={`where${open ? ' open' : ''}`}><button type="button" className="where-pin" aria-label="Where" aria-expanded={open} onClick={() => setOpen(!open)}>
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 21.5s-7-6.1-7-11.6a7 7 0 0 1 14 0c0 5.5-7 11.6-7 11.6z"/><circle cx="12" cy="9.8" r="2.4"/></svg>
-  </button><span className="where-text" aria-hidden={!open}>· {where}</span></span>;
+  return <span className={`where${open ? ' open' : ''}`}><button type="button" className="where-pin" aria-label="Where" aria-expanded={open} onClick={() => setOpen(!open)}></button><span className="where-text" aria-hidden={!open}>{where}</span></span>;
 }
 /* A week per person, from the same notes: how many titles, roughly how long (each title counts up to where it was last left),
    how many were finished, and the device used most. Rough on purpose; it is for spotting who watches what, not for billing. */

@@ -310,12 +310,14 @@ button.from.own:hover { text-decoration: underline; }
 .title { font-weight: 650; text-align: left; }
 .title:hover { text-decoration: underline; }
 .on-device { opacity: .75; font-size: 13px !important; }
-/* Where a play was reported from: a quiet pin after the device that unfolds the place inline when pressed (or hovered). */
+/* Where a play was reported from: a quiet dot after the device that unfolds the place inline when pressed (or hovered). */
 /* The pin is centred on the device text's x-height, its negative margins keeping the line from growing. The place is set at the
    top of the line, one line tall, so it sits on the device text's baseline (hiding overflow puts an inline-block's own baseline
    at its bottom). */
 .where-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; margin: -5px 0 -5px 1px; vertical-align: middle; border-radius: 6px; color: var(--muted); opacity: .7; transition: opacity .15s, color .15s; }
 .where-pin:hover, .where.open .where-pin { opacity: 1; color: var(--text); }
+/* A dot, like a bullet (•), drawn so it sits exactly on the centre. */
+.where-pin::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .where-text { display: inline-block; vertical-align: top; max-width: 0; opacity: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: max-width .28s ease, opacity .2s ease; }
 .where.open .where-text { max-width: 100%; opacity: 1; }
 @media (hover: hover) { .where:hover .where-text { max-width: 100%; opacity: 1; } }

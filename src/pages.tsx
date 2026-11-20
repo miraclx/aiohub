@@ -473,7 +473,7 @@ export function HubPage(page: PageProps & {tab: string}) {
     {tab === 'home' && <><HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="hub" rows={hub.rows} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{page.live && !hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p></>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
-    {tab === 'general' && page.live && <><ServerName hub={hub} update={update} toast={toast}/><Servers hub={hub} live={page.live} toast={toast}/><Advanced live={page.live} toast={toast}/></>}
+    {tab === 'general' && page.live && <><ServerName hub={hub} update={update} toast={toast}/><Servers hub={hub} live={page.live} toast={toast}/><Background hub={hub}/><Advanced live={page.live} toast={toast}/></>}
     {tab === 'general' && SAMPLE && <section>
       <div className="card settings">
         <Setting column title="AIOStreams server" hint="Where the players connect behind the scenes. Changing it moves every group; watch history moves with it.">
@@ -510,6 +510,30 @@ function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
       {(doors.own ?? []).map(found => door(`AIOMetadata for ${found.name}`, found, found.player ? `${found.name}’s own server: their Home, looks, accounts and what they’ve watched. Their apps reach it through the hub, which keeps it in step with the hub and their group.` : `${found.group ? `The ${found.name} group’s` : `${found.name}’s`} own Home, looks and accounts. The hub made it because they differ from the shared one, and removes it once they don’t.`))}
       <Setting column title="What the hub keeps putting back" hint={`The hub rewrites the things it manages each time you change something here: debrid account, the sources it lists, quality and size, languages, the stream label, people, Home rows and collections. Anything else you add there is left alone. ${doors.front ? 'Each person’s Home lives on their own AIOMetadata setup, listed above.' : 'A group’s or a person’s own Home lives in its own AIOMetadata setup, listed above when there is one.'}`}><button type="button" className="ghost small" onClick={() => setDoors(null)}>Hide</button></Setting>
     </div>}
+  </section>;
+}
+/* What the hub does on its own (the cron, every five minutes on the clock): when it last ran and runs next, how many times it has
+   run, and the daily Trakt/MDBList check, which starts with the first run after 04:00 UTC. */
+const FIVE = 300_000, DAY_MS = 86_400_000;
+function Background({hub}: {hub: Hub}) {
+  const jobs = hub.jobs, [now, setNow] = useState(Date.now());
+  useEffect(() => {const timer = window.setInterval(() => setNow(Date.now()), 30_000); return () => window.clearInterval(timer);}, []);
+  if (!jobs) return null;
+  const time = (ms: number) => new Date(ms).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'});
+  const when = (ms: number) => {const days = Math.round((new Date(ms).setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0)) / DAY_MS); return `${days === 0 ? 'today' : days === 1 ? 'tomorrow' : days === -1 ? 'yesterday' : new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'})} at ${time(ms)}`;};
+  const ago = (ms: number) => {const minutes = Math.round((now - ms) / 60_000); return minutes < 1 ? 'Just now' : minutes < 60 ? `${minutes} min ago` : `${Math.round(minutes / 60)} h ago`;};
+  const next = Math.ceil((now + 1) / FIVE) * FIVE, today = new Date(now).toISOString().slice(0, 10), start = Date.parse(`${today}T04:00:00Z`);
+  const daily = jobs.checking ? next : jobs.checked === today ? start + DAY_MS : Math.max(start, next);
+  const checked = jobs.checked ? Date.parse(`${jobs.checked}T04:00:00Z`) : 0, people = (n: number) => `${n} ${n === 1 ? 'person' : 'people'}`;
+  return <section>
+    <div className="section-head"><div><h2>Background work</h2><p className="muted">Every five minutes the hub tries again anything Trakt didn’t take, and lets Trakt know when a player stopped without saying so. Once a day it also checks that Trakt and MDBList agree, for anyone who has both.</p></div></div>
+    <div className="card settings">
+      <Setting title="Last run" hint={jobs.last ? when(jobs.last * 1000) : undefined}><span className="muted">{jobs.last ? ago(jobs.last * 1000) : 'Not yet'}</span></Setting>
+      <Setting title="Next run" hint={when(next)}><span className="muted">In {Math.max(1, Math.ceil((next - now) / 60_000))} min</span></Setting>
+      <Setting title="Runs so far" hint="Counted since 20 Nov 2026."><span className="muted">{(jobs.runs ?? 0).toLocaleString()}</span></Setting>
+      <Setting title="Waiting for Trakt" hint="Tried again on each run, for up to a week."><span className="muted">{jobs.waiting ? `${jobs.waiting} ${jobs.waiting === 1 ? 'update' : 'updates'}` : 'Nothing'}</span></Setting>
+      <Setting title="Trakt and MDBList check" hint={jobs.checking ? `Under way, for ${people(jobs.checking)}.` : `${jobs.checked ? `Ran ${when(checked).replace(/ at .*/, '')}, for ${people(jobs.people)}. ` : ''}Next ${when(daily)}.`}><span className="muted">Daily</span></Setting>
+    </div>
   </section>;
 }
 /* The name player apps and Trakt show for this hub. */

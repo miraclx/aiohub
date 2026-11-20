@@ -70,6 +70,11 @@ await owner.goto(BASE + '/#/person/ada/devices'); await owner.getByRole('button'
 await owner.getByLabel('Password', {exact: true}).filter({hasText: /^[a-z]+-[a-z]+-[a-z]+-\d\d$/}).waitFor(); const password = await owner.getByLabel('Password', {exact: true}).textContent(); await shot(owner, '4-devices');
 await owner.goto(BASE + '/#/hub/playback'); await owner.getByRole('radio', {name: 'Best'}).click().catch(() => owner.getByText('Best', {exact: true}).first().click()); await owner.waitForTimeout(900);
 await owner.goto(BASE + '/#/hub/sources'); await owner.getByText('TorBox').first().waitFor(); await shot(owner, '5-sources');
+// Background work on Hub, General: one cron run (before the daily check's hour), then when it ran, runs next, and how often it has.
+await fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/5 * * * *')}&time=${Date.UTC(2026, 0, 1, 3)}`);
+await owner.goto(BASE + '/#/hub/general'); await owner.reload(); const work = owner.locator('section', {has: owner.getByRole('heading', {name: 'Background work'})});
+await work.getByText('Just now').waitFor(); await work.getByText(/^In \d min$/).waitFor(); assert.equal(await work.locator('.setting', {hasText: 'Runs so far'}).locator('span.muted').textContent(), '1');
+await work.getByText('Nothing', {exact: true}).waitFor(); await work.getByText(/^Next (today|tomorrow) at /).waitFor(); await work.scrollIntoViewIfNeeded(); await shot(owner, '5b-background');
 await owner.goto(BASE + '/#/'); await owner.getByText('Add someone to Family').waitFor(); await shot(owner, '6-people');
 // The manager opening the invite link is told to send it on, and stays signed in.
 await owner.goto(link); await owner.getByText(/signed in as the manager/).waitFor();
@@ -114,12 +119,12 @@ await note.getByText('2 plays from the last two weeks are in one but not the oth
 await note.getByRole('button', {name: 'Fix'}).click(); await guest.getByText('1 play to MDBList and 1 play to Trakt, each with the date it was watched.', {exact: false}).waitFor(); await shot(guest, '13b-drift-confirm');
 await guest.getByRole('button', {name: 'Cancel'}).click(); await shot(guest, '13c-drift-note');
 execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', 'DELETE FROM drift'], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
-// With Trakt connected, Recently Watched waits under "Not on Home". Showing it keeps her following her group's Home.
-await guest.goto(BASE + '/#/me/home'); await guest.getByText('Not on Home').click();
-await guest.locator('.off li', {has: guest.getByRole('heading', {name: 'Recently Watched'})}).getByRole('button', {name: 'Show'}).click();
-await toast(guest).filter({hasText: '“Recently Watched” is on Home'}).waitFor(); await guest.locator('.rows li', {has: guest.getByRole('heading', {name: 'Recently Watched'})}).waitFor();
+// With Trakt connected, Recently Watched is on Home right after Watchlist. Switching it off keeps her following her group's Home.
+await guest.goto(BASE + '/#/me/home'); const onHome = guest.locator('.rows li h3');
+assert.deepEqual((await onHome.allTextContents()).slice(0, 3), ['Watchlist', 'Recently Watched', 'Recommended Movies']);
+await guest.getByRole('switch', {name: 'Show Recently Watched on Home'}).click(); await toast(guest).filter({hasText: '“Recently Watched” is off Home'}).waitFor();
 const followed = await guest.evaluate(async () => {for (let i = 0; i < 40; i++) {const me = (await (await fetch('/api/state')).json()).hub.people[0]; if (me.picks) return me; await new Promise(done => setTimeout(done, 250));} return null;});
-assert.equal(followed.rows, null, 'still following the group Home'); assert.deepEqual(followed.picks, {'recently-watched': true}); await shot(guest, '13d-recently-watched-on'); await guest.goto(BASE + '/#/me/accounts'); await trakt.getByText('Connected as adatrakt.').waitFor();
+assert.equal(followed.rows, null, 'still following the group Home'); assert.deepEqual(followed.picks, {'recently-watched': false}); await shot(guest, '13d-recently-watched-off'); await guest.goto(BASE + '/#/me/accounts'); await trakt.getByText('Connected as adatrakt.').waitFor();
 // MDBList: with her key saved, progress is kept there, and copying what she watched here is offered on her own page.
 await guest.getByRole('radio', {name: 'MDBList'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key'); await guest.getByRole('button', {name: 'Save'}).click();
 await toast(guest).filter({hasText: 'MDBList connected as adalists'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'MDBList'}).getAttribute('aria-checked'), 'true');
@@ -151,7 +156,7 @@ const where = async page => {
   assert.equal(await pin.count(), 1, 'a pin only for the play with a place'); assert.equal(await pin.getAttribute('aria-expanded'), 'false');
   assert.equal((await text.boundingBox())?.width ?? 0, 0, 'the place starts folded'); await lined(page, 'folded');
   await pin.click(); assert.equal(await pin.getAttribute('aria-expanded'), 'true'); assert.equal(await text.getAttribute('aria-hidden'), 'false');
-  await text.filter({hasText: '· Lagos, NG · SpaceX'}).waitFor({state: 'visible'}); await page.waitForTimeout(400);
+  await text.filter({hasText: 'Lagos, NG · SpaceX'}).waitFor({state: 'visible'}); await page.waitForTimeout(400);
   assert.ok((await text.boundingBox()).width > 60, 'the place unfolds'); assert.ok(!(await text.textContent()).includes('Inc'), 'the network is said briefly'); await lined(page, 'unfolded');
   await pin.click(); assert.equal(await pin.getAttribute('aria-expanded'), 'false');
 };

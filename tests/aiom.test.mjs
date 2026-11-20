@@ -297,7 +297,7 @@ test('with Trakt connected to the hub, her setup reads her Trakt rows from the h
   assert.deepEqual(await syncAll(), {state: 'ok'});
   const [, ada] = playerOf('Ada'), [, ben] = playerOf('Ben');
   // The same rows, in the same order and under the same names, now imported from the hub's own addon; Up Next and Recently aired stay off.
-  assert.deepEqual(rowsOf(ada.config), [['custom.aiohub_rows.all.watchlist', 'all', 'Watchlist', true], ['custom.aiohub_rows.all.history', 'all', 'Recently Watched', false], ['custom.aiohub_rows.movie.recommended', 'movie', 'Recommended Movies', true],
+  assert.deepEqual(rowsOf(ada.config), [['custom.aiohub_rows.all.watchlist', 'all', 'Watchlist', true], ['custom.aiohub_rows.all.history', 'all', 'Recently Watched', true], ['custom.aiohub_rows.movie.recommended', 'movie', 'Recommended Movies', true],
     ['custom.aiohub_rows.series.recommended', 'series', 'Recommended Shows', true], ['custom.aiohub_rows.series.up_next', 'series', 'Up Next', false], ['custom.aiohub_rows.series.recently_aired', 'series', 'Recently Aired for You', false]]);
   served = ada.config.catalogs.filter(item => item.id.startsWith('custom.'));
   for (const item of served) {
@@ -311,15 +311,15 @@ test('with Trakt connected to the hub, her setup reads her Trakt rows from the h
   assert.deepEqual(rowsOf(ben.config), []);
   // The address is made once: a second sync sends nothing.
   const version = ada.config.configVersion; assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Ada')[1].config.configVersion, version);
-  // Switching Recently Watched on keeps her following her group's Home: only that row changes, and a later save leaves it on.
+  // Switching Recently Watched off keeps her following her group's Home: only that row changes, and a later save leaves it off.
   const before = rowsOf(ada.config), put = async extra => {const me = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
     return owner('PUT', '/api/people/ada', {name: me.name, groupId: me.groupId, rows: me.rows, settings: me.settings, can: me.can, paused: me.paused, trakt: me.trakt, lists: me.lists, v: me.v, ...extra});};
-  assert.equal((await put({picks: {'recently-watched': true, 'not-a-row': true}})).status, 200);
+  assert.equal((await put({picks: {'recently-watched': false, 'not-a-row': true}})).status, 200);
   assert.deepEqual(await syncAll(), {state: 'ok'});
-  assert.deepEqual(rowsOf(playerOf('Ada')[1].config), before.map(row => row[0] === 'custom.aiohub_rows.all.history' ? [...row.slice(0, 3), true] : row));
+  assert.deepEqual(rowsOf(playerOf('Ada')[1].config), before.map(row => row[0] === 'custom.aiohub_rows.all.history' ? [...row.slice(0, 3), false] : row));
   assert.equal((await put({})).status, 200);
   const me = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
-  assert.equal(me.rows, null); assert.deepEqual(me.picks, {'recently-watched': true});
+  assert.equal(me.rows, null); assert.deepEqual(me.picks, {'recently-watched': false});
   // The site says the older link is still there and no longer needed; removing it keeps her Trakt rows.
   let shown = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
   assert.equal(shown.aiomTrakt, true); assert.equal(shown.trakt, true);
