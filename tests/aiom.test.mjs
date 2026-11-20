@@ -14,7 +14,7 @@ function client() {
   };
 }
 // Stand-ins: AIOStreams (setups, its server id) and AIOMetadata (setups by uuid, each also a Jellyfin server once it has an app password).
-const fake = {configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: []};
+const fake = {configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: [], ticks: [], positions: []};
 const uuidOf = n => `${String(n).padStart(8, '0')}-0000-4000-8000-0000000000aa`, ITEM = 'a1110100-0000-eaf7-78ff-ffffff010000';
 // What Ada's own server holds: a film she watched, an episode she is partway through, one MDBList already has, and their show.
 const FILM = 'a1110100-0000-eaf7-78ff-ffffff050000', LEFT = 'a1110100-0000-eaf7-78ff-ffffff060000', EP3 = 'a1110100-0000-eaf7-78ff-ffffff070000';
@@ -31,7 +31,7 @@ const HELD = {
 };
 // Trakt: single-use refresh tokens, and every call as Ada logged. Each title above runs 6000 seconds. `refuse` turns that many
 // writes away with a 429, as Trakt's Cloudflare does to the shared addresses Workers call from; `refuseReads` does it to reads.
-const trakt = {history: [], watchlist: null, calls: [], reads: [], issued: 0, valid: new Set(), refresh: '', expiresIn: 7 * 86400, refreshed: [], revoked: [], stop: 201, refuse: 0, refused: [], refuseReads: false};
+const trakt = {history: [], playback: null, watchlist: null, calls: [], reads: [], issued: 0, valid: new Set(), refresh: '', expiresIn: 7 * 86400, refreshed: [], revoked: [], stop: 201, refuse: 0, refused: [], refuseReads: false};
 // What Ada's Trakt holds, for the rows the hub serves: a watchlist with a film, a show (twice: once by an episode) and a film known
 // only by its TMDB id; 45 recommended films; one show with an episode to watch.
 const film = n => ({title: `Film ${n}`, year: 2000, ids: {trakt: n, imdb: `tt${String(9000000 + n)}`, tmdb: 9000 + n}});
@@ -42,10 +42,11 @@ const DAY = 86400, ago = days => new Date((Math.floor(Date.now() / 1000) - Math.
 const MOVIE = {inception: {title: 'Inception', ids: {imdb: 'tt1375666', tmdb: 27205}}, fight: {title: 'Fight Club', ids: {imdb: 'tt0137523', tmdb: 550}}, pulp: {title: 'Pulp Fiction', ids: {imdb: 'tt0110912', tmdb: 680}},
   gump: {title: 'Forrest Gump', ids: {imdb: 'tt0109830', tmdb: 13}}, knight: {title: 'The Dark Knight', ids: {imdb: 'tt0468569', tmdb: 155}}};
 const BB = {title: 'Breaking Bad', ids: {imdb: 'tt0903747', tmdb: 1396}};
-const lists = {plays: {}, recent: {movies: [], shows: [], episodes: []}, refuse: false};
+const lists = {plays: {}, recent: {movies: [], shows: [], episodes: []}, refuse: false, playback: null};
 const READS = {
   '/sync/watchlist/all/added/desc': () => trakt.watchlist ?? WATCHLIST,
   '/sync/history': () => trakt.history,
+  '/sync/playback': () => trakt.playback ?? [],
   '/recommendations/movies': Array.from({length: 45}, (_, n) => film(n + 1)),
   '/recommendations/shows': [{title: 'Breaking Bad', ids: {imdb: 'tt0903747', tmdb: 1396}}],
   '/sync/progress/up_next': [{show: {title: 'Breaking Bad', ids: {imdb: 'tt0903747', tmdb: 1396}}, progress: {aired: 62, completed: 10}}],
@@ -107,7 +108,7 @@ http.createServer(async (request, answer) => {
   if (request.url.startsWith('/mdblist/lists/someone/a-list?')) return send(200, [{id: 5151, name: 'A list', mediatype: 'show'}]);
   if (request.url.startsWith('/mdblist/sync/history/movie/tmdb/603')) return send(200, {plays: fake.watched.some(body => body.movies?.length) ? [{season_num: null}] : []});
   if (request.url.startsWith('/mdblist/sync/history/show/tmdb/1399')) return send(200, {plays: [{season_num: 1, episode_num: 1}]});
-  if (request.url.startsWith('/mdblist/sync/playback')) return send(200, []);
+  if (request.url.startsWith('/mdblist/sync/playback')) return send(200, lists.playback ?? []);
   if (request.url.startsWith('/mdblist/') && lists.refuse) return send(503, {});
   const history = /^\/mdblist\/sync\/history\/(movie|show)\/tmdb\/(\d+)/.exec(request.url);
   if (history && lists.plays[`${history[1]}/${history[2]}`]) return send(200, {type: history[1], play_count: lists.plays[`${history[1]}/${history[2]}`].length, truncated: false, plays: lists.plays[`${history[1]}/${history[2]}`]});
@@ -144,6 +145,12 @@ http.createServer(async (request, answer) => {
     if (rest === '/Users') return send(200, [{Id: uuid, Name: home.config.jellyfinUserName}]);
     if (rest.startsWith('/Sessions/Playing')) return send(204, {});
     if (rest.startsWith('/UserViews')) return send(200, {Items: [{Id: VIEW, Name: 'Trending Movies', CollectionType: 'movies'}]});
+    // Ticking and keeping a spot, as AIOMetadata takes them, each read back after (the card's writes into Here).
+    const own = /^\/Users\/[^/]+\/(PlayedItems|Items)\/([^/?]+)(\/UserData)?/.exec(rest), held = own && HELD[decodeURIComponent(own[2])];
+    if (own && own[1] === 'PlayedItems' && request.method === 'POST') {if (held) {held.UserData = {...held.UserData, Played: true}; fake.ticks.push({id: held.Id, at: new URLSearchParams(rest.split('?')[1]).get('DatePlayed')});} return send(200, {Played: true});}
+    if (own && own[3] && request.method === 'POST') {if (held) {held.UserData = {...held.UserData, PlaybackPositionTicks: body.PlaybackPositionTicks}; fake.positions.push({id: held.Id, ticks: body.PlaybackPositionTicks});} return held ? send(200, {}) : send(400, {});}
+    if (own && own[3]) return held ? send(200, held.UserData ?? {}) : send(404, {});
+    if (rest.startsWith('/Shows/')) {const series = decodeURIComponent(rest.split('/')[2]); return send(200, {Items: Object.values(HELD).filter(item => item.SeriesId === series && item.Listed !== false)});}
     if (rest.startsWith(`/Users/${uuid}/Items?Ids=`)) return send(200, {Items: decodeURIComponent(rest.split('Ids=')[1].split('&')[0]).split(',').map(id => HELD[id]).filter(Boolean)});
     if (rest.startsWith(`/Users/${uuid}/Items/`)) {const id = rest.split('/').pop().split('?')[0], {UserData, ...held} = HELD[id] ?? {}; return send(200, {Id: ITEM, Name: 'Meta Movie', ...held, RunTimeTicks: 6000e7, ServerId: uuid, UserData: {Key: uuid}, Poster: `${UP}/jellyfin/${uuid}/Items/${ITEM}/Images/Primary`});}
     return send(200, {Seen: rest});
@@ -643,6 +650,81 @@ test('her own lists and what her watching suggests are hers alone, from her own 
   await syncAll(); assert.equal(catalogsOf('Ada').some(item => /list_mine/.test(item.id)), false);
   // Trakt disconnected: her lists, like everything read from her Trakt, are forgotten.
   assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200); assert.deepEqual(sql("SELECT kind FROM rows_cache WHERE person = 'ada' AND kind NOT LIKE 'history%'"), []);
+});
+/* AIOMetadata's id for a film, a show or an episode (under its show), as the hub works it out (worker/here.ts). */
+const pack = (kind, imdb, season, episode) => {
+  const b = Buffer.alloc(16); b[0] = 0xa1; b[1] = ({movie: 1, series: 2, episode: 4}[kind] << 4) | 1; b[2] = kind === 'movie' ? 1 : 2; b.writeUIntBE(Number(imdb.slice(2)), 3, 6);
+  b.writeUInt16BE(kind === 'episode' ? season : 0xffff, 9); b.writeUInt16BE(kind === 'episode' ? episode : 0xffff, 11); b[13] = 1; const h = b.toString('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+};
+test('the card compares two places and copies across: paused points both ways, a move back Here that echoes nowhere, Here and Trakt, a move to MDBList', async () => {
+  trakt.expiresIn = 7 * 86400; await connect(); trakt.calls = [];
+  const T = ago(2), BBS = pack('series', 'tt0903747');
+  // What Ada's server holds of titles the other places have: unticked, with running times; one episode it numbers differently.
+  for (const [id, item] of [[pack('movie', 'tt0137523'), {Type: 'Movie', Name: 'Fight Club'}], [pack('movie', 'tt1375666'), {Type: 'Movie', Name: 'Inception'}], [pack('movie', 'tt0110912'), {Type: 'Movie', Name: 'Pulp Fiction'}], [pack('movie', 'tt0109830'), {Type: 'Movie', Name: 'Forrest Gump'}],
+    [pack('episode', 'tt0903747', 1, 3), {Type: 'Episode', SeriesId: BBS, ParentIndexNumber: 1, IndexNumber: 3}], [pack('episode', 'tt0903747', 2, 9), {Type: 'Episode', SeriesId: BBS, ParentIndexNumber: 2, IndexNumber: 9, Listed: false}]]) HELD[id] = {Id: id, RunTimeTicks: 6000e7, UserData: {}, ...item};
+  const compare = (method, pair, body) => adaSite(method, `/api/people/ada/compare/${pair}`, body), forget = () => sql('UPDATE drift SET here = NULL');
+  // Only Ada, from her own page.
+  assert.equal((await owner('GET', '/api/people/ada/compare/here-trakt')).status, 403);
+  assert.equal((await compare('GET', 'sideways')).status, 400);
+
+  // On MDBList with Trakt: a paused point MDBList has goes to Trakt, and one Trakt has goes to MDBList (under 80%, dated now).
+  lists.playback = [{type: 'movie', progress: 50, paused_at: T, movie: MOVIE.inception}]; trakt.playback = [{type: 'movie', progress: 30.5, paused_at: T, movie: MOVIE.gump}];
+  const points = (await compare('GET', 'mdblist-trakt')).body;
+  assert.deepEqual(points.lines.map(line => [line.title, line.pct, line.lists, line.trakt]), [['Inception', 50, 'has', 'add'], ['Forrest Gump', 31, 'add', 'has']]);
+  const pauses = fake.pauses.length; assert.deepEqual((await compare('POST', 'mdblist-trakt', {})).body, {added: 2, unmatched: 0, more: false, switched: false});
+  assert.deepEqual((await heard(1)).map(call => [call.path, call.body]), [['/scrobble/pause', {movie: {ids: MOVIE.inception.ids}, progress: 50}]]);
+  assert.deepEqual(fake.pauses.slice(pauses), [{movie: {ids: MOVIE.gump.ids}, progress: 31}]);
+
+  // Moving back Here. Not before she starts it, and not while her setup still passes ticks on to MDBList.
+  lists.playback = [{type: 'movie', progress: 50, paused_at: T, movie: MOVIE.inception}]; trakt.playback = [];
+  lists.recent = {movies: [{last_watched_at: T, movie: MOVIE.fight}], episodes: [{last_watched_at: T, episode: {season: 1, number: 3, show: BB}}, {last_watched_at: T, episode: {season: 2, number: 9, show: BB}}]};
+  assert.equal((await compare('POST', 'mdblist-here', {switch: true})).status, 409);
+  assert.equal((await adaSite('POST', '/api/people/ada/moving', {to: 'here'})).status, 200);
+  assert.match((await compare('POST', 'mdblist-here', {switch: true})).body.message, /still switching/);
+  assert.deepEqual(await syncAll(), {state: 'ok'});
+  const [, ada] = playerOf('Ada'); assert.equal(ada.config.playbackReporting, false); assert.equal(ada.config.mdblistWatchTracking, false); assert.equal(ada.config.apiKeys.mdblist, undefined);
+  assert.equal((await adaSite('GET', '/api/state')).body.hub.people[0].moving, 'here');
+  const back = (await compare('GET', 'mdblist-here')).body;
+  assert.deepEqual(back.lines.map(line => [line.title, line.detail, line.pct ?? null, line.here, line.lists]).sort(), [['Breaking Bad', 'Season 1 · Episode 3', null, 'add', 'has'], ['Breaking Bad', 'Season 2 · Episode 9', null, 'add', 'has'], ['Fight Club', 'Movie', null, 'add', 'has'], ['Inception', 'Movie', 50, 'add', 'has']]);
+  // The move: ticked with the date MDBList had, the spot kept; the episode Ada's server numbers differently is left out. Nothing
+  // reaches Trakt or MDBList (no echo), and only then is she switched.
+  const before = {trakt: trakt.calls.length, watched: fake.watched.length, pauses: fake.pauses.length}, ticked = fake.ticks.length, kept = fake.positions.length;
+  assert.deepEqual((await compare('POST', 'mdblist-here', {switch: true})).body, {added: 3, unmatched: 1, more: false, switched: true});
+  assert.deepEqual(fake.ticks.slice(ticked).map(tick => [HELD[tick.id].Name ?? `S${HELD[tick.id].ParentIndexNumber}E${HELD[tick.id].IndexNumber}`, tick.at]).sort(), [['Fight Club', T], ['S1E3', T]]);
+  assert.deepEqual(fake.positions.slice(kept).map(point => [HELD[point.id].Name, point.ticks]), [['Inception', 3000e7]]);
+  await pause(500); assert.deepEqual({trakt: trakt.calls.length, watched: fake.watched.length, pauses: fake.pauses.length}, before, 'nothing echoed to a tracker');
+  const me = (await adaSite('GET', '/api/state')).body.hub.people[0]; assert.equal(me.lists, false); assert.equal(me.moving, null);
+  assert.deepEqual(sql("SELECT kind FROM secrets WHERE owner = 'ada' AND kind = 'mdblist'"), []);
+  assert.deepEqual(await syncAll(), {state: 'ok'});
+
+  // Here and Trakt (Trakt only now). Out: plays here that never reached Trakt, and a spot as a paused point. In: a film watched
+  // elsewhere and a spot Trakt holds. A play that reached Trakt as it happened is not offered again.
+  // (Earlier tests ticked some of these through her apps: here one stays partway and one unwatched.)
+  HELD[EP].UserData = {PlayedPercentage: 40}; HELD[LEFT].UserData = {}; HELD[FILM].UserData = {};
+  sql(`UPDATE plays SET scrobbled = 'watched', updated = unixepoch() + 5 WHERE person = 'ada' AND item = '${ITEM}'`); forget();
+  trakt.history = [{watched_at: ago(1), type: 'movie', movie: MOVIE.pulp}]; trakt.playback = [{type: 'movie', progress: 20, paused_at: ago(1), movie: MOVIE.gump}];
+  const both = (await compare('GET', 'here-trakt')).body, line = item => [item.title, item.detail, item.here, item.trakt, item.elsewhere ?? false, item.pct ?? null];
+  assert.ok(!both.lines.some(item => item.title === 'Meta Movie'), 'reached Trakt live: not offered');
+  assert.deepEqual(both.lines.map(line).sort(), [['Forrest Gump', 'Movie', 'add', 'has', true, 20], ['Meta Show', 'Season 1 · Episode 1', 'has', 'add', false, null], ['Meta Show', 'Season 1 · Episode 2', 'has', 'add', false, 40], ['Pulp Fiction', 'Movie', 'add', 'has', true, null]]);
+  const ticks = fake.ticks.length; trakt.calls = [];
+  const added = (await compare('POST', 'here-trakt', {})).body; assert.equal(added.added, 4, JSON.stringify(added));
+  const sent = await heard(2);
+  assert.deepEqual(sent.map(call => call.path).sort(), ['/scrobble/pause', '/sync/history']);
+  assert.deepEqual(sent.find(call => call.path === '/scrobble/pause').body, {show: {ids: {tmdb: 1399}}, episode: {season: 1, number: 2}, progress: 40});
+  assert.deepEqual(sent.find(call => call.path === '/sync/history').body.shows[0].seasons, [{number: 1, episodes: [{number: 1, watched_at: sent.find(call => call.path === '/sync/history').body.shows[0].seasons[0].episodes[0].watched_at}]}]);
+  assert.deepEqual(fake.ticks.slice(ticks).map(tick => HELD[tick.id].Name), ['Pulp Fiction']); assert.equal(fake.positions.at(-1).ticks, 1200e7);
+  assert.deepEqual((await compare('GET', 'here-trakt')).body.lines.length, 0, 'done once, nothing offered again');
+
+  // Choosing MDBList from her own page: the key is kept but nothing reports there until her plays have moved over.
+  assert.deepEqual((await adaSite('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key', moving: true})).body, {username: 'adalists'});
+  assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Ada')[1].config.playbackReporting, false);
+  const moving = (await adaSite('GET', '/api/state')).body.hub.people[0]; assert.equal(moving.lists, false); assert.equal(moving.moving, 'mdblist');
+  const to = (await compare('POST', 'here-mdblist', {switch: true})).body; assert.equal(to.switched, true, JSON.stringify(to));
+  assert.equal((await adaSite('GET', '/api/state')).body.hub.people[0].lists, true);
+  assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Ada')[1].config.playbackReporting, true);
+  lists.playback = null; trakt.playback = null; trakt.history = [];
+  assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200);
 });
 test('a setup another request is still making is waited for quietly; one that never finished is said once', async () => {
   const person = {rows: null, settings: {}, can: {arrange: false, add: false, playback: false}, trakt: false, lists: false};

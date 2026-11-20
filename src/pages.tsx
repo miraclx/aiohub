@@ -262,20 +262,22 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
    AIOMetadata hides only by what a connected tracker says, and here it has none. */
 function Progress({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
-  const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [leaving, setLeaving] = useState(false);
-  const their = mine ? 'your' : 'their', choice = person.lists ? 'mdblist' : keying ? 'mdblist' : 'here';
-  const self = mine;
+  const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [leaving, setLeaving] = useState(false), [back, setBack] = useState(false);
+  // On their own page a switch is a move (the card below), and it happens only once their plays are across.
+  const self = mine && !!live, moving = person.moving ?? null;
+  const their = mine ? 'your' : 'their', choice = person.lists ? (back || moving === 'here' ? 'here' : 'mdblist') : keying || moving === 'mdblist' ? 'mdblist' : 'here';
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
   const pick = (value: 'here' | 'mdblist') => {
-    if (value === 'mdblist' && !person.lists) {if (live) setKeying(true); else if (mine) edit(target => {target.lists = true;}, 'MDBList connected'); return;}
-    if (value === 'here') {setKeying(false); if (person.lists) setLeaving(true);}
+    if (self && value === 'mdblist' && person.lists) return setBack(false);
+    if (value === 'mdblist' && !person.lists) {if (moving !== 'mdblist') {if (live) setKeying(true); else if (mine) edit(target => {target.lists = true;}, 'MDBList connected');} return;}
+    if (value === 'here') {setKeying(false); if (person.lists) {if (self) setBack(true); else setLeaving(true);}}
   };
   const leave = () => {
     setLeaving(false);
     if (!live) return edit(target => {target.lists = false; target.rows = target.rows?.filter(row => !row.source.startsWith('MDBList')) ?? null;}, 'Progress kept here');
     setBusy(true); void live.call('DELETE', at).then(() => live.sync()).then(() => live.reload()).then(() => toast('Progress kept here'), fail(toast)).finally(() => setBusy(false));
   };
-  const save = () => {setBusy(true); void live!.call<{username: string}>('POST', at, {key: own}).then(found => live!.sync().then(() => live!.reload()).then(() => {toast(found.username ? `MDBList connected as ${found.username}` : person.lists ? 'MDBList key replaced' : 'MDBList connected'); setKeying(false); setOwn('');}), fail(toast)).finally(() => setBusy(false));};
+  const save = () => {const move = self && !person.lists; setBusy(true); void live!.call<{username: string}>('POST', at, {key: own, ...(move ? {moving: true} : {})}).then(found => live!.sync().then(() => live!.reload()).then(() => {toast(move ? `MDBList connected${found.username ? ` as ${found.username}` : ''}. Move your plays across to switch.` : found.username ? `MDBList connected as ${found.username}` : person.lists ? 'MDBList key replaced' : 'MDBList connected'); setKeying(false); setOwn('');}), fail(toast)).finally(() => setBusy(false));};
   const canChoose = !!live || mine || person.lists;
   return <>
     <h3 className="sub">Where progress is kept</h3>
@@ -283,7 +285,7 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
     <ul className="accounts">
       <li className="stacked"><div className="account-row"><div><h3>{choice === 'here' ? 'Here' : 'MDBList'}</h3>
         <p>{choice === 'here' ? 'Kept on this hub, in the player apps. Nothing to connect.' : person.lists ? `${person.listsName ? `Connected as ${person.listsName}. ` : ''}In ${their} own MDBList account, so other apps that read MDBList see it too.` : `In ${their} own MDBList account, so other apps that read MDBList see it too. Free.`}</p>
-          {live && person.lists && !keying && <button type="button" className="link small" onClick={() => setKeying(true)}>Replace key</button>}</div>
+          {live && person.lists && !keying && !moving && !back && <button type="button" className="link small" onClick={() => setKeying(true)}>Replace key</button>}</div>
         {canChoose ? <Segments label="Where progress is kept" value={choice} onChange={pick} options={[{value: 'here', label: 'Here'}, {value: 'mdblist', label: 'MDBList'}]}/>
           : <span className="pill" title={`Send ${person.name} their link from the Settings tab`}>Waiting for {person.name}</span>}</div>
         {choice === 'here' && <p className="muted small">Hiding what’s been watched needs MDBList. With progress kept here, watched titles stay in rows.</p>}
@@ -292,58 +294,113 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
           <div className="field-row"><input type="password" aria-label="MDBList API key" placeholder="API key" autoComplete="off" value={own} onChange={event => setOwn(event.target.value)}/><button className="primary" disabled={busy || !own.trim()}>Save</button>{person.lists && <button type="button" className="ghost" onClick={() => {setKeying(false); setOwn('');}}>Cancel</button>}</div>
         </form>}
       </li>
-      {live && self && <Trackers page={page} person={person}/>}
+      {live && self && <Trackers page={page} person={person} back={back} onBack={setBack}/>}
       {live && !self && person.lists && <li><div><h3>What they watched here</h3><p>{person.name} can copy it to MDBList from their own page, under Accounts. It’s theirs, so it isn’t shown here.</p></div></li>}
     </ul>
     {leaving && <Confirm title="Keep progress here?" body={`MDBList is disconnected from ${mine ? 'you' : person.name}. Whatever is already in that MDBList account stays there.`} action="Keep it here" onYes={leave} onClose={() => setLeaving(false)}/>}
   </>;
 }
-interface CarryEntry {key: string; title: string; detail: string; at: string; pct?: number; season?: number; episode?: number; trakt?: Cell; lists?: Cell}
-interface CarryPlan {watched: CarryEntry[]; partway: CarryEntry[]; already: number; unknown: number; more: boolean}
-/* One card for plays one of a person's trackers is missing: Trakt and MDBList from the hub's daily look, and what was watched here
-   that their Trakt or MDBList doesn't have yet (worked out when the card opens, kept a few hours). Every play starts included; tapping one leaves
-   it out, and once the rest are added it stays out of later looks. Nothing is ever removed from either tracker. */
 type Cell = 'has' | 'add' | 'none';
-interface Line {key: string; title: string; detail: string; at?: string; pct?: number; here?: boolean; trakt: Cell; lists: Cell}
-const episode = (season?: number, number?: number) => season != null ? `S${season}E${number}` : 'Movie';
-function Trackers({page, person}: {page: PageProps; person: Person}) {
-  const {toast, live} = page, found = person.drift, trakt = !!person.history && !person.history.again, lists = person.lists;
-  const [here, setHere] = useState<CarryPlan | null>(null), [out, setOut] = useState<Set<string>>(new Set()), [busy, setBusy] = useState(false);
-  useEffect(() => {if (live && (lists || trakt)) void live.call<CarryPlan>('GET', `/api/people/${person.id}/carry`).then(setHere, () => setHere(null)); else setHere(null);}, [person.id, lists, trakt, person.v]);
-  if (!live || (!trakt && !lists)) return null;
+type Place = 'here' | 'trakt' | 'lists';
+interface Line {key: string; title: string; detail: string; at?: string; pct?: number; here?: Cell; trakt?: Cell; lists?: Cell; elsewhere?: boolean}
+interface Look {lines: Line[]; more: boolean; unmatched: number; already: number; checked?: number}
+type Pair = 'here-trakt' | 'here-mdblist' | 'mdblist-here' | 'mdblist-trakt';
+const NAMES: Record<Place, string> = {here: 'Here', trakt: 'Trakt', lists: 'MDBList'};
+const short = (detail: string) => detail.replace(/^Season (\d+) · Episode (\d+)$/, 'S$1E$2');
+const SHOWN = 8;
+/* One card that always compares two places: where progress is kept (Here or MDBList) and Trakt, or, while moving where progress is
+   kept, the old place and the new one (worker/places.ts). Each line is a play one side lacks, with an arrow toward it; every line
+   starts included, and tapping one leaves it out (and out of later looks). Nothing is ever removed. Moving switches only once the
+   plays are across. With nothing missing it folds to one line; with nothing connected there is no card. */
+function Trackers({page, person, back, onBack}: {page: PageProps; person: Person; back: boolean; onBack: (back: boolean) => void}) {
+  const {toast, live, hub} = page, trakt = !!person.history && !person.history.again, lists = person.lists, moving = person.moving ?? null;
+  const [looks, setLooks] = useState<Record<string, Look | 'failed'>>({}), [out, setOut] = useState<Set<string>>(new Set()), [busy, setBusy] = useState(''), [all, setAll] = useState(false);
+  // What each pair holds, kept with whose it is: a look at someone else never shows here.
+  const whose = `${hub.code}/${person.id}`, lookOf = (pair: Pair) => looks[`${whose}/${pair}/${person.v}`];
+  const want: Pair[] = moving === 'mdblist' ? ['here-mdblist'] : lists && (back || moving === 'here') ? ['mdblist-here'] : lists ? (trakt ? ['here-mdblist', 'mdblist-trakt'] : ['here-mdblist']) : trakt ? ['here-trakt'] : [];
+  useEffect(() => {
+    if (!live) return;
+    for (const pair of want) {const at = `${whose}/${pair}/${person.v}`; if (!looks[at]) void live.call<Look>('GET', `/api/people/${person.id}/compare/${pair}`).then(got => setLooks(was => ({...was, [at]: got})), () => setLooks(was => ({...was, [at]: 'failed'})));}
+  }, [whose, want.join(), person.v]);
+  if (!live || (!trakt && !lists && !moving)) return null;
+  const leftover = lookOf('here-mdblist'), leftovers = lists && !moving && !back && leftover && leftover !== 'failed' && leftover.lines.length > 0;
+  // Which state the card is in: the pair, its two columns, and its words.
+  const state = moving === 'mdblist' ? {kind: 'to-lists', pair: 'here-mdblist' as Pair, cols: ['here', 'lists'] as Place[], title: 'Moving to MDBList', count: 'to move'}
+    : lists && (back || moving === 'here') ? {kind: 'to-here', pair: 'mdblist-here' as Pair, cols: ['here', 'lists'] as Place[], title: 'Moving back to Here', count: 'to move'}
+    : leftovers ? {kind: 'finish', pair: 'here-mdblist' as Pair, cols: ['here', 'lists'] as Place[], title: 'Finish moving from Here', count: 'to move'}
+    : lists && trakt ? {kind: 'both', pair: 'mdblist-trakt' as Pair, cols: ['lists', 'trakt'] as Place[], title: 'MDBList and Trakt', count: 'missing'}
+    : trakt ? {kind: 'here-trakt', pair: 'here-trakt' as Pair, cols: ['here', 'trakt'] as Place[], title: 'Here and Trakt', count: 'missing'}
+    : {kind: 'lists', pair: null, cols: ['here', 'lists'] as Place[], title: 'MDBList', count: 'missing'};
+  const found = person.drift, moves = state.kind === 'to-lists' || state.kind === 'to-here';
+  if (lists && !moving && !back && leftover === undefined) return <li className="trackers quiet"><span className="dot wait" aria-hidden="true"/><p><strong>{trakt ? 'MDBList and Trakt' : 'MDBList'}</strong> <span className="muted">· looking…</span></p></li>;
+  const looked = state.pair ? lookOf(state.pair) : undefined;
+  if (state.pair && !looked) return <li className="trackers quiet"><span className="dot wait" aria-hidden="true"/><p><strong>{state.title}</strong> <span className="muted">· looking…</span></p></li>;
   const when = (ms: number) => {const date = new Date(ms), today = new Date().toDateString() === date.toDateString(); return `${today ? 'today' : date.toLocaleDateString(undefined, {day: 'numeric', month: 'short'})} at ${date.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;};
   const stamp = (ms: number) => `${new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'})}, ${new Date(ms).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;
-  const lines: Line[] = [
-    ...(trakt && lists ? (found?.toTrakt ?? []).map(miss => ({key: miss.key, title: miss.name || 'Untitled', detail: episode(miss.season, miss.episode), at: stamp(miss.at * 1000), trakt: 'add' as Cell, lists: 'has' as Cell})) : []),
-    ...(trakt && lists ? (found?.toMdblist ?? []).map(miss => ({key: miss.key, title: miss.name || 'Untitled', detail: episode(miss.season, miss.episode), at: stamp(miss.at * 1000), trakt: 'has' as Cell, lists: 'add' as Cell})) : []),
-    ...(here ? [...here.watched, ...here.partway].map(entry => ({key: entry.key, title: entry.title, detail: episode(entry.season, entry.episode), at: entry.pct == null ? stamp(Date.parse(entry.at)) : undefined, pct: entry.pct, here: true, trakt: trakt ? entry.trakt ?? 'none' : 'none', lists: lists ? entry.lists ?? 'add' : 'none'})) : []),
-  ];
-  const kept = lines.filter(line => !out.has(line.key)), checked = found ? `Checked ${when(found.checked * 1000)}` : '';
+  const lines: Line[] = state.kind === 'both' ? [
+    ...(found?.toMdblist ?? []).map(miss => ({key: miss.key, title: miss.name || 'Untitled', detail: miss.season != null ? `S${miss.season}E${miss.episode}` : 'Movie', at: stamp(miss.at * 1000), trakt: 'has' as Cell, lists: 'add' as Cell})),
+    ...(found?.toTrakt ?? []).map(miss => ({key: miss.key, title: miss.name || 'Untitled', detail: miss.season != null ? `S${miss.season}E${miss.episode}` : 'Movie', at: stamp(miss.at * 1000), trakt: 'add' as Cell, lists: 'has' as Cell})),
+    // Paused points one of them has and the other lacks (looked at when the card opens).
+    ...(looked && looked !== 'failed' ? looked.lines.map(line => ({...line, detail: short(line.detail), at: undefined})) : []),
+  ] : looked && looked !== 'failed' ? looked.lines.map(line => ({...line, detail: short(line.detail), at: line.pct == null && line.at ? stamp(Date.parse(line.at)) : undefined})) : [];
+  const checkedAt = state.kind === 'both' ? (found ? found.checked * 1000 : 0) : looked && looked !== 'failed' && looked.checked ? looked.checked * 1000 : 0;
+  const [left, right] = state.cols, kept = lines.filter(line => !out.has(line.key));
   const flip = (key: string) => setOut(was => {const next = new Set(was); if (!next.delete(key)) next.add(key); return next;});
-  const add = async () => {
-    setBusy(true); let added = 0;
+  const after = async (note: string) => {setOut(new Set()); setLooks({}); await live.sync(); await live.reload(); toast(note);};
+  const plays = (n: number) => `${n} ${n === 1 ? 'play' : 'plays'}`;
+  // One press: as many passes as it takes (each fits in what the hub may do per request), showing how far it has got.
+  const run = async () => {
+    setBusy('…'); let added = 0, unmatched = 0;
     try {
-      for (let pass = 0, leave = [...out]; pass < 10; pass++, leave = []) {const got = await live.call<{trakt: number; mdblist: number; more: boolean}>('POST', `/api/people/${person.id}/drift`, {leave}); added += got.trakt + got.mdblist; if (!got.more) break;}
-      setOut(new Set()); setHere(null); await live.reload(); toast(added ? `Added ${added} ${added === 1 ? 'play' : 'plays'}` : 'Both already had them');
-    } catch (error) {toast((error as Error).message);} finally {setBusy(false);}
+      if (state.kind === 'both') {
+        const got = await live.call<{trakt: number; mdblist: number}>('POST', `/api/people/${person.id}/drift`, {leave: [...out]}); added = got.trakt + got.mdblist;
+        if (lines.some(line => line.key.startsWith('pm:') || line.key.startsWith('pt:'))) added += (await live.call<{added: number}>('POST', `/api/people/${person.id}/compare/mdblist-trakt`, {})).added;
+        return await after(added ? `Added ${plays(added)}` : 'Both already had them');
+      }
+      if (state.kind === 'to-here' && moving !== 'here') {await live.call('POST', `/api/people/${person.id}/moving`, {to: 'here'}); await live.sync();}
+      let switched = false;
+      for (let pass = 0, leave = [...out]; pass < 30; pass++, leave = []) {
+        const got = await live.call<{added: number; unmatched: number; more: boolean; switched: boolean}>('POST', `/api/people/${person.id}/compare/${state.pair}`, {leave, ...(moves ? {switch: true} : {})});
+        added += got.added; unmatched += got.unmatched; switched = got.switched; setBusy(` ${added} so far`);
+        if (!got.more) break;
+      }
+      const missed = unmatched ? ` ${plays(unmatched)} couldn’t be matched and ${unmatched === 1 ? 'was' : 'were'} left out.` : '';
+      onBack(false);
+      await after(state.kind === 'to-lists' && switched ? `Moved ${plays(added)}. Progress is kept in MDBList now.${missed}` : state.kind === 'to-here' && switched ? `Moved ${plays(added)}. Progress is kept here now.${missed}` : added ? `Added ${plays(added)}.${missed}` : `Nothing needed adding.${missed}`);
+    } catch (error) {toast((error as Error).message); setLooks({}); await live.reload();} finally {setBusy('');}
   };
-  if (!lines.length) return !here && !found ? null : <li className="trackers quiet"><span className="dot ok" aria-hidden="true"/><p><strong>{trakt && lists ? 'Trakt and MDBList' : trakt ? 'Trakt' : 'MDBList'}</strong> <span className="muted">· all in step{found ? ` · checked ${when(found.checked * 1000)}` : ''}</span></p></li>;
-  const cell = (state: Cell, left: boolean) => state === 'none' ? <span className="cell none" aria-hidden="true">–</span> : <span className={`cell ${state}${left ? ' off' : ''}`} aria-hidden="true">{state === 'has' ? '✓' : '+'}</span>;
-  const arrow = (line: Line) => line.trakt === 'add' && line.lists === 'add' ? '← →' : line.trakt === 'add' ? '←' : '→';
+  const stay = async () => {
+    setBusy('…');
+    try {
+      if (state.kind === 'to-lists') {await live.call('DELETE', `/api/people/${person.id}/mdblist`); return await after('Staying on Here');}
+      if (moving === 'here') await live.call('POST', `/api/people/${person.id}/moving`, {to: null});
+      onBack(false); await after('Staying on MDBList');
+    } catch (error) {toast((error as Error).message);} finally {setBusy('');}
+  };
+  if (looked === 'failed') return <li className="trackers quiet"><span className="dot wait" aria-hidden="true"/><p><strong>{state.title}</strong> <span className="muted">· couldn’t look just now</span></p></li>;
+  if (!lines.length && !moves) return state.kind === 'lists' && !leftover ? null : <li className="trackers quiet"><span className="dot ok" aria-hidden="true"/><p><strong>{state.kind === 'both' ? 'Trakt and MDBList' : state.kind === 'here-trakt' ? 'Here and Trakt' : 'MDBList'}</strong> <span className="muted">· all in step{checkedAt ? ` · checked ${when(checkedAt)}` : ''}</span></p></li>;
+  const cell = (state_: Cell | undefined, off: boolean) => !state_ || state_ === 'none' ? <span className="cell none" aria-hidden="true">–</span> : <span className={`cell ${state_}${off ? ' off' : ''}`} aria-hidden="true">{state_ === 'has' ? '✓' : '+'}</span>;
+  const arrow = (line: Line) => line[right] === 'add' && line[left] === 'add' ? '← →' : line[right] === 'add' ? '→' : '←';
+  const visible = all ? lines : lines.slice(0, SHOWN);
+  const label = busy ? `${moves || state.kind === 'finish' ? 'Moving' : 'Adding'}…${busy.trim() === '…' ? '' : busy}` : moves ? (kept.length ? `Move ${plays(kept.length)} and switch` : state.kind === 'to-lists' ? 'Switch to MDBList' : 'Switch back to Here') : state.kind === 'finish' ? `Move ${plays(kept.length)}` : `Add ${plays(kept.length)}`;
   return <li className="stacked trackers">
-    <div className="trackers-head"><h3>{trakt && lists ? 'Trakt and MDBList' : trakt ? 'Trakt' : 'MDBList'}</h3>{checked && <span className="muted small">{checked}</span>}</div>
-    <p className="muted small">{lines.length} {lines.length === 1 ? 'play' : 'plays'} missing</p>
-    {trakt && lists && <div className="trackers-cols muted small" aria-hidden="true"><span>Trakt</span><span>MDBList</span></div>}
-    <ul className="plays">{lines.map(line => {const left = out.has(line.key); return <li key={line.key}>
-      <button type="button" className={`play${left ? ' left' : ''}`} aria-pressed={!left} aria-label={`Add ${line.title} ${line.detail}`} onClick={() => flip(line.key)}>
-        {trakt && lists && cell(line.trakt, left)}
-        <span className="what"><strong>{line.title}</strong><small>{line.detail}{line.at ? ` · ${line.at}` : ''}{line.here ? ' · watched here' : ''}{line.pct != null && <> · <em>{line.pct}%</em></>}</small>{trakt && lists && <small className="arrow" aria-hidden="true">{arrow(line)}</small>}</span>
-        {trakt && lists && cell(line.lists, left)}
-      </button></li>;})}</ul>
-    <button type="button" className="primary" disabled={busy || !kept.length} onClick={() => void add()}>{busy ? 'Adding…' : `Add ${kept.length} ${kept.length === 1 ? 'play' : 'plays'}`}</button>
-    <p className="muted small center-text">Tap a play to leave it out. Nothing is ever removed.</p>
+    <div className="trackers-head"><h3>{state.title}</h3>{checkedAt ? <span className="muted small">Checked {when(checkedAt)}</span> : null}</div>
+    <p className="muted small">{lines.length ? `${plays(lines.length)} ${state.count}` : 'Nothing to move'}{(looked as Look | undefined)?.more ? ', and more after these' : ''}</p>
+    {!!lines.length && <div className="trackers-cols muted small" aria-hidden="true"><span>{NAMES[left]}</span><span>{NAMES[right]}</span></div>}
+    {!!lines.length && <ul className="plays">{visible.map(line => {const off = out.has(line.key); return <li key={line.key}>
+      <button type="button" className={`play${off ? ' left' : ''}`} aria-pressed={!off} aria-label={`Add ${line.title} ${line.detail}`} onClick={() => flip(line.key)}>
+        {cell(line[left], off)}
+        <span className="what"><strong>{line.title}</strong><small>{line.detail}{line.at ? ` · ${line.at}` : ''}{line.pct != null && <> · partway · <em>{line.pct}%</em></>}{line.elsewhere ? ' · watched elsewhere' : ''}</small><small className="arrow" aria-hidden="true">{arrow(line)}</small></span>
+        {cell(line[right], off)}
+      </button></li>;})}</ul>}
+    {lines.length > SHOWN && !all && <button type="button" className="link small center-text more-plays" onClick={() => setAll(true)}>and {lines.length - SHOWN} more</button>}
+    <button type="button" className="primary" disabled={!!busy || (!kept.length && !moves)} onClick={() => void run()}>{label}</button>
+    <p className="muted small center-text">{state.kind === 'to-lists' ? <>Everything stays Here too. <button type="button" className="link small stay" disabled={!!busy} onClick={() => void stay()}>Stay on Here</button></>
+      : state.kind === 'to-here' ? <>Everything stays in MDBList too. <button type="button" className="link small stay" disabled={!!busy} onClick={() => void stay()}>Stay on MDBList</button></>
+      : state.kind === 'finish' ? 'These were watched here before MDBList. Everything stays Here too.' : 'Tap a play to leave it out. Nothing is ever removed.'}</p>
   </li>;
 }
+
 type Found = {id: string; title: string; kind: string; source: string};
 /* What only the person themselves sees in Add row on their own Home: their own Trakt and MDBList lists, and the suggestions their
    watching points to. Kept with whose they are, so a view of someone else never shows them. */

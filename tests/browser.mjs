@@ -162,39 +162,79 @@ for (const where of ['/#/hub', '/#/group/family', '/#/person/ada/home']) {
   if (where === '/#/hub') await theirs.getByText(/more picks? reads? MDBList lists/).waitFor();
   await theirs.getByRole('button', {name: 'Close'}).click();
 } await guest.goto(BASE + '/#/me/accounts'); await trakt.getByText('Connected as adatrakt.').waitFor();
-// MDBList: with her key saved, progress is kept there, and copying what she watched here is offered on her own page.
-await guest.getByRole('radio', {name: 'MDBList'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key'); await guest.getByRole('button', {name: 'Save'}).click();
-await toast(guest).filter({hasText: 'MDBList connected as adalists'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'MDBList'}).getAttribute('aria-checked'), 'true');
-await guest.getByText('Hiding what’s been watched needs MDBList').waitFor({state: 'detached'});
-// Plays one of her trackers is missing (as the daily look would note it): one card, every play included until she taps it out.
+// The Trakt and MDBList card: always two places side by side. What each pair holds is put in the hub's six-hour keep here (no
+// player setups run in this test, so nothing could be looked at); copying across is tested in tests/aiom.test.mjs.
 const sqlLocal = command => execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', command], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
+const iso = days => new Date(Date.now() - days * 86400e3).toISOString(), keep = {};
+const play = (key, title, detail, days, cells, extra = {}) => ({key, title, detail, at: iso(days), here: 'none', trakt: 'none', lists: 'none', ...cells, ...extra});
+const holds = (pair, lines) => {keep[pair] = {at: Math.floor(Date.now() / 1000), look: {lines, more: false, unmatched: 0, already: 0}}; sqlLocal(`INSERT INTO drift (hub, person, day, here, here_at) SELECT id, 'ada', '', '${JSON.stringify(keep)}', 0 FROM hubs WHERE true ON CONFLICT (hub, person) DO UPDATE SET here = excluded.here`);};
+const card = guest.locator('.accounts li.trackers'), both = async (page, name) => {await card.scrollIntoViewIfNeeded(); await shot(page, `${name}-phone`); await page.setViewportSize({width: 1280, height: 900}); await card.scrollIntoViewIfNeeded(); await shot(page, `${name}-wide`); await page.setViewportSize({width: 390, height: 844});};
+const columns = async () => (await card.locator('.trackers-cols span').allTextContents()).join(' | ');
+// Progress Here, Trakt connected (also what someone with Trakt only sees): out to Trakt what never reached it, in from Trakt what
+// was watched elsewhere, a spot Trakt holds.
+holds('here-trakt', [play('w:show/60574:5:2', 'Peaky Blinders', 'Season 5 · Episode 2', 0.5, {here: 'has', trakt: 'add'}), play('i:show/83867:2:4', 'Andor', 'Season 2 · Episode 4', 5, {here: 'add', trakt: 'has'}, {elsewhere: true}),
+  play('ip:movie/693134', 'Dune: Part Two', 'Movie', 8, {here: 'add', trakt: 'has'}, {elsewhere: true, pct: 42})]);
+await guest.reload(); await card.getByRole('heading', {name: 'Here and Trakt'}).waitFor(); await card.getByText('3 plays missing').waitFor();
+assert.equal(await columns(), 'Here | Trakt'); await card.getByText('· watched elsewhere').first().waitFor(); await card.getByText('partway').waitFor();
+const andor = card.getByRole('button', {name: 'Add Andor S2E4'}); await andor.click(); assert.equal(await andor.getAttribute('aria-pressed'), 'false'); await card.getByRole('button', {name: 'Add 2 plays'}).waitFor();
+await both(guest, '13a-card-here-trakt'); await andor.click();
+holds('here-trakt', []); await guest.reload(); await guest.getByText('Here and Trakt · all in step', {exact: false}).waitFor(); await both(guest, '13h-card-here-trakt-in-step');
+// Choosing MDBList on her own page keeps the key and opens the move: nothing switches until her plays are across.
+await guest.getByRole('radio', {name: 'MDBList'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key');
+await guest.getByRole('button', {name: 'Save'}).click(); await toast(guest).filter({hasText: 'Move your plays across to switch'}).waitFor();
+holds('here-mdblist', [play('p:show/194764:1:6', 'The Penguin', 'Season 1 · Episode 6', 2, {here: 'has', lists: 'add'}, {pct: 42}), play('w:show/66276:6:6', 'Slow Horses', 'Season 6 · Episode 6', 15, {here: 'has', lists: 'add'}), play('w:show/1407:5:5', 'Homeland', 'Season 5 · Episode 5', 18, {here: 'has', lists: 'add'})]);
+await guest.reload();
+await card.getByRole('heading', {name: 'Moving to MDBList'}).waitFor(); await card.getByText('3 plays to move').waitFor(); assert.equal(await columns(), 'Here | MDBList');
+await card.getByRole('button', {name: 'Move 3 plays and switch'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'MDBList'}).getAttribute('aria-checked'), 'true');
+assert.equal((await guest.evaluate(async () => (await (await fetch('/api/state')).json()).hub.people[0])).lists, false, 'not switched yet');
+await both(guest, '13e-card-moving-to-mdblist');
+// Staying on Here lets the key go again.
+await card.getByRole('button', {name: 'Stay on Here'}).click(); await toast(guest).filter({hasText: 'Staying on Here'}).waitFor();
+assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true'); await guest.locator('li.trackers', {hasText: 'Here and Trakt'}).waitFor();
+// The manager connects it for her instead (from the manager's view it switches at once). Plays from before stay Here until she
+// finishes moving them: the card shows that first.
+await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByRole('radio', {name: 'MDBList'}).click(); await owner.getByLabel('MDBList API key').fill('ada-mdblist-key'); await owner.getByRole('button', {name: 'Save'}).click();
+await toast(owner).filter({hasText: 'MDBList connected as adalists'}).waitFor();
+holds('here-mdblist', [play('w:show/66276:6:6', 'Slow Horses', 'Season 6 · Episode 6', 15, {here: 'has', lists: 'add'}), play('w:movie/603', 'The Matrix', 'Movie', 20, {here: 'has', lists: 'add'})]);
+await guest.reload(); await card.getByRole('heading', {name: 'Finish moving from Here'}).waitFor(); await card.getByRole('button', {name: 'Move 2 plays'}).waitFor(); assert.equal(await columns(), 'Here | MDBList');
+await guest.getByText('Hiding what’s been watched needs MDBList').waitFor({state: 'detached'});
+await both(guest, '13f-card-finish-moving');
+// Progress in MDBList, Trakt connected: MDBList on the left, Trakt on the right, both ways (the daily look and paused points).
+holds('here-mdblist', []); holds('mdblist-trakt', [play('pt:movie/550', 'Fight Club', 'Movie', 1, {trakt: 'has', lists: 'add'}, {pct: 35})]);
 const drift = JSON.stringify({since: 0, trakt: 3, mdblist: 2, toMdblist: [{kind: 'show', tmdb: 1396, name: 'Breaking Bad', season: 1, episode: 2, at: 1763000000}], toTrakt: [{kind: 'movie', tmdb: 680, name: 'Pulp Fiction', at: 1762900000}]});
-sqlLocal(`INSERT INTO drift (hub, person, day, result, at) SELECT id, 'ada', '2026-06-01', '${drift}', ${Math.floor(Date.now() / 1000)} FROM hubs`);
-await guest.reload(); const card = guest.locator('.accounts li.trackers');
-await card.getByText('2 plays missing').waitFor(); await card.getByText(/^Checked today at /).waitFor(); await card.getByRole('button', {name: 'Add 2 plays'}).waitFor();
+sqlLocal(`UPDATE drift SET result = '${drift}', at = ${Math.floor(Date.now() / 1000)}, day = '2026-06-01'`);
+await guest.reload(); await card.getByRole('heading', {name: 'MDBList and Trakt'}).waitFor();
+await card.getByText('3 plays missing').waitFor(); await card.getByText(/^Checked today at /).waitFor(); await card.getByRole('button', {name: 'Add 3 plays'}).waitFor(); assert.equal(await columns(), 'MDBList | Trakt');
 const pulpLine = card.getByRole('button', {name: 'Add Pulp Fiction Movie'}); assert.equal(await pulpLine.getAttribute('aria-pressed'), 'true');
-await pulpLine.click(); assert.equal(await pulpLine.getAttribute('aria-pressed'), 'false'); await card.getByRole('button', {name: 'Add 1 play'}).waitFor();
-await card.scrollIntoViewIfNeeded(); await shot(guest, '13b-trackers-phone');
-await guest.setViewportSize({width: 1280, height: 900}); await card.scrollIntoViewIfNeeded(); await shot(guest, '13c-trackers-wide'); await guest.setViewportSize({width: 390, height: 844});
+assert.equal(await pulpLine.locator('.arrow').textContent(), '→', 'MDBList has it, Trakt gets it');
+await pulpLine.click(); assert.equal(await pulpLine.getAttribute('aria-pressed'), 'false'); await card.getByRole('button', {name: 'Add 2 plays'}).waitFor();
+await both(guest, '13b-card-mdblist-trakt');
 await pulpLine.press('Enter'); assert.equal(await pulpLine.getAttribute('aria-pressed'), 'true');
 // Nothing missing: the card folds to one line.
-sqlLocal(`UPDATE drift SET result = '${JSON.stringify({since: 0, trakt: 3, mdblist: 3, toMdblist: [], toTrakt: []})}'`);
-await guest.reload(); await guest.getByText('· all in step · checked today at', {exact: false}).waitFor(); await shot(guest, '13d-trackers-in-step');
+holds('mdblist-trakt', []); sqlLocal(`UPDATE drift SET result = '${JSON.stringify({since: 0, trakt: 3, mdblist: 3, toMdblist: [], toTrakt: []})}'`);
+await guest.reload(); await guest.getByText('Trakt and MDBList · all in step · checked today at', {exact: false}).waitFor(); await both(guest, '13d-card-in-step');
+// Pressing Here on her own page opens the move back, MDBList's plays coming Here; staying on MDBList changes nothing.
+holds('mdblist-here', [play('i:show/83867:2:4', 'Andor', 'Season 2 · Episode 4', 5, {here: 'add', lists: 'has'}), play('i:show/95396:2:10', 'Severance', 'Season 2 · Episode 10', 11, {here: 'add', lists: 'has'})]);
+await guest.getByRole('radio', {name: 'Here'}).click(); assert.equal(await guest.getByRole('button', {name: 'Keep it here'}).count(), 0);
+await card.getByRole('heading', {name: 'Moving back to Here'}).waitFor(); await card.getByRole('button', {name: 'Move 2 plays and switch'}).waitFor(); assert.equal(await columns(), 'Here | MDBList');
+assert.equal(await card.locator('.arrow').first().textContent(), '←');
+await both(guest, '13g-card-moving-back');
+await card.getByRole('button', {name: 'Stay on MDBList'}).click(); await toast(guest).filter({hasText: 'Staying on MDBList'}).waitFor();
+assert.equal(await guest.getByRole('radio', {name: 'MDBList'}).getAttribute('aria-checked'), 'true');
 sqlLocal('DELETE FROM drift');
-// The manager sees the same states, without the copy step: that is hers alone.
+// The manager sees none of it: what she watched is hers alone.
 await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Connected as adatrakt.').waitFor();
-await owner.getByText('can copy it to MDBList from their own page').waitFor(); assert.equal(await owner.getByText('What you watched here').count(), 0); await shot(owner, '14-accounts-manager');
+await owner.getByText('can copy it to MDBList from their own page').waitFor(); assert.equal(await owner.locator('li.trackers').count(), 0); await shot(owner, '14-accounts-manager');
 // The manager who is Ada too opens her link once she has joined: straight into her own view, as if she had signed in, with her
 // own things there. "Back to manager" returns to the manager's view, which was kept aside meanwhile.
 await owner.goto(link); await owner.waitForURL(/#\/me/); await owner.getByText('Shared with you').waitFor(); await owner.getByRole('button', {name: 'Back to manager'}).waitFor();
 await owner.goto(BASE + '/#/me/accounts'); await owner.getByText('Where progress is kept').waitFor(); assert.equal(await owner.getByText('can copy it to MDBList from their own page').count(), 0); await shot(owner, '14b-accounts-as-ada');
 await owner.getByRole('button', {name: 'Back to manager'}).click(); await owner.getByText('Add someone to Family').waitFor();
-await owner.goto(BASE + '/#/person/ada/accounts'); await owner.getByText('can copy it to MDBList from their own page').waitFor(); assert.equal(await owner.getByText('What you watched here').count(), 0);
 // Her rows' posters stay on her page: the hub's Home shows only blanks where her Trakt rows would go.
 await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later').first().waitFor(); assert.equal(await owner.locator('.rows .row.later .posters span:not(.blank)').count(), 0);
-// Back to Here asks first, then MDBList is let go.
-await guest.getByRole('radio', {name: 'Here'}).click(); await guest.getByRole('button', {name: 'Keep it here'}).click();
-await toast(guest).filter({hasText: 'Progress kept here'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
+// From the manager's view, back to Here asks first, then MDBList is let go at once.
+await owner.goto(BASE + '/#/person/ada/accounts'); await owner.getByRole('radio', {name: 'Here'}).click(); await owner.getByRole('button', {name: 'Keep it here'}).click();
+await toast(owner).filter({hasText: 'Progress kept here'}).waitFor(); await guest.reload(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
 await owner.goto(BASE + '/#/hub/playback'); await owner.getByText('It needs progress kept in MDBList').waitFor();
 
 // Activity keeps where each play was reported from behind a small pin: folded until pressed, and absent when unknown.

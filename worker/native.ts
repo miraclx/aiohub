@@ -427,7 +427,9 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
   if (!key) return {state: 'needs-key', message: `Connect ${service} under Hub, Sources, so there is something to play from.`};
   const [groupRows, personRows] = await env.DB.batch([env.DB.prepare('SELECT id, name, data FROM groups WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, grp, name, data FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id)]);
   const top: Want = {rows: data.rows, settings: data.defaults}, linked = new Map<string, string>(), watching = new Map<string, string>();
-  for (const name of vault.keys()) if (name.endsWith('/mdblist')) {const owner = name.slice(0, -8), own = await held<{key: string}>(env, vault, hub.id, owner, 'mdblist'); if (own?.key) watching.set(owner, own.key);}
+  // A key kept while its person moves where progress is kept (places.ts) records nothing and hides nothing: they are still on Here,
+  // or on their way back to it, and ticks Here then never echo into MDBList.
+  for (const name of vault.keys()) if (name.endsWith('/mdblist')) {const owner = name.slice(0, -8), own = await held<{key: string; moving?: string}>(env, vault, hub.id, owner, 'mdblist'); if (own?.key && !own.moving) watching.set(owner, own.key);}
   for (const name of vault.keys()) if (name.endsWith('/trakt')) {const owner = name.slice(0, -6), held_ = await held<{tokenId: string}>(env, vault, hub.id, owner, 'trakt'); if (held_?.tokenId) linked.set(owner, held_.tokenId);}
   // Someone whose Trakt is connected to the hub gets their Trakt rows from the hub, at an address of their own made once. If their
   // Trakt is also connected on AIOMetadata, the hub's wins and AIOMetadata's is no longer used.

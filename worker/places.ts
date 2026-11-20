@@ -1,0 +1,241 @@
+/* The Trakt and MDBList card on a person's own Accounts page always compares two places: where their progress is kept (Here, their
+   own server; or their MDBList) and Trakt, or, while they move where progress is kept, the old place and the new one. Each line is a
+   play one of the two lacks; Add (or Move) copies it across. Nothing is ever removed anywhere.
+   Pairs, by what is looked at:
+   - here-trakt: plays here that never reached Trakt go to Trakt (carry.ts); plays on Trakt in the last two weeks that Here lacks
+     ("watched elsewhere") are ticked Here.
+   - here-mdblist: what Here has that MDBList lacks (carry.ts): the move to MDBList, or what is left of it.
+   - mdblist-here: what MDBList has that Here lacks, ticked Here: the move back.
+   - mdblist-trakt: paused points (part-watched titles) one of MDBList and Trakt has and the other lacks. Their finished plays are
+     compared by the daily look (drift.ts).
+   Part-watched titles travel as paused points under 80%: Trakt and MDBList date one when it is sent; Here keeps the position.
+   Ticking Here never reaches a tracker: it goes straight to the person's own server, and only while that server passes nothing on
+   (playbackReporting off: someone on Here, or someone moving back from MDBList, whose setup is switched first). */
+import type {Env} from './util';
+import {getSecret, now, putSecret} from './util';
+import {LINK} from './trakt';
+import type {Link} from './trakt';
+import {traktPlays} from './drift';
+import {carry, mdblist, pauseOf, plan, pointKey, traktPoints} from './carry';
+import type {TraktPoint} from './carry';
+import {deliver} from './trakt';
+import type {Cell} from './carry';
+import {packed, server} from './here';
+import type {Ids, Item, Server, Via} from './here';
+
+export type Pair = 'here-trakt' | 'here-mdblist' | 'mdblist-here' | 'mdblist-trakt';
+export const PAIRS: Pair[] = ['here-trakt', 'here-mdblist', 'mdblist-here', 'mdblist-trakt'];
+export interface Line {key: string; title: string; detail: string; at: string; pct?: number; here: Cell; trakt: Cell; lists: Cell; elsewhere?: boolean}
+export interface Look {lines: Line[]; more: boolean; unmatched: number; already: number; checked?: number}
+type Failed = {error: string};
+/* A play another place has that Here lacks, with the id Here knows it by. */
+interface Incoming {key: string; kind: 'movie' | 'show'; ids: Ids; title: string; season?: number; episode?: number; at: string; pct?: number; id: string; runtime?: number}
+
+// Trakt plays from this far back are offered to Here; MDBList is read whole when moving back, the newest this many at a time.
+// A pass ticks Here until its own calls reach BUDGET, leaving room in the Worker's ~50 for the rest of the pass.
+const SPAN = 14 * 86400, CHECK = 300, BUDGET = 22;
+const detail = (season?: number, episode?: number) => season != null ? `Season ${season} · Episode ${episode}` : 'Movie';
+const same = (a: string, b: string) => a.replace(/-/g, '').toLowerCase() === b.replace(/-/g, '').toLowerCase();
+const where = (kind: string, tmdb: number | undefined, season?: number, episode?: number) => `${kind}/${tmdb}${season != null ? `:${season}:${episode}` : ''}`;
+
+/* What Here holds of these plays: each one Here lacks (with its id there), how many it has, how many it does not know. */
+async function lacking(own: Server, plays: Omit<Incoming, 'id'>[]) {
+  const withId = plays.map(play => ({...play, id: packed(play.kind === 'movie' ? 'movie' : 'episode', play.ids, play.season, play.episode) ?? ''})).filter(play => play.id);
+  const found = await own.items(withId.map(play => play.id)), out: Incoming[] = [];
+  let has = 0, unknown = plays.length - withId.length;
+  for (const play of withId) {
+    const item = found.find(held => same(held.Id, play.id));
+    if (!item) {unknown++; continue;}
+    if (item.UserData?.Played || (play.pct != null && Number(item.UserData?.PlaybackPositionTicks) > 0)) {has++; continue;}
+    out.push({...play, runtime: item.RunTimeTicks});
+  }
+  return {out, has, unknown};
+}
+/* Plays on Trakt in the last two weeks, newest first, one per title or episode. null when Trakt did not answer. */
+async function fromTrakt(env: Env, hub: string, person: string) {
+  const titles: Record<string, {kind: 'movie' | 'show'; tmdb: number; imdb?: string; name: string}> = {}, plays: Omit<Incoming, 'id'>[] = [], seen = new Set<string>();
+  let more = false;
+  // Where Trakt holds a part-watched title: brought Here as a position, where Here has none.
+  // Not known just now: only the finished plays are looked at this time.
+  const points = await traktPoints(env, hub, person) ?? [];
+  for (const point of points) {const play = fromPoint(point); if (play && !seen.has(play.key)) {seen.add(play.key); plays.push(play);}}
+  for (let page = 1; page <= 3; page++) {
+    const got = await traktPlays(env, hub, person, now() - SPAN, now(), page, titles);
+    if (!got) return null;
+    for (const play of got.plays) {
+      const title = titles[play.t], key = `i:${where(title.kind, title.tmdb, play.s, play.e)}`;
+      if (seen.has(key)) continue; seen.add(key);
+      plays.push({key, kind: title.kind, ids: {tmdb: title.tmdb, ...(title.imdb ? {imdb: title.imdb} : {})}, title: title.name || 'Untitled', ...(play.s != null ? {season: play.s, episode: play.e} : {}), at: new Date(play.at * 1000).toISOString()});
+    }
+    if (!got.more) break;
+    more = page === 3;
+  }
+  return {plays, more};
+}
+interface Media {title?: string; ids?: {tmdb?: number | null; imdb?: string | null}}
+const idsOf = (media?: Media): Ids => ({tmdb: Number(media?.ids?.tmdb) || undefined, ...(/^tt\d+$/.test(media?.ids?.imdb ?? '') ? {imdb: media!.ids!.imdb!} : {})});
+/* A paused point (Trakt's or MDBList's) as a part-watched play, or null for one that is finished or has nothing to go by. */
+function fromPoint(point: TraktPoint): Omit<Incoming, 'id'> | null {
+  const pct = Math.round(Number(point.progress)), movie = point.type === 'movie', media = movie ? point.movie : point.show, key = pointKey(point);
+  if (!key || !(pct >= 1 && pct < 80) || (!movie && (point.episode?.season == null || point.episode.number == null))) return null;
+  return {key: `ip:${key}`, kind: movie ? 'movie' : 'show', ids: idsOf(media), title: String(media?.title ?? 'Untitled').slice(0, 200), ...(movie ? {} : {season: point.episode!.season, episode: point.episode!.number}), at: point.paused_at ?? new Date().toISOString(), pct};
+}
+/* Everything MDBList has as watched, and what it holds partway, newest first. null when MDBList did not answer. */
+async function fromMdblist(env: Env, key: string) {
+  const ask = mdblist(env, key), watched = await ask('/sync/watched?limit=1000'), paused = await ask('/sync/playback');
+  const body = watched.body as {movies?: {last_watched_at?: string; movie?: Media}[]; episodes?: {last_watched_at?: string; episode?: {season?: number; number?: number; show?: Media}}[]} | null;
+  if (watched.status !== 200 || !body || Array.isArray(body) || paused.status !== 200) return null;
+  const plays: Omit<Incoming, 'id'>[] = [], ids = idsOf;
+  for (const item of body.movies ?? []) if (item.movie) plays.push({key: `i:${where('movie', ids(item.movie).tmdb)}`, kind: 'movie', ids: ids(item.movie), title: String(item.movie.title ?? 'Untitled').slice(0, 200), at: item.last_watched_at ?? new Date().toISOString()});
+  for (const item of body.episodes ?? []) if (item.episode?.show && item.episode.season != null && item.episode.number != null) plays.push({key: `i:${where('show', ids(item.episode.show).tmdb, item.episode.season, item.episode.number)}`, kind: 'show', ids: ids(item.episode.show), title: String(item.episode.show.title ?? 'Untitled').slice(0, 200), season: item.episode.season, episode: item.episode.number, at: item.last_watched_at ?? new Date().toISOString()});
+  for (const point of (Array.isArray(paused.body) ? paused.body : []) as TraktPoint[]) {const play = fromPoint(point); if (play) plays.push(play);}
+  return plays.filter(play => play.ids.tmdb || play.ids.imdb).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+}
+const incomingLine = (play: Incoming, from: 'trakt' | 'lists'): Line => ({key: play.key, title: play.title, detail: detail(play.season, play.episode), at: play.at, ...(play.pct != null ? {pct: play.pct} : {}), here: 'add', trakt: from === 'trakt' ? 'has' : 'none', lists: from === 'lists' ? 'has' : 'none', ...(from === 'trakt' ? {elsewhere: true} : {})});
+
+/* Paused points MDBList has and Trakt lacks, and the other way: one read of each. */
+async function pointsBoth(env: Env, hub: string, person: string): Promise<{lines: Line[]; points: (Omit<Incoming, 'id'> & {to: 'trakt' | 'lists'})[]; same: number} | Failed> {
+  const lists = await getSecret<{key: string}>(env, hub, person, 'mdblist');
+  if (!lists?.key) return {error: 'Connect MDBList first.'};
+  const theirs = await mdblist(env, lists.key)('/sync/playback'), trakt = await traktPoints(env, hub, person);
+  if (theirs.status !== 200 || !Array.isArray(theirs.body)) return {error: 'MDBList isn’t answering just now. Try again in a moment.'};
+  if (!Array.isArray(trakt)) return {error: 'Trakt isn’t answering just now. Try again in a few minutes.'};
+  const onLists = new Map((theirs.body as TraktPoint[]).map(point => [pointKey(point), point])), onTrakt = new Map(trakt.map(point => [pointKey(point), point]));
+  const points: (Omit<Incoming, 'id'> & {to: 'trakt' | 'lists'})[] = [];
+  let same = 0;
+  for (const [key, point] of onLists) {if (!key) continue; if (onTrakt.has(key)) {same++; continue;} const play = fromPoint(point); if (play) points.push({...play, key: `pm:${key}`, to: 'trakt'});}
+  for (const [key, point] of onTrakt) {if (!key || onLists.has(key)) continue; const play = fromPoint(point); if (play) points.push({...play, key: `pt:${key}`, to: 'lists'});}
+  return {points, same, lines: points.map(point => ({key: point.key, title: point.title, detail: detail(point.season, point.episode), at: point.at, pct: point.pct, here: 'none', trakt: point.to === 'trakt' ? 'add' : 'has', lists: point.to === 'lists' ? 'add' : 'has'}))};
+}
+/* What a pair has to copy, as the card shows it. */
+export async function look(env: Env, hub: string, person: string, pair: Pair, skip: Set<string>, outgoing = true): Promise<Look & {incoming: Incoming[]} | Failed> {
+  const lines: Line[] = [];
+  let more = false, unmatched = 0, already = 0, incoming: Incoming[] = [];
+  if (pair === 'mdblist-trakt') {
+    const got = await pointsBoth(env, hub, person);
+    if ('error' in got) return got;
+    return {lines: got.lines.filter(line => !skip.has(line.key)), more: false, unmatched: 0, already: got.same, incoming: []};
+  }
+  if (outgoing && (pair === 'here-trakt' || pair === 'here-mdblist')) {
+    const out = await plan(env, hub, person, skip, pair === 'here-trakt' ? {trakt: true} : {lists: true});
+    if ('error' in out) return out;
+    for (const entry of [...out.watched, ...out.partway]) lines.push({key: entry.key, title: entry.title, detail: entry.detail, at: entry.at, ...(entry.pct != null ? {pct: entry.pct} : {}), here: 'has', trakt: entry.trakt, lists: entry.lists});
+    more = out.more; unmatched = out.unknown; already = out.already;
+  }
+  if (pair === 'here-trakt' || pair === 'mdblist-here') {
+    const via = await getSecret<Via>(env, hub, person, 'upstream-aiom');
+    if (!via) return {error: 'Nothing has been watched here yet.'};
+    let plays: Omit<Incoming, 'id'>[];
+    if (pair === 'here-trakt') {
+      const got = await fromTrakt(env, hub, person);
+      if (!got) return {error: 'Trakt isn’t answering just now. Try again in a few minutes.'};
+      plays = got.plays; more ||= got.more;
+    } else {
+      const lists = await getSecret<{key: string}>(env, hub, person, 'mdblist');
+      if (!lists?.key) return {error: 'Connect MDBList first.'};
+      const got = await fromMdblist(env, lists.key);
+      if (!got) return {error: 'MDBList isn’t answering just now. Try again in a moment.'};
+      plays = got;
+    }
+    plays = plays.filter(play => !skip.has(play.key));
+    if (plays.length > CHECK) {more = true; plays = plays.slice(0, CHECK);}
+    const own = await server(via);
+    if (!own) return {error: 'Your server did not answer. Try again in a moment.'};
+    try {
+      const got = await lacking(own, plays);
+      incoming = got.out; already += got.has; unmatched += got.unknown;
+      lines.push(...incoming.map(play => incomingLine(play, pair === 'here-trakt' ? 'trakt' : 'lists')));
+    } catch {return {error: 'Your server did not answer. Try again in a moment.'};}
+    finally {await own.done();}
+  }
+  return {lines: lines.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)), more, unmatched, already, incoming};
+}
+
+/* The person's own server passes nothing on to a tracker right now: ticking Here cannot echo anywhere. */
+async function quiet(env: Env, hub: string, person: string) {
+  const made = await getSecret<{uuid: string; password: string; at?: string}>(env, hub, person, 'aiom');
+  if (!made) return false;
+  const read = await fetch(`${made.at ?? env.AIOM_ORIGIN}/api/config/load/${made.uuid}`, {method: 'POST', headers: {'content-type': 'application/json', accept: 'application/json', 'user-agent': 'AIOHub/1.0'}, body: JSON.stringify({password: made.password})}).catch(() => null);
+  const config = read?.status === 200 ? ((await read.json().catch(() => null)) as {config?: Record<string, unknown>} | null)?.config : null;
+  return !!config && config.playbackReporting !== true && config.mdblistWatchTracking !== true;
+}
+/* Ticks plays Here, as many as fit in one pass. Episodes go by the show's own numbering on this server: one it does not have under
+   that season and number is left out (counted as not matched), never guessed. */
+async function tickHere(own: Server, plays: Incoming[]) {
+  let added = 0, unmatched = 0, left = 0;
+  const shows = new Map<string, Map<string, string> | null>();
+  for (const play of plays) {
+    if (own.counter.calls > BUDGET) {left++; continue;}
+    let id = play.id;
+    if (play.kind === 'show') {
+      const series = packed('series', play.ids) ?? '';
+      if (!shows.has(series)) shows.set(series, series ? await own.episodes(series) : null);
+      const numbered = shows.get(series);
+      id = numbered?.get(`${play.season}:${play.episode}`) ?? '';
+      if (!id) {unmatched++; continue;}
+    }
+    const done = play.pct != null ? (play.runtime ? await own.position(id, play.runtime * play.pct / 100) : false) : await own.mark(id, play.at);
+    if (done) added++; else unmatched++;
+  }
+  return {added, unmatched, left};
+}
+
+/* One pass of Add (or Move) for a pair. `leave`: what the person tapped out, kept out for good. */
+export async function copy(env: Env, hub: string, person: string, pair: Pair, skip: Set<string>): Promise<{added: number; unmatched: number; more: boolean} | Failed> {
+  let added = 0, unmatched = 0, more = false;
+  if (pair === 'mdblist-trakt') {
+    const got = await pointsBoth(env, hub, person);
+    if ('error' in got) return got;
+    const lists = (await getSecret<{key: string}>(env, hub, person, 'mdblist'))!, ask = mdblist(env, lists.key), todo = got.points.filter(point => !skip.has(point.key));
+    for (const point of todo.slice(0, 10)) {
+      if (point.to === 'trakt') {if (await deliver(env, hub, person, `carry:${point.key.slice(3)}`, {kind: 'pause', path: '/scrobble/pause', body: pauseOf(point)}) === 'off') return {error: 'Trakt needs connecting again.'}; added++;}
+      else {const answer = await ask('/scrobble/pause', point.kind === 'movie' ? {movie: {ids: point.ids}, progress: Math.min(79.99, point.pct!)} : {show: {ids: point.ids, season: {number: point.season, episode: {number: point.episode}}}, progress: Math.min(79.99, point.pct!)}); if (answer.status === 200 || answer.status === 201) added++; else unmatched++;}
+    }
+    return {added, unmatched, more: todo.length > 10};
+  }
+  if (pair !== 'here-mdblist' && !await quiet(env, hub, person)) return {error: 'Your setup is still switching over. Try again in a moment.'};
+  // Out of Here first (to Trakt or MDBList), through carry.ts, which keeps one pass per person at a time.
+  if (pair !== 'mdblist-here') {
+    const got = await carry(env, hub, person, skip, pair === 'here-trakt' ? {trakt: true} : {lists: true});
+    if ('error' in got) return got;
+    added += got.watched + got.partway + got.trakt; more ||= got.more; unmatched += got.missed;
+    if (pair === 'here-mdblist') return {added, unmatched, more};
+  }
+  const found = await look(env, hub, person, pair, skip, false);
+  if ('error' in found) return found;
+  if (!found.incoming.length) return {added, unmatched, more: more || found.more};
+  const via = (await getSecret<Via>(env, hub, person, 'upstream-aiom'))!, own = await server(via);
+  if (!own) return {error: 'Your server did not answer. Try again in a moment.'};
+  try {
+    const got = await tickHere(own, found.incoming);
+    return {added: added + got.added, unmatched: unmatched + got.unmatched, more: more || found.more || got.left > 0};
+  } finally {await own.done();}
+}
+
+/* What the card shows, worked out when it opens and kept for six hours per person and pair: MDBList allows a person 1,000 calls a
+   day, and Trakt turns away busy callers. */
+const KEPT = 6 * 3600;
+export async function shown(env: Env, hub: string, person: string, pair: Pair, skip: Set<string>): Promise<Look | Failed> {
+  const row = await env.DB.prepare('SELECT here FROM drift WHERE hub = ? AND person = ?').bind(hub, person).first<{here: string | null}>();
+  let kept: Record<string, {at: number; look: Look}> = {};
+  try {kept = row?.here ? JSON.parse(row.here) : {};} catch {kept = {};}
+  if (kept[pair] && now() - kept[pair].at < KEPT) return {...kept[pair].look, checked: kept[pair].at};
+  const got = await look(env, hub, person, pair, skip);
+  if ('error' in got) return got;
+  const {incoming: _, ...look_} = got;
+  await env.DB.batch([env.DB.prepare("INSERT INTO drift (hub, person, day) VALUES (?, ?, '') ON CONFLICT (hub, person) DO NOTHING").bind(hub, person), env.DB.prepare('UPDATE drift SET here = ?, here_at = ? WHERE hub = ? AND person = ?').bind(JSON.stringify({...kept, [pair]: {at: now(), look: look_}}), now(), hub, person)]);
+  return {...look_, checked: now()};
+}
+export const forgetShown = (env: Env, hub: string, person: string) => env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, person);
+
+/* Whether a person's Trakt is connected to the hub and usable. */
+export const traktOn = async (env: Env, hub: string, person: string) => !!env.TRAKT_CLIENT_ID && !((await getSecret<Link>(env, hub, person, LINK)) ?? {again: true}).again;
+/* Marks the MDBList key as being moved to or from. */
+export async function moving(env: Env, hub: string, person: string, to: 'mdblist' | 'here' | null) {
+  const kept = await getSecret<{key: string; username?: string; moving?: string}>(env, hub, person, 'mdblist');
+  if (!kept) return false;
+  const {moving: _, ...rest} = kept;
+  await (await putSecret(env, hub, person, 'mdblist', to ? {...rest, moving: to} : rest)).run();
+  return true;
+}
+export type {Item};

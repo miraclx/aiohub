@@ -426,3 +426,7 @@ a.primary.button { display: inline-flex; align-items: center; min-height: 34px; 
 .accounts .quiet-note p { margin: 0; }
 .below-head { margin: -4px 0 10px; }
 @media (max-width: 520px) { .accounts .account-row:has(> .segments) { flex-direction: column; align-items: stretch; } }
+/* The way out of a move: quiet, as in "Everything stays Here too. Stay on Here". */
+.trackers .link.stay { color: var(--muted); text-decoration: underline; font-weight: 400; }
+.trackers .more-plays { display: block; margin: 0 auto 12px; }
+.trackers .dot.wait { background: var(--muted); }
