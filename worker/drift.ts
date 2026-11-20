@@ -129,10 +129,22 @@ export async function drift(env: Env, time: number) {
   await keep(null, compare(work));
 }
 
-/* What the page shows: the differences found, if any. */
-export function differing(result: string | null) {
-  const found = result ? JSON.parse(result) as Found : null;
-  return found && (found.toMdblist.length || found.toTrakt.length) ? found : null;
+/* A play by title, episode and time: what a person skips is kept by this, so it stays skipped through later looks. */
+const playKey = (miss: Miss) => `${missKey(miss)}@${miss.at}`;
+/* What the page shows: the differences found, less what the person skipped, if any are left. Each comes with its key. */
+export function differing(result: string | null, skipped: string | null = null) {
+  const found = result ? JSON.parse(result) as Found : null, skip = new Set<string>(skipped ? JSON.parse(skipped) as string[] : []);
+  if (!found) return null;
+  const keep = (list: Miss[]) => list.filter(miss => !skip.has(playKey(miss))).map(miss => ({...miss, key: playKey(miss)}));
+  const left = {...found, toMdblist: keep(found.toMdblist), toTrakt: keep(found.toTrakt)};
+  return left.toMdblist.length || left.toTrakt.length ? left : null;
+}
+/* A play the person says is not right: never shown or copied again. */
+export async function skip(env: Env, hub: string, person: string, key: string) {
+  const row = await env.DB.prepare('SELECT skipped FROM drift WHERE hub = ? AND person = ?').bind(hub, person).first<{skipped: string | null}>();
+  if (!row) return;
+  const kept = row.skipped ? JSON.parse(row.skipped) as string[] : [];
+  if (!kept.includes(key)) await env.DB.prepare('UPDATE drift SET skipped = ? WHERE hub = ? AND person = ?').bind(JSON.stringify([key, ...kept].slice(0, 500)), hub, person).run();
 }
 
 const ids = (miss: Miss) => ({tmdb: miss.tmdb, ...(miss.imdb ? {imdb: miss.imdb} : {})});
@@ -161,7 +173,7 @@ const near = (plays: Play[], miss: Miss) => plays.some(play => keyOf(play) === m
    either side is changed or removed. (A play MDBList gets that is older than the newest it has for an episode is kept as history
    only, which is what it is.) */
 export async function fix(env: Env, hub: string, person: string): Promise<{trakt: number; mdblist: number} | {error: string}> {
-  const row = await env.DB.prepare('SELECT result FROM drift WHERE hub = ? AND person = ?').bind(hub, person).first<{result: string | null}>(), found = differing(row?.result ?? null);
+  const row = await env.DB.prepare('SELECT result, skipped FROM drift WHERE hub = ? AND person = ?').bind(hub, person).first<{result: string | null; skipped: string | null}>(), found = differing(row?.result ?? null, row?.skipped ?? null);
   const lists = await getSecret<{key: string}>(env, hub, person, 'mdblist');
   if (!found || !lists?.key || !await getSecret(env, hub, person, LINK)) return {trakt: 0, mdblist: 0};
   const titles: Record<string, Title> = {}, ask = mdblist(env, lists.key);

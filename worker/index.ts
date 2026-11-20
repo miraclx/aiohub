@@ -20,7 +20,7 @@ export default {
   // stopped on Trakt for it. Then a step of the day's look at whether Trakt and MDBList agree, on its own so it never holds those up.
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
     // Each run is counted, for the Hub page.
-    const counted = env.DB.prepare("INSERT INTO runs (job, at, count) VALUES ('cron', ?, 1) ON CONFLICT (job) DO UPDATE SET at = excluded.at, count = runs.count + 1").bind(now()).run().catch(() => null);
+    const counted = env.DB.prepare("INSERT INTO runs (job, at, count, since) VALUES ('cron', ?1, 1, ?1) ON CONFLICT (job) DO UPDATE SET at = excluded.at, count = CASE WHEN runs.since IS NULL THEN 1 ELSE runs.count + 1 END, since = coalesce(runs.since, excluded.at)").bind(now()).run().catch(() => null);
     ctx.waitUntil(counted.then(() => sweep(env)).catch(error => console.error('sweep', (error as Error).message)).then(() => drift(env, event.scheduledTime)).catch(error => console.error('drift', (error as Error).message)));
   },
 } satisfies ExportedHandler<Env>;

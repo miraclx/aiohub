@@ -1,6 +1,6 @@
 import {useEffect, useState} from 'react';
 import {QRCodeSVG} from 'qrcode.react';
-import {SAMPLE, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, ownLists, personRows, resolve, samplePassword, samplePin, slug, traktRows} from './data';
+import {SAMPLE, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, TRAKT_IDS, ownLists, personRows, resolve, samplePassword, samplePin, slug, traktRows} from './data';
 import type {Device, Group, Hub, Miss, Person, Row, Settings} from './data';
 import {Activity} from './activity';
 import {GroupOrder, HomeEditor, moved} from './home';
@@ -262,8 +262,10 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
    AIOMetadata hides only by what a connected tracker says, and here it has none. */
 function Progress({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
-  const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [leaving, setLeaving] = useState(false);
+  const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [leaving, setLeaving] = useState(false), [unlocking, setUnlocking] = useState(false), [own_, setOwn_] = useState('');
   const their = mine ? 'your' : 'their', choice = person.lists ? 'mdblist' : keying ? 'mdblist' : 'here';
+  // Their own things (copying to MDBList, the Trakt/MDBList note): on their own page, or here once their password was given.
+  const self = mine || page.hub.also === person.id;
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
   const pick = (value: 'here' | 'mdblist') => {
     if (value === 'mdblist' && !person.lists) {if (live) setKeying(true); else if (mine) edit(target => {target.lists = true;}, 'MDBList connected'); return;}
@@ -291,10 +293,17 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
           <div className="field-row"><input type="password" aria-label="MDBList API key" placeholder="API key" autoComplete="off" value={own} onChange={event => setOwn(event.target.value)}/><button className="primary" disabled={busy || !own.trim()}>Save</button>{person.lists && <button type="button" className="ghost" onClick={() => {setKeying(false); setOwn('');}}>Cancel</button>}</div>
         </form>}
       </li>
-      {live && mine && person.lists && <Carry page={page} person={person}/>}
-      {live && mine && person.drift && <DriftNote page={page} person={person}/>}
-      {live && !mine && person.lists && <li><div><h3>What they watched here</h3><p>{person.name} can copy it to MDBList from their own page, under Accounts. It’s theirs, so it isn’t shown here.</p></div></li>}
+      {live && self && person.lists && <Carry page={page} person={person}/>}
+      {live && self && person.drift && <DriftNote page={page} person={person}/>}
+      {live && !self && person.lists && <li><div><h3>What they watched here</h3><p>{person.name} can copy it to MDBList from their own page, under Accounts. It’s theirs, so it isn’t shown here.</p></div>
+        {person.joined && <button type="button" className="ghost small" onClick={() => setUnlocking(true)}>Sign in as {person.name}</button>}</li>}
+      {live && self && !mine && <li><div><p className="muted small">Signed in as {person.name} in this browser too.</p></div><button type="button" className="link small" onClick={() => void live.call('DELETE', `/api/people/${person.id}/unlock`).then(() => live.reload()).then(() => toast(`Signed out as ${person.name}`), fail(toast))}>Sign out as {person.name}</button></li>}
     </ul>
+    {unlocking && <Sheet title={`Sign in as ${person.name}`} onClose={() => setUnlocking(false)}>
+      <form className="stack" onSubmit={event => {event.preventDefault(); setBusy(true); void live!.call('POST', `/api/people/${person.id}/unlock`, {password: own_}).then(() => live!.reload()).then(() => {setUnlocking(false); setOwn_(''); toast(`Signed in as ${person.name} here too`);}, fail(toast)).finally(() => setBusy(false));}}>
+        <p className="muted sheet-lead">With {person.name}’s own password, what’s only theirs shows here as well, such as copying to MDBList. You stay signed in as the manager.</p>
+        <div className="field-row"><input type="password" aria-label={`${person.name}’s password`} placeholder="Their password" autoComplete="current-password" autoFocus value={own_} onChange={event => setOwn_(event.target.value)}/><button className="primary" disabled={busy || !own_}>Sign in</button></div>
+      </form></Sheet>}
     {leaving && <Confirm title="Keep progress here?" body={`MDBList is disconnected from ${mine ? 'you' : person.name}. Whatever is already in that MDBList account stays there.`} action="Keep it here" onYes={leave} onClose={() => setLeaving(false)}/>}
   </>;
 }
@@ -305,8 +314,11 @@ function DriftNote({page, person}: {page: PageProps; person: Person}) {
   const count = found.toMdblist.length + found.toTrakt.length, plays = (n: number) => `${n} ${n === 1 ? 'play' : 'plays'}`;
   const when = (at: number) => new Date(at * 1000).toLocaleDateString(undefined, {day: 'numeric', month: 'short'});
   const part = (title: string, list: Miss[]) => !list.length ? null : <><p className="muted small">{title}</p>
-    <ul className="feed compact">{list.slice(0, 8).map(miss => <li key={`${miss.kind}${miss.tmdb}:${miss.season}:${miss.episode}:${miss.at}`}><div><strong>{miss.name || 'Untitled'}</strong> <span className="muted">{miss.season != null ? `Season ${miss.season} · Episode ${miss.episode}` : 'Movie'} · {when(miss.at)}</span></div></li>)}</ul>
+    <ul className="feed compact">{list.slice(0, 8).map(miss => <li key={miss.key}><div><strong>{miss.name || 'Untitled'}</strong> <span className="muted">{miss.season != null ? `Season ${miss.season} · Episode ${miss.episode}` : 'Movie'} · {when(miss.at)}</span></div>
+      <button type="button" className="ghost small" disabled={busy} aria-label={`Skip ${miss.name}`} onClick={() => leave(miss)}>Skip</button></li>)}</ul>
     {list.length > 8 && <p className="muted small">And {list.length - 8} more.</p>}</>;
+  // A play that isn't right (one never actually watched, say) is left out from now on, and Fix leaves it alone.
+  const leave = (miss: Miss) => {setBusy(true); void live!.call('POST', `/api/people/${person.id}/drift`, {skip: miss.key}).then(() => live!.reload()).then(() => toast('Skipped. It won’t come up again.'), fail(toast)).finally(() => setBusy(false));};
   const go = () => {
     setAsking(false); setBusy(true);
     void live!.call<{trakt: number; mdblist: number}>('POST', `/api/people/${person.id}/drift`, {})
@@ -352,7 +364,6 @@ function Carry({page, person}: {page: PageProps; person: Person}) {
     {phase === 'shown' && plan && count > 0 && <div className="field-row"><button type="button" className="primary small" onClick={() => void go()}>Copy {count}</button><button type="button" className="ghost small" onClick={() => setPhase('idle')}>Not now</button></div>}
   </li>;
 }
-const TRAKT_IDS = new Set(traktRows().map(row => row.id));
 function PersonSections({page, person, tab, mine}: {page: PageProps; person: Person; tab: string; mine: boolean}) {
   const {hub, update, toast} = page, group = hub.groups.find(item => item.id === person.groupId)!;
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
@@ -441,7 +452,7 @@ export function GroupPage(page: PageProps & {id: string; tab: string}) {
     <a className="back" href="#/">← People</a>
     <div className="page-head"><h1>{group.name}</h1><p className="muted">Everyone in this group starts here. {members.length} {members.length === 1 ? 'person' : 'people'}{custom ? `, ${custom} with their own changes` : ''}.</p></div>
     <Tabs base={`/group/${id}`} tab={tab} tabs={[['home', 'Home'], ['playback', 'Playback'], ['sources', 'Sources'], ['activity', 'Activity'], ['settings', 'Settings']]}/>
-    {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="group" rows={groupRows(hub, group)} tag={row => row.origin === 'group' ? 'This group' : undefined} onChange={(rows, note) => edit(target => {target.rows = rows;}, note)}
+    {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="group" rows={placed(groupRows(hub, group))} tag={row => row.origin === 'group' ? 'This group' : undefined} onChange={(rows, note) => edit(target => {target.rows = rows;}, note)}
       onFollow={group.rows ? () => edit(target => {target.rows = null;}, `Following ${HUB} again`) : undefined} followLabel="Use the default Home again"/>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
@@ -470,10 +481,10 @@ export function HubPage(page: PageProps & {tab: string}) {
     <a className="back" href="#/">← People</a>
     <div className="page-head"><h1>Hub</h1><p className="muted">What every group starts with, where things play from, and the hub’s own setup. A group or a person can change anything for themselves.</p></div>
     <Tabs base="/hub" tab={tab} tabs={[['home', 'Home'], ['playback', 'Playback'], ['sources', 'Sources'], ['general', 'General']]}/>
-    {tab === 'home' && <><HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="hub" rows={hub.rows} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{page.live && !hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p></>}
+    {tab === 'home' && <><HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="hub" rows={placed(hub.rows)} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{page.live && !hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p></>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
-    {tab === 'general' && page.live && <><ServerName hub={hub} update={update} toast={toast}/><Servers hub={hub} live={page.live} toast={toast}/><Background hub={hub}/><Advanced live={page.live} toast={toast}/></>}
+    {tab === 'general' && page.live && <><ServerName hub={hub} update={update} toast={toast}/><Servers hub={hub} live={page.live} toast={toast}/><Advanced live={page.live} toast={toast}/><Background hub={hub}/></>}
     {tab === 'general' && SAMPLE && <section>
       <div className="card settings">
         <Setting column title="AIOStreams server" hint="Where the players connect behind the scenes. Changing it moves every group; watch history moves with it.">
@@ -512,28 +523,29 @@ function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
     </div>}
   </section>;
 }
-/* What the hub does on its own (the cron, every five minutes on the clock): when it last ran and runs next, how many times it has
-   run, and the daily Trakt/MDBList check, which starts with the first run after 04:00 UTC. */
+/* What the hub does on its own, one compact row per job: the five-minute run (Trakt calls that waited, players that went quiet)
+   and the daily Trakt/MDBList check, which starts with the first run after 04:00 UTC. Times are the viewer's own. */
 const FIVE = 300_000, DAY_MS = 86_400_000;
 function Background({hub}: {hub: Hub}) {
   const jobs = hub.jobs, [now, setNow] = useState(Date.now());
   useEffect(() => {const timer = window.setInterval(() => setNow(Date.now()), 30_000); return () => window.clearInterval(timer);}, []);
   if (!jobs) return null;
-  const time = (ms: number) => new Date(ms).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'});
-  const when = (ms: number) => {const days = Math.round((new Date(ms).setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0)) / DAY_MS); return `${days === 0 ? 'today' : days === 1 ? 'tomorrow' : days === -1 ? 'yesterday' : new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'})} at ${time(ms)}`;};
-  const ago = (ms: number) => {const minutes = Math.round((now - ms) / 60_000); return minutes < 1 ? 'Just now' : minutes < 60 ? `${minutes} min ago` : `${Math.round(minutes / 60)} h ago`;};
-  const next = Math.ceil((now + 1) / FIVE) * FIVE, today = new Date(now).toISOString().slice(0, 10), start = Date.parse(`${today}T04:00:00Z`);
-  const daily = jobs.checking ? next : jobs.checked === today ? start + DAY_MS : Math.max(start, next);
-  const checked = jobs.checked ? Date.parse(`${jobs.checked}T04:00:00Z`) : 0, people = (n: number) => `${n} ${n === 1 ? 'person' : 'people'}`;
+  const time = (ms: number) => new Date(ms).toLocaleTimeString(undefined, {hour: '2-digit', minute: '2-digit'});
+  const day = (ms: number) => {const days = Math.round((new Date(ms).setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0)) / DAY_MS); return days === 0 ? 'today' : days === 1 ? 'tomorrow' : days === -1 ? 'yesterday' : new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'});};
+  const at = (ms: number) => `${day(ms)} at ${time(ms)}`, next = Math.ceil((now + 1) / FIVE) * FIVE, start = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T04:00:00Z`);
+  const daily = jobs.checking ? next : jobs.checked === new Date(now).toISOString().slice(0, 10) ? start + DAY_MS : Math.max(start, next);
+  const since = jobs.since ? (day(jobs.since * 1000) === 'today' ? time(jobs.since * 1000) : day(jobs.since * 1000)) : '';
+  const rows = [
+    {name: 'Trakt sync', count: jobs.waiting ? `${jobs.waiting} waiting` : `${(jobs.runs ?? 0).toLocaleString()} ${jobs.runs === 1 ? 'run' : 'runs'}${since ? ` since ${since}` : ''}`,
+      last: jobs.last ? `Ran ${at(jobs.last * 1000)}` : 'Not run yet', next: `next in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
+    {name: 'Trakt and MDBList check', count: 'once a day', last: jobs.ran ? `Ran ${at(jobs.ran * 1000)}` : 'Not run yet', next: jobs.checking ? 'under way' : `next ${at(daily)}`},
+  ];
   return <section>
-    <div className="section-head"><div><h2>Background work</h2><p className="muted">Every five minutes the hub tries again anything Trakt didn’t take, and lets Trakt know when a player stopped without saying so. Once a day it also checks that Trakt and MDBList agree, for anyone who has both.</p></div></div>
-    <div className="card settings">
-      <Setting title="Last run" hint={jobs.last ? when(jobs.last * 1000) : undefined}><span className="muted">{jobs.last ? ago(jobs.last * 1000) : 'Not yet'}</span></Setting>
-      <Setting title="Next run" hint={when(next)}><span className="muted">In {Math.max(1, Math.ceil((next - now) / 60_000))} min</span></Setting>
-      <Setting title="Runs so far" hint="Counted since 20 Nov 2026."><span className="muted">{(jobs.runs ?? 0).toLocaleString()}</span></Setting>
-      <Setting title="Waiting for Trakt" hint="Tried again on each run, for up to a week."><span className="muted">{jobs.waiting ? `${jobs.waiting} ${jobs.waiting === 1 ? 'update' : 'updates'}` : 'Nothing'}</span></Setting>
-      <Setting title="Trakt and MDBList check" hint={jobs.checking ? `Under way, for ${people(jobs.checking)}.` : `${jobs.checked ? `Ran ${when(checked).replace(/ at .*/, '')}, for ${people(jobs.people)}. ` : ''}Next ${when(daily)}.`}><span className="muted">Daily</span></Setting>
-    </div>
+    <div className="section-head"><div><h2>Background work</h2></div></div>
+    <ul className="accounts jobs">{rows.map(row => <li key={row.name}><div className="job">
+      <div><h3>{row.name}</h3><span>{row.count}</span></div>
+      <div className="muted small"><span>{row.last}</span><span>{row.next}</span></div>
+    </div></li>)}</ul>
   </section>;
 }
 /* The name player apps and Trakt show for this hub. */

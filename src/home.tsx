@@ -1,7 +1,7 @@
 import {useState} from 'react';
 import {DragDropProvider} from '@dnd-kit/react';
 import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
-import {countries, suggestions, tongues} from './data';
+import {TRAKT_IDS, countries, suggestions, tongues} from './data';
 import type {Cover, Level, Row} from './data';
 import {Art, Chips, NameField, Posters, Segments, Sheet, Switch, hash} from './ui';
 
@@ -9,13 +9,15 @@ type Pick = {id: string; title: string; kind: string; source: string};
 export function Grip({handleRef, label}: {handleRef: (element: Element | null) => void; label: string}) {
   return <button type="button" ref={handleRef} className="grip" aria-label={label}><i/><i/><i/></button>;
 }
-function RowCard({row, index, tag, locked, onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
+// On a hub or group Home, a Trakt row is a place kept for it: only someone who connects Trakt gets it.
+const LATER = 'Appears once someone connects Trakt';
+function RowCard({row, index, tag, locked, later, onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; later?: boolean; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
   const sortable = useSortable({id: row.id, index, disabled: locked});
-  return <li ref={sortable.ref} className={`row${sortable.isDragging ? ' dragging' : ''}${locked ? ' locked' : ''}`}>
+  return <li ref={sortable.ref} className={`row${sortable.isDragging ? ' dragging' : ''}${locked ? ' locked' : ''}${later ? ' later' : ''}`}>
     {!locked && <Grip handleRef={sortable.handleRef} label={`Move ${row.title}`}/>}
     <div className="row-main">
       <div className="row-head">
-        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{row.kind} · {row.source}</p></div>
+        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? `${row.source} · ${LATER}` : `${row.kind} · ${row.source}`}</p></div>
         {!locked && <div className="row-actions">
           {onArrange && <button type="button" className="ghost small" onClick={onArrange}>Edit</button>}
           {onRemove && <button type="button" className="ghost small" onClick={onRemove}>Remove</button>}
@@ -60,14 +62,14 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
       const from = on.findIndex(row => row.id === String(event.operation.source!.id)), to = event.operation.source.index;
       if (from >= 0 && from !== to) onChange([...moved(on, from, to), ...off], 'Order saved');
     }}>
-      <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange}
+      <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={level !== 'own' && TRAKT_IDS.has(row.id)}
         onToggle={() => set(row.id, {on: false}, `“${row.title}” is off Home`)}
         onArrange={find && !row.covers ? undefined : () => setArranging(row.id)}
         onRemove={row.origin === level && !row.core ? () => onChange(rows.filter(item => item.id !== row.id), `Removed “${row.title}”`) : undefined}/>)}</ol>
     </DragDropProvider>
     {!on.length && <p className="empty">Nothing on Home yet. Add a row or turn one on below.</p>}
     {!!off.length && <details className="off" open={off.length <= 4}><summary>Not on Home <span className="count">{off.length}</span></summary>
-      <ul>{off.map(row => <li key={row.id}><Art row={row} dim/><div><h3>{row.title}</h3><p>{row.kind} · {row.source}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>)}</ul>
+      <ul>{off.map(row => <li key={row.id} className={level !== 'own' && TRAKT_IDS.has(row.id) ? 'later' : undefined}><Art row={row} dim/><div><h3>{row.title}</h3><p>{level !== 'own' && TRAKT_IDS.has(row.id) ? `${row.source} · ${LATER}` : `${row.kind} · ${row.source}`}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>)}</ul>
     </details>}
     {adding && <Sheet title="Add a row" onClose={() => setAdding(false)}>
       <form className="link-form" onSubmit={event => {

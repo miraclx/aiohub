@@ -31,6 +31,13 @@ button:disabled { opacity: .45; cursor: default; }
 .preview-bar { font-size: 13px; color: var(--muted); padding: 8px 12px; background: var(--surface); border-radius: 10px; margin: 6px 0 26px; }
 main { display: block; }
 /* A quiet credit under every page. */
+/* A Trakt row on a hub or group Home: a place kept for whoever connects Trakt. */
+.rows .row.later { border: 1px dashed var(--line); background: transparent; }
+.rows .row.later .row-main, .off li.later { opacity: .7; }
+/* Hub, General: one compact two-line row per background job. */
+.jobs .job { flex: 1; display: grid; gap: 4px; }
+.jobs .job > div { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: baseline; }
+.jobs .job h3 { margin: 0; }
 .credit { margin: 72px 0 0; text-align: center; font-size: 13px; color: var(--muted); }
 .credit a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .credit .heart { color: var(--accent); }

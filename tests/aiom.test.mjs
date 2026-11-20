@@ -297,8 +297,9 @@ test('with Trakt connected to the hub, her setup reads her Trakt rows from the h
   assert.deepEqual(await syncAll(), {state: 'ok'});
   const [, ada] = playerOf('Ada'), [, ben] = playerOf('Ben');
   // The same rows, in the same order and under the same names, now imported from the hub's own addon; Up Next and Recently aired stay off.
-  assert.deepEqual(rowsOf(ada.config), [['custom.aiohub_rows.all.watchlist', 'all', 'Watchlist', true], ['custom.aiohub_rows.all.history', 'all', 'Recently Watched', true], ['custom.aiohub_rows.movie.recommended', 'movie', 'Recommended Movies', true],
-    ['custom.aiohub_rows.series.recommended', 'series', 'Recommended Shows', true], ['custom.aiohub_rows.series.up_next', 'series', 'Up Next', false], ['custom.aiohub_rows.series.recently_aired', 'series', 'Recently Aired for You', false]]);
+  assert.deepEqual(rowsOf(ada.config), [['custom.aiohub_rows.all.watchlist', 'all', 'Watchlist', true], ['custom.aiohub_rows.movie.recommended', 'movie', 'Recommended Movies', true],
+    ['custom.aiohub_rows.series.recommended', 'series', 'Recommended Shows', true], ['custom.aiohub_rows.series.up_next', 'series', 'Up Next', false], ['custom.aiohub_rows.series.recently_aired', 'series', 'Recently Aired for You', false],
+    ['custom.aiohub_rows.all.history', 'all', 'Recently Watched', true]]);
   served = ada.config.catalogs.filter(item => item.id.startsWith('custom.'));
   for (const item of served) {
     assert.equal(item.source, 'custom'); assert.ok(item.cacheTTL > 0 && item.cacheTTL <= 900); assert.equal(item.showInHome, true);
@@ -320,6 +321,20 @@ test('with Trakt connected to the hub, her setup reads her Trakt rows from the h
   assert.equal((await put({})).status, 200);
   const me = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
   assert.equal(me.rows, null); assert.deepEqual(me.picks, {'recently-watched': false});
+  // The manager places the Trakt rows in the hub's Home and sets how each starts: Watchlist after Trending Movies, Recently Aired
+  // on. Ada follows that, with her own choice on top; Ben, without Trakt, gets nothing of it.
+  const hubNow = (await owner('GET', '/api/state')).body.hub, traktRow = id => ({id, title: id, kind: 'Series', source: 'Trakt', origin: 'hub', on: true, core: true});
+  const placedRows = [hubNow.rows[0], traktRow('watchlist'), traktRow('recently-aired'), ...hubNow.rows.slice(1)];
+  assert.equal((await owner('PUT', '/api/hub', {host: hubNow.host, hostUrl: hubNow.hostUrl, serverName: hubNow.serverName, addons: hubNow.addons, defaults: hubNow.defaults, rows: placedRows, order: hubNow.groups.map(group => group.id), v: hubNow.v})).status, 200);
+  assert.deepEqual(await syncAll(), {state: 'ok'});
+  const catalogs = playerOf('Ada')[1].config.catalogs.map(item => item.id), at = id => catalogs.indexOf(id);
+  assert.ok(at('tmdb.trending') < at('custom.aiohub_rows.all.watchlist') && at('custom.aiohub_rows.all.watchlist') < at('custom.aiohub_rows.series.recently_aired'), catalogs.join(' '));
+  assert.equal(playerOf('Ada')[1].config.catalogs.find(item => item.id === 'custom.aiohub_rows.series.recently_aired').enabled, true);
+  assert.equal(at('custom.aiohub_rows.movie.recommended'), at('custom.aiohub_rows.all.watchlist') + 1, 'a Trakt row the hub did not place follows the one before it');
+  assert.deepEqual(rowsOf(playerOf('Ben')[1].config), []);
+  const back = (await owner('GET', '/api/state')).body.hub;
+  assert.equal((await owner('PUT', '/api/hub', {host: back.host, hostUrl: back.hostUrl, serverName: back.serverName, addons: back.addons, defaults: back.defaults, rows: hubNow.rows, order: back.groups.map(group => group.id), v: back.v})).status, 200);
+  assert.deepEqual(await syncAll(), {state: 'ok'});
   // The site says the older link is still there and no longer needed; removing it keeps her Trakt rows.
   let shown = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
   assert.equal(shown.aiomTrakt, true); assert.equal(shown.trakt, true);
@@ -448,15 +463,19 @@ test('once a day her Trakt and MDBList are compared over two weeks, a few steps 
   // It is hers: the manager sees nothing and cannot copy it.
   assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').drift, null);
   assert.equal((await owner('POST', '/api/people/ada/drift', {})).status, 403);
+  // A play she says is not right is left out, now and in later looks, and Fix leaves it alone.
+  const pulp = mine.toTrakt.find(miss => miss.name === 'Pulp Fiction');
+  assert.equal((await owner('POST', '/api/people/ada/drift', {skip: pulp.key})).status, 403);
+  assert.equal((await adaSite('POST', '/api/people/ada/drift', {skip: pulp.key})).status, 200);
+  assert.deepEqual((await adaSite('GET', '/api/state')).body.hub.people[0].drift.toTrakt.map(line), [['Breaking Bad', 1, 3, T.e3]]);
   // Fix, pressed twice at once: exactly the missing plays, each with its own date, sent once.
   const [one, two] = await Promise.all([adaSite('POST', '/api/people/ada/drift', {}), adaSite('POST', '/api/people/ada/drift', {})]);
-  assert.deepEqual([one.body, two.body].sort((a, b) => b.trakt - a.trakt), [{trakt: 2, mdblist: 2}, {trakt: 0, mdblist: 0}]);
-  assert.deepEqual(trakt.calls.map(({path, body}) => ({path, body})), [{path: '/sync/history', body: {movies: [{ids: {tmdb: 680, imdb: 'tt0110912'}, watched_at: T.pulp}],
-    shows: [{ids: {tmdb: 1396, imdb: 'tt0903747'}, seasons: [{number: 1, episodes: [{number: 3, watched_at: T.e3}]}]}]}}]);
+  assert.deepEqual([one.body, two.body].sort((a, b) => b.trakt - a.trakt), [{trakt: 1, mdblist: 2}, {trakt: 0, mdblist: 0}]);
+  assert.deepEqual(trakt.calls.map(({path, body}) => ({path, body})), [{path: '/sync/history', body: {shows: [{ids: {tmdb: 1396, imdb: 'tt0903747'}, seasons: [{number: 1, episodes: [{number: 3, watched_at: T.e3}]}]}]}}]);
   assert.deepEqual(fake.watched.slice(posted), [{movies: [{ids: {tmdb: 27205, imdb: 'tt1375666'}, watched_at: T.inception}], shows: [{ids: {tmdb: 1396, imdb: 'tt0903747'}, seasons: [{number: 1, episodes: [{number: 2, watched_at: T.e2}]}]}]}]);
   assert.equal((await adaSite('GET', '/api/state')).body.hub.people[0].drift, null);
-  // The next day both have everything: nothing is shown.
-  trakt.history.unshift({watched_at: T.e3, type: 'episode', episode: {season: 1, number: 3}, show: BB}); trakt.history.splice(4, 0, {watched_at: T.pulp, type: 'movie', movie: MOVIE.pulp});
+  // The next day both have everything but the play she skipped, which stays out: nothing is shown.
+  trakt.history.unshift({watched_at: T.e3, type: 'episode', episode: {season: 1, number: 3}, show: BB});
   lists.plays['movie/27205'] = [{watched_at: T.inception}]; lists.plays['show/1396'].push({season_num: 1, episode_num: 2, watched_at: T.e2}); trakt.calls = [];
   await cron(day + DAY * 1e3); await cron(day + DAY * 1e3 + 300e3);
   assert.deepEqual(sql('SELECT day, work IS NULL AS done FROM drift'), [{day: '2026-06-02', done: 1}]);

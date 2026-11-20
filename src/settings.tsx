@@ -47,6 +47,7 @@ export function PlaybackEditor({hub, resolved: {values, from}, scope, set, reset
       <Setting title="Hide unreleased titles" hint="Nothing that cannot be watched yet." {...line('unreleased')}><Switch label="Hide unreleased titles" checked={values.unreleased} onChange={value => set('unreleased', value)}/></Setting>
       {<Setting title="Posters" hint={values.posters === 'better' ? 'Better Posters: clean art with the rating on it.' : 'Standard art, nothing added.'} {...line('posters')}>
         <Segments label="Posters" value={values.posters} onChange={value => set('posters', value)} options={[{value: 'better', label: 'Better Posters'}, {value: 'plain', label: 'Plain'}]}/></Setting>}
+      {values.posters === 'better' && <Setting title="Age rating on posters" hint="Adds the age rating, such as PG-13 or TV-MA, to a corner of each poster." {...line('ageBadge')}><Switch label="Age rating on posters" checked={!!values.ageBadge} onChange={value => set('ageBadge', value)}/></Setting>}
     </div>
   </section>;
 }

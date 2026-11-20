@@ -271,7 +271,8 @@ const RATING: Record<string, string> = {kids: 'PG', teen: 'PG-13'};
 const limited = (home: string | null, settings: Settings) => home && RATING[settings.limit] ? `${home}&contentrating=${RATING[settings.limit]}` : home;
 // Better Posters (btttr.cc) draws the rating onto the poster. This is its standard style, the same address for everyone; Plain is the opt-out.
 const BETTER = 'https://btttr.cc/poster/imdb/poster-default/{imdb_id}.jpg';
-const art = (settings: Settings, pattern: string = BETTER) => settings.posters === 'better' ? {posterRatingProvider: 'custom', customPosterUrlPattern: pattern, usePosterProxy: true, enableRatingPostersForLibrary: true} : {posterRatingProvider: 'none', customPosterUrlPattern: '', usePosterProxy: false, enableRatingPostersForLibrary: false};
+// With the age badge on, Better Posters' /poster-a/ adds the age rating (PG-13, TV-MA) to the corner. The rating stays Average (no rs).
+const art = (settings: Settings, pattern: string = settings.ageBadge ? BETTER.replace('/poster/', '/poster-a/') : BETTER) => settings.posters === 'better' ? {posterRatingProvider: 'custom', customPosterUrlPattern: pattern, usePosterProxy: true, enableRatingPostersForLibrary: true} : {posterRatingProvider: 'none', customPosterUrlPattern: '', usePosterProxy: false, enableRatingPostersForLibrary: false};
 // `$trakt` is the person's Trakt connection on AIOMetadata; it travels with the keys, not as a setting. Hiding what's been watched
 // reads from it. `served` is the hub's own Trakt connection serving their rows instead: then AIOMetadata has no Trakt at all.
 // `$lists` is the person's own MDBList key. With it, what they play is recorded to their MDBList and can be hidden from rows;
@@ -363,7 +364,8 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
   if (known && Date.now() - known.at < 600_000) return known.rows;
   const at = made.at ?? env.AIOM_ORIGIN, out: Record<string, string[]> = {};
   const where = (row: Row) => {const list = /^mdblist\.(\d+)\.(movie|series|all)$/.exec(row.id); return TMDB_ROW[row.id] ?? (served && SERVED[row.id] ? {id: customId(SERVED[row.id]), type: SERVED[row.id].type} : TRAKT_ROW[row.id]) ?? (list ? {id: `mdblist.${list[1]}`, type: list[2]} : null);};
-  await Promise.all(rows.filter(row => row.on && where(row)).slice(0, 16).map(async row => {
+  // A hub or group Home keeps places for Trakt rows; only a person with Trakt has anything in them.
+  await Promise.all(rows.filter(row => row.on && where(row) && (person || !TRAKT_ROW[row.id])).slice(0, 16).map(async row => {
     const from = where(row)!, answer = await fetch(`${at}/stremio/${made!.uuid}/catalog/${from.type}/${from.id}.json`, {headers: {accept: 'application/json', 'user-agent': 'AIOHub/1.0'}}).catch(() => null);
     const metas = answer?.status === 200 ? ((await answer.json().catch(() => null)) as {metas?: {poster?: string}[]} | null)?.metas ?? [] : [];
     const posters = metas.map(meta => meta.poster).filter((poster): poster is string => typeof poster === 'string' && poster.startsWith('https://')).slice(0, 8);

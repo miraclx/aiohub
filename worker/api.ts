@@ -1,8 +1,7 @@
 // The site's own API: managers' accounts, the hub they run, and what an invited person may change about themselves.
 // What reaches the streaming server goes through ./native.
 import {carry, plan} from './carry';
-import {differing, fix} from './drift';
-import type {Found} from './drift';
+import {differing, fix, skip} from './drift';
 import {defaultAddons, defaultRows, defaultSettings, slug, traktRows} from '../src/data';
 import type {Addon, Hub, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
@@ -17,8 +16,9 @@ const TAKEN = 'Someone in this hub already has that name';
 class Bad extends Error {constructor(public status: number, message: string) {super(message);}}
 const bad = (status: number, message: string): never => {throw new Bad(status, message);};
 const reply = (body: unknown, status = 200, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), {status, headers: {'content-type': 'application/json', 'cache-control': 'no-store', ...headers}});
-const COOKIE = 'hub_s', MONTH = 30 * 86400;
-const cookie = (value: string, age: number) => ({'set-cookie': `${COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${age}`});
+// AS: a person's own session held beside the manager's, when the manager signed in as that person too (see 'unlock').
+const COOKIE = 'hub_s', AS = 'hub_p', MONTH = 30 * 86400;
+const cookie = (value: string, age: number, name = COOKIE) => ({'set-cookie': `${name}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${age}`});
 
 /* ---------- what may be stored ---------- */
 const text = (value: unknown, max: number, what: string): string => typeof value === 'string' && value.length <= max ? value : bad(400, `${what} is not valid`);
@@ -38,7 +38,7 @@ function cleanRows(value: unknown): Row[] | null {
     return row;
   });
 }
-const CHECK: {[K in keyof Settings]: (value: unknown) => Settings[K]} = {
+const CHECK: {[K in keyof Settings]-?: (value: unknown) => Settings[K]} = {
   quality: value => oneOf(value, ['saver', 'balanced', 'best'] as const, 'Quality'),
   maxSizeGb: value => typeof value === 'number' && value >= 1 && value <= 500 ? value : bad(400, 'File size is not valid'),
   languages: value => list(value, 30, 40, 'Languages'), cachedFirst: flag,
@@ -47,15 +47,18 @@ const CHECK: {[K in keyof Settings]: (value: unknown) => Settings[K]} = {
   limit: value => oneOf(value, ['all', 'teen', 'kids'] as const, 'Content limit'),
   hideWatched: flag, spoilers: flag, unreleased: flag,
   posters: value => oneOf(value, ['better', 'plain'] as const, 'Posters'),
+  ageBadge: flag,
   debrid: value => text(value, 40, 'Account'), sources: value => list(value, 60, 80, 'Sources'),
   formatter: value => ({name: text((value as Record<string, unknown>)?.name, 20_000, 'Stream label'), description: text((value as Record<string, unknown>).description, 20_000, 'Stream label')}),
 };
+const LATER = new Set<keyof Settings>(['ageBadge']);
 function cleanSettings(value: unknown, whole: boolean): Overrides {
   if (!value || typeof value !== 'object' || Array.isArray(value)) bad(400, 'Settings are not valid');
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(CHECK) as (keyof Settings)[]) {
     const given = (value as Record<string, unknown>)[key];
-    if (given === undefined) {if (whole) bad(400, 'Settings are incomplete');} else out[key] = CHECK[key](given);
+    // Settings added later may be missing from a hub saved before them: they keep their default.
+    if (given === undefined) {if (whole && !LATER.has(key)) bad(400, 'Settings are incomplete');} else out[key] = CHECK[key](given);
   }
   return out;
 }
@@ -82,7 +85,7 @@ function ago(seen: number) {
   return gap < 300 ? 'Now' : gap < 3600 ? `${Math.floor(gap / 60)} min ago` : gap < 86400 ? `${Math.floor(gap / 3600)} h ago` : gap < 172800 ? 'Yesterday' : `${Math.floor(gap / 86400)} days ago`;
 }
 const groupDto = (row: GroupRow) => ({id: row.id, name: row.name, ...(JSON.parse(row.data) as GroupData), v: row.version});
-const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null, aiomTrakt: boolean, listsName = '', drift: Found | null = null) => ({
+const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null, aiomTrakt: boolean, listsName = '', drift: ReturnType<typeof differing> = null) => ({
   ready, history, listsName, drift,
   id: row.id, name: row.name, groupId: row.grp, joined: !!row.joined, paused: !!row.paused, ...(JSON.parse(row.data) as PersonData), v: row.version,
   // AIOMetadata's own Trakt connection (a Token ID). Once Trakt is connected to the hub it is no longer used and can go.
@@ -92,7 +95,8 @@ const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history
 });
 
 /* ---------- who is asking ---------- */
-interface Who {session: string; account?: {id: string; username: string; name: string; theme: string}; hub: HubRow; person?: string}
+// also: the person whose own password was given in this browser while signed in as the manager.
+interface Who {session: string; account?: {id: string; username: string; name: string; theme: string}; hub: HubRow; person?: string; also?: {person: string; session: string}}
 async function whoIs(request: Request, env: Env): Promise<Who | null> {
   const token = new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`).exec(request.headers.get('cookie') ?? '')?.[1];
   if (!token) return null;
@@ -100,7 +104,11 @@ async function whoIs(request: Request, env: Env): Promise<Who | null> {
   if (!row) return null;
   if (row.account) {
     const [account, hub] = await env.DB.batch([env.DB.prepare('SELECT id, username, name, theme FROM accounts WHERE id = ?').bind(row.account), env.DB.prepare('SELECT id, code, owner, data, version FROM hubs WHERE owner = ?').bind(row.account)]);
-    return account.results[0] && hub.results[0] ? {session, account: account.results[0] as Who['account'], hub: hub.results[0] as HubRow} : null;
+    if (!account.results[0] || !hub.results[0]) return null;
+    const who: Who = {session, account: account.results[0] as Who['account'], hub: hub.results[0] as HubRow};
+    const theirs = new RegExp(`(?:^|;\\s*)${AS}=([^;]+)`).exec(request.headers.get('cookie') ?? '')?.[1];
+    const also = theirs ? await env.DB.prepare('SELECT id, person FROM sessions WHERE id = ? AND hub = ? AND person IS NOT NULL AND expires > ?').bind(await sha(theirs), who.hub.id, now()).first<{id: string; person: string}>() : null;
+    return also ? {...who, also: {person: also.person, session: also.id}} : who;
   }
   const hub = await env.DB.prepare('SELECT id, code, owner, data, version FROM hubs WHERE id = ?').bind(row.hub).first<HubRow>();
   return hub && row.person ? {session, hub, person: row.person} : null;
@@ -126,9 +134,10 @@ async function state(env: Env, who: Who) {
     env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind = 'trakt'").bind(hub.id),
     env.DB.prepare("SELECT owner, value FROM secrets WHERE hub = ? AND kind = 'mdblist' AND owner = coalesce(?, owner)").bind(hub.id, mine ?? null),
     // Where Trakt and MDBList disagree is someone's own watching: only they see it, on their own page.
-    env.DB.prepare('SELECT result FROM drift WHERE hub = ? AND person = ?').bind(hub.id, mine ?? ''),
+    env.DB.prepare('SELECT result, skipped FROM drift WHERE hub = ? AND person = ?').bind(hub.id, mine ?? who.also?.person ?? ''),
     // The background work, for the manager: when it last ran, how often it has, what waits for Trakt, the last daily check.
-    env.DB.prepare(`SELECT (SELECT at FROM runs WHERE job = 'cron') AS last, (SELECT count FROM runs WHERE job = 'cron') AS runs, (SELECT count(*) FROM trakt_outbox WHERE hub = ?1) AS waiting,
+    env.DB.prepare(`SELECT (SELECT at FROM runs WHERE job = 'cron') AS last, (SELECT count FROM runs WHERE job = 'cron') AS runs, (SELECT since FROM runs WHERE job = 'cron') AS since,
+      (SELECT max(at) FROM drift WHERE hub = ?1 AND work IS NULL AND result IS NOT NULL) AS ran, (SELECT count(*) FROM trakt_outbox WHERE hub = ?1) AS waiting,
       (SELECT max(day) FROM drift WHERE hub = ?1 AND work IS NULL) AS checked, (SELECT count(*) FROM drift WHERE hub = ?1 AND day = (SELECT max(day) FROM drift WHERE hub = ?1) AND work IS NULL) AS people, (SELECT count(*) FROM drift WHERE hub = ?1 AND work IS NOT NULL) AS checking`).bind(hub.id),
   ]);
   // Which MDBList account each person's progress goes to (the name only; the key never leaves the vault).
@@ -146,8 +155,8 @@ async function state(env: Env, who: Who) {
     role: mine ? 'person' : 'owner', personId: mine ?? null,
     hub: {
       name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID, traktClient: env.TRAKT_CLIENT_ID ?? '',
-      ...(mine ? {} : {jobs: jobs.results[0] as Hub['jobs']}),
-      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? differing((drifts.results[0] as {result: string | null} | undefined)?.result ?? null) : null)),
+      ...(mine ? {} : {jobs: jobs.results[0] as Hub['jobs'], also: who.also?.person ?? null}),
+      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine || row.id === who.also?.person ? differing((drifts.results[0] as {result: string | null} | undefined)?.result ?? null, (drifts.results[0] as {skipped: string | null} | undefined)?.skipped ?? null) : null)),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
   };
@@ -318,14 +327,25 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
   }
   if (action === 'drift' && request.method === 'POST') {
     // Copying the plays one of Trakt and MDBList is missing, asked for from their own page, after a confirmation there.
-    if (who.person !== id) bad(403, 'Only they can do this, from their own page');
+    if (who.person !== id && who.also?.person !== id) bad(403, 'Only they can do this, from their own page');
+    // A play they say is not right: left out from now on.
+    if (body.skip !== undefined) {await skip(env, hub, id, text(body.skip, 200, 'Play')); return {};}
     const got = await fix(env, hub, id);
     if ('error' in got) bad(409, got.error);
     return got;
   }
+  if (action === 'unlock' && who.account) {
+    // The manager is this person too: their own password, given here, opens their own things on this page, beside the manager's view.
+    if (request.method === 'DELETE') {if (who.also) await env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(who.also.session).run(); return {cookie: cookie('', 0, AS)['set-cookie']};}
+    const key = guesses(request, `own:${hub}:${id}`), stored = (await env.DB.prepare('SELECT pass FROM people WHERE hub = ? AND id = ?').bind(hub, id).first<{pass: string}>())!.pass;
+    if (!row.joined) bad(409, `${row.name} hasn’t chosen a password yet. It’s set the first time their link is opened.`);
+    if (await blocked(env, key)) bad(429, 'Too many tries. Wait ten minutes.');
+    if (!await ownPassword(String(body.password ?? ''), stored, signin)) {await failed(env, key); bad(403, `That isn’t ${row.name}’s password`);}
+    return {cookie: (await startSession(env, {hub, person: id}))['set-cookie'].replace(`${COOKIE}=`, `${AS}=`)};
+  }
   if (action === 'carry') {
     // Someone's own watching: only they can look at it or move it, from their own page.
-    if (who.person !== id) bad(403, 'Only they can do this, from their own page');
+    if (who.person !== id && who.also?.person !== id) bad(403, 'Only they can do this, from their own page');
     const got = request.method === 'POST' ? await carry(env, hub, id) : await plan(env, hub, id);
     if ('error' in got) bad(409, got.error);
     return got;
@@ -599,7 +619,10 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     if (first === 'rows' && method === 'GET') return await rows(env, path.slice(1));
     const who = await whoIs(request, env);
     if (first === 'join' && method === 'POST') return await join(request, env, body, who);
-    if (first === 'signout' && method === 'POST') {if (who) await env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(who.session).run(); return reply({}, 200, cookie('', 0));}
+    if (first === 'signout' && method === 'POST') {
+      if (who) await env.DB.prepare('DELETE FROM sessions WHERE id IN (?, ?)').bind(who.session, who.also?.session ?? '').run();
+      const out = reply({}, 200, cookie('', 0)); out.headers.append('set-cookie', cookie('', 0, AS)['set-cookie']); return out;
+    }
     if (!who) return reply({message: 'Sign in first'}, 401);
     // Anyone signed in may ask for the players to be brought in step; what is sent comes only from what the hub has stored.
     if (first === 'lists' && method === 'POST') return reply(await findList(env, who, body));
@@ -613,7 +636,12 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
       return reply({now: now(), plays: rows.results, starts: starts.results});
     }
     if (first === 'state' && method === 'GET') return reply(await state(env, who) ?? bad(401, 'Sign in first'));
-    if (first === 'people' && second && third) return reply(await personAction(request, env, who, second, third, fourth, body, url.origin));
+    if (first === 'people' && second && third) {
+      // Signing in as a person beside the manager hands back that person's own session cookie.
+      const done = await personAction(request, env, who, second, third, fourth, body, url.origin) as Record<string, unknown>;
+      if (third === 'unlock' && typeof done?.cookie === 'string') return reply({}, 200, {'set-cookie': done.cookie});
+      return reply(done);
+    }
     if (first === 'people' && second && method === 'PUT') return reply(await savePerson(env, who, second, body));
     if (who.person) bad(403, 'Not allowed');
     if (first === 'hub' && method === 'PUT') return reply(await saveHub(env, who, body));

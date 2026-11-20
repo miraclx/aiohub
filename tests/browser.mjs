@@ -73,8 +73,13 @@ await owner.goto(BASE + '/#/hub/sources'); await owner.getByText('TorBox').first
 // Background work on Hub, General: one cron run (before the daily check's hour), then when it ran, runs next, and how often it has.
 await fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/5 * * * *')}&time=${Date.UTC(2026, 0, 1, 3)}`);
 await owner.goto(BASE + '/#/hub/general'); await owner.reload(); const work = owner.locator('section', {has: owner.getByRole('heading', {name: 'Background work'})});
-await work.getByText('Just now').waitFor(); await work.getByText(/^In \d min$/).waitFor(); assert.equal(await work.locator('.setting', {hasText: 'Runs so far'}).locator('span.muted').textContent(), '1');
-await work.getByText('Nothing', {exact: true}).waitFor(); await work.getByText(/^Next (today|tomorrow) at /).waitFor(); await work.scrollIntoViewIfNeeded(); await shot(owner, '5b-background');
+const job = name => work.locator('.job', {has: owner.getByRole('heading', {name, exact: true})});
+await job('Trakt sync').getByText(/^1 run since \d/).waitFor();
+await job('Trakt sync').getByText(/^Ran today at /).waitFor(); await job('Trakt sync').getByText(/^next in \d min$/).waitFor();
+await job('Trakt and MDBList check').getByText('once a day').waitFor(); await job('Trakt and MDBList check').getByText('Not run yet').waitFor(); await job('Trakt and MDBList check').getByText(/^next (today|tomorrow) at /).waitFor();
+await work.scrollIntoViewIfNeeded(); await shot(owner, '5b-background');
+// The hub's Home keeps a place for each Trakt row, marked as one that appears once someone connects Trakt.
+await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later', {hasText: 'Watchlist'}).getByText('Appears once someone connects Trakt').waitFor(); await shot(owner, '5c-hub-home');
 await owner.goto(BASE + '/#/'); await owner.getByText('Add someone to Family').waitFor(); await shot(owner, '6-people');
 // The manager opening the invite link is told to send it on, and stays signed in.
 await owner.goto(link); await owner.getByText(/signed in as the manager/).waitFor();
@@ -118,10 +123,12 @@ await guest.reload(); const note = guest.locator('.accounts li', {has: guest.get
 await note.getByText('2 plays from the last two weeks are in one but not the other.').waitFor(); await note.getByText('Season 1 · Episode 2', {exact: false}).waitFor(); await note.getByText('Pulp Fiction').waitFor();
 await note.getByRole('button', {name: 'Fix'}).click(); await guest.getByText('1 play to MDBList and 1 play to Trakt, each with the date it was watched.', {exact: false}).waitFor(); await shot(guest, '13b-drift-confirm');
 await guest.getByRole('button', {name: 'Cancel'}).click(); await shot(guest, '13c-drift-note');
+await note.getByRole('button', {name: 'Skip Pulp Fiction'}).click(); await toast(guest).filter({hasText: 'Skipped.'}).waitFor();
+await note.getByText('1 play from the last two weeks is in one but not the other.').waitFor(); assert.equal(await note.getByText('Pulp Fiction').count(), 0);
 execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', 'DELETE FROM drift'], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
 // With Trakt connected, Recently Watched is on Home right after Watchlist. Switching it off keeps her following her group's Home.
 await guest.goto(BASE + '/#/me/home'); const onHome = guest.locator('.rows li h3');
-assert.deepEqual((await onHome.allTextContents()).slice(0, 3), ['Watchlist', 'Recently Watched', 'Recommended Movies']);
+assert.deepEqual((await onHome.allTextContents()).slice(0, 4), ['Watchlist', 'Recommended Movies', 'Recommended Shows', 'Recently Watched']);
 await guest.getByRole('switch', {name: 'Show Recently Watched on Home'}).click(); await toast(guest).filter({hasText: '“Recently Watched” is off Home'}).waitFor();
 const followed = await guest.evaluate(async () => {for (let i = 0; i < 40; i++) {const me = (await (await fetch('/api/state')).json()).hub.people[0]; if (me.picks) return me; await new Promise(done => setTimeout(done, 250));} return null;});
 assert.equal(followed.rows, null, 'still following the group Home'); assert.deepEqual(followed.picks, {'recently-watched': false}); await shot(guest, '13d-recently-watched-off'); await guest.goto(BASE + '/#/me/accounts'); await trakt.getByText('Connected as adatrakt.').waitFor();
@@ -132,6 +139,12 @@ await guest.getByText('What you watched here').waitFor(); assert.equal(await gue
 // The manager sees the same states, without the copy step: that is hers alone.
 await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Connected as adatrakt.').waitFor();
 await owner.getByText('can copy it to MDBList from their own page').waitFor(); assert.equal(await owner.getByText('What you watched here').count(), 0); await shot(owner, '14-accounts-manager');
+// The manager who is Ada too: her own password, given here, shows her own things beside the manager's view; signing out hides them again.
+await owner.getByRole('button', {name: 'Sign in as Ada'}).click(); await owner.getByLabel('Ada’s password').fill('not her password'); await owner.getByRole('button', {name: 'Sign in', exact: true}).click();
+await toast(owner).filter({hasText: 'That isn’t Ada’s password'}).waitFor();
+await owner.getByLabel('Ada’s password').fill('my own password'); await owner.getByRole('button', {name: 'Sign in', exact: true}).click();
+await toast(owner).filter({hasText: 'Signed in as Ada here too'}).waitFor(); await owner.getByText('What you watched here').waitFor(); await shot(owner, '14b-accounts-as-ada');
+await owner.getByRole('button', {name: 'Sign out as Ada'}).click(); await owner.getByRole('button', {name: 'Sign in as Ada'}).waitFor(); assert.equal(await owner.getByText('What you watched here').count(), 0);
 // Back to Here asks first, then MDBList is let go.
 await guest.getByRole('radio', {name: 'Here'}).click(); await guest.getByRole('button', {name: 'Keep it here'}).click();
 await toast(guest).filter({hasText: 'Progress kept here'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');

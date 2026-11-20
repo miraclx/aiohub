@@ -11,13 +11,13 @@ export interface Template {name: string; description: string}
 export interface Settings {
   quality: 'saver' | 'balanced' | 'best'; maxSizeGb: number; languages: string[]; cachedFirst: boolean; search: 'fast' | 'balanced' | 'thorough';
   subtitles: string[]; skip: boolean;
-  limit: 'all' | 'teen' | 'kids'; hideWatched: boolean; spoilers: boolean; unreleased: boolean; posters: 'better' | 'plain';
+  limit: 'all' | 'teen' | 'kids'; hideWatched: boolean; spoilers: boolean; unreleased: boolean; posters: 'better' | 'plain'; ageBadge?: boolean;
   debrid: string; sources: string[]; formatter: Template;
 }
 export type Overrides = Partial<Settings>;
 export interface Device {id: string; app: string; name: string; seen: string; place?: string; net?: string}
 // Plays one of Trakt and MDBList has and the other lacks, from the daily look (drift.ts on the Worker).
-export interface Miss {kind: 'movie' | 'show'; tmdb: number; name: string; season?: number; episode?: number; at: number}
+export interface Miss {kind: 'movie' | 'show'; tmdb: number; name: string; season?: number; episode?: number; at: number; key: string}
 export interface Drift {since: number; trakt: number; mdblist: number; toMdblist: Miss[]; toTrakt: Miss[]}
 export interface Person {drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
@@ -25,7 +25,9 @@ export interface Addon {id: string; name: string; note: string; locked?: boolean
 export interface Hub {
   // The five-minute background work (manager only): last run (unix seconds), runs counted, calls waiting for Trakt, the last day the
   // Trakt/MDBList check finished, for how many people, and how many are part way through.
-  jobs?: {last: number | null; runs: number | null; waiting: number; checked: string | null; people: number; checking: number};
+  jobs?: {last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number};
+  // The person whose own password was given in this browser beside the manager's sign-in: their own things show on their page.
+  also?: string | null;
   v?: number; serverName?: string; tmdb?: boolean; mdblist?: boolean; scrobble?: boolean; traktClient?: string; metaUrl?: string; missing?: string[]; traktLink?: string; name: string; code: string; host: string; hostUrl: string; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; groups: Group[]; people: Person[];
   me: {name: string; theme: 'dark' | 'light' | 'auto'; passkeys: {id: string; name: string; added: string}[]};
 }
@@ -52,19 +54,28 @@ export const defaultRows = (): Row[] => [
 // Up next is off: nothing writes plays back to Trakt yet, so it would fall behind. The player's own Continue watching covers it.
 export const traktRows = (): Row[] => [
   {id: 'watchlist', title: 'Watchlist', kind: 'Movies & shows, newest first', source: 'Trakt', origin: 'own', on: true, core: true},
-  {id: 'recently-watched', title: 'Recently Watched', kind: 'Movies & shows, latest first', source: 'Trakt', origin: 'own', on: true, core: true},
   {id: 'recommended-movies', title: 'Recommended Movies', kind: 'Movies', source: 'Trakt', origin: 'own', on: true, core: true},
   {id: 'recommended-series', title: 'Recommended Shows', kind: 'Series', source: 'Trakt', origin: 'own', on: true, core: true},
   {id: 'up-next', title: 'Up Next', kind: 'Series', source: 'Trakt', origin: 'own', on: false, core: true},
   {id: 'recently-aired', title: 'Recently Aired for You', kind: 'Series', source: 'Trakt', origin: 'own', on: false, core: true},
+  // Looking back comes last: Continue Watching and Next Up already cover picking something up again.
+  {id: 'recently-watched', title: 'Recently Watched', kind: 'Movies & shows, latest first', source: 'Trakt', origin: 'own', on: true, core: true},
 ];
-/* A person's rows: their own Home if they made one, else their Trakt rows (once connected) above the shared ones, each on or off as
-   they last chose (`picks`), so switching one keeps them following the Home above. A Trakt row added to the site after they made a
-   Home of their own comes at its end, off. */
+export const TRAKT_IDS = new Set(traktRows().map(row => row.id));
+/* A Home's rows with each Trakt row in its place: where this Home put it, else right after the Trakt row before it in traktRows()
+   (the first at the top). A hub or group Home keeps them even though only someone with Trakt connected gets them: that is how
+   the manager places them and chooses whether each starts on. */
+export function placed(rows: Row[]): Row[] {
+  const out = [...rows], all = traktRows();
+  all.forEach((row, n) => {if (!out.some(item => item.id === row.id)) out.splice(n ? out.findIndex(item => item.id === all[n - 1].id) + 1 : 0, 0, {...row, origin: 'hub'});});
+  return out;
+}
+/* A person's rows: their own Home if they made one, else the Home above with its Trakt rows (only once they connect Trakt), each
+   on or off as they last chose (`picks`), so switching one keeps them following the Home above. A Trakt row added to the site
+   after they made a Home of their own comes at its end, off. */
 export function rowsOf(own: Row[] | null, shared: Row[], trakt: boolean, picks?: Record<string, boolean>): Row[] {
-  if (!trakt) return own ?? shared;
-  if (own) return [...own, ...traktRows().filter(row => !own.some(item => item.id === row.id)).map(row => ({...row, on: false}))];
-  return [...traktRows().map(row => ({...row, on: picks?.[row.id] ?? row.on})), ...shared];
+  if (own) return !trakt ? own : [...own, ...traktRows().filter(row => !own.some(item => item.id === row.id)).map(row => ({...row, on: false}))];
+  return placed(shared).filter(row => trakt || !TRAKT_IDS.has(row.id)).map(row => TRAKT_IDS.has(row.id) && picks?.[row.id] !== undefined ? {...row, on: picks[row.id]} : row);
 }
 export const isTrakt = (item: Row) => item.source === 'Trakt' || item.source.startsWith('Trakt ·');
 export const suggestions = [
@@ -99,14 +110,14 @@ export const defaultAddons = (): Addon[] => [
 export const defaultSettings = (): Settings => ({
   quality: 'balanced', maxSizeGb: 25, languages: ['English'], cachedFirst: true, search: 'balanced',
   subtitles: ['English'], skip: true,
-  limit: 'all', hideWatched: false, spoilers: false, unreleased: true, posters: 'better',
+  limit: 'all', hideWatched: false, spoilers: false, unreleased: true, posters: 'better', ageBadge: false,
   debrid: 'TorBox', sources: ['library', 'torrentio', 'comet', 'meteor'], formatter: formatter as Template,
 });
 export interface Resolved {values: Settings; from: Record<keyof Settings, Level>}
 export function resolve(hub: Hub, group?: Group, person?: Person): Resolved {
   const values = {...hub.defaults, ...(group?.settings ?? {}), ...(person?.settings ?? {})} as Settings;
   const from = {} as Record<keyof Settings, Level>;
-  for (const key of Object.keys(hub.defaults) as (keyof Settings)[]) from[key] = person && key in person.settings ? 'own' : group && key in group.settings ? 'group' : 'hub';
+  for (const key of Object.keys({...defaultSettings(), ...hub.defaults}) as (keyof Settings)[]) from[key] = person && key in person.settings ? 'own' : group && key in group.settings ? 'group' : 'hub';
   return {values, from};
 }
 export const groupRows = (hub: Hub, group: Group) => group.rows ?? hub.rows;
