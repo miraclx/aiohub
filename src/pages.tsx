@@ -260,8 +260,8 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
   </li>;
 }
 /* MDBList, an account like Trakt: optional and free. Connecting only saves their own key (checked with MDBList, kept in the
-   vault); it reads their lists from then on. Keeping progress there is chosen below it (Progress). A key not keeping progress can
-   be removed; one that is can only be replaced, until progress is kept Here again. */
+   vault); it reads their lists from then on. Keeping progress there is chosen below it (Progress). Another MDBList account is
+   Disconnect, then Connect. */
 function MdbList({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
   const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [dropping, setDropping] = useState(false);
@@ -275,7 +275,7 @@ function MdbList({page, person, mine}: {page: PageProps; person: Person; mine: b
   }
   const save = () => {
     setBusy(true); void live.call<{username: string}>('POST', at, {key: own, ...(person.lists ? {} : {keep: true})}).then(found => {
-      toast(connected ? 'MDBList key replaced' : found.username ? `MDBList connected as ${found.username}` : 'MDBList connected');
+      toast(found.username ? `MDBList connected as ${found.username}` : 'MDBList connected');
       setKeying(false); setOwn(''); live.apps(); return live.reload();
     }, fail(toast)).finally(() => setBusy(false));
   };
@@ -283,11 +283,11 @@ function MdbList({page, person, mine}: {page: PageProps; person: Person; mine: b
   const named = person.listsName ? ` as ${person.listsName}` : '';
   const state = !connected ? about : person.lists ? `Connected${named}. Keeps ${their} progress.` : moving ? `Connected${named}.` : `Connected${named}. Not keeping progress; it reads ${their} lists.`;
   return <li className="stacked"><div className="account-row"><div><h3>MDBList</h3><p>{state}</p>
-      {connected && !keying && <p className="quiet-links"><button type="button" className="link small" disabled={busy} onClick={() => setKeying(true)}>Replace key</button></p>}</div>
+</div>
     {connected ? <button type="button" className="ghost small" disabled={busy} onClick={() => setDropping(true)}>Disconnect</button>
       : !keying && <button type="button" className="primary small" disabled={busy} onClick={() => setKeying(true)}>Connect</button>}</div>
     {keying && <form className="stack link-back" onSubmit={event => {event.preventDefault(); save();}}>
-      <p className="muted small">{person.lists ? 'A key from another MDBList account moves where new progress goes; what is already in the old one stays there. ' : ''}Paste {their} own MDBList API key. It is at <a className="link" href="https://mdblist.com/preferences/" target="_blank" rel="noreferrer">mdblist.com, Preferences, API Access</a>. One key per person: a shared key would mix everyone’s watching together.</p>
+      <p className="muted small">Paste {their} own MDBList API key. It is at <a className="link" href="https://mdblist.com/preferences/" target="_blank" rel="noreferrer">mdblist.com, Preferences, API Access</a>. One key per person: a shared key would mix everyone’s watching together.</p>
       <div className="field-row"><input type="password" aria-label="MDBList API key" placeholder="API key" autoComplete="off" value={own} onChange={event => setOwn(event.target.value)}/><button className="primary" disabled={busy || !own.trim()}>Save</button><button type="button" className="ghost" onClick={() => {setKeying(false); setOwn('');}}>Cancel</button></div>
     </form>}
     {dropping && <Confirm title="Disconnect MDBList?" body={person.lists || moving ? `Progress goes back to being kept here, and ${their} MDBList lists stop showing. Plays only in MDBList stay there; to bring them here first, choose Here under Where progress is kept.` : `${mine ? 'Your' : 'Their'} MDBList lists stop showing here. Nothing in ${their} MDBList account changes.`} action="Disconnect" onYes={forget} onClose={() => setDropping(false)}/>}
