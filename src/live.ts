@@ -21,7 +21,7 @@ export async function call<T = Record<string, unknown>>(method: string, path: st
 
 const hubBody = (hub: Hub) => ({host: hub.host, hostUrl: hub.hostUrl, serverName: hub.serverName ?? "", addons: hub.addons, defaults: hub.defaults, rows: hub.rows, order: hub.groups.map(group => group.id)});
 const groupBody = (group: Group) => ({name: group.name, rows: group.rows, settings: group.settings, paused: !!group.paused});
-const personBody = (person: Person) => ({name: person.name, groupId: person.groupId, rows: person.rows, settings: person.settings, can: person.can, paused: !!person.paused, trakt: person.trakt, lists: person.lists});
+const personBody = (person: Person) => ({name: person.name, groupId: person.groupId, rows: person.rows, picks: person.picks, settings: person.settings, can: person.can, paused: !!person.paused, trakt: person.trakt, lists: person.lists});
 const differs = (a: unknown, b: unknown) => JSON.stringify(a) !== JSON.stringify(b);
 export interface Job {method: string; path: string; body?: Record<string, unknown>; kind: 'hub' | 'group' | 'person' | 'me'; id: string; gone?: boolean}
 /* What has to be sent to turn the saved hub into the one on screen. Groups are made before the people in them, and emptied before they go. */

@@ -1,7 +1,7 @@
 import {useEffect, useState} from 'react';
 import {QRCodeSVG} from 'qrcode.react';
 import {SAMPLE, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, ownLists, personRows, resolve, samplePassword, samplePin, slug, traktRows} from './data';
-import type {Device, Group, Hub, Person, Row, Settings} from './data';
+import type {Device, Group, Hub, Miss, Person, Row, Settings} from './data';
 import {Activity} from './activity';
 import {GroupOrder, HomeEditor, moved} from './home';
 import {PlaybackEditor, SourcesEditor} from './settings';
@@ -47,8 +47,8 @@ function editor({hub, update, toast, live}: PageProps, group?: Group, person?: P
     reset: key => {update(next => {delete (target(next) as Partial<Settings>)[key];}); toast(`Following ${person ? group!.name : HUB} again`);},
   };
 }
-function Confirm({title, body, action, onYes, onClose}: {title: string; body: string; action: string; onYes: () => void; onClose: () => void}) {
-  return <Sheet title={title} onClose={onClose}><p className="muted sheet-lead">{body}</p><div className="split"><button type="button" className="ghost" onClick={onClose}>Cancel</button><button type="button" className="primary danger-fill" onClick={onYes}>{action}</button></div></Sheet>;
+function Confirm({title, body, action, onYes, onClose, plain}: {title: string; body: string; action: string; onYes: () => void; onClose: () => void; plain?: boolean}) {
+  return <Sheet title={title} onClose={onClose}><p className="muted sheet-lead">{body}</p><div className="split"><button type="button" className="ghost" onClick={onClose}>Cancel</button><button type="button" className={plain ? 'primary' : 'primary danger-fill'} onClick={onYes}>{action}</button></div></Sheet>;
 }
 function copyOf(hub: Hub, source: Person, name: string, groupId = source.groupId): Person {
   const copy = newPerson(hub, name, groupId);
@@ -292,10 +292,33 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
         </form>}
       </li>
       {live && mine && person.lists && <Carry page={page} person={person}/>}
+      {live && mine && person.drift && <DriftNote page={page} person={person}/>}
       {live && !mine && person.lists && <li><div><h3>What they watched here</h3><p>{person.name} can copy it to MDBList from their own page, under Accounts. It’s theirs, so it isn’t shown here.</p></div></li>}
     </ul>
     {leaving && <Confirm title="Keep progress here?" body={`MDBList is disconnected from ${mine ? 'you' : person.name}. Whatever is already in that MDBList account stays there.`} action="Keep it here" onYes={leave} onClose={() => setLeaving(false)}/>}
   </>;
+}
+/* Where Trakt and MDBList disagree on the last two weeks, from the hub's daily look. Shown only when they do, and only to the
+   person. Nothing is copied until they confirm. */
+function DriftNote({page, person}: {page: PageProps; person: Person}) {
+  const {toast, live} = page, found = person.drift!, [asking, setAsking] = useState(false), [busy, setBusy] = useState(false);
+  const count = found.toMdblist.length + found.toTrakt.length, plays = (n: number) => `${n} ${n === 1 ? 'play' : 'plays'}`;
+  const when = (at: number) => new Date(at * 1000).toLocaleDateString(undefined, {day: 'numeric', month: 'short'});
+  const part = (title: string, list: Miss[]) => !list.length ? null : <><p className="muted small">{title}</p>
+    <ul className="feed compact">{list.slice(0, 8).map(miss => <li key={`${miss.kind}${miss.tmdb}:${miss.season}:${miss.episode}:${miss.at}`}><div><strong>{miss.name || 'Untitled'}</strong> <span className="muted">{miss.season != null ? `Season ${miss.season} · Episode ${miss.episode}` : 'Movie'} · {when(miss.at)}</span></div></li>)}</ul>
+    {list.length > 8 && <p className="muted small">And {list.length - 8} more.</p>}</>;
+  const go = () => {
+    setAsking(false); setBusy(true);
+    void live!.call<{trakt: number; mdblist: number}>('POST', `/api/people/${person.id}/drift`, {})
+      .then(got => live!.reload().then(() => toast(got.trakt + got.mdblist ? 'Copied across' : 'Both already had them')), fail(toast)).finally(() => setBusy(false));
+  };
+  return <li className="stacked"><div><h3>Trakt and MDBList</h3>
+    <p>{plays(count)} from the last two weeks {count === 1 ? 'is' : 'are'} in one but not the other.</p>
+    {part('On Trakt, not in MDBList', found.toMdblist)}
+    {part('In MDBList, not on Trakt', found.toTrakt)}</div>
+    <div className="field-row"><button type="button" className="primary small" disabled={busy} onClick={() => setAsking(true)}>{busy ? 'Copying…' : 'Fix'}</button></div>
+    {asking && <Confirm plain title="Copy the missing plays?" body={`${[found.toMdblist.length && `${plays(found.toMdblist.length)} to MDBList`, found.toTrakt.length && `${plays(found.toTrakt.length)} to Trakt`].filter(Boolean).join(' and ')}, each with the date it was watched. Nothing already in either one is changed.`} action="Copy" onYes={go} onClose={() => setAsking(false)}/>}
+  </li>;
 }
 /* Copying what someone watched here to their MDBList: they see exactly what would go, then it is done in a few short steps. */
 interface CarryEntry {key: string; title: string; detail: string; at: string; pct?: number}
@@ -329,6 +352,7 @@ function Carry({page, person}: {page: PageProps; person: Person}) {
     {phase === 'shown' && plan && count > 0 && <div className="field-row"><button type="button" className="primary small" onClick={() => void go()}>Copy {count}</button><button type="button" className="ghost small" onClick={() => setPhase('idle')}>Not now</button></div>}
   </li>;
 }
+const TRAKT_IDS = new Set(traktRows().map(row => row.id));
 function PersonSections({page, person, tab, mine}: {page: PageProps; person: Person; tab: string; mine: boolean}) {
   const {hub, update, toast} = page, group = hub.groups.find(item => item.id === person.groupId)!;
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
@@ -339,7 +363,11 @@ function PersonSections({page, person, tab, mine}: {page: PageProps; person: Per
       tag={row => row.origin === 'own' && !row.core ? (mine ? 'Yours' : 'Personal') : undefined}
       lists={ownLists(person)} listsHint={mine ? 'Connect Trakt or MDBList under Accounts to pick from your own lists.' : `Shows up once ${person.name} connects Trakt or MDBList.`}
       onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined}
-      onChange={(next: Row[], note) => edit(target => {target.rows = next;}, note)}
+      onChange={(next: Row[], note) => edit(target => {
+        // Only a Trakt row switched on or off while following the Home above: kept as their choice, so they still follow it.
+        const flipped = !target.rows && next.length === rows.length && next.every((row, at) => row.id === rows[at].id) ? next.filter((row, at) => row.on !== rows[at].on) : [];
+        if (flipped.length === 1 && TRAKT_IDS.has(flipped[0].id)) target.picks = {...target.picks, [flipped[0].id]: flipped[0].on}; else target.rows = next;
+      }, note)}
       onFollow={person.rows && canArrange ? () => edit(target => {target.rows = null;}, `Following ${group.name} again`) : undefined} followLabel={`Follow ${group.name} again`}/>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}

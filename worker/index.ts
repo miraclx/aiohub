@@ -1,6 +1,7 @@
 // AIOHub Worker: the site, its API, and the sign-in front that player apps talk to.
 import {api} from './api';
 import {front} from './front';
+import {drift} from './drift';
 import {sweep} from './trakt';
 import type {Env} from './util';
 
@@ -15,6 +16,8 @@ export default {
     return env.ASSETS.fetch(request);
   },
   // Every five minutes: Trakt calls still waiting are tried again, and plays whose player went quiet without saying stop are
-  // stopped on Trakt for it.
-  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {ctx.waitUntil(sweep(env).catch(error => console.error('sweep', (error as Error).message)));},
+  // stopped on Trakt for it. Then a step of the day's look at whether Trakt and MDBList agree, on its own so it never holds those up.
+  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(sweep(env).catch(error => console.error('sweep', (error as Error).message)).then(() => drift(env, event.scheduledTime)).catch(error => console.error('drift', (error as Error).message)));
+  },
 } satisfies ExportedHandler<Env>;

@@ -1,6 +1,8 @@
 // The site's own API: managers' accounts, the hub they run, and what an invited person may change about themselves.
 // What reaches the streaming server goes through ./native.
 import {carry, plan} from './carry';
+import {differing, fix} from './drift';
+import type {Found} from './drift';
 import {defaultAddons, defaultRows, defaultSettings, slug, traktRows} from '../src/data';
 import type {Addon, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
@@ -65,21 +67,23 @@ const cleanPassword = (value: unknown) => typeof value === 'string' && value.len
 /* ---------- rows as stored ---------- */
 interface HubData {host: string; hostUrl: string; serverName?: string; metaUrl?: string; missing?: string[]; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; order?: string[]}
 interface GroupData {rows: Row[] | null; settings: Overrides; paused?: boolean}
-interface PersonData {rows: Row[] | null; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; trakt: boolean; lists: boolean}
+// picks: Trakt rows they switched on or off while following the Home above (see rowsOf in data.ts).
+interface PersonData {rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; trakt: boolean; lists: boolean}
 interface HubRow {id: string; code: string; owner: string; data: string; version: number}
 interface GroupRow {id: string; name: string; data: string; version: number}
 interface PersonRow {id: string; grp: string; name: string; data: string; joined: number; paused: number; version: number}
 interface DeviceRow {ref: string; person: string; app: string; name: string; seen: number; place: string; net: string}
 interface SignIn {password: string; pin: string | null}
-const TRAKT_ROWS = ['watchlist', 'recommended-movies', 'recommended-series', 'up-next', 'recently-aired'];
+const TRAKT_ROWS = traktRows().map(row => row.id);
+const cleanPicks = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).filter(([id, on]) => TRAKT_ROWS.includes(id) && typeof on === 'boolean')) as Record<string, boolean> : undefined;
 
 function ago(seen: number) {
   const gap = now() - seen;
   return gap < 300 ? 'Now' : gap < 3600 ? `${Math.floor(gap / 60)} min ago` : gap < 86400 ? `${Math.floor(gap / 3600)} h ago` : gap < 172800 ? 'Yesterday' : `${Math.floor(gap / 86400)} days ago`;
 }
 const groupDto = (row: GroupRow) => ({id: row.id, name: row.name, ...(JSON.parse(row.data) as GroupData), v: row.version});
-const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null, aiomTrakt: boolean, listsName = '') => ({
-  ready, history, listsName,
+const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null, aiomTrakt: boolean, listsName = '', drift: Found | null = null) => ({
+  ready, history, listsName, drift,
   id: row.id, name: row.name, groupId: row.grp, joined: !!row.joined, paused: !!row.paused, ...(JSON.parse(row.data) as PersonData), v: row.version,
   // AIOMetadata's own Trakt connection (a Token ID). Once Trakt is connected to the hub it is no longer used and can go.
   aiomTrakt,
@@ -110,7 +114,7 @@ async function startSession(env: Env, subject: {account: string} | {hub: string;
 /* ---------- what a page loads ---------- */
 async function state(env: Env, who: Who) {
   const hub = who.hub, data = JSON.parse(hub.data) as HubData, mine = who.person;
-  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys] = await env.DB.batch([
+  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, drifts] = await env.DB.batch([
     env.DB.prepare('SELECT id, name, data, version FROM groups WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? AND id = ?').bind(hub.id, mine) : env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? AND person = ? ORDER BY seen DESC').bind(hub.id, mine) : env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? ORDER BY seen DESC').bind(hub.id),
@@ -121,6 +125,8 @@ async function state(env: Env, who: Who) {
     env.DB.prepare('SELECT owner, value FROM secrets WHERE hub = ? AND kind = ? AND owner = coalesce(?, owner)').bind(hub.id, LINK, mine ?? null),
     env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind = 'trakt'").bind(hub.id),
     env.DB.prepare("SELECT owner, value FROM secrets WHERE hub = ? AND kind = 'mdblist' AND owner = coalesce(?, owner)").bind(hub.id, mine ?? null),
+    // Where Trakt and MDBList disagree is someone's own watching: only they see it, on their own page.
+    env.DB.prepare('SELECT result FROM drift WHERE hub = ? AND person = ?').bind(hub.id, mine ?? ''),
   ]);
   // Which MDBList account each person's progress goes to (the name only; the key never leaves the vault).
   const listsName: Record<string, string> = {};
@@ -137,7 +143,7 @@ async function state(env: Env, who: Who) {
     role: mine ? 'person' : 'owner', personId: mine ?? null,
     hub: {
       name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID, traktClient: env.TRAKT_CLIENT_ID ?? '',
-      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '')),
+      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? differing((drifts.results[0] as {result: string | null} | undefined)?.result ?? null) : null)),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
   };
@@ -194,14 +200,17 @@ async function savePerson(env: Env, who: Who, id: string, body: Body) {
       }
       next.rows = rows;
     }
+    const picks = body.picks === undefined ? before.picks : cleanPicks(body.picks);
+    if (JSON.stringify(picks) !== JSON.stringify(before.picks)) {if (!before.can.arrange) bad(403, 'Arranging Home is turned off for you'); next.picks = picks;}
     if (JSON.stringify(settings) !== JSON.stringify(before.settings)) {if (!before.can.playback) bad(403, 'Changing playback is turned off for you'); next.settings = settings;}
     const done = await env.DB.prepare('UPDATE people SET name = ?, login = ?, data = ?, version = version + 1 WHERE hub = ? AND id = ? AND version = ?').bind(name, slug(name), JSON.stringify(next), hub, id, Number(body.v)).run().catch(() => bad(409, TAKEN));
     versioned(done.meta.changes); return {v: Number(body.v) + 1};
   }
   const can = body.can as Record<string, unknown> | undefined, grp = text(body.groupId, 40, 'Group');
-  const data: PersonData = {rows, settings, can: {arrange: flag(can?.arrange), add: flag(can?.add), playback: flag(can?.playback)},
+  const was = current ? JSON.parse(current.data) as PersonData : null;
+  const data: PersonData = {rows, ...(body.picks !== undefined ? {picks: cleanPicks(body.picks)} : was?.picks ? {picks: was.picks} : {}), settings, can: {arrange: flag(can?.arrange), add: flag(can?.add), playback: flag(can?.playback)},
     // Connections are made and undone on their own, after a check; a page save never changes them.
-    trakt: current ? (JSON.parse(current.data) as PersonData).trakt : false, lists: current ? (JSON.parse(current.data) as PersonData).lists : false};
+    trakt: was?.trakt ?? false, lists: was?.lists ?? false};
   if (!await env.DB.prepare('SELECT 1 FROM groups WHERE hub = ? AND id = ?').bind(hub, grp).first()) bad(400, 'That group is gone');
   if (!current) {
     if (body.v !== undefined) bad(409, 'This person was removed somewhere else');
@@ -282,7 +291,7 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       await env.DB.batch([await putSecret(env, hub, id, 'mdblist', {key, username}), save(true)]);
       return {username};
     }
-    if (request.method === 'DELETE') {await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'mdblist'").bind(hub, id), save(false)]); return {};}
+    if (request.method === 'DELETE') {await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'mdblist'").bind(hub, id), env.DB.prepare('DELETE FROM drift WHERE hub = ? AND person = ?').bind(hub, id), save(false)]); return {};}
   }
   if (action === 'scrobble' && env.TRAKT_CLIENT_ID) {
     // Trakt, connected by the person or by the manager with them, on Trakt's own sign-in page. The page does the sign-in with
@@ -302,6 +311,13 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       if (!await hasSecret(env, hub, id, 'trakt')) await savePersonData(env, hub, id, withTraktRows(await personData(env, hub, id), false)).run();
       return {};
     }
+  }
+  if (action === 'drift' && request.method === 'POST') {
+    // Copying the plays one of Trakt and MDBList is missing, asked for from their own page, after a confirmation there.
+    if (who.person !== id) bad(403, 'Only they can do this, from their own page');
+    const got = await fix(env, hub, id);
+    if ('error' in got) bad(409, got.error);
+    return got;
   }
   if (action === 'carry') {
     // Someone's own watching: only they can look at it or move it, from their own page.
@@ -543,7 +559,7 @@ async function removeHub(request: Request, env: Env, who: Who, body: Body) {
   if (!await checkPassword(String(body.password ?? ''), stored!.pass)) {await failed(env, key); bad(403, 'That is not your password');}
   if (!await removePlayers(env, who.hub)) bad(502, 'The streaming server did not confirm the removal, so nothing was deleted. Try again in a moment.');
   const hub = who.hub.id;
-  await env.DB.batch([...['devices', 'plays', 'starts', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
+  await env.DB.batch([...['devices', 'plays', 'starts', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
     env.DB.prepare('DELETE FROM hubs WHERE id = ?').bind(hub), env.DB.prepare('DELETE FROM passkeys WHERE account = ?').bind(who.account!.id), env.DB.prepare('DELETE FROM accounts WHERE id = ?').bind(who.account!.id)]);
   return {};
 }

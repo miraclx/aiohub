@@ -1,7 +1,7 @@
 // The hub's own setup on the streaming server (AIOStreams): created once per hub, then kept in step with what the site holds.
 // The hub only ever talks to a setup it created itself, whose id and password it keeps in the vault. Nothing here names an id in an
 // error or a log line. Each request shape was proven by script against a live server first.
-import {traktRows} from '../src/data';
+import {rowsOf} from '../src/data';
 import type {Addon, Row, Settings} from '../src/data';
 import type {Env} from './util';
 import {getSecret, hosted, newToken, now, putSecret, sha, unseal} from './util';
@@ -242,9 +242,10 @@ export function homeOf(rows: Row[], lists: boolean, trakt = false, served: strin
   for (const row of rows) {
     const plain = TMDB_ROW[row.id], item = COLLECTIONS.get(row.id);
     const list = lists ? /^mdblist\.(\d+)\.(movie|series|all)$/.exec(row.id) : null;
-    const own = trakt || served ? TRAKT_ROW[row.id] : undefined;
+    // Trakt rows: from the hub when it serves them (some only it has), else AIOMetadata's own.
+    const own = trakt && !served ? TRAKT_ROW[row.id] : undefined;
     if (plain) {catalogs.push({...plain, name: row.title, source: 'tmdb', enabled: row.on, showInHome: true}); above = plain;}
-    else if (own && served) {const made = catalogOf(served, row.id, row.title, row.on); above = {id: made.id, type: made.type}; catalogs.push(made);}
+    else if (served && SERVED[row.id]) {const made = catalogOf(served, row.id, row.title, row.on); above = {id: made.id, type: made.type}; catalogs.push(made);}
     else if (own) {above = {id: own.id, type: own.type}; catalogs.push({...own, name: row.title, source: 'trakt', enabled: row.on, showInHome: true});}
     else if (list) {above = {id: `mdblist.${list[1]}`, type: list[2]}; catalogs.push({...above, name: row.title, source: 'mdblist', sort: 'default', enabled: row.on, showInHome: true});}
     else if (item && lists && row.on) {
@@ -350,9 +351,9 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
   if (person) {
     const found = await env.DB.prepare('SELECT p.data AS mine, g.id AS grp, g.data AS theirs FROM people p JOIN groups g ON g.hub = p.hub AND g.id = p.grp WHERE p.hub = ? AND p.id = ?').bind(hub.id, person).first<{mine: string; grp: string; theirs: string}>();
     if (!found) return {};
-    const mine = JSON.parse(found.mine) as {rows: Row[] | null; trakt?: boolean}, shared = (JSON.parse(found.theirs) as {rows: Row[] | null}).rows ?? data.rows;
+    const mine = JSON.parse(found.mine) as {rows: Row[] | null; trakt?: boolean; picks?: Record<string, boolean>}, shared = (JSON.parse(found.theirs) as {rows: Row[] | null}).rows ?? data.rows;
     served = await servesTrakt(env, hub.id, person);
-    rows = mine.rows ?? [...(mine.trakt || served ? traktRows() : []), ...shared]; owners = [person, groupOwner(found.grp), HUB_OWNER];
+    rows = rowsOf(mine.rows, shared, !!mine.trakt || served, mine.picks); owners = [person, groupOwner(found.grp), HUB_OWNER];
   }
   // With AIOMetadata in front, a person's rows are on their own setup there.
   let made: Catalogs | null = person && env.FRONT === 'aiometadata' ? await getSecret<Catalogs>(env, hub.id, person, PLAYER) : null;
@@ -399,10 +400,10 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
   if (minted.length) await env.DB.batch(minted);
   const groups = (groupRows.results as {id: string; name: string; data: string}[]).map(row => {const own = JSON.parse(row.data) as {rows: Row[] | null; settings: Partial<Settings>}; return {id: row.id, name: row.name, want: {rows: own.rows ?? top.rows, settings: {...top.settings, ...own.settings}} as Want, home: null as string | null, reach: null as string | null, sig: ''};});
   const people = (personRows.results as {id: string; grp: string; name: string; data: string}[]).map(row => {
-    const own = JSON.parse(row.data) as {rows: Row[] | null; settings: Partial<Settings>; trakt?: boolean}, group = groups.find(item => item.id === row.grp), above = group?.want ?? top;
+    const own = JSON.parse(row.data) as {rows: Row[] | null; settings: Partial<Settings>; trakt?: boolean; picks?: Record<string, boolean>}, group = groups.find(item => item.id === row.grp), above = group?.want ?? top;
     const mine = served.get(row.id) ?? null, trakt = !mine && own.trakt ? linked.get(row.id) ?? null : null, lists = watching.get(row.id) ?? null;
     // Someone with Trakt connected and no Home of their own gets their Trakt rows above the shared ones.
-    return {id: row.id, name: row.name, group, above, want: {rows: own.rows ?? [...(trakt || mine ? traktRows() : []), ...above.rows], settings: {...above.settings, ...own.settings}, trakt, lists, served: mine} as Want, tracks: !!lists, home: null as string | null, variants: [] as string[]};
+    return {id: row.id, name: row.name, group, above, want: {rows: rowsOf(own.rows, above.rows, !!(trakt || mine), own.picks), settings: {...above.settings, ...own.settings}, trakt, lists, served: mine} as Want, tracks: !!lists, home: null as string | null, variants: [] as string[]};
   });
 
   // Home. The hub has one setup on AIOMetadata; a group or a person gets their own only while theirs differs from the one above.

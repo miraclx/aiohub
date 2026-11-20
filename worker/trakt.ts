@@ -37,7 +37,7 @@ export async function disconnect(env: Env, hub: string, person: string) {
   await env.DB.batch([drop(env, hub, person, LINK), drop(env, hub, person, PENDING), ...forgetTrakt(env, hub, person), env.DB.prepare("UPDATE plays SET scrobbled = NULL WHERE hub = ? AND person = ? AND scrobbled IN ('playing', 'paused')").bind(hub, person)]);
 }
 /* What waits for or came from a person's Trakt: gone with the connection, the person, or the hub. */
-export const forgetTrakt = (env: Env, hub: string, person: string) => ['trakt_outbox', 'rows_cache'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ? AND person = ?`).bind(hub, person));
+export const forgetTrakt = (env: Env, hub: string, person: string) => ['trakt_outbox', 'rows_cache', 'drift'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ? AND person = ?`).bind(hub, person));
 /* What the page shows: connected as whom, or that Trakt wants connecting again. */
 export async function links(env: Env, hub: string, rows: {owner: string; value: string}[]) {
   const out: Record<string, {username: string; again: boolean}> = {};
@@ -89,14 +89,16 @@ async function attempt(env: Env, hub: string, person: string, path: string, body
   return {status: answer?.status ?? 0, after: Math.min(3600, Number(answer?.headers.get('retry-after')) || 0)};
 }
 export const send = async (env: Env, hub: string, person: string, path: string, body: unknown) => (await attempt(env, hub, person, path, body)).status;
-/* One read as this person, renewed and retried like `send`. null when not connected, Trakt wants connecting again, or it did not answer. */
-export async function read<T>(env: Env, hub: string, person: string, path: string): Promise<T | null> {
+/* One read as this person, renewed and retried like `send`. null when not connected, Trakt wants connecting again, or it did not answer.
+   `paging`, when given, is told how many pages Trakt says the list has. */
+export async function read<T>(env: Env, hub: string, person: string, path: string, paging?: {pages: number}): Promise<T | null> {
   let token = await access(env, hub, person);
   if (!token) return null;
   const get = (access: string) => fetch(api(env) + path, {headers: head(env, access)}).catch(() => null);
   let answer = await get(token);
   if (answer?.status === 401) {token = await access(env, hub, person, token); if (!token) return null; answer = await get(token);}
   if (!answer?.ok) console.error('trakt read', path.split('?')[0], answer?.status ?? 0, answer?.headers.get('x-ratelimit') ?? '', answer?.headers.get('retry-after') ?? '');
+  if (paging && answer?.ok) paging.pages = Number(answer.headers.get('x-pagination-page-count')) || 0;
   return answer?.ok ? await answer.json().catch(() => null) as T | null : null;
 }
 export const history = (target: Target, at: string) => 'movie' in target ? {movies: [{ids: target.movie.ids, watched_at: at}]}

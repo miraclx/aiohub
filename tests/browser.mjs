@@ -103,6 +103,14 @@ execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', 
 await guest.reload(); await trakt.getByText('Nothing uses it any more').waitFor(); await shot(guest, '13-accounts-connected');
 await trakt.getByRole('button', {name: 'Disconnect it'}).click(); await toast(guest).filter({hasText: 'Older Trakt link removed'}).waitFor();
 assert.equal(await trakt.getByText('Nothing uses it any more').count(), 0); await trakt.getByText('Connected as adatrakt.').waitFor();
+// Where her Trakt and MDBList disagree (as the daily look would note it): a quiet note, and nothing copied until she confirms.
+const drift = JSON.stringify({since: 0, trakt: 3, mdblist: 2, toMdblist: [{kind: 'show', tmdb: 1396, name: 'Breaking Bad', season: 1, episode: 2, at: 1763000000}], toTrakt: [{kind: 'movie', tmdb: 680, name: 'Pulp Fiction', at: 1762900000}]});
+execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', `INSERT INTO drift (hub, person, day, result, at) SELECT id, 'ada', '2026-06-01', '${drift}', 1 FROM hubs`], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
+await guest.reload(); const note = guest.locator('.accounts li', {has: guest.getByRole('heading', {name: 'Trakt and MDBList'})});
+await note.getByText('2 plays from the last two weeks are in one but not the other.').waitFor(); await note.getByText('Season 1 · Episode 2', {exact: false}).waitFor(); await note.getByText('Pulp Fiction').waitFor();
+await note.getByRole('button', {name: 'Fix'}).click(); await guest.getByText('1 play to MDBList and 1 play to Trakt, each with the date it was watched.', {exact: false}).waitFor(); await shot(guest, '13b-drift-confirm');
+await guest.getByRole('button', {name: 'Cancel'}).click(); await shot(guest, '13c-drift-note');
+execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', 'DELETE FROM drift'], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
 // MDBList: with her key saved, progress is kept there, and copying what she watched here is offered on her own page.
 await guest.getByRole('radio', {name: 'MDBList'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key'); await guest.getByRole('button', {name: 'Save'}).click();
 await toast(guest).filter({hasText: 'MDBList connected as adalists'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'MDBList'}).getAttribute('aria-checked'), 'true');
@@ -118,18 +126,31 @@ await owner.goto(BASE + '/#/hub/playback'); await owner.getByText('It needs prog
 // Activity keeps where each play was reported from behind a small pin: folded until pressed, and absent when unknown.
 // (Two plays made here directly in the local database, one with a made-up place and one without.)
 execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', "INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net) SELECT id, 'ada', 'm-1', 'Paper Kites', 'Movie', 600, 6000, 'Strand · Mac', 0, CAST(strftime('%s', 'now') AS INTEGER), '', 'Lagos, NG', 'SpaceX Services, Inc.' FROM hubs; INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) SELECT id, 'ada', 'm-2', 'Small Engines', 'Movie', 300, 6000, 'Odin · Apple TV', 0, CAST(strftime('%s', 'now') AS INTEGER) - 60, '' FROM hubs"], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
+/* The pin's centre against the device text's x-height centre, and the place's baseline against the device's (in px). A place too
+   long for the rest of the line goes whole onto the next one, on its baseline: one line height lower. */
+const lineUp = page => page.evaluate(() => {
+  const line = document.querySelector('.where').closest('.on-device'), probe = () => {const mark = document.createElement('span'); mark.style.cssText = 'display:inline-block;width:0;height:1ex;vertical-align:baseline'; return mark;};
+  const own = probe(), placed = probe(), lh = parseFloat(getComputedStyle(line).lineHeight); line.insertBefore(own, line.firstChild); document.querySelector('.where-text').prepend(placed);
+  const pin = document.querySelector('.where-pin').getBoundingClientRect(), a = own.getBoundingClientRect(), b = placed.getBoundingClientRect(); own.remove(); placed.remove();
+  const gap = b.bottom - a.bottom;
+  return {pin: Math.abs(pin.top + pin.height / 2 - (a.top + a.height / 2)), text: Math.min(Math.abs(gap), Math.abs(gap - lh)), wrapped: gap > lh / 2};
+});
+const lined = async (page, label) => {const got = await lineUp(page); assert.ok(got.pin <= 1 && got.text <= 1, `${label}: pin and place line up with the device text (${JSON.stringify(got)})`);};
 const where = async page => {
   await page.getByText('Paper Kites').waitFor(); await page.getByText('Small Engines').waitFor();
   const pin = page.getByRole('button', {name: 'Where'}), text = page.locator('.where-text');
   assert.equal(await pin.count(), 1, 'a pin only for the play with a place'); assert.equal(await pin.getAttribute('aria-expanded'), 'false');
-  assert.equal((await text.boundingBox())?.width ?? 0, 0, 'the place starts folded');
+  assert.equal((await text.boundingBox())?.width ?? 0, 0, 'the place starts folded'); await lined(page, 'folded');
   await pin.click(); assert.equal(await pin.getAttribute('aria-expanded'), 'true'); assert.equal(await text.getAttribute('aria-hidden'), 'false');
   await text.filter({hasText: '· Lagos, NG · SpaceX'}).waitFor({state: 'visible'}); await page.waitForTimeout(400);
-  assert.ok((await text.boundingBox()).width > 60, 'the place unfolds'); assert.ok(!(await text.textContent()).includes('Inc'), 'the network is said briefly');
+  assert.ok((await text.boundingBox()).width > 60, 'the place unfolds'); assert.ok(!(await text.textContent()).includes('Inc'), 'the network is said briefly'); await lined(page, 'unfolded');
   await pin.click(); assert.equal(await pin.getAttribute('aria-expanded'), 'false');
 };
 await guest.goto(BASE + '/#/me/activity'); await where(guest); await shot(guest, '15-activity-own');
 await owner.goto(BASE + '/#/activity'); await where(owner); await owner.getByRole('button', {name: 'Where'}).click(); await shot(owner, '16-activity-where');
+// The same on a wide screen, folded and unfolded.
+await owner.setViewportSize({width: 1280, height: 800}); await owner.reload(); await owner.mouse.move(0, 0); await where(owner);
+assert.equal((await lineUp(owner)).wrapped, false, 'on a wide screen the place stays on the device line'); await owner.getByRole('button', {name: 'Where'}).click(); await owner.mouse.move(0, 0); await shot(owner, '16b-activity-where-wide'); await owner.setViewportSize({width: 390, height: 844});
 
 // Back as the manager: Ada shows as joined, and the playback change stuck.
 await owner.goto(BASE + '/#/person/ada/settings'); await owner.reload(); await owner.getByText(/Family · joined/).waitFor();

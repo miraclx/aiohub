@@ -16,7 +16,10 @@ export interface Settings {
 }
 export type Overrides = Partial<Settings>;
 export interface Device {id: string; app: string; name: string; seen: string; place?: string; net?: string}
-export interface Person {v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
+// Plays one of Trakt and MDBList has and the other lacks, from the daily look (drift.ts on the Worker).
+export interface Miss {kind: 'movie' | 'show'; tmdb: number; name: string; season?: number; episode?: number; at: number}
+export interface Drift {since: number; trakt: number; mdblist: number; toMdblist: Miss[]; toTrakt: Miss[]}
+export interface Person {drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
 export interface Hub {
@@ -46,11 +49,20 @@ export const defaultRows = (): Row[] => [
 // Up next is off: nothing writes plays back to Trakt yet, so it would fall behind. The player's own Continue watching covers it.
 export const traktRows = (): Row[] => [
   {id: 'watchlist', title: 'Watchlist', kind: 'Movies & shows, newest first', source: 'Trakt', origin: 'own', on: true, core: true},
+  {id: 'recently-watched', title: 'Recently Watched', kind: 'Movies & shows, latest first', source: 'Trakt', origin: 'own', on: false, core: true},
   {id: 'recommended-movies', title: 'Recommended Movies', kind: 'Movies', source: 'Trakt', origin: 'own', on: true, core: true},
   {id: 'recommended-series', title: 'Recommended Shows', kind: 'Series', source: 'Trakt', origin: 'own', on: true, core: true},
   {id: 'up-next', title: 'Up Next', kind: 'Series', source: 'Trakt', origin: 'own', on: false, core: true},
   {id: 'recently-aired', title: 'Recently Aired for You', kind: 'Series', source: 'Trakt', origin: 'own', on: false, core: true},
 ];
+/* A person's rows: their own Home if they made one, else their Trakt rows (once connected) above the shared ones, each on or off as
+   they last chose (`picks`), so switching one keeps them following the Home above. A Trakt row added to the site after they made a
+   Home of their own comes at its end, off. */
+export function rowsOf(own: Row[] | null, shared: Row[], trakt: boolean, picks?: Record<string, boolean>): Row[] {
+  if (!trakt) return own ?? shared;
+  if (own) return [...own, ...traktRows().filter(row => !own.some(item => item.id === row.id)).map(row => ({...row, on: false}))];
+  return [...traktRows().map(row => ({...row, on: picks?.[row.id] ?? row.on})), ...shared];
+}
 export const isTrakt = (item: Row) => item.source === 'Trakt' || item.source.startsWith('Trakt ·');
 export const suggestions = [
   {id: 'sg-nollywood', title: 'Nollywood', kind: 'Movies', source: 'TMDB'},
@@ -97,7 +109,7 @@ export function resolve(hub: Hub, group?: Group, person?: Person): Resolved {
 export const groupRows = (hub: Hub, group: Group) => group.rows ?? hub.rows;
 // Trakt rows come with either Trakt connection: the hub's own (history), or the older one made through AIOMetadata (trakt).
 export const hasTrakt = (person: Person) => person.trakt || (!!person.history && !person.history.again);
-export const personRows = (hub: Hub, person: Person) => person.rows ?? [...(hasTrakt(person) ? traktRows() : []), ...groupRows(hub, hub.groups.find(item => item.id === person.groupId)!)];
+export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), hasTrakt(person), person.picks);
 
 const words = ['maple', 'river', 'copper', 'lantern', 'meadow', 'harbor', 'ember', 'willow', 'pebble', 'comet'];
 function seed(text: string) {let h = 11; for (const c of text) h = (h * 33 + c.charCodeAt(0)) >>> 0; return h;}

@@ -39,7 +39,7 @@ async function server(via: Via) {
     done: () => fetch(`${via.base}/Sessions/Logout`, {method: 'POST', headers: head(token)}).catch(() => null),
   };
 }
-const mdblist = (env: Env, key: string) => async (path: string, body?: unknown) => {
+export const mdblist = (env: Env, key: string) => async (path: string, body?: unknown) => {
   const answer = await fetch(`${env.MDBLIST_API ?? 'https://api.mdblist.com'}${path}${path.includes('?') ? '&' : '?'}apikey=${encodeURIComponent(key)}`,
     {method: body === undefined ? 'GET' : 'POST', headers: {accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'AIOHub/1.0'}, body: body === undefined ? undefined : JSON.stringify(body)}).catch(() => null);
   return {status: answer?.status ?? 0, body: answer ? await answer.json().catch(() => null) as Record<string, unknown> | unknown[] | null : null};
