@@ -269,20 +269,21 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
     if (!live) return edit(target => {target.lists = false; target.rows = target.rows?.filter(row => !row.source.startsWith('MDBList')) ?? null;}, 'Progress kept here');
     setBusy(true); void live.call('DELETE', at).then(() => live.sync()).then(() => live.reload()).then(() => toast('Progress kept here'), fail(toast)).finally(() => setBusy(false));
   };
-  const save = () => {setBusy(true); void live!.call<{username: string}>('POST', at, {key: own}).then(found => live!.sync().then(() => live!.reload()).then(() => {toast(found.username ? `MDBList connected as ${found.username}` : 'MDBList connected'); setKeying(false); setOwn('');}), fail(toast)).finally(() => setBusy(false));};
+  const save = () => {setBusy(true); void live!.call<{username: string}>('POST', at, {key: own}).then(found => live!.sync().then(() => live!.reload()).then(() => {toast(found.username ? `MDBList connected as ${found.username}` : person.lists ? 'MDBList key replaced' : 'MDBList connected'); setKeying(false); setOwn('');}), fail(toast)).finally(() => setBusy(false));};
   const canChoose = !!live || mine || person.lists;
   return <>
     <h3 className="sub">Where progress is kept</h3>
     <p className="muted small below-head">Continue Watching, what’s ticked as watched, Next Up, and hiding what’s been watched.</p>
     <ul className="accounts">
       <li className="stacked"><div className="account-row"><div><h3>{choice === 'here' ? 'Here' : 'MDBList'}</h3>
-        <p>{choice === 'here' ? 'Kept on this hub, in the player apps. Nothing to connect.' : person.lists ? `In ${their} own MDBList account, so other apps that read MDBList see it too.` : `In ${their} own MDBList account, so other apps that read MDBList see it too. Free.`}</p></div>
+        <p>{choice === 'here' ? 'Kept on this hub, in the player apps. Nothing to connect.' : person.lists ? `${person.listsName ? `Connected as ${person.listsName}. ` : ''}In ${their} own MDBList account, so other apps that read MDBList see it too.` : `In ${their} own MDBList account, so other apps that read MDBList see it too. Free.`}</p>
+          {live && person.lists && !keying && <button type="button" className="link small" onClick={() => setKeying(true)}>Replace key</button>}</div>
         {canChoose ? <Segments label="Where progress is kept" value={choice} onChange={pick} options={[{value: 'here', label: 'Here'}, {value: 'mdblist', label: 'MDBList'}]}/>
           : <span className="pill" title={`Send ${person.name} their link from the Settings tab`}>Waiting for {person.name}</span>}</div>
         {choice === 'here' && <p className="muted small">Hiding what’s been watched needs MDBList. With progress kept here, watched titles stay in rows.</p>}
-        {live && keying && !person.lists && <form className="stack link-back" onSubmit={event => {event.preventDefault(); save();}}>
-          <p className="muted small">Paste {their} own MDBList API key. It is at <a className="link" href="https://mdblist.com/preferences/" target="_blank" rel="noreferrer">mdblist.com, Preferences, API Access</a>. One key per person: a shared key would mix everyone’s watching together.</p>
-          <div className="field-row"><input type="password" aria-label="MDBList API key" placeholder="API key" autoComplete="off" value={own} onChange={event => setOwn(event.target.value)}/><button className="primary" disabled={busy || !own.trim()}>Save</button></div>
+        {live && keying && <form className="stack link-back" onSubmit={event => {event.preventDefault(); save();}}>
+          <p className="muted small">{person.lists ? 'A key from another MDBList account moves where new progress goes; what is already in the old one stays there. ' : ''}Paste {their} own MDBList API key. It is at <a className="link" href="https://mdblist.com/preferences/" target="_blank" rel="noreferrer">mdblist.com, Preferences, API Access</a>. One key per person: a shared key would mix everyone’s watching together.</p>
+          <div className="field-row"><input type="password" aria-label="MDBList API key" placeholder="API key" autoComplete="off" value={own} onChange={event => setOwn(event.target.value)}/><button className="primary" disabled={busy || !own.trim()}>Save</button>{person.lists && <button type="button" className="ghost" onClick={() => {setKeying(false); setOwn('');}}>Cancel</button>}</div>
         </form>}
       </li>
       {live && mine && person.lists && <Carry page={page} person={person}/>}
