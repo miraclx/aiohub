@@ -35,6 +35,7 @@ function Frame({page, parts, mine, bar, toastView, children}: {page?: PageProps;
         {!!at && !['person', 'group', 'hub', 'activity', 'account'].includes(at) && <div className="empty"><p>There’s no page at this address.</p><p><a className="link" href="#/">Go to People</a></p></div>}
       </>)}
     </main>
+    <footer className="credit">Built with <span className="heart" role="img" aria-label="love">♥︎</span> by <a href="https://github.com/miraclx/aiohub" target="_blank" rel="noreferrer">miraclx</a></footer>
     {toastView}
   </div>;
 }
@@ -129,7 +130,7 @@ function Hubbed() {
   if (creating || unfinished) return <Frame parts={parts} toastView={toastView}><SetupPage hub={hub ?? {...sampleHub(), services: [], groups: [], people: []}} go={go} toast={toast} update={live.update} live={live} signedIn={phase === 'in'} needCode={open?.code} linkCode={at === 'setup' ? id : undefined} offer={open?.hub && open.proof ? {hub: open.hub, proof: open.proof} : undefined}/></Frame>;
   if (!inside) return <Frame parts={parts} toastView={toastView}><SignInPage live={live} toast={toast} canCreate={!!open?.signup}/></Frame>;
   if (who.role === 'person') return <Frame page={page} parts={parts} toastView={toastView} mine="#/me"><JoinPage {...page!} id={who.personId} base="/me" tab={(at === 'me' ? id : undefined) ?? 'home'}/></Frame>;
-  return <Frame page={page} parts={parts} toastView={toastView} bar={<p className="preview-bar">Test build, running on the AIOStreams and AIOMetadata hosted by ForTheWeak.</p>}/>;
+  return <Frame page={page} parts={parts} toastView={toastView}/>;
 }
 
 export const App = SAMPLE ? Preview : Hubbed;
