@@ -442,6 +442,8 @@ test('a connection near its end is renewed once, and the new pair is kept', asyn
   assert.equal(trakt.calls[0].auth, 'trakt-access-3'); assert.equal(trakt.refreshed.length, 1);
   assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').history, {username: 'adatrakt', again: false});
 });
+// What the page lists as missing on either side (the day's look is shown even when nothing is).
+const missing = drift => drift ? [...drift.toMdblist, ...drift.toTrakt] : [];
 test('once a day her Trakt and MDBList are compared over two weeks, a few steps a run, and only she sees what differs', async () => {
   const T = {e3: ago(1), inception: ago(2), e2: ago(3), e1: ago(3.1), pulp: ago(4), fight: ago(5), gump: ago(6), knight: ago(7), old: ago(20)}, plus = (time, hours) => new Date(Date.parse(time) + hours * 3600e3).toISOString();
   trakt.history = [{watched_at: T.inception, type: 'movie', movie: MOVIE.inception}, {watched_at: T.e2, type: 'episode', episode: {season: 1, number: 2}, show: BB}, {watched_at: T.e1, type: 'episode', episode: {season: 1, number: 1}, show: BB},
@@ -466,7 +468,7 @@ test('once a day her Trakt and MDBList are compared over two weeks, a few steps 
   const mine = (await adaSite('GET', '/api/state')).body.hub.people[0].drift, line = miss => [miss.name, miss.season ?? null, miss.episode ?? null, new Date(miss.at * 1000).toISOString()];
   assert.deepEqual(mine.toMdblist.map(line), [['Inception', null, null, T.inception], ['Breaking Bad', 1, 2, T.e2]]);
   assert.deepEqual(mine.toTrakt.map(line), [['Breaking Bad', 1, 3, T.e3], ['Pulp Fiction', null, null, T.pulp]]);
-  assert.equal(mine.trakt, 6); assert.equal(mine.mdblist, 6);
+  assert.ok(mine.checked > 0, 'when it was checked');
   // It is hers: the manager sees nothing and cannot copy it.
   assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').drift, null);
   assert.equal((await owner('POST', '/api/people/ada/drift', {})).status, 403);
@@ -477,22 +479,22 @@ test('once a day her Trakt and MDBList are compared over two weeks, a few steps 
   assert.deepEqual((await adaSite('GET', '/api/state')).body.hub.people[0].drift.toTrakt.map(line), [['Breaking Bad', 1, 3, T.e3]]);
   // Fix, pressed twice at once: exactly the missing plays, each with its own date, sent once.
   const [one, two] = await Promise.all([adaSite('POST', '/api/people/ada/drift', {}), adaSite('POST', '/api/people/ada/drift', {})]);
-  assert.deepEqual([one.body, two.body].sort((a, b) => b.trakt - a.trakt), [{trakt: 1, mdblist: 2}, {trakt: 0, mdblist: 0}]);
+  assert.deepEqual([one.body, two.body].sort((a, b) => b.trakt - a.trakt), [{trakt: 1, mdblist: 2, more: false}, {trakt: 0, mdblist: 0, more: false}]);
   assert.deepEqual(trakt.calls.map(({path, body}) => ({path, body})), [{path: '/sync/history', body: {shows: [{ids: {tmdb: 1396, imdb: 'tt0903747'}, seasons: [{number: 1, episodes: [{number: 3, watched_at: T.e3}]}]}]}}]);
   assert.deepEqual(fake.watched.slice(posted), [{movies: [{ids: {tmdb: 27205, imdb: 'tt1375666'}, watched_at: T.inception}], shows: [{ids: {tmdb: 1396, imdb: 'tt0903747'}, seasons: [{number: 1, episodes: [{number: 2, watched_at: T.e2}]}]}]}]);
-  assert.equal((await adaSite('GET', '/api/state')).body.hub.people[0].drift, null);
+  assert.deepEqual(missing((await adaSite('GET', '/api/state')).body.hub.people[0].drift), []);
   // The next day both have everything but the play she skipped, which stays out: nothing is shown.
   trakt.history.unshift({watched_at: T.e3, type: 'episode', episode: {season: 1, number: 3}, show: BB});
   lists.plays['movie/27205'] = [{watched_at: T.inception}]; lists.plays['show/1396'].push({season_num: 1, episode_num: 2, watched_at: T.e2}); trakt.calls = [];
   await cron(day + DAY * 1e3); await cron(day + DAY * 1e3 + 300e3);
   assert.deepEqual(sql('SELECT day, work IS NULL AS done FROM drift'), [{day: '2026-06-02', done: 1}]);
-  assert.equal((await adaSite('GET', '/api/state')).body.hub.people[0].drift, null); assert.deepEqual(trakt.calls, []);
+  assert.deepEqual(missing((await adaSite('GET', '/api/state')).body.hub.people[0].drift), []); assert.deepEqual(trakt.calls, []);
   // A day MDBList does not answer: no differences are made up from it, and the look is tried again on the next run.
   lists.refuse = true; await cron(day + 2 * DAY * 1e3);
   assert.deepEqual(sql('SELECT day, json_extract(work, \'$.tries\') AS tries FROM drift'), [{day: '2026-06-03', tries: 1}]);
-  assert.equal((await adaSite('GET', '/api/state')).body.hub.people[0].drift, null);
+  assert.deepEqual(missing((await adaSite('GET', '/api/state')).body.hub.people[0].drift), []);
   lists.refuse = false; await cron(day + 2 * DAY * 1e3 + 300e3); await cron(day + 2 * DAY * 1e3 + 600e3);
-  assert.equal(sql('SELECT work FROM drift')[0].work, null); assert.equal((await adaSite('GET', '/api/state')).body.hub.people[0].drift, null);
+  assert.equal(sql('SELECT work FROM drift')[0].work, null); assert.deepEqual(missing((await adaSite('GET', '/api/state')).body.hub.people[0].drift), []);
 });
 test('the rows address answers with IMDb ids from her Trakt, page by page, renewing the connection when Trakt refuses it', async () => {
   const get = async url => {const answer = await fetch(url); return {status: answer.status, body: await answer.json().catch(() => null)};};

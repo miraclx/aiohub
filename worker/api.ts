@@ -1,7 +1,7 @@
 // The site's own API: managers' accounts, the hub they run, and what an invited person may change about themselves.
 // What reaches the streaming server goes through ./native.
 import {carry, plan} from './carry';
-import {differing, fix, skip} from './drift';
+import {fix, looked, skip, skippedOf} from './drift';
 import {defaultAddons, defaultRows, defaultSettings, slug, traktRows} from '../src/data';
 import type {Addon, Hub, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
@@ -78,7 +78,7 @@ interface GroupRow {id: string; name: string; data: string; version: number}
 interface PersonRow {id: string; grp: string; name: string; data: string; joined: number; paused: number; version: number}
 interface DeviceRow {ref: string; person: string; app: string; name: string; seen: number; place: string; net: string}
 interface SignIn {password: string; pin: string | null}
-const TRAKT_ROWS = traktRows().map(row => row.id);
+const TRAKT_ROWS = traktRows().map(row => row.id), HERE = 6 * 3600;
 const cleanPicks = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).filter(([id, on]) => TRAKT_ROWS.includes(id) && typeof on === 'boolean')) as Record<string, boolean> : undefined;
 
 function ago(seen: number) {
@@ -86,7 +86,7 @@ function ago(seen: number) {
   return gap < 300 ? 'Now' : gap < 3600 ? `${Math.floor(gap / 60)} min ago` : gap < 86400 ? `${Math.floor(gap / 3600)} h ago` : gap < 172800 ? 'Yesterday' : `${Math.floor(gap / 86400)} days ago`;
 }
 const groupDto = (row: GroupRow) => ({id: row.id, name: row.name, ...(JSON.parse(row.data) as GroupData), v: row.version});
-const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null, aiomTrakt: boolean, listsName = '', drift: ReturnType<typeof differing> = null) => ({
+const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null, aiomTrakt: boolean, listsName = '', drift: ReturnType<typeof looked> = null) => ({
   ready, history, listsName, drift,
   id: row.id, name: row.name, groupId: row.grp, joined: !!row.joined, paused: !!row.paused, ...(JSON.parse(row.data) as PersonData), v: row.version,
   // AIOMetadata's own Trakt connection (a Token ID). Once Trakt is connected to the hub it is no longer used and can go.
@@ -137,7 +137,7 @@ async function state(env: Env, who: Who) {
     env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind = 'trakt'").bind(hub.id),
     env.DB.prepare("SELECT owner, value FROM secrets WHERE hub = ? AND kind = 'mdblist' AND owner = coalesce(?, owner)").bind(hub.id, mine ?? null),
     // Where Trakt and MDBList disagree is someone's own watching: only they see it, on their own page.
-    env.DB.prepare('SELECT result, skipped FROM drift WHERE hub = ? AND person = ?').bind(hub.id, mine ?? ''),
+    env.DB.prepare('SELECT result, skipped, at FROM drift WHERE hub = ? AND person = ?').bind(hub.id, mine ?? ''),
     // The background work, for the manager: when it last ran, how often it has, what waits for Trakt, the last daily check.
     env.DB.prepare(`SELECT (SELECT at FROM runs WHERE job = 'cron') AS last, (SELECT count FROM runs WHERE job = 'cron') AS runs, (SELECT since FROM runs WHERE job = 'cron') AS since,
       (SELECT max(at) FROM drift WHERE hub = ?1 AND work IS NULL AND result IS NOT NULL) AS ran, (SELECT count(*) FROM trakt_outbox WHERE hub = ?1) AS waiting,
@@ -159,7 +159,7 @@ async function state(env: Env, who: Who) {
     hub: {
       name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID, traktClient: env.TRAKT_CLIENT_ID ?? '',
       ...(mine ? {manager: !!who.manager} : {jobs: jobs.results[0] as Hub['jobs']}),
-      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? differing((drifts.results[0] as {result: string | null} | undefined)?.result ?? null, (drifts.results[0] as {skipped: string | null} | undefined)?.skipped ?? null) : null)),
+      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? looked(drifts.results[0] as {result: string | null; skipped: string | null; at: number} | undefined) : null)),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
   };
@@ -332,19 +332,39 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     }
   }
   if (action === 'drift' && request.method === 'POST') {
-    // Copying the plays one of Trakt and MDBList is missing, asked for from their own page, after a confirmation there.
+    // "Add what's missing", from their own page: the plays they left out are kept out for good, then each side gets what it lacks
+    // (Trakt and MDBList from the day's look, and what was watched here copied to MDBList, a pass at a time).
     if (who.person !== id) bad(403, 'Only they can do this, from their own page');
-    // A play they say is not right: left out from now on.
-    if (body.skip !== undefined) {await skip(env, hub, id, text(body.skip, 200, 'Play')); return {};}
-    const got = await fix(env, hub, id);
-    if ('error' in got) bad(409, got.error);
-    return got;
+    const leave = Array.isArray(body.leave) ? body.leave.slice(0, 200).map(key => text(key, 200, 'Play')) : body.skip !== undefined ? [text(body.skip, 200, 'Play')] : [];
+    await skip(env, hub, id, leave);
+    if (body.skip !== undefined) return {};
+    const fixed = await fix(env, hub, id);
+    if ('error' in fixed) return bad(409, fixed.error);
+    let here = {watched: 0, partway: 0, more: false};
+    if (await hasSecret(env, hub, id, 'mdblist') && await hasSecret(env, hub, id, 'upstream-aiom')) {
+      const got = await carry(env, hub, id, await skippedOf(env, hub, id));
+      if ('error' in got) return bad(409, got.error);
+      here = got;
+    }
+    await env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, id).run();
+    return {trakt: fixed.trakt, mdblist: fixed.mdblist + here.watched + here.partway, more: here.more};
   }
   if (action === 'carry') {
     // Someone's own watching: only they can look at it or move it, from their own page.
     if (who.person !== id) bad(403, 'Only they can do this, from their own page');
-    const got = request.method === 'POST' ? await carry(env, hub, id) : await plan(env, hub, id);
+    if (request.method === 'POST') {
+      const got = await carry(env, hub, id, await skippedOf(env, hub, id));
+      await env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, id).run();
+      if ('error' in got) bad(409, got.error);
+      return got;
+    }
+    // What was watched here and MDBList lacks, worked out when their page asks and kept for a few hours: MDBList allows a person
+    // 1,000 calls a day, and one look costs about twenty.
+    const kept = await env.DB.prepare('SELECT here, here_at FROM drift WHERE hub = ? AND person = ?').bind(hub, id).first<{here: string | null; here_at: number | null}>();
+    if (kept?.here && now() - (kept.here_at ?? 0) < HERE) return JSON.parse(kept.here);
+    const got = await plan(env, hub, id, await skippedOf(env, hub, id));
     if ('error' in got) bad(409, got.error);
+    await env.DB.batch([env.DB.prepare("INSERT INTO drift (hub, person, day) VALUES (?, ?, '') ON CONFLICT (hub, person) DO NOTHING").bind(hub, id), env.DB.prepare('UPDATE drift SET here = ?, here_at = ? WHERE hub = ? AND person = ?').bind(JSON.stringify(got), now(), hub, id)]);
     return got;
   }
   if (action === 'rotate' && request.method === 'POST') {

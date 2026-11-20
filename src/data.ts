@@ -18,7 +18,7 @@ export type Overrides = Partial<Settings>;
 export interface Device {id: string; app: string; name: string; seen: string; place?: string; net?: string}
 // Plays one of Trakt and MDBList has and the other lacks, from the daily look (drift.ts on the Worker).
 export interface Miss {kind: 'movie' | 'show'; tmdb: number; name: string; season?: number; episode?: number; at: number; key: string}
-export interface Drift {since: number; trakt: number; mdblist: number; toMdblist: Miss[]; toTrakt: Miss[]}
+export interface Drift {checked: number; since: number; toMdblist: Miss[]; toTrakt: Miss[]}
 export interface Person {drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}

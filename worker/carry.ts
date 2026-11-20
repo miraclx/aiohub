@@ -45,7 +45,8 @@ export const mdblist = (env: Env, key: string) => async (path: string, body?: un
   return {status: answer?.status ?? 0, body: answer ? await answer.json().catch(() => null) as Record<string, unknown> | unknown[] | null : null};
 };
 
-export async function plan(env: Env, hub: string, person: string): Promise<Plan | Failed> {
+/* `skip`: what the person left out, never offered again. */
+export async function plan(env: Env, hub: string, person: string, skip: Set<string> = new Set()): Promise<Plan | Failed> {
   const lists = await getSecret<{key: string}>(env, hub, person, 'mdblist');
   if (!lists?.key) return {error: 'Connect MDBList first.'};
   const via = await getSecret<Via>(env, hub, person, 'upstream-aiom');
@@ -70,7 +71,7 @@ export async function plan(env: Env, hub: string, person: string): Promise<Plan 
         title: String((episode ? show?.Name ?? item.SeriesName : item.Name) ?? 'Untitled').slice(0, 200), detail: episode ? `Season ${item.ParentIndexNumber} · Episode ${item.IndexNumber}` : 'Movie',
         at: data.LastPlayedDate ?? new Date((when.get(item.Id) ?? now()) * 1000).toISOString(), ...(partway ? {pct: Math.round(pct)} : {}), ...(episode ? {season: item.ParentIndexNumber, episode: item.IndexNumber} : {})};
       entry.key = `${watched ? 'w' : 'p'}:${where(entry)}`;
-      if (!carried.has(entry.key)) all.push(entry);
+      if (!carried.has(entry.key) && !skip.has(entry.key)) all.push(entry);
     }
     // What MDBList already has for each title. Newest first, so a long list is copied the most recent first.
     const titles = [...new Set(all.map(entry => `${entry.kind}/${entry.ids.tmdb}`))], checked = new Set(titles.slice(0, TITLES)), held = new Set<string>(), ask = mdblist(env, lists.key);
@@ -98,8 +99,8 @@ export async function plan(env: Env, hub: string, person: string): Promise<Plan 
 }
 
 /* Copies one pass of the plan, worked out again here rather than taken from the page. Says whether there is more to do. */
-export async function carry(env: Env, hub: string, person: string): Promise<{watched: number; partway: number; missed: number; more: boolean} | Failed> {
-  const got = await plan(env, hub, person);
+export async function carry(env: Env, hub: string, person: string, skip: Set<string> = new Set()): Promise<{watched: number; partway: number; missed: number; more: boolean} | Failed> {
+  const got = await plan(env, hub, person, skip);
   if ('error' in got) return got;
   const lists = (await getSecret<{key: string}>(env, hub, person, 'mdblist'))!, ask = mdblist(env, lists.key), done: string[] = [];
   let missed = 0;

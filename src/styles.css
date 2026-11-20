@@ -42,6 +42,28 @@ main { display: block; }
 .jobs .job { flex: 1; display: grid; gap: 4px; }
 .jobs .job > div { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: baseline; }
 .jobs .job h3 { margin: 0; }
+/* The Trakt and MDBList card: one line per play, Trakt's cell on the left, MDBList's on the right, which way it goes between. */
+.trackers .trackers-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.trackers .trackers-cols { display: flex; justify-content: space-between; text-transform: uppercase; letter-spacing: .06em; font-size: 12px; padding: 12px 8px 6px; border-bottom: 1px solid var(--line); }
+.trackers .plays { list-style: none; margin: 0 0 14px; padding: 0; }
+.trackers .plays > li + li { border-top: 1px solid var(--line); }
+.trackers .play { width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 8px; text-align: center; border-radius: 10px; min-height: 64px; }
+.trackers .play:hover { background: var(--raised); }
+.trackers .play .what { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.trackers .play .what small { color: var(--muted); font-size: 13px; }
+.trackers .play .what em { font-style: normal; color: var(--accent); }
+.trackers .play .arrow { color: var(--accent); }
+.trackers .cell { width: 32px; height: 32px; flex-shrink: 0; display: grid; place-items: center; border-radius: 50%; font-size: 15px; }
+.trackers .cell.has { color: var(--ok); background: color-mix(in srgb, var(--ok) 16%, transparent); }
+.trackers .cell.add { color: var(--accent); border: 1.5px dashed var(--accent); }
+.trackers .cell.none { color: var(--muted); }
+.trackers .play.left { opacity: .45; }
+.trackers .play.left strong { text-decoration: line-through; }
+.trackers .play.left .cell.add, .trackers .play.left .arrow, .trackers .play.left .what em { color: var(--muted); border-color: var(--muted); }
+.trackers > .primary { width: 100%; }
+.trackers.quiet { display: flex; align-items: center; gap: 10px; }
+.trackers.quiet p { margin: 0; }
+.trackers .dot, .trackers.quiet .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex-shrink: 0; }
 .credit { margin: 72px 0 0; text-align: center; font-size: 13px; color: var(--muted); }
 .credit a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .credit .heart { color: var(--accent); }

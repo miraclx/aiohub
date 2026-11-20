@@ -292,68 +292,56 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
           <div className="field-row"><input type="password" aria-label="MDBList API key" placeholder="API key" autoComplete="off" value={own} onChange={event => setOwn(event.target.value)}/><button className="primary" disabled={busy || !own.trim()}>Save</button>{person.lists && <button type="button" className="ghost" onClick={() => {setKeying(false); setOwn('');}}>Cancel</button>}</div>
         </form>}
       </li>
-      {live && self && person.lists && <Carry page={page} person={person}/>}
-      {live && self && person.drift && <DriftNote page={page} person={person}/>}
+      {live && self && <Trackers page={page} person={person}/>}
       {live && !self && person.lists && <li><div><h3>What they watched here</h3><p>{person.name} can copy it to MDBList from their own page, under Accounts. It’s theirs, so it isn’t shown here.</p></div></li>}
     </ul>
     {leaving && <Confirm title="Keep progress here?" body={`MDBList is disconnected from ${mine ? 'you' : person.name}. Whatever is already in that MDBList account stays there.`} action="Keep it here" onYes={leave} onClose={() => setLeaving(false)}/>}
   </>;
 }
-/* Where Trakt and MDBList disagree on the last two weeks, from the hub's daily look. Shown only when they do, and only to the
-   person. Nothing is copied until they confirm. */
-function DriftNote({page, person}: {page: PageProps; person: Person}) {
-  const {toast, live} = page, found = person.drift!, [asking, setAsking] = useState(false), [busy, setBusy] = useState(false);
-  const count = found.toMdblist.length + found.toTrakt.length, plays = (n: number) => `${n} ${n === 1 ? 'play' : 'plays'}`;
-  const when = (at: number) => new Date(at * 1000).toLocaleDateString(undefined, {day: 'numeric', month: 'short'});
-  const part = (title: string, list: Miss[]) => !list.length ? null : <><p className="muted small">{title}</p>
-    <ul className="feed compact">{list.slice(0, 8).map(miss => <li key={miss.key}><div><strong>{miss.name || 'Untitled'}</strong> <span className="muted">{miss.season != null ? `Season ${miss.season} · Episode ${miss.episode}` : 'Movie'} · {when(miss.at)}</span></div>
-      <button type="button" className="ghost small" disabled={busy} aria-label={`Skip ${miss.name}`} onClick={() => leave(miss)}>Skip</button></li>)}</ul>
-    {list.length > 8 && <p className="muted small">And {list.length - 8} more.</p>}</>;
-  // A play that isn't right (one never actually watched, say) is left out from now on, and Fix leaves it alone.
-  const leave = (miss: Miss) => {setBusy(true); void live!.call('POST', `/api/people/${person.id}/drift`, {skip: miss.key}).then(() => live!.reload()).then(() => toast('Skipped. It won’t come up again.'), fail(toast)).finally(() => setBusy(false));};
-  const go = () => {
-    setAsking(false); setBusy(true);
-    void live!.call<{trakt: number; mdblist: number}>('POST', `/api/people/${person.id}/drift`, {})
-      .then(got => live!.reload().then(() => toast(got.trakt + got.mdblist ? 'Copied across' : 'Both already had them')), fail(toast)).finally(() => setBusy(false));
-  };
-  return <li className="stacked"><div><h3>Trakt and MDBList</h3>
-    <p>{plays(count)} from the last two weeks {count === 1 ? 'is' : 'are'} in one but not the other.</p>
-    {part('On Trakt, not in MDBList', found.toMdblist)}
-    {part('In MDBList, not on Trakt', found.toTrakt)}</div>
-    <div className="field-row"><button type="button" className="primary small" disabled={busy} onClick={() => setAsking(true)}>{busy ? 'Copying…' : 'Fix'}</button></div>
-    {asking && <Confirm plain title="Copy the missing plays?" body={`${[found.toMdblist.length && `${plays(found.toMdblist.length)} to MDBList`, found.toTrakt.length && `${plays(found.toTrakt.length)} to Trakt`].filter(Boolean).join(' and ')}, each with the date it was watched. Nothing already in either one is changed.`} action="Copy" onYes={go} onClose={() => setAsking(false)}/>}
-  </li>;
-}
-/* Copying what someone watched here to their MDBList: they see exactly what would go, then it is done in a few short steps. */
-interface CarryEntry {key: string; title: string; detail: string; at: string; pct?: number}
+interface CarryEntry {key: string; title: string; detail: string; at: string; pct?: number; season?: number; episode?: number}
 interface CarryPlan {watched: CarryEntry[]; partway: CarryEntry[]; already: number; unknown: number; more: boolean}
-function Carry({page, person}: {page: PageProps; person: Person}) {
-  const {toast, live} = page, at = `/api/people/${person.id}/carry`;
-  const [plan, setPlan] = useState<CarryPlan | null>(null), [phase, setPhase] = useState<'idle' | 'looking' | 'shown' | 'copying' | 'done'>('idle'), [copied, setCopied] = useState(0);
-  if (!live) return null;
-  const look = () => {setPhase('looking'); void live.call<CarryPlan>('GET', at).then(found => {setPlan(found); setPhase('shown');}, (error: Error) => {toast(error.message); setPhase('idle');});};
-  const go = async () => {
-    setPhase('copying'); let total = 0;
+/* One card for plays one of a person's trackers is missing: Trakt and MDBList from the hub's daily look, and what was watched here
+   that MDBList doesn't have yet (worked out when the card opens, kept a few hours). Every play starts included; tapping one leaves
+   it out, and once the rest are added it stays out of later looks. Nothing is ever removed from either tracker. */
+type Cell = 'has' | 'add' | 'none';
+interface Line {key: string; title: string; detail: string; at?: string; pct?: number; here?: boolean; trakt: Cell; lists: Cell}
+const episode = (season?: number, number?: number) => season != null ? `S${season}E${number}` : 'Movie';
+function Trackers({page, person}: {page: PageProps; person: Person}) {
+  const {toast, live} = page, found = person.drift, trakt = !!person.history && !person.history.again, lists = person.lists;
+  const [here, setHere] = useState<CarryPlan | null>(null), [out, setOut] = useState<Set<string>>(new Set()), [busy, setBusy] = useState(false);
+  useEffect(() => {if (live && lists) void live.call<CarryPlan>('GET', `/api/people/${person.id}/carry`).then(setHere, () => setHere(null));}, [person.id, lists, person.v]);
+  if (!live || (!trakt && !lists)) return null;
+  const when = (ms: number) => {const date = new Date(ms), today = new Date().toDateString() === date.toDateString(); return `${today ? 'today' : date.toLocaleDateString(undefined, {day: 'numeric', month: 'short'})} at ${date.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;};
+  const stamp = (ms: number) => `${new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'})}, ${new Date(ms).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;
+  const lines: Line[] = [
+    ...(trakt && lists ? (found?.toTrakt ?? []).map(miss => ({key: miss.key, title: miss.name || 'Untitled', detail: episode(miss.season, miss.episode), at: stamp(miss.at * 1000), trakt: 'add' as Cell, lists: 'has' as Cell})) : []),
+    ...(trakt && lists ? (found?.toMdblist ?? []).map(miss => ({key: miss.key, title: miss.name || 'Untitled', detail: episode(miss.season, miss.episode), at: stamp(miss.at * 1000), trakt: 'has' as Cell, lists: 'add' as Cell})) : []),
+    ...(lists && here ? [...here.watched, ...here.partway].map(entry => ({key: entry.key, title: entry.title, detail: episode(entry.season, entry.episode), at: entry.pct == null ? stamp(Date.parse(entry.at)) : undefined, pct: entry.pct, here: true, trakt: 'none' as Cell, lists: 'add' as Cell})) : []),
+  ];
+  const kept = lines.filter(line => !out.has(line.key)), checked = found ? `Checked ${when(found.checked * 1000)}` : '';
+  const flip = (key: string) => setOut(was => {const next = new Set(was); if (!next.delete(key)) next.add(key); return next;});
+  const add = async () => {
+    setBusy(true); let added = 0;
     try {
-      for (let pass = 0; pass < 20; pass++) {const got = await live.call<{watched: number; partway: number; more: boolean}>('POST', at, {}); total += got.watched + got.partway; if (!got.more) break;}
-      setCopied(total); setPhase('done');
-    } catch (error) {toast((error as Error).message); setPhase('shown');}
+      for (let pass = 0, leave = [...out]; pass < 10; pass++, leave = []) {const got = await live.call<{trakt: number; mdblist: number; more: boolean}>('POST', `/api/people/${person.id}/drift`, {leave}); added += got.trakt + got.mdblist; if (!got.more) break;}
+      setOut(new Set()); setHere(null); await live.reload(); toast(added ? `Added ${added} ${added === 1 ? 'play' : 'plays'}` : 'Both already had them');
+    } catch (error) {toast((error as Error).message);} finally {setBusy(false);}
   };
-  const items = plan ? [...plan.watched, ...plan.partway] : [], count = items.length;
-  const when = (entry: CarryEntry) => entry.pct != null ? `${entry.pct}% in` : new Date(entry.at).toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'});
-  return <li className="stacked"><div><h3>What you watched here</h3>
-    {phase === 'idle' && <p>It stays in your apps either way. Copy it to MDBList too, so anything else that reads MDBList knows what you’ve seen.</p>}
-    {phase === 'looking' && <p>Looking…</p>}
-    {phase === 'shown' && plan && (count ? <>
-      <p>{[plan.watched.length && `${plan.watched.length} watched`, plan.partway.length && `${plan.partway.length} partway`].filter(Boolean).join(' and ')} will be copied, each with the date you watched it.{plan.already ? ` ${plan.already} already in MDBList, left as they are.` : ''}{plan.unknown ? ` ${plan.unknown} couldn’t be matched and stay here only.` : ''}{plan.more ? ' There’s more after these; it carries on by itself.' : ''}</p>
-      <ul className="feed compact">{items.slice(0, 12).map(entry => <li key={entry.key}><div><strong>{entry.title}</strong> <span className="muted">{entry.detail} · {when(entry)}</span></div></li>)}</ul>
-      {count > 12 && <p className="muted small">And {count - 12} more.</p>}
-    </> : <p>Nothing to copy. MDBList already has everything you watched here.{plan.unknown ? ` ${plan.unknown} couldn’t be matched and stay here only.` : ''}</p>)}
-    {phase === 'copying' && <p>Copying. This takes a few seconds.</p>}
-    {phase === 'done' && <p>Done. {copied} copied to MDBList.</p>}
-  </div>
-    {phase === 'idle' && <button type="button" className="ghost small" onClick={look}>See what would be copied</button>}
-    {phase === 'shown' && plan && count > 0 && <div className="field-row"><button type="button" className="primary small" onClick={() => void go()}>Copy {count}</button><button type="button" className="ghost small" onClick={() => setPhase('idle')}>Not now</button></div>}
+  if (!lines.length) return lists && !here && !found ? null : <li className="trackers quiet"><span className="dot ok" aria-hidden="true"/><p><strong>{trakt && lists ? 'Trakt and MDBList' : trakt ? 'Trakt' : 'MDBList'}</strong> <span className="muted">· all in step{found ? ` · checked ${when(found.checked * 1000)}` : ''}</span></p></li>;
+  const cell = (state: Cell, left: boolean) => state === 'none' ? <span className="cell none" aria-hidden="true">–</span> : <span className={`cell ${state}${left ? ' off' : ''}`} aria-hidden="true">{state === 'has' ? '✓' : '+'}</span>;
+  const arrow = (line: Line) => line.trakt === 'add' && line.lists === 'add' ? '← →' : line.trakt === 'add' ? '←' : '→';
+  return <li className="stacked trackers">
+    <div className="trackers-head"><h3>{trakt && lists ? 'Trakt and MDBList' : trakt ? 'Trakt' : 'MDBList'}</h3>{checked && <span className="muted small">{checked}</span>}</div>
+    <p className="muted small">{lines.length} {lines.length === 1 ? 'play' : 'plays'} missing</p>
+    {trakt && lists && <div className="trackers-cols muted small" aria-hidden="true"><span>Trakt</span><span>MDBList</span></div>}
+    <ul className="plays">{lines.map(line => {const left = out.has(line.key); return <li key={line.key}>
+      <button type="button" className={`play${left ? ' left' : ''}`} aria-pressed={!left} aria-label={`Add ${line.title} ${line.detail}`} onClick={() => flip(line.key)}>
+        {trakt && lists && cell(line.trakt, left)}
+        <span className="what"><strong>{line.title}</strong><small>{line.detail}{line.at ? ` · ${line.at}` : ''}{line.here ? ' · watched here' : ''}{line.pct != null && <> · <em>{line.pct}%</em></>}</small>{trakt && lists && <small className="arrow" aria-hidden="true">{arrow(line)}</small>}</span>
+        {trakt && lists && cell(line.lists, left)}
+      </button></li>;})}</ul>
+    <button type="button" className="primary" disabled={busy || !kept.length} onClick={() => void add()}>{busy ? 'Adding…' : `Add ${kept.length} ${kept.length === 1 ? 'play' : 'plays'}`}</button>
+    <p className="muted small center-text">Tap a play to leave it out. Nothing is ever removed.</p>
   </li>;
 }
 function PersonSections({page, person, tab, mine}: {page: PageProps; person: Person; tab: string; mine: boolean}) {

@@ -116,16 +116,6 @@ execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', 
 await guest.reload(); await trakt.getByText('Nothing uses it any more').waitFor(); await shot(guest, '13-accounts-connected');
 await trakt.getByRole('button', {name: 'Disconnect it'}).click(); await toast(guest).filter({hasText: 'Older Trakt link removed'}).waitFor();
 assert.equal(await trakt.getByText('Nothing uses it any more').count(), 0); await trakt.getByText('Connected as adatrakt.').waitFor();
-// Where her Trakt and MDBList disagree (as the daily look would note it): a quiet note, and nothing copied until she confirms.
-const drift = JSON.stringify({since: 0, trakt: 3, mdblist: 2, toMdblist: [{kind: 'show', tmdb: 1396, name: 'Breaking Bad', season: 1, episode: 2, at: 1763000000}], toTrakt: [{kind: 'movie', tmdb: 680, name: 'Pulp Fiction', at: 1762900000}]});
-execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', `INSERT INTO drift (hub, person, day, result, at) SELECT id, 'ada', '2026-06-01', '${drift}', 1 FROM hubs`], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
-await guest.reload(); const note = guest.locator('.accounts li', {has: guest.getByRole('heading', {name: 'Trakt and MDBList'})});
-await note.getByText('2 plays from the last two weeks are in one but not the other.').waitFor(); await note.getByText('Season 1 · Episode 2', {exact: false}).waitFor(); await note.getByText('Pulp Fiction').waitFor();
-await note.getByRole('button', {name: 'Fix'}).click(); await guest.getByText('1 play to MDBList and 1 play to Trakt, each with the date it was watched.', {exact: false}).waitFor(); await shot(guest, '13b-drift-confirm');
-await guest.getByRole('button', {name: 'Cancel'}).click(); await shot(guest, '13c-drift-note');
-await note.getByRole('button', {name: 'Skip Pulp Fiction'}).click(); await toast(guest).filter({hasText: 'Skipped.'}).waitFor();
-await note.getByText('1 play from the last two weeks is in one but not the other.').waitFor(); assert.equal(await note.getByText('Pulp Fiction').count(), 0);
-execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', 'DELETE FROM drift'], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
 // With Trakt connected, Recently Watched is on Home right after Watchlist. Switching it off keeps her following her group's Home.
 await guest.goto(BASE + '/#/me/home'); const onHome = guest.locator('.rows li h3');
 assert.deepEqual((await onHome.allTextContents()).slice(0, 4), ['Watchlist', 'Recommended Movies', 'Recommended Shows', 'Recently Watched']);
@@ -135,14 +125,29 @@ assert.equal(followed.rows, null, 'still following the group Home'); assert.deep
 // MDBList: with her key saved, progress is kept there, and copying what she watched here is offered on her own page.
 await guest.getByRole('radio', {name: 'MDBList'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key'); await guest.getByRole('button', {name: 'Save'}).click();
 await toast(guest).filter({hasText: 'MDBList connected as adalists'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'MDBList'}).getAttribute('aria-checked'), 'true');
-await guest.getByText('What you watched here').waitFor(); assert.equal(await guest.getByText('Hiding what’s been watched needs MDBList').count(), 0);
+await guest.getByText('Hiding what’s been watched needs MDBList').waitFor({state: 'detached'});
+// Plays one of her trackers is missing (as the daily look would note it): one card, every play included until she taps it out.
+const sqlLocal = command => execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', command], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
+const drift = JSON.stringify({since: 0, trakt: 3, mdblist: 2, toMdblist: [{kind: 'show', tmdb: 1396, name: 'Breaking Bad', season: 1, episode: 2, at: 1763000000}], toTrakt: [{kind: 'movie', tmdb: 680, name: 'Pulp Fiction', at: 1762900000}]});
+sqlLocal(`INSERT INTO drift (hub, person, day, result, at) SELECT id, 'ada', '2026-06-01', '${drift}', ${Math.floor(Date.now() / 1000)} FROM hubs`);
+await guest.reload(); const card = guest.locator('.accounts li.trackers');
+await card.getByText('2 plays missing').waitFor(); await card.getByText(/^Checked today at /).waitFor(); await card.getByRole('button', {name: 'Add 2 plays'}).waitFor();
+const pulpLine = card.getByRole('button', {name: 'Add Pulp Fiction Movie'}); assert.equal(await pulpLine.getAttribute('aria-pressed'), 'true');
+await pulpLine.click(); assert.equal(await pulpLine.getAttribute('aria-pressed'), 'false'); await card.getByRole('button', {name: 'Add 1 play'}).waitFor();
+await card.scrollIntoViewIfNeeded(); await shot(guest, '13b-trackers-phone');
+await guest.setViewportSize({width: 1280, height: 900}); await card.scrollIntoViewIfNeeded(); await shot(guest, '13c-trackers-wide'); await guest.setViewportSize({width: 390, height: 844});
+await pulpLine.press('Enter'); assert.equal(await pulpLine.getAttribute('aria-pressed'), 'true');
+// Nothing missing: the card folds to one line.
+sqlLocal(`UPDATE drift SET result = '${JSON.stringify({since: 0, trakt: 3, mdblist: 3, toMdblist: [], toTrakt: []})}'`);
+await guest.reload(); await guest.getByText('· all in step · checked today at', {exact: false}).waitFor(); await shot(guest, '13d-trackers-in-step');
+sqlLocal('DELETE FROM drift');
 // The manager sees the same states, without the copy step: that is hers alone.
 await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Connected as adatrakt.').waitFor();
 await owner.getByText('can copy it to MDBList from their own page').waitFor(); assert.equal(await owner.getByText('What you watched here').count(), 0); await shot(owner, '14-accounts-manager');
 // The manager who is Ada too opens her link once she has joined: straight into her own view, as if she had signed in, with her
 // own things there. "Back to manager" returns to the manager's view, which was kept aside meanwhile.
 await owner.goto(link); await owner.waitForURL(/#\/me/); await owner.getByText('Shared with you').waitFor(); await owner.getByRole('button', {name: 'Back to manager'}).waitFor();
-await owner.goto(BASE + '/#/me/accounts'); await owner.getByText('What you watched here').waitFor(); await shot(owner, '14b-accounts-as-ada');
+await owner.goto(BASE + '/#/me/accounts'); await owner.getByText('Where progress is kept').waitFor(); assert.equal(await owner.getByText('can copy it to MDBList from their own page').count(), 0); await shot(owner, '14b-accounts-as-ada');
 await owner.getByRole('button', {name: 'Back to manager'}).click(); await owner.getByText('Add someone to Family').waitFor();
 await owner.goto(BASE + '/#/person/ada/accounts'); await owner.getByText('can copy it to MDBList from their own page').waitFor(); assert.equal(await owner.getByText('What you watched here').count(), 0);
 // Her rows' posters stay on her page: the hub's Home shows only blanks where her Trakt rows would go.

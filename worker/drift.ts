@@ -139,12 +139,20 @@ export function differing(result: string | null, skipped: string | null = null) 
   const left = {...found, toMdblist: keep(found.toMdblist), toTrakt: keep(found.toTrakt)};
   return left.toMdblist.length || left.toTrakt.length ? left : null;
 }
-/* A play the person says is not right: never shown or copied again. */
-export async function skip(env: Env, hub: string, person: string, key: string) {
+/* Plays the person left out: never shown or copied again. Kept for someone with only MDBList too (their row starts empty). */
+export async function skip(env: Env, hub: string, person: string, keys: string[]) {
+  if (!keys.length) return;
+  await env.DB.prepare("INSERT INTO drift (hub, person, day) VALUES (?, ?, '') ON CONFLICT (hub, person) DO NOTHING").bind(hub, person).run();
   const row = await env.DB.prepare('SELECT skipped FROM drift WHERE hub = ? AND person = ?').bind(hub, person).first<{skipped: string | null}>();
-  if (!row) return;
-  const kept = row.skipped ? JSON.parse(row.skipped) as string[] : [];
-  if (!kept.includes(key)) await env.DB.prepare('UPDATE drift SET skipped = ? WHERE hub = ? AND person = ?').bind(JSON.stringify([key, ...kept].slice(0, 500)), hub, person).run();
+  const kept = row?.skipped ? JSON.parse(row.skipped) as string[] : [];
+  await env.DB.prepare('UPDATE drift SET skipped = ? WHERE hub = ? AND person = ?').bind(JSON.stringify([...new Set([...keys, ...kept])].slice(0, 1000)), hub, person).run();
+}
+export const skippedOf = async (env: Env, hub: string, person: string) => new Set(JSON.parse((await env.DB.prepare('SELECT skipped FROM drift WHERE hub = ? AND person = ?').bind(hub, person).first<{skipped: string | null}>())?.skipped ?? '[]') as string[]);
+/* The day's look as the person's page shows it, missing or not: when it was checked, and what one side lacks (less what they left out). */
+export function looked(row: {result: string | null; skipped: string | null; at: number} | undefined) {
+  if (!row?.result) return null;
+  const found = differing(row.result, row.skipped), base = JSON.parse(row.result) as Found;
+  return {checked: row.at, since: base.since, toMdblist: found?.toMdblist ?? [], toTrakt: found?.toTrakt ?? []};
 }
 
 const ids = (miss: Miss) => ({tmdb: miss.tmdb, ...(miss.imdb ? {imdb: miss.imdb} : {})});
