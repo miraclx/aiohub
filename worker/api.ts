@@ -334,14 +334,10 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     if ('error' in got) bad(409, got.error);
     return got;
   }
-  if (action === 'unlock' && who.account) {
-    // The manager is this person too: their own password, given here, opens their own things on this page, beside the manager's view.
-    if (request.method === 'DELETE') {if (who.also) await env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(who.also.session).run(); return {cookie: cookie('', 0, AS)['set-cookie']};}
-    const key = guesses(request, `own:${hub}:${id}`), stored = (await env.DB.prepare('SELECT pass FROM people WHERE hub = ? AND id = ?').bind(hub, id).first<{pass: string}>())!.pass;
-    if (!row.joined) bad(409, `${row.name} hasn’t chosen a password yet. It’s set the first time their link is opened.`);
-    if (await blocked(env, key)) bad(429, 'Too many tries. Wait ten minutes.');
-    if (!await ownPassword(String(body.password ?? ''), stored, signin)) {await failed(env, key); bad(403, `That isn’t ${row.name}’s password`);}
-    return {cookie: (await startSession(env, {hub, person: id}))['set-cookie'].replace(`${COOKIE}=`, `${AS}=`)};
+  if (action === 'unlock' && who.account && request.method === 'DELETE') {
+    // Signing out as this person, back to the manager's view alone.
+    if (who.also) await env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(who.also.session).run();
+    return {cookie: cookie('', 0, AS)['set-cookie']};
   }
   if (action === 'carry') {
     // Someone's own watching: only they can look at it or move it, from their own page.
@@ -434,6 +430,13 @@ async function join(request: Request, env: Env, body: Body, who: Who | null) {
   if (!row) return reply({gone: true});
   const about = {name: row.name, username: row.name, owner: row.owner, joined: !!row.joined};
   if (who?.person === row.id && who.hub.id === row.hub) return reply({ok: true});
+  // Their manager, in the same browser: once they have joined, the link signs in as them beside the manager's own sign-in (the
+  // manager could set their password anyway). Before that it waits for them, so their password stays theirs to choose.
+  if (who?.account && who.hub.id === row.hub) {
+    if (!row.joined) return reply({waiting: about});
+    if (who.also) await env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(who.also.session).run();
+    return reply({as: row.id}, 200, {'set-cookie': (await startSession(env, {hub: row.hub, person: row.id}))['set-cookie'].replace(`${COOKIE}=`, `${AS}=`)});
+  }
   if (body.password === undefined) return reply({ask: about});
   if (await blocked(env, key)) bad(429, 'Too many tries. Wait ten minutes.');
   const signin = await getSecret<SignIn>(env, row.hub, row.id, 'signin') ?? bad(500, 'Sign-in details are missing');

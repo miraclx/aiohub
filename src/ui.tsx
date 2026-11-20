@@ -19,11 +19,14 @@ export function hash(text: string) {let h = 7; for (const c of text) h = (h * 31
    never the preview's sample art. */
 const real = new Map<string, string[]>();
 export const showReal = (rows: Record<string, string[]>) => {real.clear(); for (const [id, posters] of Object.entries(rows)) real.set(id, posters);};
-/* One person's own rows, kept apart from the shared ones so a reload of either never wipes the other. */
+/* One person's own rows, kept apart from the shared ones so a reload of either never wipes the other. They are shown only on that
+   person's own Home: rows of the same name elsewhere (a hub or group Home) never get them. */
 const own = new Map<string, string[]>();
-export const addReal = (rows: Record<string, string[]>) => {own.clear(); for (const [id, posters] of Object.entries(rows)) own.set(id, posters);};
-export function Posters({seed, dim}: {seed: string; dim?: boolean}) {
-  if (!SAMPLE) return <div className={`posters${dim ? ' dim' : ''}`} aria-hidden="true">{(own.get(seed) ?? real.get(seed) ?? Array<string>(7).fill('')).map((poster, i) => <span key={i} className={poster ? '' : 'blank'} style={poster ? {backgroundImage: `url(${JSON.stringify(poster)})`} : undefined}/>)}</div>;
+let ownFor = '';
+export const addReal = (rows: Record<string, string[]>, person: string) => {own.clear(); ownFor = person; for (const [id, posters] of Object.entries(rows)) own.set(id, posters);};
+// `blank`: only blanks, for a row that holds nothing until someone connects an account.
+export function Posters({seed, dim, person, blank}: {seed: string; dim?: boolean; person?: string; blank?: boolean}) {
+  if (!SAMPLE) return <div className={`posters${dim ? ' dim' : ''}`} aria-hidden="true">{((blank ? null : (person && person === ownFor ? own.get(seed) : null) ?? real.get(seed)) ?? Array<string>(7).fill('')).map((poster, i) => <span key={i} className={poster ? '' : 'blank'} style={poster ? {backgroundImage: `url(${JSON.stringify(poster)})`} : undefined}/>)}</div>;
   return <div className={`posters${dim ? ' dim' : ''}`} aria-hidden="true">{Array.from({length: 7}, (_, i) => {
     const h = hash(`${i}:${seed}:${i * 7}`), a = (hash(seed) + i * 47 + h % 30) % 360, b = (a + 40 + (h >> 4) % 80) % 360;
     const poster = String((hash(seed) + i * 5) % 56).padStart(2, '0');
@@ -33,7 +36,7 @@ export function Posters({seed, dim}: {seed: string; dim?: boolean}) {
 export function Covers({items, dim}: {items: {title: string; image: string}[]; dim?: boolean}) {
   return <div className={`covers${dim ? ' dim' : ''}`} aria-hidden="true">{items.slice(0, 9).map(item => <span key={item.image} style={{backgroundImage: `url(${item.image})`}}/>)}</div>;
 }
-export function Art({row, dim}: {row: Row; dim?: boolean}) {return row.covers?.length ? <Covers items={row.covers} dim={dim}/> : <Posters seed={row.id} dim={dim}/>;}
+export function Art({row, dim, person, blank}: {row: Row; dim?: boolean; person?: string; blank?: boolean}) {return row.covers?.length ? <Covers items={row.covers} dim={dim}/> : <Posters seed={row.id} dim={dim} person={person} blank={blank}/>;}
 export function Avatar({name, size = 44}: {name: string; size?: number}) {
   const a = hash(name || 'manager') % 360;
   return <span className="avatar" style={{width: size, height: size, fontSize: size * 0.4, background: `linear-gradient(135deg, hsl(${a} 60% 48%), hsl(${(a + 50) % 360} 60% 32%))`}} aria-hidden="true">{name ? name.slice(0, 1).toUpperCase() : <svg viewBox="0 0 24 24" width="58%" height="58%" fill="currentColor"><circle cx="12" cy="8.5" r="4"/><path d="M4 20.5c0-4.2 3.6-6.5 8-6.5s8 2.300 8 6.500z"/></svg>}</span>;

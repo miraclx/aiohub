@@ -124,7 +124,7 @@ function Hubbed() {
   const [at, id, tab] = parts, inside = phase === 'in' && !!page;
 
   if (phase === 'loading') return <Frame parts={parts} toastView={toastView}><p className="empty">Loading…</p></Frame>;
-  if (at === 'join' && id && !(inside && who.role === 'person')) return <Frame parts={parts} toastView={toastView}><JoinGate token={id} live={live} toast={toast} manager={inside} onIn={() => {void live.reload().then(() => go('/me'));}}/></Frame>;
+  if (at === 'join' && id && !(inside && who.role === 'person')) return <Frame parts={parts} toastView={toastView}><JoinGate token={id} live={live} toast={toast} manager={inside} onIn={() => {void live.reload().then(() => go('/me'));}} onAs={id => {void live.reload().then(() => go(`/person/${id}`));}}/></Frame>;
   // One place for first-time setup, so it keeps its step while the account is being created underneath it.
   const creating = phase === 'out' && at === 'setup' && !!open?.signup, unfinished = inside && who.role === 'owner' && !hub!.groups.length;
   if (creating || unfinished) return <Frame parts={parts} toastView={toastView}><SetupPage hub={hub ?? {...sampleHub(), services: [], groups: [], people: []}} go={go} toast={toast} update={live.update} live={live} signedIn={phase === 'in'} needCode={open?.code} linkCode={at === 'setup' ? id : undefined} offer={open?.hub && open.proof ? {hub: open.hub, proof: open.proof} : undefined}/></Frame>;

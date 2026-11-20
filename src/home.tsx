@@ -11,7 +11,7 @@ export function Grip({handleRef, label}: {handleRef: (element: Element | null) =
 }
 // On a hub or group Home, a Trakt row is a place kept for it: only someone who connects Trakt gets it.
 const LATER = 'Appears once someone connects Trakt';
-function RowCard({row, index, tag, locked, later, onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; later?: boolean; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
+function RowCard({row, index, tag, locked, later, person, onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; later?: boolean; person?: string; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
   const sortable = useSortable({id: row.id, index, disabled: locked});
   return <li ref={sortable.ref} className={`row${sortable.isDragging ? ' dragging' : ''}${locked ? ' locked' : ''}${later ? ' later' : ''}`}>
     {!locked && <Grip handleRef={sortable.handleRef} label={`Move ${row.title}`}/>}
@@ -24,7 +24,7 @@ function RowCard({row, index, tag, locked, later, onToggle, onRemove, onArrange}
           <Switch checked={row.on} onChange={onToggle} label={`Show ${row.title} on Home`}/>
         </div>}
       </div>
-      <Art row={row}/>
+      <Art row={row} person={person} blank={later}/>
     </div>
   </li>;
 }
@@ -40,10 +40,12 @@ export interface HomeProps {
   rows: Row[]; level: Level; onChange: (rows: Row[], note: string) => void;
   tag: (row: Row) => string | undefined; lists?: Pick[]; listsHint?: string;
   followLabel?: string; onFollow?: () => void; onBuild?: () => void; canAdd?: boolean; canArrange?: boolean; mine?: boolean;
+  /* Whose Home this is, when it is a person's: their own rows' posters show only here. */
+  person?: string;
   /* On a real hub: looks a pasted link up, and only what really reaches the player apps is offered. */
   find?: (link: string) => Promise<Pick>; fail?: (text: string) => void;
 }
-export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, onBuild, canAdd = true, canArrange = true, mine = false, find, fail}: HomeProps) {
+export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, onBuild, canAdd = true, canArrange = true, mine = false, person, find, fail}: HomeProps) {
   const [country, setCountry] = useState(''), [tongue, setTongue] = useState(''), [kinds, setKinds] = useState(['Movies']), [adding, setAdding] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
   const on = rows.filter(row => row.on), off = rows.filter(row => !row.on);
   const set = (id: string, next: Partial<Row>, note: string) => onChange(rows.map(row => row.id === id ? {...row, ...next} : row), note);
@@ -62,14 +64,14 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
       const from = on.findIndex(row => row.id === String(event.operation.source!.id)), to = event.operation.source.index;
       if (from >= 0 && from !== to) onChange([...moved(on, from, to), ...off], 'Order saved');
     }}>
-      <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={level !== 'own' && TRAKT_IDS.has(row.id)}
+      <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={level !== 'own' && TRAKT_IDS.has(row.id)} person={person}
         onToggle={() => set(row.id, {on: false}, `“${row.title}” is off Home`)}
         onArrange={find && !row.covers ? undefined : () => setArranging(row.id)}
         onRemove={row.origin === level && !row.core ? () => onChange(rows.filter(item => item.id !== row.id), `Removed “${row.title}”`) : undefined}/>)}</ol>
     </DragDropProvider>
     {!on.length && <p className="empty">Nothing on Home yet. Add a row or turn one on below.</p>}
     {!!off.length && <details className="off" open={off.length <= 4}><summary>Not on Home <span className="count">{off.length}</span></summary>
-      <ul>{off.map(row => <li key={row.id} className={level !== 'own' && TRAKT_IDS.has(row.id) ? 'later' : undefined}><Art row={row} dim/><div><h3>{row.title}</h3><p>{level !== 'own' && TRAKT_IDS.has(row.id) ? `${row.source} · ${LATER}` : `${row.kind} · ${row.source}`}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>)}</ul>
+      <ul>{off.map(row => <li key={row.id} className={level !== 'own' && TRAKT_IDS.has(row.id) ? 'later' : undefined}><Art row={row} dim person={person} blank={level !== 'own' && TRAKT_IDS.has(row.id)}/><div><h3>{row.title}</h3><p>{level !== 'own' && TRAKT_IDS.has(row.id) ? `${row.source} · ${LATER}` : `${row.kind} · ${row.source}`}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>)}</ul>
     </details>}
     {adding && <Sheet title="Add a row" onClose={() => setAdding(false)}>
       <form className="link-form" onSubmit={event => {

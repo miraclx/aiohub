@@ -262,7 +262,7 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
    AIOMetadata hides only by what a connected tracker says, and here it has none. */
 function Progress({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
-  const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [leaving, setLeaving] = useState(false), [unlocking, setUnlocking] = useState(false), [own_, setOwn_] = useState('');
+  const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [leaving, setLeaving] = useState(false);
   const their = mine ? 'your' : 'their', choice = person.lists ? 'mdblist' : keying ? 'mdblist' : 'here';
   // Their own things (copying to MDBList, the Trakt/MDBList note): on their own page, or here once their password was given.
   const self = mine || page.hub.also === person.id;
@@ -295,15 +295,9 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
       </li>
       {live && self && person.lists && <Carry page={page} person={person}/>}
       {live && self && person.drift && <DriftNote page={page} person={person}/>}
-      {live && !self && person.lists && <li><div><h3>What they watched here</h3><p>{person.name} can copy it to MDBList from their own page, under Accounts. It’s theirs, so it isn’t shown here.</p></div>
-        {person.joined && <button type="button" className="ghost small" onClick={() => setUnlocking(true)}>Sign in as {person.name}</button>}</li>}
+      {live && !self && person.lists && <li><div><h3>What they watched here</h3><p>{person.name} can copy it to MDBList from their own page, under Accounts. It’s theirs, so it isn’t shown here.</p></div></li>}
       {live && self && !mine && <li><div><p className="muted small">Signed in as {person.name} in this browser too.</p></div><button type="button" className="link small" onClick={() => void live.call('DELETE', `/api/people/${person.id}/unlock`).then(() => live.reload()).then(() => toast(`Signed out as ${person.name}`), fail(toast))}>Sign out as {person.name}</button></li>}
     </ul>
-    {unlocking && <Sheet title={`Sign in as ${person.name}`} onClose={() => setUnlocking(false)}>
-      <form className="stack" onSubmit={event => {event.preventDefault(); setBusy(true); void live!.call('POST', `/api/people/${person.id}/unlock`, {password: own_}).then(() => live!.reload()).then(() => {setUnlocking(false); setOwn_(''); toast(`Signed in as ${person.name} here too`);}, fail(toast)).finally(() => setBusy(false));}}>
-        <p className="muted sheet-lead">With {person.name}’s own password, what’s only theirs shows here as well, such as copying to MDBList. You stay signed in as the manager.</p>
-        <div className="field-row"><input type="password" aria-label={`${person.name}’s password`} placeholder="Their password" autoComplete="current-password" autoFocus value={own_} onChange={event => setOwn_(event.target.value)}/><button className="primary" disabled={busy || !own_}>Sign in</button></div>
-      </form></Sheet>}
     {leaving && <Confirm title="Keep progress here?" body={`MDBList is disconnected from ${mine ? 'you' : person.name}. Whatever is already in that MDBList account stays there.`} action="Keep it here" onYes={leave} onClose={() => setLeaving(false)}/>}
   </>;
 }
@@ -370,7 +364,7 @@ function PersonSections({page, person, tab, mine}: {page: PageProps; person: Per
   const props = editor(page, group, person, mine), rows = personRows(hub, person);
   const canArrange = !mine || person.can.arrange, canAdd = !mine || person.can.add;
   return <>
-    {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} mine={mine} level="own" rows={rows} canAdd={canAdd} canArrange={canArrange}
+    {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} mine={mine} person={person.id} level="own" rows={rows} canAdd={canAdd} canArrange={canArrange}
       tag={row => row.origin === 'own' && !row.core ? (mine ? 'Yours' : 'Personal') : undefined}
       lists={ownLists(person)} listsHint={mine ? 'Connect Trakt or MDBList under Accounts to pick from your own lists.' : `Shows up once ${person.name} connects Trakt or MDBList.`}
       onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined}
@@ -399,7 +393,7 @@ export function PersonPage(page: PageProps & {id: string; tab: string}) {
   const person = hub.people.find(item => item.id === id);
   // Their own rows (Trakt, lists, a Home of their own) get real posters too, from the setup they are on.
   const [, redraw] = useState(0);
-  useEffect(() => {if (!live) return; addReal({}); void live.call<{rows: Record<string, string[]>}>('GET', `/api/previews?person=${encodeURIComponent(id)}`).then(found => {addReal(found.rows); redraw(count => count + 1);}, () => {});}, [id, person?.v]);
+  useEffect(() => {if (!live) return; addReal({}, id); void live.call<{rows: Record<string, string[]>}>('GET', `/api/previews?person=${encodeURIComponent(id)}`).then(found => {addReal(found.rows, id); redraw(count => count + 1);}, () => {});}, [id, person?.v]);
   if (!person) return <p className="empty">This person is gone. <a className="link" href="#/">Back to people</a></p>;
   const group = hub.groups.find(item => item.id === person.groupId)!;
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === id)!)); toast(note);};
@@ -523,27 +517,27 @@ function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
     </div>}
   </section>;
 }
-/* What the hub does on its own, one compact row per job: the five-minute run (Trakt calls that waited, players that went quiet)
-   and the daily Trakt/MDBList check, which starts with the first run after 04:00 UTC. Times are the viewer's own. */
+/* What the hub does on its own, one compact row per job, with how often it runs: the five-minute run (Trakt calls that waited,
+   players that went quiet) and the daily Trakt/MDBList check, which starts with the first run after 04:00 UTC. Times are the
+   viewer's own. */
 const FIVE = 300_000, DAY_MS = 86_400_000;
 function Background({hub}: {hub: Hub}) {
   const jobs = hub.jobs, [now, setNow] = useState(Date.now());
   useEffect(() => {const timer = window.setInterval(() => setNow(Date.now()), 30_000); return () => window.clearInterval(timer);}, []);
   if (!jobs) return null;
-  const time = (ms: number) => new Date(ms).toLocaleTimeString(undefined, {hour: '2-digit', minute: '2-digit'});
+  const time = (ms: number) => new Date(ms).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'});
   const day = (ms: number) => {const days = Math.round((new Date(ms).setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0)) / DAY_MS); return days === 0 ? 'today' : days === 1 ? 'tomorrow' : days === -1 ? 'yesterday' : new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'});};
-  const at = (ms: number) => `${day(ms)} at ${time(ms)}`, next = Math.ceil((now + 1) / FIVE) * FIVE, start = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T04:00:00Z`);
-  const daily = jobs.checking ? next : jobs.checked === new Date(now).toISOString().slice(0, 10) ? start + DAY_MS : Math.max(start, next);
-  const since = jobs.since ? (day(jobs.since * 1000) === 'today' ? time(jobs.since * 1000) : day(jobs.since * 1000)) : '';
+  const ran = (s: number | null) => s ? `Ran ${day(s * 1000)} at ${time(s * 1000)}` : 'Not run yet';
+  const next = Math.ceil((now + 1) / FIVE) * FIVE, start = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T04:00:00Z`);
+  const daily = jobs.checked === new Date(now).toISOString().slice(0, 10) ? start + DAY_MS : Math.max(start, next);
   const rows = [
-    {name: 'Trakt sync', count: jobs.waiting ? `${jobs.waiting} waiting` : `${(jobs.runs ?? 0).toLocaleString()} ${jobs.runs === 1 ? 'run' : 'runs'}${since ? ` since ${since}` : ''}`,
-      last: jobs.last ? `Ran ${at(jobs.last * 1000)}` : 'Not run yet', next: `next in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
-    {name: 'Trakt and MDBList check', count: 'once a day', last: jobs.ran ? `Ran ${at(jobs.ran * 1000)}` : 'Not run yet', next: jobs.checking ? 'under way' : `next ${at(daily)}`},
+    {name: 'Trakt sync', every: 'every 5 min', last: `${ran(jobs.last)}${jobs.waiting ? ` · ${jobs.waiting} waiting to send` : ''}`, next: `next in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
+    {name: 'Trakt and MDBList check', every: `every day at ${time(start)}`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next ${day(daily)}`},
   ];
   return <section>
     <div className="section-head"><div><h2>Background work</h2></div></div>
     <ul className="accounts jobs">{rows.map(row => <li key={row.name}><div className="job">
-      <div><h3>{row.name}</h3><span>{row.count}</span></div>
+      <div><h3>{row.name}</h3><span>{row.every}</span></div>
       <div className="muted small"><span>{row.last}</span><span>{row.next}</span></div>
     </div></li>)}</ul>
   </section>;
@@ -716,12 +710,18 @@ export function JoinPage(page: PageProps & {id: string; tab: string; base?: stri
 
 /* ---------- the real hub: opening an invite link, and signing in ---------- */
 interface Asked {name: string; username: string; owner: string; joined: boolean}
-export function JoinGate({token, live, toast, manager, onIn}: {token: string; live: Live; toast: (text: string) => void; manager: boolean; onIn: () => void}) {
-  const [info, setInfo] = useState<Asked | 'gone' | null>(null), [pass, setPass] = useState(''), [busy, setBusy] = useState(false);
-  useEffect(() => {void live.call<{gone?: boolean; ok?: boolean; ask?: Asked}>('POST', '/api/join', {token}).then(found => found.ok ? onIn() : setInfo(found.ask ?? 'gone'), fail(toast));}, [token]);
+/* An invite link. Opened by their manager in the same browser, it goes straight to their page as them once they have joined. */
+export function JoinGate({token, live, toast, manager, onIn, onAs}: {token: string; live: Live; toast: (text: string) => void; manager: boolean; onIn: () => void; onAs: (id: string) => void}) {
+  const [info, setInfo] = useState<Asked | 'gone' | null>(null), [waiting, setWaiting] = useState(false), [pass, setPass] = useState(''), [busy, setBusy] = useState(false);
+  useEffect(() => {void live.call<{gone?: boolean; ok?: boolean; ask?: Asked; as?: string; waiting?: Asked}>('POST', '/api/join', {token}).then(found => {
+    if (found.as) return onAs(found.as);
+    if (found.ok) return onIn();
+    setWaiting(!!found.waiting); setInfo(found.waiting ?? found.ask ?? 'gone');
+  }, fail(toast));}, [token]);
   if (!info) return <p className="empty">Opening…</p>;
   if (info === 'gone') return <p className="empty">This link is no longer valid. Ask for a new one.</p>;
-  if (manager) return <p className="empty">This is {info.name}’s link, and you’re signed in as the manager. Send it to them instead of opening it here. <a className="link" href="#/">Back to people</a></p>;
+  if (waiting) return <p className="empty">{info.name} hasn’t joined yet. Send them this link, so they can choose their own password. <a className="link" href="#/">Back to people</a></p>;
+  if (manager) return <p className="empty">This is {info.name}’s link, for another hub. Send it to them instead of opening it here. <a className="link" href="#/">Back to people</a></p>;
   return <form className="setup stack gate" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call('POST', '/api/join', {token, password: pass}).then(onIn, fail(toast)).finally(() => setBusy(false));}}>
     <div className="stack center"><Avatar name={info.name} size={84}/><h1>Hi {info.name}</h1><p className="muted">{info.joined ? 'Type your password to open your page.' : 'You’ve been invited. Choose a password for your page here. Only you know it.'}</p></div>
     {/* Their name is their username. It only matters on the Devices tab, so it is not mentioned here; the hidden field lets a password manager file the password under it. */}

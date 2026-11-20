@@ -74,15 +74,15 @@ await owner.goto(BASE + '/#/hub/sources'); await owner.getByText('TorBox').first
 await fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/5 * * * *')}&time=${Date.UTC(2026, 0, 1, 3)}`);
 await owner.goto(BASE + '/#/hub/general'); await owner.reload(); const work = owner.locator('section', {has: owner.getByRole('heading', {name: 'Background work'})});
 const job = name => work.locator('.job', {has: owner.getByRole('heading', {name, exact: true})});
-await job('Trakt sync').getByText(/^1 run since \d/).waitFor();
-await job('Trakt sync').getByText(/^Ran today at /).waitFor(); await job('Trakt sync').getByText(/^next in \d min$/).waitFor();
-await job('Trakt and MDBList check').getByText('once a day').waitFor(); await job('Trakt and MDBList check').getByText('Not run yet').waitFor(); await job('Trakt and MDBList check').getByText(/^next (today|tomorrow) at /).waitFor();
+await job('Trakt sync').getByText('every 5 min').waitFor();
+await job('Trakt sync').getByText(/^Ran today at \d/).waitFor(); await job('Trakt sync').getByText(/^next in \d min$/).waitFor();
+await job('Trakt and MDBList check').getByText(/^every day at \d/).waitFor(); await job('Trakt and MDBList check').getByText('Not run yet').waitFor(); await job('Trakt and MDBList check').getByText(/^next (today|tomorrow)$/).waitFor();
 await work.scrollIntoViewIfNeeded(); await shot(owner, '5b-background');
 // The hub's Home keeps a place for each Trakt row, marked as one that appears once someone connects Trakt.
 await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later', {hasText: 'Watchlist'}).getByText('Appears once someone connects Trakt').waitFor(); await shot(owner, '5c-hub-home');
 await owner.goto(BASE + '/#/'); await owner.getByText('Add someone to Family').waitFor(); await shot(owner, '6-people');
-// The manager opening the invite link is told to send it on, and stays signed in.
-await owner.goto(link); await owner.getByText(/signed in as the manager/).waitFor();
+// The manager opening the invite link before Ada has joined is told to send it on, and stays signed in.
+await owner.goto(link); await owner.getByText('Ada hasn’t joined yet. Send them this link', {exact: false}).waitFor();
 
 const guest = await open();
 await guest.goto(link); await guest.getByRole('heading', {name: 'Hi Ada'}).waitFor(); await shot(guest, '7-join');
@@ -139,12 +139,13 @@ await guest.getByText('What you watched here').waitFor(); assert.equal(await gue
 // The manager sees the same states, without the copy step: that is hers alone.
 await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Connected as adatrakt.').waitFor();
 await owner.getByText('can copy it to MDBList from their own page').waitFor(); assert.equal(await owner.getByText('What you watched here').count(), 0); await shot(owner, '14-accounts-manager');
-// The manager who is Ada too: her own password, given here, shows her own things beside the manager's view; signing out hides them again.
-await owner.getByRole('button', {name: 'Sign in as Ada'}).click(); await owner.getByLabel('Ada’s password').fill('not her password'); await owner.getByRole('button', {name: 'Sign in', exact: true}).click();
-await toast(owner).filter({hasText: 'That isn’t Ada’s password'}).waitFor();
-await owner.getByLabel('Ada’s password').fill('my own password'); await owner.getByRole('button', {name: 'Sign in', exact: true}).click();
-await toast(owner).filter({hasText: 'Signed in as Ada here too'}).waitFor(); await owner.getByText('What you watched here').waitFor(); await shot(owner, '14b-accounts-as-ada');
-await owner.getByRole('button', {name: 'Sign out as Ada'}).click(); await owner.getByRole('button', {name: 'Sign in as Ada'}).waitFor(); assert.equal(await owner.getByText('What you watched here').count(), 0);
+// The manager who is Ada too opens her link once she has joined: straight to her page as her, beside the manager's sign-in, with
+// her own things there; signing out as her hides them again, and the manager stays signed in.
+await owner.goto(link); await owner.waitForURL(/#\/person\/ada/); await owner.goto(BASE + '/#/person/ada/accounts'); await owner.getByText('What you watched here').waitFor();
+await owner.getByText('Signed in as Ada in this browser too.').waitFor(); await shot(owner, '14b-accounts-as-ada');
+await owner.getByRole('button', {name: 'Sign out as Ada'}).click(); await owner.getByText('can copy it to MDBList from their own page').waitFor(); assert.equal(await owner.getByText('What you watched here').count(), 0);
+// Her rows' posters stay on her page: the hub's Home shows only blanks where her Trakt rows would go.
+await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later').first().waitFor(); assert.equal(await owner.locator('.rows .row.later .posters span:not(.blank)').count(), 0);
 // Back to Here asks first, then MDBList is let go.
 await guest.getByRole('radio', {name: 'Here'}).click(); await guest.getByRole('button', {name: 'Keep it here'}).click();
 await toast(guest).filter({hasText: 'Progress kept here'}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
@@ -178,7 +179,8 @@ await owner.goto(BASE + '/#/activity'); await where(owner); await owner.getByRol
 // The same on a wide screen, folded and unfolded.
 await owner.setViewportSize({width: 1280, height: 800}); await owner.reload(); await owner.mouse.move(0, 0); await where(owner);
 assert.equal((await lineUp(owner)).wrapped, false, 'on a wide screen the place stays on the device line'); await owner.getByRole('button', {name: 'Where'}).click(); await owner.mouse.move(0, 0); await shot(owner, '16b-activity-where-wide');
-await credit(owner); assert.equal(await owner.getByText('Test build').count(), 0, 'no test-build banner'); await owner.setViewportSize({width: 390, height: 844});
+await credit(owner); assert.equal(await owner.getByText('Test build').count(), 0, 'no test-build banner');
+await owner.goto(BASE + '/#/hub/general'); await owner.getByRole('heading', {name: 'Background work'}).waitFor(); await shot(owner, '16c-general-wide'); await owner.setViewportSize({width: 390, height: 844});
 
 // Back as the manager: Ada shows as joined, and the playback change stuck.
 await owner.goto(BASE + '/#/person/ada/settings'); await owner.reload(); await owner.getByText(/Family · joined/).waitFor();
