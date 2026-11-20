@@ -334,7 +334,7 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
       {live && self && <Trackers page={page} person={person} back={back} onBack={setBack}/>}
       {live && !self && (person.lists || person.history) && <li><div><h3>What they watched</h3><p>{person.name}’s own page, under Accounts, shows what’s missing between where {their} progress is kept and Trakt. It’s theirs, so it isn’t shown here.</p></div></li>}
     </ul>
-    {leaving && <Confirm title="Keep progress here?" body={`MDBList stops keeping ${mine ? 'your' : `${person.name}’s`} progress. The key stays saved, unused, for picking MDBList again later, and whatever is already in that account stays there.`} action="Keep it here" onYes={leave} onClose={() => setLeaving(false)}/>}
+    {leaving && <Confirm title="Keep progress here?" body={`MDBList stops keeping ${mine ? 'your' : `${person.name}’s`} progress. What’s already in MDBList stays there.`} action="Keep it here" onYes={leave} onClose={() => setLeaving(false)}/>}
   </>;
 }
 type Cell = 'has' | 'add' | 'none';
