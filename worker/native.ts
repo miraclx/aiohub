@@ -4,7 +4,7 @@
 import {rowsOf, suggestionOf} from '../src/data';
 import type {Addon, Part, Row, Settings} from '../src/data';
 import type {Env} from './util';
-import {getSecret, hosted, newToken, now, putSecret, sha, unseal} from './util';
+import {gate, getSecret, hosted, inTurn, newToken, now, putSecret, sha, unseal} from './util';
 import {CUSTOM, ROWS, addressOf, catalogOf, servedOf} from './rows';
 import {LINK} from './trakt';
 import shipped from './collections.json';
@@ -219,7 +219,8 @@ const TRAKT_ROW: Record<string, Record<string, unknown> & {id: string; type: str
   'recommended-movies': {id: 'trakt.recommendations.movies', type: 'movie'}, 'recommended-series': {id: 'trakt.recommendations.shows', type: 'series'},
   'up-next': {id: 'trakt.upnext', type: 'series', cacheTTL: 300}, 'recently-aired': {id: 'trakt.unwatched', type: 'series', cacheTTL: 300},
 };
-interface Catalogs {uuid: string; password: string; v: number; sent: string; at?: string; client?: string}
+// `shape`: for each catalog sent, a short fingerprint of it and of the settings that change what it holds (see shapeOf).
+interface Catalogs {uuid: string; password: string; v: number; sent: string; at?: string; client?: string; shape?: Record<string, string>}
 /* With FRONT=aiometadata each person has one more AIOMetadata setup: their own Jellyfin server, which their player apps reach
    through the hub. It holds their Home, their Trakt and MDBList, and points at their own stream setup on AIOStreams. */
 export const PLAYER = 'aiom', VIA = 'upstream-aiom';
@@ -318,8 +319,18 @@ const LATER = 'AIOMetadata did not answer, so Home rows in the player apps were 
 
 /* Everything the hub keeps in the vault, read in one go: a sync touches many records, and a Worker may only ask the database so often. */
 type Vault = Map<string, string>;
-const vaultOf = async (env: Env, hub: string): Promise<Vault> => new Map((await env.DB.prepare('SELECT owner, kind, value FROM secrets WHERE hub = ?').bind(hub).all<{owner: string; kind: string; value: string}>()).results.map(row => [`${row.owner}/${row.kind}`, row.value]));
+const vaultFrom = (rows: unknown[]): Vault => new Map((rows as {owner: string; kind: string; value: string}[]).map(row => [`${row.owner}/${row.kind}`, row.value]));
 const held = <T>(env: Env, vault: Vault, hub: string, owner: string, kind: string) => unseal<T>(env, `${hub}/${owner}/${kind}`, vault.get(`${owner}/${kind}`));
+/* What each catalog of a setup was sent as, together with the settings that change what any catalog holds (posters, limits, hiding
+   what was watched). A preview of a row is reused while its fingerprint is the same. The player sign-in fields and the blurring of
+   episode pictures change no row's posters, so they are left out. */
+async function shapeOf(wanted: Wanted): Promise<Record<string, string>> {
+  const {catalogs, collections: _, ...rest} = wanted, looks = JSON.stringify(Object.entries(rest).filter(([key]) => !key.startsWith('jellyfin') && key !== 'blurThumbs'));
+  return Object.fromEntries(await Promise.all(catalogs.map(async item => [`${item.type}/${item.id}`, (await sha(`${looks}\n${JSON.stringify(item)}`)).slice(0, 16)] as const)));
+}
+// How many AIOMetadata setups one sync works on at once, all kinds together. Each is a read then a write; AIOMetadata is shared,
+// so this stays small.
+const AIOM_AT_ONCE = 2;
 /* One Home setup on AIOMetadata: the hub's, or a group's or a person's own when theirs differs. Made once per owner, then kept in step. */
 async function syncHome(env: Env, vault: Vault, hub: string, owner: string, wanted: Wanted, keys: Keys, budget: {left: number}, kind = 'catalogs', keep: Record<string, unknown> = {}): Promise<{address: string; made: Catalogs} | {message: string; more?: boolean}> {
   const {$trakt, $lists, ...rest} = wanted as Wanted & {$trakt?: string | null; $lists?: string | null};
@@ -327,7 +338,11 @@ async function syncHome(env: Env, vault: Vault, hub: string, owner: string, want
   let made = await held<Catalogs>(env, vault, hub, owner, kind);
   // The hub moved to another AIOMetadata server: the setup on the old one is removed, and a new one is made here.
   if (made?.at && made.at !== env.AIOM_ORIGIN) {if ((budget.left -= 1) < 0 || !await dropHome({...env, AIOM_ORIGIN: made.at}, hub, owner, kind)) return {message: LATER, more: budget.left < 0}; made = null;}
-  if (made?.sent === sent) return {address: address(env, made), made};
+  if (made?.sent === sent) {
+    // Kept from before previews were reused row by row: the fingerprints are added once, with no call to AIOMetadata.
+    if (!made.shape) {made = {...made, shape: await shapeOf(wanted)}; await (await putSecret(env, hub, owner, kind, made)).run();}
+    return {address: address(env, made), made};
+  }
   // A Worker may only make so many calls for one request. What does not fit is done on the next pass, which the site asks for.
   if ((budget.left -= 2) < 0) return {message: 'Still bringing everyone’s Home in step.', more: true};
   if (!made) {
@@ -344,7 +359,7 @@ async function syncHome(env: Env, vault: Vault, hub: string, owner: string, want
       await env.DB.batch([env.DB.prepare('DELETE FROM ops WHERE hub = ? AND kind = ? AND target = ?').bind(hub, `create-${kind}`, owner), env.DB.prepare('DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(hub, owner, `${kind}-pending`)]);
       return {message: 'AIOMetadata refused the Home setup. Check the TMDB and MDBList keys under Hub, Sources.'};
     }
-    made = {uuid: body.userUUID, password, v: now(), sent, at: env.AIOM_ORIGIN, ...keep};
+    made = {uuid: body.userUUID, password, v: now(), sent, at: env.AIOM_ORIGIN, shape: await shapeOf(wanted), ...keep};
     await env.DB.batch([await putSecret(env, hub, owner, kind, made), env.DB.prepare("UPDATE ops SET state = 'done', updated = ? WHERE hub = ? AND kind = ? AND target = ?").bind(now(), hub, `create-${kind}`, owner), env.DB.prepare('DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(hub, owner, `${kind}-pending`)]);
     return {address: address(env, made), made};
   }
@@ -365,7 +380,7 @@ async function syncHome(env: Env, vault: Vault, hub: string, owner: string, want
   stored.apiKeys = {...others, ...apiKeys};
   const write = await fetch(`${env.AIOM_ORIGIN}/api/config/update/${made.uuid}`, {method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({config: stored, password: made.password, baseVersion: stored.configVersion})}).catch(() => null);
   if (write?.status !== 200) return {message: LATER};
-  made = {...made, v: now() <= made.v ? made.v + 1 : now(), sent, ...keep};
+  made = {...made, v: now() <= made.v ? made.v + 1 : now(), sent, shape: await shapeOf(wanted), ...keep};
   await (await putSecret(env, hub, owner, kind, made)).run();
   return {address: address(env, made), made};
 }
@@ -380,52 +395,65 @@ async function dropHome(env: Env, hub: string, owner: string, kind = 'catalogs')
 }
 
 /* What each Home row actually holds right now, for the site's own preview: the first few posters, exactly as a player app would get
-   them from the hub's AIOMetadata setup (so with its poster settings applied). Remembered for ten minutes per running copy. */
-const shown = new Map<string, {at: number; rows: Record<string, string[]>}>();
+   them from the setup they are on (so with its poster settings applied). Kept per hub, per person (the hub's own page as the hub) and
+   per row, with the fingerprint of what that row was last sent as: a save that changes one row asks AIOMetadata for that row only. */
+const PREVIEW_KEEP = 3600, PREVIEW_WAIT = 8000, PREVIEWS_AT_ONCE = 4, PREVIEW = 'preview:';
 export async function previews(site: Env, hub: {id: string; data: string}, person?: string): Promise<Record<string, string[]>> {
   const data = JSON.parse(hub.data) as HubData, env = hosted(site, data);
   if (!env.AIOM_ORIGIN) return {};
+  const who = person ?? HUB_OWNER;
+  // One trip to the database: whose rows, the setups they could be on, and what was kept from before.
+  const [found, secrets, kept] = await env.DB.batch([
+    env.DB.prepare('SELECT p.data AS mine, g.id AS grp, g.data AS theirs FROM people p JOIN groups g ON g.hub = p.hub AND g.id = p.grp WHERE p.hub = ? AND p.id = ?').bind(hub.id, person ?? ''),
+    env.DB.prepare("SELECT owner, kind, value FROM secrets WHERE hub = ? AND (owner IN (?, ?) OR owner LIKE '#g:%') AND kind IN ('catalogs', ?, ?)").bind(hub.id, who, HUB_OWNER, PLAYER, LINK),
+    env.DB.prepare('SELECT kind, at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind LIKE ?').bind(hub.id, who, `${PREVIEW}%`),
+  ]);
+  const vault: Vault = new Map((secrets.results as {owner: string; kind: string; value: string}[]).map(row => [`${row.owner}/${row.kind}`, row.value]));
   // A person's rows come from whichever Home setup they are on: their own, their group's, or the hub's.
   let rows = data.rows, owners = [HUB_OWNER], served = false;
   if (person) {
-    const found = await env.DB.prepare('SELECT p.data AS mine, g.id AS grp, g.data AS theirs FROM people p JOIN groups g ON g.hub = p.hub AND g.id = p.grp WHERE p.hub = ? AND p.id = ?').bind(hub.id, person).first<{mine: string; grp: string; theirs: string}>();
-    if (!found) return {};
-    const mine = JSON.parse(found.mine) as {rows: Row[] | null; trakt?: boolean; picks?: Record<string, boolean>}, shared = (JSON.parse(found.theirs) as {rows: Row[] | null}).rows ?? data.rows;
-    served = await servesTrakt(env, hub.id, person);
-    rows = rowsOf(mine.rows, shared, !!mine.trakt || served, mine.picks); owners = [person, groupOwner(found.grp), HUB_OWNER];
+    const row = found.results[0] as {mine: string; grp: string; theirs: string} | undefined;
+    if (!row) return {};
+    const mine = JSON.parse(row.mine) as {rows: Row[] | null; trakt?: boolean; picks?: Record<string, boolean>}, shared = (JSON.parse(row.theirs) as {rows: Row[] | null}).rows ?? data.rows;
+    served = !!env.TRAKT_CLIENT_ID && !((await held<{again?: boolean}>(env, vault, hub.id, person, LINK)) ?? {again: true}).again;
+    rows = rowsOf(mine.rows, shared, !!mine.trakt || served, mine.picks); owners = [person, groupOwner(row.grp), HUB_OWNER];
   }
   // With AIOMetadata in front, a person's rows are on their own setup there.
-  let made: Catalogs | null = person && env.FRONT === 'aiometadata' ? await getSecret<Catalogs>(env, hub.id, person, PLAYER) : null;
-  if (!made) for (const owner of owners) if ((made = await getSecret<Catalogs>(env, hub.id, owner, 'catalogs'))) break;
+  let made: Catalogs | null = person && env.FRONT === 'aiometadata' ? await held<Catalogs>(env, vault, hub.id, person, PLAYER) : null;
+  if (!made) for (const owner of owners) if ((made = await held<Catalogs>(env, vault, hub.id, owner, 'catalogs'))) break;
   if (!made) return {};
-  // Per person and per setup: someone still on the hub's or their group's setup never shares an answer with the hub's own page.
-  const key = `${hub.id}/${person ?? ''}/${made.uuid}/${made.v}`, known = shown.get(key);
-  if (known && Date.now() - known.at < 600_000) return known.rows;
-  const at = made.at ?? env.AIOM_ORIGIN, out: Record<string, string[]> = {};
+  const at = made.at ?? env.AIOM_ORIGIN, setup = made, out: Record<string, string[]> = {}, fresh: {row: string; sig: string; posters: string[]}[] = [];
+  const before = new Map((kept.results as {kind: string; at: number; items: string}[]).map(row => [row.kind.slice(PREVIEW.length), {at: row.at, ...JSON.parse(row.items) as {sig: string; posters: string[]}}]));
   const where = (row: Row) => plainOf(row, true, !served, served ? 'https://hub.invalid' : null);
   // A hub or group Home keeps places for Trakt rows; only a person with Trakt has anything in them.
-  await Promise.all(rows.filter(row => row.on && where(row) && (person || !TRAKT_ROW[row.id])).slice(0, 16).map(async row => {
-    const from = where(row)!, answer = await fetch(`${at}/stremio/${made!.uuid}/catalog/${from.type}/${from.id}.json`, {headers: {accept: 'application/json', 'user-agent': 'AIOHub/1.0'}}).catch(() => null);
+  const wanted = rows.filter(row => row.on && where(row) && (person || !TRAKT_ROW[row.id])).slice(0, 16), time = now();
+  await inTurn(wanted.map(row => async () => {
+    const from = where(row)!, sig = (await sha(`${setup.uuid}/${setup.shape?.[`${from.type}/${from.id}`] ?? `v${setup.v}`}`)).slice(0, 16), had = before.get(row.id);
+    if (had?.sig === sig && time - had.at < PREVIEW_KEEP) {out[row.id] = had.posters; return;}
+    const answer = await fetch(`${at}/stremio/${setup.uuid}/catalog/${from.type}/${from.id}.json`, {headers: {accept: 'application/json', 'user-agent': 'AIOHub/1.0'}, signal: AbortSignal.timeout(PREVIEW_WAIT)}).catch(() => null);
     const metas = answer?.status === 200 ? ((await answer.json().catch(() => null)) as {metas?: {poster?: string}[]} | null)?.metas ?? [] : [];
     const posters = metas.map(meta => meta.poster).filter((poster): poster is string => typeof poster === 'string' && poster.startsWith('https://')).slice(0, 8);
-    if (posters.length) out[row.id] = posters;
-  }));
-  if (shown.size > 500) shown.clear(); shown.set(key, {at: Date.now(), rows: out});
+    // Only a real answer is kept: an empty or failed one is asked for again next time.
+    if (posters.length) {out[row.id] = posters; fresh.push({row: row.id, sig, posters});}
+  }), PREVIEWS_AT_ONCE);
+  if (fresh.length) await env.DB.batch([
+    ...fresh.map(item => env.DB.prepare('INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, ?, ?) ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at, items = excluded.items').bind(hub.id, who, `${PREVIEW}${item.row}`, time, JSON.stringify({sig: item.sig, posters: item.posters}))),
+    // Rows no longer shown are let go after a day.
+    env.DB.prepare('DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind LIKE ? AND at < ?').bind(hub.id, who, `${PREVIEW}%`, time - 86400),
+  ]);
   return out;
 }
-
-/* Whether the hub serves this person's Trakt rows: their Trakt is connected to the hub, and Trakt has not asked for it again. */
-const servesTrakt = async (env: Env, hub: string, person: string) => !!env.TRAKT_CLIENT_ID && !((await getSecret<{again?: boolean}>(env, hub, person, LINK)) ?? {again: true}).again;
 
 /* Brings the hub's setups in step with the site: the debrid account, sources, stream label, who can sign in, everyone's Home, and
    what each group and person has changed for themselves. */
 export async function syncPlayers(site: Env, hub: {id: string; data: string}, origin = ''): Promise<Synced> {
   const data = JSON.parse(hub.data) as HubData, service = data.defaults.debrid, env = hosted(site, data);
-  const vault = await vaultOf(env, hub.id), accounts = new Map<string, string>();
+  // The vault, the groups and the people in one trip to the database: each trip costs as much as a call to AIOStreams.
+  const [secretRows, groupRows, personRows] = await env.DB.batch([env.DB.prepare('SELECT owner, kind, value FROM secrets WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, name, data FROM groups WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, grp, name, data FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id)]);
+  const vault = vaultFrom(secretRows.results), accounts = new Map<string, string>();
   for (const name of data.services) {const account = SERVICE[name] ? await held<string>(env, vault, hub.id, HUB_OWNER, `debrid:${name}`) : null; if (account) accounts.set(name, account);}
   const key = accounts.get(service);
   if (!key) return {state: 'needs-key', message: `Connect ${service} under Hub, Sources, so there is something to play from.`};
-  const [groupRows, personRows] = await env.DB.batch([env.DB.prepare('SELECT id, name, data FROM groups WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, grp, name, data FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id)]);
   const top: Want = {rows: data.rows, settings: data.defaults}, linked = new Map<string, string>(), watching = new Map<string, string>();
   // A key kept while its person moves where progress is kept (places.ts) records nothing and hides nothing: they are still on Here,
   // or on their way back to it, and ticks Here then never echo into MDBList.
@@ -453,27 +481,35 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
   const known = await held<string>(env, vault, hub.id, HUB_OWNER, 'key:tmdb'), tmdb = env.AIOM_ORIGIN ? known : null, budget = {left: 30};
   let note = !env.AIOM_ORIGIN ? 'Home rows are not set up on this site.' : !tmdb ? 'Add a TMDB key under Hub, Sources, so Home has rows in the player apps.' : '', more = false, base: string | null = null;
   const keys: Keys | null = tmdb ? {tmdb, mdblist: await held<string>(env, vault, hub.id, HUB_OWNER, 'key:mdblist')} : null, front = env.FRONT === 'aiometadata';
-  if (keys) {
-    const needed = new Set([HUB_OWNER]);
-    const make = async (owner: string, wanted: Wanted) => {const got = await syncHome(env, vault, hub.id, owner, wanted, keys, budget); if ('address' in got) return got.address; note ||= got.message; more ||= !!got.more; return null;};
+  // The hub's own Home setup (and, without AIOMetadata in front, each group's and person's that differ) is brought in step. With
+  // AIOMetadata in front nothing below waits for it, so it runs beside the AIOStreams step; otherwise the variants need it first.
+  const aiom = gate(AIOM_AT_ONCE);
+  const homes = async () => {
+    if (!keys) return;
+    const needed = new Set([HUB_OWNER]), fold = (got: Awaited<ReturnType<typeof syncHome>>) => {if ('address' in got) return got.address; note ||= got.message; more ||= !!got.more; return null;};
     const wanted = wantedOf(top, keys), sig = JSON.stringify(wanted);
-    if ((base = await make(HUB_OWNER, wanted))) {
-      for (const group of groups) {
-        const theirs = wantedOf(group.want, keys); group.sig = JSON.stringify(theirs);
-        // With each person on their own player setup, AIOStreams' Home is not what apps show, so only the hub's is kept.
-        if (!front && group.sig !== sig && people.some(person => person.group === group)) {needed.add(groupOwner(group.id)); group.home = await make(groupOwner(group.id), theirs);}
-      }
-      for (const person of people) {
-        const theirs = wantedOf(person.want, keys);
-        if (!front && JSON.stringify(theirs) !== (person.group?.sig ?? sig)) {needed.add(person.id); person.home = await make(person.id, theirs);}
-      }
-      // A setup nobody needs any more (its owner follows the level above again, or is gone) is removed.
-      for (const name of vault.keys()) {
-        const owner = name.endsWith('/catalogs') ? name.slice(0, -9) : ''; if (!owner || needed.has(owner) || (budget.left -= 1) < 0) continue;
-        await dropHome({...env, AIOM_ORIGIN: (await held<Catalogs>(env, vault, hub.id, owner, 'catalogs'))?.at ?? env.AIOM_ORIGIN}, hub.id, owner);
-      }
+    if (!(base = fold(await aiom(() => syncHome(env, vault, hub.id, HUB_OWNER, wanted, keys, budget))))) return;
+    const jobs: {owner: string; wanted: Wanted; done: (address: string | null) => void}[] = [];
+    for (const group of groups) {
+      const theirs = wantedOf(group.want, keys); group.sig = JSON.stringify(theirs);
+      // With each person on their own player setup, AIOStreams' Home is not what apps show, so only the hub's is kept.
+      if (!front && group.sig !== sig && people.some(person => person.group === group)) {needed.add(groupOwner(group.id)); jobs.push({owner: groupOwner(group.id), wanted: theirs, done: address => {group.home = address;}});}
     }
-  }
+    for (const person of people) {
+      const theirs = wantedOf(person.want, keys);
+      if (!front && JSON.stringify(theirs) !== (person.group?.sig ?? sig)) {needed.add(person.id); jobs.push({owner: person.id, wanted: theirs, done: address => {person.home = address;}});}
+    }
+    // A few at a time; what each says is taken in the same order as before, so the note shown never depends on which answered first.
+    const got = await inTurn(jobs.map(job => () => aiom(() => syncHome(env, vault, hub.id, job.owner, job.wanted, keys, budget))), AIOM_AT_ONCE);
+    got.forEach((answer, at) => jobs[at].done(fold(answer)));
+    // A setup nobody needs any more (its owner follows the level above again, or is gone) is removed.
+    for (const name of vault.keys()) {
+      const owner = name.endsWith('/catalogs') ? name.slice(0, -9) : ''; if (!owner || needed.has(owner) || (budget.left -= 1) < 0) continue;
+      await dropHome({...env, AIOM_ORIGIN: (await held<Catalogs>(env, vault, hub.id, owner, 'catalogs'))?.at ?? env.AIOM_ORIGIN}, hub.id, owner);
+    }
+  };
+  const homesDone = homes();
+  if (!front) await homesDone;
   const variants: Variant[] = [], hubReach = limited(base, top.settings), extras = extrasOf(data);
   for (const group of front ? [] : groups) {
     // A group with nobody in it has nobody to apply its changes to.
@@ -500,45 +536,63 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
   // on AIOStreams as before, so a setup AIOMetadata refused never leaves someone unable to sign in.
   const moved = new Set(front ? [...vault.keys()].filter(name => name.endsWith(`/${VIA}`)).map(name => name.slice(0, -VIA.length - 1)) : []);
   const staying = people.filter(person => !moved.has(person.id));
-  let players = await held<Home>(env, vault, hub.id, HUB_OWNER, 'players');
-  // The hub moved to another AIOStreams server: its setup on the old one is removed first, then a new one is made here.
-  if (players?.at && players.at !== env.UP_ORIGIN) {
-    if (!await removeSetup({...env, UP_ORIGIN: players.at}, players)) return {state: 'error', message: 'The old AIOStreams server did not confirm removing the hub’s setup, so nothing was moved. It will be tried again on your next change.'};
-    await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND (kind = 'upstream' OR (owner = ? AND kind IN ('players', 'players-pending')))").bind(hub.id, HUB_OWNER), env.DB.prepare("DELETE FROM ops WHERE hub = ? AND kind = 'create-players'").bind(hub.id)]);
-    for (const name of [...vault.keys()]) if (name.endsWith('/upstream')) vault.delete(name);
-    players = null;
-  }
-  if (!players) {
-    const first = fresh(); patch(first, data, key, staying, front ? null : hubReach, variants, known, front);
-    const made = await create(env, hub.id, first, service);
-    if ('state' in made) return made;
-    players = made;
-  } else {
-    const read = await fetch(`${env.UP_ORIGIN}/api/v1/user?raw=true`, {headers: basic(players)}).catch(() => null);
-    const stored = read?.status === 200 ? ((await read.json().catch(() => null)) as {data?: {userData?: Stored}} | null)?.data?.userData : null;
-    if (!stored) return {state: 'error', message: 'AIOStreams did not answer. Your changes are saved here and will be sent on the next try.'};
-    const before = JSON.stringify(stored); patch(stored, data, key, staying, front ? null : hubReach, variants, known, front);
-    if (JSON.stringify(stored) !== before) {
-      const write = await fetch(`${env.UP_ORIGIN}/api/v1/user`, {method: 'PUT', headers: {...basic(players), 'content-type': 'application/json'}, body: JSON.stringify({config: stored})}).catch(() => null);
-      if (write?.status !== 200) {
-        const why = (((await write?.json().catch(() => null)) as {error?: {message?: string}} | null)?.error?.message ?? '').replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, '').replace(/https?:\/\/\S+/g, 'a link').slice(0, 160);
-        return {state: 'error', message: `AIOStreams did not accept the change${why ? `: ${why}` : '.'} Your changes are saved here and will be sent on the next try.`};
+  const signedUp = new Set<string>();
+  const streams = async (): Promise<Home | Synced> => {
+    let players = await held<Home>(env, vault, hub.id, HUB_OWNER, 'players');
+    // The hub moved to another AIOStreams server: its setup on the old one is removed first, then a new one is made here.
+    if (players?.at && players.at !== env.UP_ORIGIN) {
+      if (!await removeSetup({...env, UP_ORIGIN: players.at}, players)) return {state: 'error', message: 'The old AIOStreams server did not confirm removing the hub’s setup, so nothing was moved. It will be tried again on your next change.'};
+      await env.DB.batch([env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND (kind = 'upstream' OR (owner = ? AND kind IN ('players', 'players-pending')))").bind(hub.id, HUB_OWNER), env.DB.prepare("DELETE FROM ops WHERE hub = ? AND kind = 'create-players'").bind(hub.id)]);
+      for (const name of [...vault.keys()]) if (name.endsWith('/upstream')) vault.delete(name);
+      players = null;
+    }
+    if (!players) {
+      const first = fresh(); patch(first, data, key, staying, front ? null : hubReach, variants, known, front);
+      const made = await create(env, hub.id, first, service);
+      if ('state' in made) return made;
+      players = made;
+    } else {
+      const read = await fetch(`${env.UP_ORIGIN}/api/v1/user?raw=true`, {headers: basic(players)}).catch(() => null);
+      const stored = read?.status === 200 ? ((await read.json().catch(() => null)) as {data?: {userData?: Stored}} | null)?.data?.userData : null;
+      if (!stored) return {state: 'error', message: 'AIOStreams did not answer. Your changes are saved here and will be sent on the next try.'};
+      const before = JSON.stringify(stored); patch(stored, data, key, staying, front ? null : hubReach, variants, known, front);
+      if (JSON.stringify(stored) !== before) {
+        const write = await fetch(`${env.UP_ORIGIN}/api/v1/user`, {method: 'PUT', headers: {...basic(players), 'content-type': 'application/json'}, body: JSON.stringify({config: stored})}).catch(() => null);
+        if (write?.status !== 200) {
+          const why = (((await write?.json().catch(() => null)) as {error?: {message?: string}} | null)?.error?.message ?? '').replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, '').replace(/https?:\/\/\S+/g, 'a link').slice(0, 160);
+          return {state: 'error', message: `AIOStreams did not accept the change${why ? `: ${why}` : '.'} Your changes are saved here and will be sent on the next try.`};
+        }
       }
     }
-  }
-  // Each person signs in upstream under this setup with their own name. The kept sign-in answer, if any, is left in place.
-  // With AIOMetadata in front, only those not moved yet keep one; the rest sign in to their own AIOMetadata setup.
-  const writes = [];
-  for (const person of staying) {
-    const user = `${players.uuid}/${person.name}`, had = await held<{user: string; pass: string; auth?: string}>(env, vault, hub.id, person.id, 'upstream');
-    if (!had || had.user !== user || had.pass !== players.password) writes.push(await putSecret(env, hub.id, person.id, 'upstream', {...(had?.user.split('/')[0] === players.uuid ? had : {}), user, pass: players.password}));
-  }
-  if (writes.length) await env.DB.batch(writes);
-  if (front && keys) {
-    const got = await syncFronts(env, vault, hub.id, people, players, variants, keys, budget);
+    // Each person signs in upstream under this setup with their own name. The kept sign-in answer, if any, is left in place.
+    // With AIOMetadata in front, only those not moved yet keep one; the rest sign in to their own AIOMetadata setup.
+    const writes = [];
+    for (const person of staying) {
+      const user = `${players.uuid}/${person.name}`, had = await held<{user: string; pass: string; auth?: string}>(env, vault, hub.id, person.id, 'upstream');
+      if (!had || had.user !== user || had.pass !== players.password) signedUp.add(person.id), writes.push(await putSecret(env, hub.id, person.id, 'upstream', {...(had?.user.split('/')[0] === players.uuid ? had : {}), user, pass: players.password}));
+    }
+    if (writes.length) await env.DB.batch(writes);
+    return players;
+  };
+  // Everyone's own setup waits only for the AIOStreams step (their stream address names their variant there), never for the hub's
+  // Home. Both are waited for before anything is answered, so nothing is left half-done when the request ends.
+  const fronted = (async () => {
+    const up = await streams();
+    return {up, got: 'state' in up || !front || !keys ? null : await syncFronts(env, vault, hub.id, people, up, variants, keys, budget, aiom)};
+  })();
+  const [step, home] = await Promise.allSettled([fronted, homesDone]);
+  if (step.status === 'rejected') throw step.reason;
+  if (home.status === 'rejected') throw home.reason;
+  const {up, got} = step.value;
+  if ('state' in up) return up;
+  if (got) {
+    // The hub's Home speaks first, as it always has.
     note ||= got.note; more ||= got.more;
     // Whoever now has their own setup's sign-in no longer needs the AIOStreams one (their AIOStreams user goes on the next sync).
-    await env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND kind = 'upstream' AND owner IN (SELECT owner FROM secrets WHERE hub = ? AND kind = ?)").bind(hub.id, hub.id, VIA).run();
+    // Asked only when someone has both, as the vault read at the start shows or as this sync just made.
+    const both = (owner: string) => (vault.has(`${owner}/upstream`) || signedUp.has(owner)) && (vault.has(`${owner}/${VIA}`) || got.moved.has(owner));
+    if (people.some(person => both(person.id)) || [...vault.keys()].some(name => name.endsWith('/upstream') && both(name.slice(0, -9))))
+      await env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND kind = 'upstream' AND owner IN (SELECT owner FROM secrets WHERE hub = ? AND kind = ?)").bind(hub.id, hub.id, VIA).run();
   }
   return note || more ? {state: 'partial', message: note, ...(more ? {more: true} : {})} : {state: 'ok'};
 }
@@ -546,17 +600,18 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
 /* Each person's own Jellyfin server on AIOMetadata. Worked out again on every sync from the hub, their group and themselves, and
    saved only when the result changed, so a change at the hub reaches everyone who has not changed that setting for themselves.
    Their streams come from the hub's one AIOStreams setup, through their own variant. */
-async function syncFronts(env: Env, vault: Vault, hub: string, people: {id: string; name: string; want: Want}[], players: Home, variants: Variant[], keys: Keys, budget: {left: number}): Promise<{note: string; more: boolean}> {
+async function syncFronts(env: Env, vault: Vault, hub: string, people: {id: string; name: string; want: Want}[], players: Home, variants: Variant[], keys: Keys, budget: {left: number}, aiom: ReturnType<typeof gate>): Promise<{note: string; more: boolean; moved: Set<string>}> {
   let note = '', more = false, streams = players.enc ? players : null;
   if (!streams) {
     // The stream address carries AIOStreams' own form of the setup's password, which only AIOStreams can make. Asked for once.
     const read = await fetch(`${env.UP_ORIGIN}/api/v1/user`, {headers: basic(players)}).catch(() => null);
     const enc = read?.status === 200 ? ((await read.json().catch(() => null)) as {data?: {encryptedPassword?: string}} | null)?.data?.encryptedPassword : null;
-    if (!enc) return {note: 'AIOStreams did not answer, so the players were not brought in step. It will be tried again on your next change.', more: false};
+    if (!enc) return {note: 'AIOStreams did not answer, so the players were not brought in step. It will be tried again on your next change.', more: false, moved: new Set()};
     streams = {...players, enc}; await (await putSecret(env, hub, HUB_OWNER, 'players', streams)).run();
   }
-  const base = `${env.UP_ORIGIN}/stremio/${players.uuid}/${encodeURIComponent(streams.enc!)}`, writes = [];
-  for (const person of people) {
+  const base = `${env.UP_ORIGIN}/stremio/${players.uuid}/${encodeURIComponent(streams.enc!)}`, writes = [], moved = new Set<string>();
+  // A few people at a time. What each says is taken in people order, so the note shown never depends on which answered first.
+  const done = await inTurn(people.map(person => async () => {
     const kept = await held<Catalogs>(env, vault, hub, person.id, PLAYER), client = kept?.client ?? newToken('a');
     const variant = variants.some(item => item.id === `${OURS}c-${person.id}`) ? `/v/${OURS}c-${person.id}` : '';
     const wanted: Wanted = {...wantedOf(person.want, keys), jellyfinUserName: person.name, jellyfinAppPassword: client, jellyfinStreamUrl: `${base}${variant}/manifest.json`, jellyfinResumeSource: 'auto', jellyfinUsers: [],
@@ -564,10 +619,14 @@ async function syncFronts(env: Env, vault: Vault, hub: string, people: {id: stri
       ageRating: RATING[person.want.settings.limit] ?? 'None', jellyfinSkipSource: person.want.settings.skip ? 'auto' : 'off',
       // Kids: a title with no rating could be anything, so it is left out too. Only then is it set, so nobody else's setup changes.
       ...(person.want.settings.limit === 'kids' ? {allowUnratedContent: false} : {})};
-    const got = await syncHome(env, vault, hub, person.id, wanted, keys, budget, PLAYER, {client});
-    if (!('made' in got)) {note ||= got.message; more ||= !!got.more; continue;}
+    const got = await aiom(() => syncHome(env, vault, hub, person.id, wanted, keys, budget, PLAYER, {client}));
+    if (!('made' in got)) return {person, got, write: null};
     const at = `${got.made.at ?? env.AIOM_ORIGIN}/jellyfin/${got.made.uuid}`, had = await held<{user: string; pass: string; base: string}>(env, vault, hub, person.id, VIA);
-    if (!had || had.user !== person.name || had.pass !== client || had.base !== at) writes.push(await putSecret(env, hub, person.id, VIA, {user: person.name, pass: client, base: at}));
+    return {person, got, write: !had || had.user !== person.name || had.pass !== client || had.base !== at ? await putSecret(env, hub, person.id, VIA, {user: person.name, pass: client, base: at}) : null};
+  }), AIOM_AT_ONCE);
+  for (const {person, got, write} of done) {
+    if (!('made' in got)) {note ||= got.message; more ||= !!got.more;}
+    if (write) {writes.push(write); moved.add(person.id);}
   }
   // A setup whose person is gone is removed.
   const here = new Set(people.map(person => person.id));
@@ -576,7 +635,7 @@ async function syncFronts(env: Env, vault: Vault, hub: string, people: {id: stri
     await dropHome({...env, AIOM_ORIGIN: (await held<Catalogs>(env, vault, hub, owner, PLAYER))?.at ?? env.AIOM_ORIGIN}, hub, owner, PLAYER);
   }
   if (writes.length) await env.DB.batch(writes);
-  return {note, more: more || budget.left < 0};
+  return {note, more: more || budget.left < 0, moved};
 }
 
 /* Removes one setup from AIOStreams. AIOStreams answers 400 "invalid details" for a setup that is already gone (seen on staging), so a

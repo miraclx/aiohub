@@ -14,7 +14,8 @@ function client() {
   };
 }
 // Stand-ins: AIOStreams (setups, its server id) and AIOMetadata (setups by uuid, each also a Jellyfin server once it has an app password).
-const fake = {configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: [], ticks: [], positions: []};
+// `slow`: how long AIOMetadata takes over reading or writing a setup; `most`: the most it was asked to at once; `catalogs`: rows asked for.
+const fake = {configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: [], ticks: [], positions: [], slow: 0, busy: 0, most: 0, catalogs: []};
 const uuidOf = n => `${String(n).padStart(8, '0')}-0000-4000-8000-0000000000aa`, ITEM = 'a1110100-0000-eaf7-78ff-ffffff010000';
 // What Ada's own server holds: a film she watched, an episode she is partway through, one MDBList already has, and their show.
 const FILM = 'a1110100-0000-eaf7-78ff-ffffff050000', LEFT = 'a1110100-0000-eaf7-78ff-ffffff060000', EP3 = 'a1110100-0000-eaf7-78ff-ffffff070000';
@@ -117,12 +118,16 @@ http.createServer(async (request, answer) => {
   if (request.url.startsWith('/mdblist/sync/watched')) {fake.watched.push(body); return send(200, {added: {movies: 1}, not_found: {movies: [], shows: [], episodes: []}});}
   if (request.url.startsWith('/mdblist/scrobble/pause')) {fake.pauses.push(body); return send(201, {action: 'pause'});}
   if (request.url === '/api/config/save') {if (!body.config?.apiKeys?.tmdb) return send(400, {}); const uuid = uuidOf(++fake.made); fake.homes.set(uuid, {password: body.password, config: {...body.config, configVersion: 1}}); return send(200, {success: true, userUUID: uuid});}
+  if (/^\/api\/config\/(load|update)\//.test(request.url)) {fake.most = Math.max(fake.most, ++fake.busy); await new Promise(done => setTimeout(done, fake.slow)); fake.busy--;}
   if (request.url.startsWith('/api/config/')) {
     const home = fake.homes.get(request.url.split('/').pop()); if (!home || home.password !== body.password) return send(401, {});
     if (request.url.includes('/load/')) return send(200, {success: true, config: {...home.config, keptByTheServer: true}});
     if (request.url.includes('/update/')) {if (body.baseVersion !== home.config.configVersion) return send(409, {}); home.config = {...body.config, configVersion: home.config.configVersion + 1}; return send(200, {success: true});}
     if (request.url.includes('/delete-user/')) {fake.homes.delete(request.url.split('/').pop()); return send(200, {success: true});}
   }
+  // A row's titles, told apart by setup, so whose answer came back shows.
+  const row = /^\/stremio\/([^/]+)\/catalog\/([^/]+)\/([^/]+)\.json$/.exec(request.url);
+  if (row) {fake.catalogs.push(`${row[1]}/${row[2]}/${row[3]}`); return send(200, {metas: [1, 2].map(n => ({poster: `https://img.test/${row[1]}/${row[3]}/${n}.jpg`}))});}
   if (request.url.startsWith('/stremio/')) return send(200, {metas: []});
   if (request.url.startsWith('/api/v1/user')) {
     if (request.method === 'POST') {const uuid = `cfg-${fake.configs.size + 1}`; fake.configs.set(uuid, {password: body.password, config: body.config}); return send(201, {success: true, data: {uuid}});}
@@ -725,6 +730,59 @@ test('the card compares two places and copies across: paused points both ways, a
   assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Ada')[1].config.playbackReporting, true);
   lists.playback = null; trakt.playback = null; trakt.history = [];
   assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200);
+});
+test('a save brings a few setups in step at once, and nobody waits on rows that did not change', async () => {
+  const state = (await owner('GET', '/api/state')).body.hub, before = state.defaults.unreleased;
+  // A change at the hub touches the hub's own setup and everyone's: read and written two at a time, never all at once, never one by one.
+  fake.slow = 150; fake.most = 0;
+  assert.equal((await owner('PUT', '/api/hub', {...state, defaults: {...state.defaults, unreleased: !before}})).status, 200);
+  assert.deepEqual(await syncAll(), {state: 'ok'}); fake.slow = 0;
+  assert.equal(fake.most, 2, 'two setups at a time');
+  for (const [, home] of fake.homes) assert.equal(home.config.hideUnreleasedDigital, !before);
+  // Nothing changed: no setup is read or written again.
+  fake.most = 0; assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(fake.most, 0);
+
+  const look = async path => {fake.catalogs = []; const rows = (await owner('GET', path)).body.rows; return {rows, asked: fake.catalogs.splice(0)};};
+  const first = await look('/api/previews');
+  assert.ok(first.asked.length >= 4 && first.rows['trending-movies']?.length === 2, 'the rows are asked for once');
+  assert.deepEqual((await look('/api/previews')).asked, [], 'then kept');
+  // The same row for two people, and for the hub: each from their own setup, never one shared answer.
+  const ada = await look('/api/previews?person=ada'), ben = await look('/api/previews?person=ben');
+  const [hubAt, adaAt, benAt] = [first, ada, ben].map(found => found.rows['trending-movies'][0].split('/')[3]);
+  assert.equal(new Set([hubAt, adaAt, benAt]).size, 3);
+  assert.equal(adaAt, playerOf('Ada')[0]); assert.equal(benAt, playerOf('Ben')[0]);
+  assert.deepEqual((await look('/api/previews?person=ada')).asked, []);
+
+  // Rows only put in another order: nothing asked again. One row turned on: only that row.
+  const now = (await owner('GET', '/api/state')).body.hub, rows = now.rows;
+  const put = async next => {const hub_ = (await owner('GET', '/api/state')).body.hub; assert.equal((await owner('PUT', '/api/hub', {...hub_, rows: next})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});};
+  await put([...rows].reverse()); assert.deepEqual((await look('/api/previews')).asked, []);
+  const off = rows.find(item => item.id === 'popular-movies'); assert.equal(off?.on, false);
+  await put(rows.map(item => item.id === 'popular-movies' ? {...item, on: true} : item));
+  const turned = await look('/api/previews'); assert.equal(turned.asked.length, 1); assert.ok(turned.rows['popular-movies']);
+  // Ada follows the hub's Home: on her own setup, only that row is asked for too.
+  const hers = await look('/api/previews?person=ada'); assert.equal(hers.asked.length, 1); assert.ok(hers.rows['popular-movies']);
+  // Blurring episode pictures changes no row's posters: nothing asked again. A setting that changes every row (the posters) asks for
+  // every row again.
+  const blur = (await owner('GET', '/api/state')).body.hub;
+  assert.equal((await owner('PUT', '/api/hub', {...blur, defaults: {...blur.defaults, spoilers: !blur.defaults.spoilers}})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual((await look('/api/previews')).asked, []);
+  const plain = (await owner('GET', '/api/state')).body.hub;
+  assert.equal((await owner('PUT', '/api/hub', {...plain, defaults: {...plain.defaults, posters: 'plain'}})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.equal((await look('/api/previews')).asked.length, turned.asked.length + first.asked.length);
+  const back = (await owner('GET', '/api/state')).body.hub;
+  assert.equal((await owner('PUT', '/api/hub', {...back, rows, defaults: {...back.defaults, posters: plain.defaults.posters, unreleased: before, spoilers: blur.defaults.spoilers}})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+
+  // Someone removed and added again under the same name is new: nothing kept for the one before comes back.
+  const person = {rows: null, settings: {}, can: {arrange: false, add: false, playback: false}, trakt: false, lists: false};
+  assert.equal((await owner('PUT', '/api/people/dee', {...person, name: 'Dee', groupId: 'mein'})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  const old = (await look('/api/previews?person=dee')).rows['trending-movies'][0], oldAt = playerOf('Dee')[0];
+  assert.equal((await owner('DELETE', '/api/people/dee')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(sql("SELECT kind FROM rows_cache WHERE person = 'dee'"), []);
+  assert.equal((await owner('PUT', '/api/people/dee', {...person, name: 'Dee', groupId: 'mein'})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  const again = await look('/api/previews?person=dee');
+  assert.notEqual(playerOf('Dee')[0], oldAt); assert.ok(again.asked.length > 0); assert.notEqual(again.rows['trending-movies'][0], old);
+  assert.equal((await owner('DELETE', '/api/people/dee')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
 });
 test('a setup another request is still making is waited for quietly; one that never finished is said once', async () => {
   const person = {rows: null, settings: {}, can: {arrange: false, add: false, playback: false}, trakt: false, lists: false};

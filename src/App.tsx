@@ -9,12 +9,16 @@ import {AccountPage, GroupPage, HubPage, JoinGate, JoinPage, PeoplePage, PersonP
 import type {PageProps} from './pages';
 import {Avatar, forgetReal, showReal, useRoute} from './ui';
 
-function useToast() {
+/* How bringing the player apps in step is going, after a save: under way, done, or what got in the way. */
+export type AppsState = {phase: 'busy' | 'done'} | {phase: 'note'; text: string} | null;
+function useToast(apps: AppsState = null, onClear?: () => void) {
   const [note, setNote] = useState<{text: string; key: number} | null>(null), timer = useRef<number | undefined>(undefined), box = useRef<HTMLDivElement>(null);
   const toast = useMemo(() => (text: string) => {setNote({text, key: Date.now()}); clearTimeout(timer.current); timer.current = window.setTimeout(() => setNote(null), 2600);}, []);
   // An open sheet sits above the whole page, dimming and blurring it. Re-raising the toast each time puts it above the sheet too, so it stays readable.
-  useEffect(() => {const el = box.current; if (!el?.showPopover) return; try {if (el.matches(':popover-open')) el.hidePopover(); if (note) el.showPopover();} catch {/* older browser: stays where it was */}}, [note]);
-  return [toast, <div className="toast" popover="manual" ref={box} role="status" aria-live="polite">{note && <span key={note.key}>{note.text}</span>}</div>] as const;
+  useEffect(() => {const el = box.current; if (!el?.showPopover) return; try {if (el.matches(':popover-open')) el.hidePopover(); if (note || apps) el.showPopover();} catch {/* older browser: stays where it was */}}, [note, apps]);
+  const line = apps?.phase === 'busy' ? 'Apps catching up…' : apps?.phase === 'done' ? 'Apps up to date' : apps?.phase === 'note' ? apps.text : '';
+  return [toast, <div className="toast" popover="manual" ref={box} role="status" aria-live="polite">{note && <span key={note.key}>{note.text}</span>}
+    {apps && <button type="button" className={`apps ${apps.phase}`} data-apps={apps.phase} title={apps.phase === 'note' ? 'Hide' : undefined} onClick={apps.phase === 'note' ? onClear : undefined}>{line}</button>}</div>] as const;
 }
 /* The frame around every page: the top bar, the page, the toast. `mine` is an invited person's own view. */
 function Frame({page, parts, mine, bar, toastView, children}: {page?: PageProps; parts: string[]; mine?: string; bar?: ReactNode; toastView: ReactNode; children?: ReactNode}) {
@@ -59,16 +63,21 @@ if (!SAMPLE) backFromTrakt();
 
 /* The real hub. What is on screen is the truth for the page; `saved` is what the hub last confirmed. */
 function Hubbed() {
-  const [parts, go] = useRoute(), [toast, toastView] = useToast();
+  const [parts, go] = useRoute(), [apps, setApps] = useState<AppsState>(null), [toast, toastView] = useToast(apps, () => setApps(null));
   const [hub, setHub] = useState<Hub | null>(null), [phase, setPhase] = useState<'loading' | 'out' | 'in'>('loading');
   const [who, setWho] = useState<{role: 'owner' | 'person'; personId: string}>({role: 'owner', personId: ''}), [open, setOpen] = useState<{signup: boolean; code: boolean; hub?: string; proof?: string} | null>(null);
   const shown = useRef<Hub | null>(null), saved = useRef<Hub | null>(null), role = useRef<'owner' | 'person'>('owner'), queue = useRef<Promise<void>>(Promise.resolve()), timer = useRef<number | undefined>(undefined);
-  const loaded = useRef(0), seenAs = useRef('');
+  const loaded = useRef(0), seenAs = useRef(''), edits = useRef(0);
   const show = (next: Hub | null) => {shown.current = next; setHub(next);};
   const live = useMemo<Live & {update: PageProps['update']}>(() => {
-    const load = async () => {
+    const pending = () => !!saved.current && !!shown.current && changes(saved.current, shown.current, role.current).length > 0;
+    const load = async (anyway = false) => {
+      // A change made while the hub is being read is newer than the answer: the answer is dropped, so the change is never lost.
+      // `anyway`: the hub refused a change, and what it holds now is shown instead.
+      const mark = edits.current;
       try {
         const state = await call<{role: 'owner' | 'person'; personId: string | null; hub: Hub}>('GET', '/api/state');
+        if (!anyway && (edits.current !== mark || pending())) return;
         // Someone else in this tab now (another hub, or a person instead of the manager): no posters from before.
         const viewer = `${state.hub.code}/${state.role}/${state.personId ?? ''}`; if (viewer !== seenAs.current) {forgetReal(); seenAs.current = viewer;}
         loaded.current = Date.now(); saved.current = structuredClone(state.hub); role.current = state.role; show(state.hub); setWho({role: state.role, personId: state.personId ?? ''}); setPhase('in'); look();
@@ -80,16 +89,30 @@ function Hubbed() {
     };
     // What each Home row really holds, fetched beside the page and drawn when it arrives.
     const look = () => void call<{rows: Record<string, string[]>}>('GET', '/api/previews').then(found => {showReal(found.rows); if (shown.current) show(structuredClone(shown.current));}, () => {});
-    // After a save, the player apps are brought in step. A problem there is said once, not on every save.
-    let said = '';
-    const sync = async () => {
-      let result = await call<{state: string; message?: string; more?: boolean}>('POST', '/api/sync', {}).catch(() => null);
+    /* Bringing the player apps in step runs beside the page, one run at a time. Asking while a run is under way asks for one more
+       run after it, so whatever was saved meanwhile is sent too. `loud` runs (after a save) say how it went; the one on opening the
+       site speaks only if something is wrong, and a problem it already mentioned is not repeated. */
+    let asked = 0, ran = 0, running: Promise<void> | null = null, loud = false, said = '', fade: number | undefined;
+    type Answer = {state: string; message?: string; more?: boolean};
+    const pass = async () => {
+      let result = await call<Answer>('POST', '/api/sync', {}).catch(() => null);
       // A big change (a new key, many people with their own Home) is brought in step over a few passes.
-      for (let pass = 0; result?.more && pass < 8; pass++) result = await call<{state: string; message?: string; more?: boolean}>('POST', '/api/sync', {}).catch(() => null);
-      const message = result?.more ? '' : result?.message ?? '';
-      if (message && message !== said) toast(message);
-      said = message;
-      if ((result?.state === 'ok' || result?.state === 'partial') && saved.current && shown.current && !changes(saved.current, shown.current, role.current).length) await load();
+      for (let more = 0; result?.more && more < 8; more++) result = await call<Answer>('POST', '/api/sync', {}).catch(() => null);
+      return result;
+    };
+    const apps = (quiet = false) => {
+      asked++;
+      if (!quiet) {loud = true; clearTimeout(fade); setApps({phase: 'busy'});}
+      return running ??= (async () => {
+        let result: Answer | null = null;
+        try {while (ran < asked) {ran = asked; result = await pass();}} finally {running = null;}
+        const message = !result ? 'Couldn’t reach the hub to update the apps. It tries again with your next change.' : result.more ? 'The apps are still catching up. They finish with your next change.' : result.message ?? '';
+        if (message && (loud || message !== said)) {setApps({phase: 'note', text: message}); clearTimeout(fade); fade = window.setTimeout(() => setApps(current => current?.phase === 'note' && current.text === message ? null : current), 10_000);}
+        else if (loud) {setApps({phase: 'done'}); fade = window.setTimeout(() => setApps(current => current?.phase === 'done' ? null : current), 2200);}
+        said = message; loud = false;
+        // What the sync itself changed (a sign-in made, a link checked) shows once nothing is waiting to be sent.
+        if ((result?.state === 'ok' || result?.state === 'partial') && !pending()) await load();
+      })();
     };
     const drain = async () => {
       let sent = false;
@@ -103,15 +126,16 @@ function Hubbed() {
             const answer = await call<{v?: number}>(job.method, job.path, job.body);
             settle(saved.current, job, answer.v, sending);
             if (shown.current) {const next = structuredClone(shown.current); settle(next, job, answer.v); show(next);}
-          } catch (error) {toast((error as Error).message); await load(); return;}
+          } catch (error) {toast((error as Error).message); await load(true); return;}
         }
       }
-      if (sent) await sync();
+      // Saved. The apps follow in the background; the next change does not wait for them.
+      if (sent) void apps();
     };
     const settled = () => {clearTimeout(timer.current); return queue.current = queue.current.then(drain);};
     return {
-      call, settled, sync, reload: () => settled().then(load),
-      update: change => {if (!shown.current) return; const next = structuredClone(shown.current); change(next); show(next); clearTimeout(timer.current); timer.current = window.setTimeout(settled, 400);},
+      call, settled, apps: () => void apps(), sync: () => apps(true), reload: () => settled().then(() => load()),
+      update: change => {if (!shown.current) return; edits.current++; const next = structuredClone(shown.current); change(next); show(next); clearTimeout(timer.current); timer.current = window.setTimeout(settled, 400);},
     };
   }, []);
   // On opening the site, the player setups are also brought in step once: that is how an improvement to the site reaches a hub

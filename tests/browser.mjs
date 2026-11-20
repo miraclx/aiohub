@@ -127,7 +127,8 @@ assert.equal(asked.redirect_uri, `${BASE}/api/trakt/callback`); assert.equal(awa
 execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', "INSERT INTO secrets (hub, owner, kind, value) SELECT id, 'ada', 'trakt', 'x' FROM hubs"], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
 await guest.reload(); await trakt.getByText('Nothing uses it any more').waitFor(); await shot(guest, '13-accounts-connected');
 await trakt.getByRole('button', {name: 'Disconnect it'}).click(); await toast(guest).filter({hasText: 'Older Trakt link removed'}).waitFor();
-assert.equal(await trakt.getByText('Nothing uses it any more').count(), 0); await trakt.getByText('Connected as adatrakt.').waitFor();
+// Said as soon as the hub answers; the card follows a moment later.
+await trakt.getByText('Nothing uses it any more').waitFor({state: 'detached'}); await trakt.getByText('Connected as adatrakt.').waitFor();
 // With Trakt connected, Recently Watched is on Home right after Watchlist. Switching it off keeps her following her group's Home.
 await guest.goto(BASE + '/#/me/home'); const onHome = guest.locator('.rows li h3');
 assert.deepEqual((await onHome.allTextContents()).slice(0, 4), ['Watchlist', 'Recommended Movies', 'Recommended Shows', 'Recently Watched']);
@@ -271,6 +272,28 @@ await owner.goto(BASE + '/#/hub/general'); await owner.getByRole('heading', {nam
 // Back as the manager: Ada shows as joined, and the playback change stuck.
 await owner.goto(BASE + '/#/person/ada/settings'); await owner.reload(); await owner.getByText(/Family · joined/).waitFor();
 assert.equal(await owner.getByRole('switch', {name: 'Change playback'}).getAttribute('aria-checked'), 'true');
+// Saving says so as soon as the hub has it. The apps catch up beside the page (held here until let go): a second change made
+// meanwhile is saved at once and is still there when they are done, and a problem bringing them in step is said plainly.
+const can = async () => owner.evaluate(async () => (await (await fetch('/api/state')).json()).hub.people.find(person => person.id === 'ada').can);
+const was = await can(), apps = owner.locator('.toast .apps'), toggle = name => owner.getByRole('switch', {name}).click();
+let letGo, answer = {state: 'ok'}, syncs = 0;
+await owner.route('**/api/sync', async route => {syncs++; await new Promise(done => {letGo = done;}); await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(answer)});});
+await toggle('Arrange their Home'); await toast(owner).filter({hasText: 'Saved'}).waitFor(); await apps.filter({hasText: 'Apps catching up…'}).waitFor();
+await toggle('Add their own rows');
+for (let i = 0; i < 40 && (await can()).add === was.add; i++) await owner.waitForTimeout(150);
+assert.deepEqual(await can(), {...was, arrange: !was.arrange, add: !was.add}, 'both changes saved while the apps were still catching up');
+assert.equal(syncs, 1, 'one run at a time'); letGo();
+// The second change asked for one more run after the first.
+for (let i = 0; i < 40 && syncs < 2; i++) await owner.waitForTimeout(100);
+assert.equal(syncs, 2); letGo(); await apps.filter({hasText: 'Apps up to date'}).waitFor(); await shot(owner, '17-apps-up-to-date');
+assert.equal(await owner.getByRole('switch', {name: 'Add their own rows'}).getAttribute('aria-checked'), String(!was.add), 'the page kept the second change');
+answer = {state: 'error', message: 'AIOStreams did not answer. Your changes are saved here and will be sent on the next try.'};
+await toggle('Add their own rows'); await toast(owner).filter({hasText: 'Saved'}).waitFor();
+for (let i = 0; i < 40 && syncs < 3; i++) await owner.waitForTimeout(100);
+letGo(); await apps.filter({hasText: 'AIOStreams did not answer'}).waitFor(); await shot(owner, '17b-apps-note');
+await owner.unroute('**/api/sync'); await apps.click(); assert.equal(await apps.count(), 0, 'a note goes when tapped');
+await toggle('Arrange their Home'); for (let i = 0; i < 40 && (await can()).arrange !== was.arrange; i++) await owner.waitForTimeout(150);
+assert.deepEqual(await can(), was);
 await owner.goto(BASE + '/#/account'); await owner.getByRole('button', {name: 'New codes'}).click(); await owner.locator('.codes li').nth(9).waitFor(); await shot(owner, '9-codes');
 const state = await owner.evaluate(() => fetch('/api/state').then(answer => answer.text()));
 assert.ok(!state.includes(password) && !state.includes('tb-key') && !state.includes('tmdb-key') && !state.includes(link.split('/join/')[1]) && JSON.parse(state).hub.defaults.quality === 'best', 'state leaks or did not save');

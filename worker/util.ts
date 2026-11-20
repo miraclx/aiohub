@@ -20,6 +20,24 @@ export const unb64 = (text: string) => Uint8Array.from(atob(text.replace(/-/g, '
 export const hex = (bytes: Uint8Array) => [...bytes].map(n => n.toString(16).padStart(2, '0')).join('');
 export const random = (bytes: number) => crypto.getRandomValues(new Uint8Array(bytes));
 export const sha = async (text: string) => hex(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(text))));
+/* Runs jobs at most `most` at a time and answers in the jobs' own order. After a job throws, no new one starts; the ones already
+   running finish, then the first error is thrown, so nothing is left half-done in the background. */
+export async function inTurn<T>(jobs: (() => Promise<T>)[], most: number): Promise<T[]> {
+  const out: T[] = new Array(jobs.length); let next = 0, failed: {error: unknown} | null = null;
+  await Promise.all(Array.from({length: Math.min(most, jobs.length)}, async () => {
+    while (next < jobs.length && !failed) {const at = next++; try {out[at] = await jobs[at]();} catch (error) {failed ??= {error};}}
+  }));
+  if (failed) throw (failed as {error: unknown}).error;
+  return out;
+}
+/* Lets at most `most` pieces of work handed to it run at once; the rest wait their turn, first come first served. */
+export function gate(most: number) {
+  let busy = 0; const waiting: (() => void)[] = [];
+  return async <T>(work: () => Promise<T>): Promise<T> => {
+    if (busy >= most) await new Promise<void>(go => waiting.push(go)); else busy++;
+    try {return await work();} finally {const next = waiting.shift(); if (next) next(); else busy--;}
+  };
+}
 /* Compares without leaking where two strings differ. */
 export async function same(a: string, b: string) {
   const [x, y] = await Promise.all([sha(a), sha(b)]); let diff = 0;

@@ -80,7 +80,7 @@ function Formatter({value, onSave}: {value: Template; onSave: (value: Template) 
 }
 
 export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset, update, toast, live}: EditorProps) {
-  const service_ = (method: string, name: string, body: unknown, note: string) => void live!.call(method, `/api/services/${encodeURIComponent(name)}`, body).then(() => live!.sync()).then(() => live!.reload()).then(() => toast(note), (error: Error) => toast(error.message));
+  const service_ = (method: string, name: string, body: unknown, note: string) => void live!.call(method, `/api/services/${encodeURIComponent(name)}`, body).then(() => {toast(note); live!.apps(); return live!.reload();}, (error: Error) => toast(error.message));
   const line = (key: keyof Settings) => ({from: from[key], scope, onReset: () => reset(key)});
   const [service, setService] = useState(''), [key, setKey] = useState(''), [link, setLink] = useState(''), [tmdb, setTmdb] = useState(''), [lists, setLists] = useState(''), [replacing, setReplacing] = useState(''), [fresh, setFresh] = useState('');
   const free = allServices.filter(item => !hub.services.includes(item)), shipped = defaultAddons(); // the wording of a built-in source's note is the site's, not what a hub happened to save
@@ -107,11 +107,11 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
         {id: 'tmdb', name: 'TMDB', on: hub.tmdb, does: 'Builds the Home rows.', missing: 'Missing. Home rows are built from TMDB; the key is free.', get: 'https://www.themoviedb.org/settings/api', value: tmdb, setValue: setTmdb},
         {id: 'mdblist', name: 'MDBList', on: hub.mdblist, does: 'Builds the collection rows (by Service, by Genre) from MDBList lists.', missing: 'Optional. Without it the collection rows (by Service, by Genre) stay out of the player apps. The key is free.', get: 'https://mdblist.com/preferences/', value: lists, setValue: setLists},
       ] as const).map(item => {
-        const save = () => void live.call('PUT', `/api/keys/${item.id}`, {key: item.value}).then(() => live.sync()).then(() => live.reload()).then(() => {item.setValue(''); setReplacing(''); toast(`${item.name} key ${item.on ? 'replaced' : 'saved'}`);}, (error: Error) => toast(error.message));
+        const save = () => void live.call('PUT', `/api/keys/${item.id}`, {key: item.value}).then(() => {item.setValue(''); setReplacing(''); toast(`${item.name} key ${item.on ? 'replaced' : 'saved'}`); live.apps(); return live.reload();}, (error: Error) => toast(error.message));
         const field = (label: string) => <form className="field-row" onSubmit={event => {event.preventDefault(); save();}}><input type="password" aria-label={`${item.name} API key`} placeholder={item.on ? 'New API key' : 'API key'} autoComplete="off" autoFocus={item.on} value={item.value} onChange={event => item.setValue(event.target.value)}/><button className="ghost small" disabled={!item.value.trim()}>{label}</button></form>;
         return <li key={item.id} className={!item.on || replacing === item.id ? 'stacked' : ''}><div><h3>{item.name}</h3><p>{item.on ? item.does : item.missing}</p>{!item.on && <a className="link small" href={item.get} target="_blank" rel="noreferrer">Get a key</a>}</div>
           {!item.on ? field('Connect') : replacing === item.id ? field('Save') : <button type="button" className="ghost small" onClick={() => {setReplacing(item.id); item.setValue('');}}>Replace key</button>}
-          {item.on && item.id === 'mdblist' && replacing !== item.id && <button type="button" className="ghost small" onClick={() => void live.call('DELETE', '/api/keys/mdblist').then(() => live.sync()).then(() => live.reload()).then(() => toast('MDBList key removed'), (error: Error) => toast(error.message))}>Remove</button>}</li>;
+          {item.on && item.id === 'mdblist' && replacing !== item.id && <button type="button" className="ghost small" onClick={() => void live.call('DELETE', '/api/keys/mdblist').then(() => {toast('MDBList key removed'); live.apps(); return live.reload();}, (error: Error) => toast(error.message))}>Remove</button>}</li>;
       })}</ul></>}
     <h3 className="sub">Stream sources</h3>
     <div className="card settings">

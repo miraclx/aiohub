@@ -6,8 +6,10 @@ export interface Live {
   call: <T = Record<string, unknown>>(method: string, path: string, body?: unknown) => Promise<T>;
   /** Waits for anything unsaved, then loads the hub again. */
   reload: () => Promise<void>;
-  /** Brings the player apps in step with what is saved, and says so if that could not be done. */
+  /** Brings the player apps in step with what is saved, and waits for it. Quiet unless something got in the way. */
   sync: () => Promise<void>;
+  /** The same in the background, after a save: shows that the apps are catching up, then that they are done or what went wrong. */
+  apps: () => void;
   /** Waits until everything on screen has been saved. */
   settled: () => Promise<void>;
 }

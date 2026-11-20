@@ -224,7 +224,7 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     const username = String((me?.ok ? await me.json().catch(() => null) as {user?: {username?: string}} | null : null)?.user?.username ?? '');
     setPhase('connecting');
     await live!.call('POST', `${at}/link`, {access: got.access_token, refresh: got.refresh_token, lasts: got.expires_in, created: got.created_at, username, redirect})
-      .then(() => live!.sync()).then(() => live!.reload()).then(() => toast(username ? `Trakt connected as ${username}` : 'Trakt connected'), fail(toast));
+      .then(() => {toast(username ? `Trakt connected as ${username}` : 'Trakt connected'); live!.apps(); void live!.reload();}, fail(toast));
     setPhase('');
   };
   const about = `Trakt follows along as things are watched here, and ${their} Trakt watchlist, picks and next episodes show up on Home.`;
@@ -236,7 +236,8 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
         : <span className="pill" title={`Send ${person.name} their link from the Settings tab`}>Waiting for {person.name}</span>}</li>;
   }
   const on = !!link && !link.again;
-  const work = (call: Promise<unknown>, note: string) => {setPhase('going'); void call.then(() => live.sync()).then(() => live.reload()).then(() => toast(note), fail(toast)).finally(() => setPhase(''));};
+  // Saved once the hub answers; the apps catch up in the background.
+  const work = (call: Promise<unknown>, note: string) => {setPhase('going'); void call.then(() => {toast(note); live.apps(); return live.reload();}, fail(toast)).finally(() => setPhase(''));};
   const connect = async () => {
     setPhase('going');
     const verifier = packed(crypto.getRandomValues(new Uint8Array(48))), state = packed(crypto.getRandomValues(new Uint8Array(16)));
@@ -275,9 +276,9 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
   const leave = () => {
     setLeaving(false);
     if (!live) return edit(target => {target.lists = false; target.rows = target.rows?.filter(row => !row.source.startsWith('MDBList')) ?? null;}, 'Progress kept here');
-    setBusy(true); void live.call('DELETE', at).then(() => live.sync()).then(() => live.reload()).then(() => toast('Progress kept here'), fail(toast)).finally(() => setBusy(false));
+    setBusy(true); void live.call('DELETE', at).then(() => {toast('Progress kept here'); live.apps(); return live.reload();}, fail(toast)).finally(() => setBusy(false));
   };
-  const save = () => {const move = self && !person.lists; setBusy(true); void live!.call<{username: string}>('POST', at, {key: own, ...(move ? {moving: true} : {})}).then(found => live!.sync().then(() => live!.reload()).then(() => {toast(move ? `MDBList connected${found.username ? ` as ${found.username}` : ''}. Move your plays across to switch.` : found.username ? `MDBList connected as ${found.username}` : person.lists ? 'MDBList key replaced' : 'MDBList connected'); setKeying(false); setOwn('');}), fail(toast)).finally(() => setBusy(false));};
+  const save = () => {const move = self && !person.lists; setBusy(true); void live!.call<{username: string}>('POST', at, {key: own, ...(move ? {moving: true} : {})}).then(found => {toast(move ? `MDBList connected${found.username ? ` as ${found.username}` : ''}. Move your plays across to switch.` : found.username ? `MDBList connected as ${found.username}` : person.lists ? 'MDBList key replaced' : 'MDBList connected'); setKeying(false); setOwn(''); live!.apps(); return live!.reload();}, fail(toast)).finally(() => setBusy(false));};
   const canChoose = !!live || mine || person.lists;
   return <>
     <h3 className="sub">Where progress is kept</h3>
@@ -619,7 +620,7 @@ function Servers({hub, live, toast}: {hub: Hub; live: Live; toast: (text: string
     <div className="section-head"><div><h2>Servers</h2><p className="muted">Where your hub’s setups live. Leave a field empty to use this site’s usual server (ForTheWeak).</p></div></div>
     <form className="card settings" onSubmit={event => {
       event.preventDefault(); setBusy(true);
-      void live.call<{missing: string[]}>('PUT', '/api/host', {aiostreams: up, aiometadata: meta}).then(answer => live.sync().then(() => live.reload()).then(() => toast(answer.missing.length ? 'Saved. Some sources are not offered there and are off.' : 'Saved')), (error: Error) => toast(error.message)).finally(() => setBusy(false));
+      void live.call<{missing: string[]}>('PUT', '/api/host', {aiostreams: up, aiometadata: meta}).then(answer => {toast(answer.missing.length ? 'Saved. Some sources are not offered there and are off.' : 'Saved'); live.apps(); return live.reload();}, (error: Error) => toast(error.message)).finally(() => setBusy(false));
     }}>
       <Setting column title="AIOStreams" hint="Finds the streams and is what the player apps talk to behind your hub’s address."><input aria-label="AIOStreams address" placeholder="https://aiostreams.fortheweak.cloud" value={up} onChange={event => setUp(event.target.value)} autoComplete="off" inputMode="url"/></Setting>
       <Setting column title="AIOMetadata" hint="Builds the Home rows, collections and search."><input aria-label="AIOMetadata address" placeholder="https://aiometadata.fortheweak.cloud" value={meta} onChange={event => setMeta(event.target.value)} autoComplete="off" inputMode="url"/></Setting>

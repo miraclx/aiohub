@@ -104,13 +104,17 @@ interface Who {session: string; account?: {id: string; username: string; name: s
 async function whoIs(request: Request, env: Env): Promise<Who | null> {
   const token = new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`).exec(request.headers.get('cookie') ?? '')?.[1];
   if (!token) return null;
-  const session = await sha(token), row = await env.DB.prepare('SELECT account, hub, person FROM sessions WHERE id = ? AND expires > ?').bind(session, now()).first<{account: string | null; hub: string | null; person: string | null}>();
+  // The session, its account and its hub in one trip to the database: every request starts here, and each trip is slow from afar.
+  const session = await sha(token), at = now(), [rows, accounts, hubs] = await env.DB.batch([
+    env.DB.prepare('SELECT account, hub, person FROM sessions WHERE id = ?1 AND expires > ?2').bind(session, at),
+    env.DB.prepare('SELECT a.id, a.username, a.name, a.theme FROM sessions s JOIN accounts a ON a.id = s.account WHERE s.id = ?1 AND s.expires > ?2').bind(session, at),
+    env.DB.prepare(`SELECT h.id, h.code, h.owner, h.data, h.version FROM sessions s JOIN hubs h ON h.owner = s.account WHERE s.id = ?1 AND s.expires > ?2
+      UNION ALL SELECT h.id, h.code, h.owner, h.data, h.version FROM sessions s JOIN hubs h ON h.id = s.hub WHERE s.id = ?1 AND s.expires > ?2 AND s.account IS NULL`).bind(session, at),
+  ]);
+  const row = rows.results[0] as {account: string | null; hub: string | null; person: string | null} | undefined;
   if (!row) return null;
-  if (row.account) {
-    const [account, hub] = await env.DB.batch([env.DB.prepare('SELECT id, username, name, theme FROM accounts WHERE id = ?').bind(row.account), env.DB.prepare('SELECT id, code, owner, data, version FROM hubs WHERE owner = ?').bind(row.account)]);
-    return account.results[0] && hub.results[0] ? {session, account: account.results[0] as Who['account'], hub: hub.results[0] as HubRow} : null;
-  }
-  const hub = await env.DB.prepare('SELECT id, code, owner, data, version FROM hubs WHERE id = ?').bind(row.hub).first<HubRow>();
+  if (row.account) return accounts.results[0] && hubs.results[0] ? {session, account: accounts.results[0] as Who['account'], hub: hubs.results[0] as HubRow} : null;
+  const hub = hubs.results[0] as HubRow | undefined;
   if (!hub || !row.person) return null;
   // Only this hub's own manager's session counts as one to go back to.
   const kept = cookieOf(request, KEPT), manager = kept ? await env.DB.prepare('SELECT id FROM sessions WHERE id = ? AND account = ? AND expires > ?').bind(await sha(kept), hub.owner, now()).first<{id: string}>() : null;
@@ -254,7 +258,7 @@ const forget = (env: Env, hub: string, id: string) => [
 ];
 async function removePerson(env: Env, who: Who, id: string) {
   forgetSeats(who.hub.id, id);
-  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_keys WHERE hub = ? AND person = ?').bind(who.hub.id, id), ...forgetTrakt(env, who.hub.id, id), env.DB.prepare("DELETE FROM ops WHERE hub = ? AND target = ? AND kind = 'carry'").bind(who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
+  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_keys WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_cache WHERE hub = ? AND person = ?').bind(who.hub.id, id), ...forgetTrakt(env, who.hub.id, id), env.DB.prepare("DELETE FROM ops WHERE hub = ? AND target = ? AND kind = 'carry'").bind(who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
   return {};
 }
 /* A person's stored choices, read fresh, and written back as a new version. */
