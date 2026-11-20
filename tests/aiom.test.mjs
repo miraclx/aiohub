@@ -174,6 +174,13 @@ test('each person gets their own AIOMetadata setup, pointed at their own streams
   assert.ok(!(players().catalogModifications ?? []).length);
   // What production carries on AIOStreams (the content limit, skipping intros) is set on each person's own server.
   assert.equal(ada.config.ageRating, 'None'); assert.equal(ben.config.ageRating, 'PG');
+  // Kids also leaves out titles without a rating; nobody else's setup carries the setting at all.
+  assert.equal(ben.config.allowUnratedContent, false); assert.equal('allowUnratedContent' in ada.config, false);
+  // Moving off Kids lets them back in; moving back leaves them out again.
+  const putBen = async limit => {const me = (await owner('GET', '/api/state')).body.hub.people.find(item => item.id === 'ben');
+    return owner('PUT', '/api/people/ben', {name: me.name, groupId: me.groupId, rows: me.rows, settings: {...me.settings, limit}, can: me.can, paused: me.paused, trakt: me.trakt, lists: me.lists, v: me.v});};
+  assert.equal((await putBen('teen')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal('allowUnratedContent' in playerOf('Ben')[1].config, false);
+  assert.equal((await putBen('kids')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Ben')[1].config.allowUnratedContent, false);
   assert.equal(ada.config.jellyfinSkipSource, 'auto'); assert.equal(ben.config.jellyfinSkipSource, 'off');
   // Both are ready to sign in, as far as the site can tell.
   const shown = (await owner('GET', '/api/state')).body.hub.people;

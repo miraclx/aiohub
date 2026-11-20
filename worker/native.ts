@@ -320,6 +320,8 @@ async function syncHome(env: Env, vault: Vault, hub: string, owner: string, want
   const ours = new Set(Object.values(TMDB_ROW).map(item => `${item.id}/${item.type}`)), folders = new Set([...COLLECTIONS.values()].map(item => item.id));
   const {catalogs, collections, ...settings} = rest;
   Object.assign(stored, settings); stored.language ??= SEARCH_SETUP.language;
+  // Titles without a rating are left out only for the Kids limit; any other limit lets them back in (AIOMetadata's default).
+  if (!('allowUnratedContent' in settings) && stored.allowUnratedContent === false) delete stored.allowUnratedContent;
   if (!(stored.search as {providers?: unknown} | undefined)?.providers) stored.search = SEARCH_SETUP.search;
   stored.catalogs = [...catalogs, ...(stored.catalogs ?? []).filter(item => !ours.has(`${item.id}/${item.type}`) && !/^(mdblist|letterboxd|trakt)\./.test(item.id) && !CUSTOM.test(item.id))];
   stored.collections = [...collections, ...(stored.collections ?? []).filter(item => !folders.has(item.id))];
@@ -521,7 +523,9 @@ async function syncFronts(env: Env, vault: Vault, hub: string, people: {id: stri
     const variant = variants.some(item => item.id === `${OURS}c-${person.id}`) ? `/v/${OURS}c-${person.id}` : '';
     const wanted: Wanted = {...wantedOf(person.want, keys), jellyfinUserName: person.name, jellyfinAppPassword: client, jellyfinStreamUrl: `${base}${variant}/manifest.json`, jellyfinResumeSource: 'auto', jellyfinUsers: [],
       // What production carries on AIOStreams' Home address and in its personas, here set on the person's own server.
-      ageRating: RATING[person.want.settings.limit] ?? 'None', jellyfinSkipSource: person.want.settings.skip ? 'auto' : 'off'};
+      ageRating: RATING[person.want.settings.limit] ?? 'None', jellyfinSkipSource: person.want.settings.skip ? 'auto' : 'off',
+      // Kids: a title with no rating could be anything, so it is left out too. Only then is it set, so nobody else's setup changes.
+      ...(person.want.settings.limit === 'kids' ? {allowUnratedContent: false} : {})};
     const got = await syncHome(env, vault, hub, person.id, wanted, keys, budget, PLAYER, {client});
     if (!('made' in got)) {note ||= got.message; more ||= !!got.more; continue;}
     const at = `${got.made.at ?? env.AIOM_ORIGIN}/jellyfin/${got.made.uuid}`, had = await held<{user: string; pass: string; base: string}>(env, vault, hub, person.id, VIA);
