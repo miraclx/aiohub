@@ -26,8 +26,8 @@ export interface Hub {
   // The five-minute background work (manager only): last run (unix seconds), runs counted, calls waiting for Trakt, the last day the
   // Trakt/MDBList check finished, for how many people, and how many are part way through.
   jobs?: {last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number};
-  // The person whose own password was given in this browser beside the manager's sign-in: their own things show on their page.
-  also?: string | null;
+  // In a person's view: their manager's own sign-in is set aside in this browser, to go back to.
+  manager?: boolean;
   v?: number; serverName?: string; tmdb?: boolean; mdblist?: boolean; scrobble?: boolean; traktClient?: string; metaUrl?: string; missing?: string[]; traktLink?: string; name: string; code: string; host: string; hostUrl: string; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; groups: Group[]; people: Person[];
   me: {name: string; theme: 'dark' | 'light' | 'auto'; passkeys: {id: string; name: string; added: string}[]};
 }

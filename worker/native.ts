@@ -360,7 +360,8 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
   let made: Catalogs | null = person && env.FRONT === 'aiometadata' ? await getSecret<Catalogs>(env, hub.id, person, PLAYER) : null;
   if (!made) for (const owner of owners) if ((made = await getSecret<Catalogs>(env, hub.id, owner, 'catalogs'))) break;
   if (!made) return {};
-  const key = `${hub.id}/${made.uuid}/${made.v}`, known = shown.get(key);
+  // Per person and per setup: someone still on the hub's or their group's setup never shares an answer with the hub's own page.
+  const key = `${hub.id}/${person ?? ''}/${made.uuid}/${made.v}`, known = shown.get(key);
   if (known && Date.now() - known.at < 600_000) return known.rows;
   const at = made.at ?? env.AIOM_ORIGIN, out: Record<string, string[]> = {};
   const where = (row: Row) => {const list = /^mdblist\.(\d+)\.(movie|series|all)$/.exec(row.id); return TMDB_ROW[row.id] ?? (served && SERVED[row.id] ? {id: customId(SERVED[row.id]), type: SERVED[row.id].type} : TRAKT_ROW[row.id]) ?? (list ? {id: `mdblist.${list[1]}`, type: list[2]} : null);};

@@ -24,6 +24,8 @@ export const showReal = (rows: Record<string, string[]>) => {real.clear(); for (
 const own = new Map<string, string[]>();
 let ownFor = '';
 export const addReal = (rows: Record<string, string[]>, person: string) => {own.clear(); ownFor = person; for (const [id, posters] of Object.entries(rows)) own.set(id, posters);};
+/* Both forgotten when someone else is signed in, in this tab. */
+export const forgetReal = () => {real.clear(); own.clear(); ownFor = '';};
 // `blank`: only blanks, for a row that holds nothing until someone connects an account.
 export function Posters({seed, dim, person, blank}: {seed: string; dim?: boolean; person?: string; blank?: boolean}) {
   if (!SAMPLE) return <div className={`posters${dim ? ' dim' : ''}`} aria-hidden="true">{((blank ? null : (person && person === ownFor ? own.get(seed) : null) ?? real.get(seed)) ?? Array<string>(7).fill('')).map((poster, i) => <span key={i} className={poster ? '' : 'blank'} style={poster ? {backgroundImage: `url(${JSON.stringify(poster)})`} : undefined}/>)}</div>;

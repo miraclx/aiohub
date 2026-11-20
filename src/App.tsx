@@ -7,7 +7,7 @@ import {call, changes, settle} from './live';
 import type {Live, Refused} from './live';
 import {AccountPage, GroupPage, HubPage, JoinGate, JoinPage, PeoplePage, PersonPage, SetupPage, SignInPage, backFromTrakt, lostTrakt} from './pages';
 import type {PageProps} from './pages';
-import {Avatar, showReal, useRoute} from './ui';
+import {Avatar, forgetReal, showReal, useRoute} from './ui';
 
 function useToast() {
   const [note, setNote] = useState<{text: string; key: number} | null>(null), timer = useRef<number | undefined>(undefined), box = useRef<HTMLDivElement>(null);
@@ -21,14 +21,16 @@ function Frame({page, parts, mine, bar, toastView, children}: {page?: PageProps;
   const [at, id, tab] = parts, people = !at || at === 'person' || at === 'group', hub = page?.hub;
   return <div className="app">
     <header className="top"><a className="brand" href={mine ?? '#/'}><span className="logo" aria-hidden="true"/>AIOHub</a>
+      {page && hub && mine && hub.manager && <button type="button" className="link small" onClick={() => void call('POST', '/api/back', {}).then(() => {location.hash = '#/'; location.reload();}, () => {})}>Back to manager</button>}
       {page && hub && !mine && <nav><a href="#/" className={people ? 'on' : ''}>People</a><a href="#/activity" className={at === 'activity' ? 'on' : ''}>Activity</a><a href="#/hub" className={at === 'hub' ? 'on' : ''}>Hub</a><a href="#/account" className={`me${at === 'account' ? ' on' : ''}`} aria-label="Your account"><Avatar name={hub.me.name} size={26}/></a></nav>}
     </header>
     {bar}
     <main>
       {children ?? (page && hub && <>
         {!at && <PeoplePage {...page}/>}
-        {at === 'person' && <PersonPage {...page} id={id ?? ''} tab={tab ?? 'home'}/>}
-        {at === 'group' && <GroupPage {...page} id={id ?? ''} tab={tab ?? 'home'}/>}
+        {/* Keyed, so moving from one person or group to another never carries the last one's sign-in details over. */}
+        {at === 'person' && <PersonPage key={id} {...page} id={id ?? ''} tab={tab ?? 'home'}/>}
+        {at === 'group' && <GroupPage key={id} {...page} id={id ?? ''} tab={tab ?? 'home'}/>}
         {at === 'hub' && <HubPage {...page} tab={id ?? 'home'}/>}
         {at === 'activity' && <><div className="page-head"><h1>Activity</h1><p className="muted">What everyone is watching.</p></div><Activity hub={hub} pick toast={page.toast} live={page.live}/></>}
         {at === 'account' && <AccountPage {...page}/>}
@@ -61,17 +63,19 @@ function Hubbed() {
   const [hub, setHub] = useState<Hub | null>(null), [phase, setPhase] = useState<'loading' | 'out' | 'in'>('loading');
   const [who, setWho] = useState<{role: 'owner' | 'person'; personId: string}>({role: 'owner', personId: ''}), [open, setOpen] = useState<{signup: boolean; code: boolean; hub?: string; proof?: string} | null>(null);
   const shown = useRef<Hub | null>(null), saved = useRef<Hub | null>(null), role = useRef<'owner' | 'person'>('owner'), queue = useRef<Promise<void>>(Promise.resolve()), timer = useRef<number | undefined>(undefined);
-  const loaded = useRef(0);
+  const loaded = useRef(0), seenAs = useRef('');
   const show = (next: Hub | null) => {shown.current = next; setHub(next);};
   const live = useMemo<Live & {update: PageProps['update']}>(() => {
     const load = async () => {
       try {
         const state = await call<{role: 'owner' | 'person'; personId: string | null; hub: Hub}>('GET', '/api/state');
+        // Someone else in this tab now (another hub, or a person instead of the manager): no posters from before.
+        const viewer = `${state.hub.code}/${state.role}/${state.personId ?? ''}`; if (viewer !== seenAs.current) {forgetReal(); seenAs.current = viewer;}
         loaded.current = Date.now(); saved.current = structuredClone(state.hub); role.current = state.role; show(state.hub); setWho({role: state.role, personId: state.personId ?? ''}); setPhase('in'); look();
         if (state.role === 'owner') localStorage.setItem('hub-code', state.hub.code);
       } catch (error) {
         if ((error as Refused).status !== 401) {toast((error as Error).message); return;}
-        saved.current = null; show(null); setPhase('out'); setOpen(await call<{signup: boolean; code: boolean; hub?: string; proof?: string}>('GET', '/api/open').catch(() => null));
+        saved.current = null; forgetReal(); seenAs.current = ''; show(null); setPhase('out'); setOpen(await call<{signup: boolean; code: boolean; hub?: string; proof?: string}>('GET', '/api/open').catch(() => null));
       }
     };
     // What each Home row really holds, fetched beside the page and drawn when it arrives.
@@ -124,7 +128,7 @@ function Hubbed() {
   const [at, id, tab] = parts, inside = phase === 'in' && !!page;
 
   if (phase === 'loading') return <Frame parts={parts} toastView={toastView}><p className="empty">Loading…</p></Frame>;
-  if (at === 'join' && id && !(inside && who.role === 'person')) return <Frame parts={parts} toastView={toastView}><JoinGate token={id} live={live} toast={toast} manager={inside} onIn={() => {void live.reload().then(() => go('/me'));}} onAs={id => {void live.reload().then(() => go(`/person/${id}`));}}/></Frame>;
+  if (at === 'join' && id && !(inside && who.role === 'person')) return <Frame parts={parts} toastView={toastView}><JoinGate token={id} live={live} toast={toast} manager={inside} onIn={() => {void live.reload().then(() => go('/me'));}}/></Frame>;
   // One place for first-time setup, so it keeps its step while the account is being created underneath it.
   const creating = phase === 'out' && at === 'setup' && !!open?.signup, unfinished = inside && who.role === 'owner' && !hub!.groups.length;
   if (creating || unfinished) return <Frame parts={parts} toastView={toastView}><SetupPage hub={hub ?? {...sampleHub(), services: [], groups: [], people: []}} go={go} toast={toast} update={live.update} live={live} signedIn={phase === 'in'} needCode={open?.code} linkCode={at === 'setup' ? id : undefined} offer={open?.hub && open.proof ? {hub: open.hub, proof: open.proof} : undefined}/></Frame>;

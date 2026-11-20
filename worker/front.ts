@@ -37,7 +37,8 @@ function whereOf(request: Request, env: Env) {
 const pictures = new Map<string, {location: string; until: number}>(), PICTURE = /^\/items\/[^/]+\/images\//, PICTURE_KEEP = 'public, max-age=86400';
 interface Upstream {user: string; pass: string; auth?: string; base?: string}
 interface Answer {AccessToken: string; User: {Id: string; Name?: string}; SessionInfo?: Record<string, unknown>}
-interface Seat {person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string; base: string; kind: string; scrobble: boolean}
+// hub: which hub the sign-in belongs to; a remembered seat answers only for that hub.
+interface Seat {hub: string; person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string; base: string; kind: string; scrobble: boolean}
 // Kept for a few seconds per running copy of the Worker, so a page of posters is one lookup, not fifty.
 const hubs = new Map<string, {id: string; up: string; at: number; pictures: string; name: string}>(), seats = new Map<string, Seat>();
 /* A person's top-level libraries on their own server, asked for once and kept ten minutes per running copy. */
@@ -80,7 +81,7 @@ const DEFAULT_NAME = 'AIOHub';
 /* A saved hub is looked up again on its next request here; other running copies catch up within the minute. */
 export const forgetHub = (code: string) => hubs.delete(code);
 /* Someone's connections changed: their apps here are looked up again on their next request (other copies within twenty seconds). */
-export const forgetSeats = (person: string) => {for (const [id, seat] of seats) if (seat.person === person) seats.delete(id);};
+export const forgetSeats = (hub: string, person: string) => {for (const [id, seat] of seats) if (seat.hub === hub && seat.person === person) seats.delete(id);};
 async function hubOf(env: Env, code: string) {
   const known = hubs.get(code); if (known && Date.now() - known.at < 60_000) return known;
   const row = await env.DB.prepare('SELECT id, data FROM hubs WHERE code = ?').bind(code).first<{id: string; data: string}>();
@@ -105,7 +106,7 @@ async function mint(env: Env, hub: string, person: string, jf: string, upstream:
   return JSON.parse(auth) as Answer;
 }
 async function seatOf(env: Env, hub: string, id: string): Promise<Seat | null> {
-  const known = seats.get(id); if (known && Date.now() - known.at < REMEMBER) return known;
+  const known = seats.get(id); if (known && known.hub === hub && Date.now() - known.at < REMEMBER) return known;
   const row = await env.DB.prepare("SELECT d.person, d.seen, d.app, d.name, p.paused OR coalesce(json_extract(g.data, '$.paused'), 0) AS paused, p.jf, s.value, m.value AS via, EXISTS (SELECT 1 FROM secrets t WHERE t.hub = d.hub AND t.owner = d.person AND t.kind = ?) AS scrobble FROM devices d JOIN people p ON p.hub = d.hub AND p.id = d.person LEFT JOIN groups g ON g.hub = p.hub AND g.id = p.grp LEFT JOIN secrets s ON s.hub = d.hub AND s.owner = d.person AND s.kind = 'upstream' LEFT JOIN secrets m ON m.hub = d.hub AND m.owner = d.person AND m.kind = ? WHERE d.id = ? AND d.hub = ?")
     .bind(LINK, VIA, id, hub).first<{person: string; seen: number; app: string; name: string; paused: number; jf: string; value: string | null; via: string | null; scrobble: number}>();
   seats.delete(id); if (!row) return null;
@@ -114,7 +115,7 @@ async function seatOf(env: Env, hub: string, id: string): Promise<Seat | null> {
   const kind = row.via ? VIA : 'upstream', upstream = await unseal<Upstream>(env, `${hub}/${row.person}/${kind}`, row.via ?? row.value);
   const answer = upstream?.auth ? JSON.parse(upstream.auth) as Answer : upstream ? await mint(env, hub, row.person, row.jf, upstream, kind) : null;
   if (!answer) return null;
-  const seat = {person: row.person, jf: row.jf, paused: !!row.paused, seen: row.seen, up: answer.AccessToken, upId: answer.User.Id, at: Date.now(), on: [row.app, row.name].filter(Boolean).join(' · '), base: upstream?.base ?? env.UP_ORIGIN + MOUNT, kind, scrobble: !!row.scrobble && !!env.TRAKT_CLIENT_ID};
+  const seat = {hub, person: row.person, jf: row.jf, paused: !!row.paused, seen: row.seen, up: answer.AccessToken, upId: answer.User.Id, at: Date.now(), on: [row.app, row.name].filter(Boolean).join(' · '), base: upstream?.base ?? env.UP_ORIGIN + MOUNT, kind, scrobble: !!row.scrobble && !!env.TRAKT_CLIENT_ID};
   if (seats.size > 2000) seats.clear(); seats.set(id, seat); return seat;
 }
 /* Activity: players report what they are playing and how far in. The hub notes the latest state per person and title as those
@@ -238,9 +239,10 @@ async function letIn(env: Env, hub: string, person: {id: string; jf: string; nam
 const quickView = (row: {code: string; person: string | null; device: string; app: string; name: string}, secret: string) => ({Authenticated: !!row.person, Secret: secret, Code: row.code, DeviceId: row.device, DeviceName: row.name, AppName: row.app, AppVersion: '', DateAdded: new Date().toISOString()});
 async function quick(request: Request, env: Env, hub: string, url: URL, lower: string, base: string): Promise<Response> {
   if (lower === '/quickconnect/initiate') {
-    const key = guesses(request, `quick-start:${hub}`);
-    if (await blocked(env, [[key[1][0], 20]])) return json(429, {Message: 'Too many tries. Wait ten minutes.'});
-    await failed(env, [[key[1][0], 20]]);
+    // Counted per address and hub on its own, so starting Quick Connect never uses up anyone's sign-in tries.
+    const key: [string, number][] = [[`quick-start:${hub}:${request.headers.get('cf-connecting-ip') ?? 'local'}`, 20]];
+    if (await blocked(env, key)) return json(429, {Message: 'Too many tries. Wait ten minutes.'});
+    await failed(env, key);
     const secret = newToken('q'), client = clientOf(request), code = String(100000 + crypto.getRandomValues(new Uint32Array(1))[0] % 900000);
     await env.DB.batch([env.DB.prepare('DELETE FROM quick WHERE expires < ?').bind(now()), env.DB.prepare('INSERT INTO quick (secret, hub, code, device, app, name, expires) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(await sha(secret), hub, code, client.device, client.app, client.name, now() + 600)]);
     return json(200, quickView({code, person: null, ...client}, secret));

@@ -139,11 +139,12 @@ await guest.getByText('What you watched here').waitFor(); assert.equal(await gue
 // The manager sees the same states, without the copy step: that is hers alone.
 await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Connected as adatrakt.').waitFor();
 await owner.getByText('can copy it to MDBList from their own page').waitFor(); assert.equal(await owner.getByText('What you watched here').count(), 0); await shot(owner, '14-accounts-manager');
-// The manager who is Ada too opens her link once she has joined: straight to her page as her, beside the manager's sign-in, with
-// her own things there; signing out as her hides them again, and the manager stays signed in.
-await owner.goto(link); await owner.waitForURL(/#\/person\/ada/); await owner.goto(BASE + '/#/person/ada/accounts'); await owner.getByText('What you watched here').waitFor();
-await owner.getByText('Signed in as Ada in this browser too.').waitFor(); await shot(owner, '14b-accounts-as-ada');
-await owner.getByRole('button', {name: 'Sign out as Ada'}).click(); await owner.getByText('can copy it to MDBList from their own page').waitFor(); assert.equal(await owner.getByText('What you watched here').count(), 0);
+// The manager who is Ada too opens her link once she has joined: straight into her own view, as if she had signed in, with her
+// own things there. "Back to manager" returns to the manager's view, which was kept aside meanwhile.
+await owner.goto(link); await owner.waitForURL(/#\/me/); await owner.getByText('Shared with you').waitFor(); await owner.getByRole('button', {name: 'Back to manager'}).waitFor();
+await owner.goto(BASE + '/#/me/accounts'); await owner.getByText('What you watched here').waitFor(); await shot(owner, '14b-accounts-as-ada');
+await owner.getByRole('button', {name: 'Back to manager'}).click(); await owner.getByText('Add someone to Family').waitFor();
+await owner.goto(BASE + '/#/person/ada/accounts'); await owner.getByText('can copy it to MDBList from their own page').waitFor(); assert.equal(await owner.getByText('What you watched here').count(), 0);
 // Her rows' posters stay on her page: the hub's Home shows only blanks where her Trakt rows would go.
 await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later').first().waitFor(); assert.equal(await owner.locator('.rows .row.later .posters span:not(.blank)').count(), 0);
 // Back to Here asks first, then MDBList is let go.
@@ -206,4 +207,8 @@ await owner.keyboard.press('Escape'); await owner.goto(BASE + '/#/account'); awa
 await toast(owner).filter({hasText: 'Passkey added'}).waitFor(); await owner.locator('.accounts li', {hasText: /^.*Added \d{4}-/}).first().waitFor(); if (shots) await owner.screenshot({path: `${shots}/real-11-passkey.png`});
 await owner.getByRole('button', {name: 'Sign out'}).click(); await owner.getByRole('heading', {name: 'Sign in'}).waitFor();
 await owner.getByRole('button', {name: 'Use a passkey'}).click(); await owner.getByText('Add someone to Family').waitFor();
+// A copy of Ada is someone new: their page never shows Ada's invite link, not even for a moment while the copy is saved.
+await owner.goto(BASE + '/#/person/ada/settings'); await owner.locator('.share-text code').first().waitFor();
+await owner.locator('.setting', {hasText: 'Make a copy'}).getByRole('button', {name: 'Copy'}).click(); await owner.getByRole('dialog').getByRole('textbox').fill('Ada Two'); await owner.getByRole('dialog').getByRole('textbox').press('Enter');
+await owner.waitForURL(/#\/person\/ada-two/); for (let i = 0; i < 20; i++) {const shown = await owner.locator('.share-text code').allTextContents(); assert.ok(!shown.includes(link), 'the copy shows its own link, never Ada\'s'); await owner.waitForTimeout(150);}
 console.log('browser flow ok; page errors:', JSON.stringify(errors)); await browser.close(); process.exit(errors.length ? 1 : 0);

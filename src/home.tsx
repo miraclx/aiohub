@@ -24,7 +24,7 @@ function RowCard({row, index, tag, locked, later, person, onToggle, onRemove, on
           <Switch checked={row.on} onChange={onToggle} label={`Show ${row.title} on Home`}/>
         </div>}
       </div>
-      <Art row={row} person={person} blank={later}/>
+      {!later && <Art row={row} person={person}/>}
     </div>
   </li>;
 }
@@ -71,7 +71,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
     </DragDropProvider>
     {!on.length && <p className="empty">Nothing on Home yet. Add a row or turn one on below.</p>}
     {!!off.length && <details className="off" open={off.length <= 4}><summary>Not on Home <span className="count">{off.length}</span></summary>
-      <ul>{off.map(row => <li key={row.id} className={level !== 'own' && TRAKT_IDS.has(row.id) ? 'later' : undefined}><Art row={row} dim person={person} blank={level !== 'own' && TRAKT_IDS.has(row.id)}/><div><h3>{row.title}</h3><p>{level !== 'own' && TRAKT_IDS.has(row.id) ? `${row.source} · ${LATER}` : `${row.kind} · ${row.source}`}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>)}</ul>
+      <ul>{off.map(row => <li key={row.id} className={level !== 'own' && TRAKT_IDS.has(row.id) ? 'later' : undefined}>{!(level !== 'own' && TRAKT_IDS.has(row.id)) && <Art row={row} dim person={person}/>}<div><h3>{row.title}</h3><p>{level !== 'own' && TRAKT_IDS.has(row.id) ? `${row.source} · ${LATER}` : `${row.kind} · ${row.source}`}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>)}</ul>
     </details>}
     {adding && <Sheet title="Add a row" onClose={() => setAdding(false)}>
       <form className="link-form" onSubmit={event => {

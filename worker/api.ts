@@ -16,8 +16,9 @@ const TAKEN = 'Someone in this hub already has that name';
 class Bad extends Error {constructor(public status: number, message: string) {super(message);}}
 const bad = (status: number, message: string): never => {throw new Bad(status, message);};
 const reply = (body: unknown, status = 200, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), {status, headers: {'content-type': 'application/json', 'cache-control': 'no-store', ...headers}});
-// AS: a person's own session held beside the manager's, when the manager signed in as that person too (see 'unlock').
-const COOKIE = 'hub_s', AS = 'hub_p', MONTH = 30 * 86400;
+// KEPT: the manager's own session, set aside while they are in a person's view (opened from that person's link), to go back to.
+const COOKIE = 'hub_s', KEPT = 'hub_m', MONTH = 30 * 86400;
+const cookieOf = (request: Request, name: string) => new RegExp(`(?:^|;\\s*)${name}=([^;]+)`).exec(request.headers.get('cookie') ?? '')?.[1];
 const cookie = (value: string, age: number, name = COOKIE) => ({'set-cookie': `${name}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${age}`});
 
 /* ---------- what may be stored ---------- */
@@ -95,8 +96,8 @@ const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history
 });
 
 /* ---------- who is asking ---------- */
-// also: the person whose own password was given in this browser while signed in as the manager.
-interface Who {session: string; account?: {id: string; username: string; name: string; theme: string}; hub: HubRow; person?: string; also?: {person: string; session: string}}
+// manager: in a person's view, the manager's own session set aside in this browser (and its cookie value, to go back with).
+interface Who {session: string; account?: {id: string; username: string; name: string; theme: string}; hub: HubRow; person?: string; manager?: {session: string; token: string}}
 async function whoIs(request: Request, env: Env): Promise<Who | null> {
   const token = new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`).exec(request.headers.get('cookie') ?? '')?.[1];
   if (!token) return null;
@@ -104,19 +105,21 @@ async function whoIs(request: Request, env: Env): Promise<Who | null> {
   if (!row) return null;
   if (row.account) {
     const [account, hub] = await env.DB.batch([env.DB.prepare('SELECT id, username, name, theme FROM accounts WHERE id = ?').bind(row.account), env.DB.prepare('SELECT id, code, owner, data, version FROM hubs WHERE owner = ?').bind(row.account)]);
-    if (!account.results[0] || !hub.results[0]) return null;
-    const who: Who = {session, account: account.results[0] as Who['account'], hub: hub.results[0] as HubRow};
-    const theirs = new RegExp(`(?:^|;\\s*)${AS}=([^;]+)`).exec(request.headers.get('cookie') ?? '')?.[1];
-    const also = theirs ? await env.DB.prepare('SELECT id, person FROM sessions WHERE id = ? AND hub = ? AND person IS NOT NULL AND expires > ?').bind(await sha(theirs), who.hub.id, now()).first<{id: string; person: string}>() : null;
-    return also ? {...who, also: {person: also.person, session: also.id}} : who;
+    return account.results[0] && hub.results[0] ? {session, account: account.results[0] as Who['account'], hub: hub.results[0] as HubRow} : null;
   }
   const hub = await env.DB.prepare('SELECT id, code, owner, data, version FROM hubs WHERE id = ?').bind(row.hub).first<HubRow>();
-  return hub && row.person ? {session, hub, person: row.person} : null;
+  if (!hub || !row.person) return null;
+  // Only this hub's own manager's session counts as one to go back to.
+  const kept = cookieOf(request, KEPT), manager = kept ? await env.DB.prepare('SELECT id FROM sessions WHERE id = ? AND account = ? AND expires > ?').bind(await sha(kept), hub.owner, now()).first<{id: string}>() : null;
+  return {session, hub, person: row.person, ...(manager ? {manager: {session: manager.id, token: kept!}} : {})};
 }
 async function startSession(env: Env, subject: {account: string} | {hub: string; person: string}) {
+  return cookie(await newSession(env, subject), MONTH);
+}
+async function newSession(env: Env, subject: {account: string} | {hub: string; person: string}) {
   const token = newToken('s');
   await env.DB.prepare('INSERT INTO sessions (id, account, hub, person, expires) VALUES (?, ?, ?, ?, ?)').bind(await sha(token), 'account' in subject ? subject.account : null, 'hub' in subject ? subject.hub : null, 'person' in subject ? subject.person : null, now() + MONTH).run();
-  return cookie(token, MONTH);
+  return token;
 }
 
 /* ---------- what a page loads ---------- */
@@ -134,7 +137,7 @@ async function state(env: Env, who: Who) {
     env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind = 'trakt'").bind(hub.id),
     env.DB.prepare("SELECT owner, value FROM secrets WHERE hub = ? AND kind = 'mdblist' AND owner = coalesce(?, owner)").bind(hub.id, mine ?? null),
     // Where Trakt and MDBList disagree is someone's own watching: only they see it, on their own page.
-    env.DB.prepare('SELECT result, skipped FROM drift WHERE hub = ? AND person = ?').bind(hub.id, mine ?? who.also?.person ?? ''),
+    env.DB.prepare('SELECT result, skipped FROM drift WHERE hub = ? AND person = ?').bind(hub.id, mine ?? ''),
     // The background work, for the manager: when it last ran, how often it has, what waits for Trakt, the last daily check.
     env.DB.prepare(`SELECT (SELECT at FROM runs WHERE job = 'cron') AS last, (SELECT count FROM runs WHERE job = 'cron') AS runs, (SELECT since FROM runs WHERE job = 'cron') AS since,
       (SELECT max(at) FROM drift WHERE hub = ?1 AND work IS NULL AND result IS NOT NULL) AS ran, (SELECT count(*) FROM trakt_outbox WHERE hub = ?1) AS waiting,
@@ -155,8 +158,8 @@ async function state(env: Env, who: Who) {
     role: mine ? 'person' : 'owner', personId: mine ?? null,
     hub: {
       name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID, traktClient: env.TRAKT_CLIENT_ID ?? '',
-      ...(mine ? {} : {jobs: jobs.results[0] as Hub['jobs'], also: who.also?.person ?? null}),
-      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine || row.id === who.also?.person ? differing((drifts.results[0] as {result: string | null} | undefined)?.result ?? null, (drifts.results[0] as {skipped: string | null} | undefined)?.skipped ?? null) : null)),
+      ...(mine ? {manager: !!who.manager} : {jobs: jobs.results[0] as Hub['jobs']}),
+      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? differing((drifts.results[0] as {result: string | null} | undefined)?.result ?? null, (drifts.results[0] as {skipped: string | null} | undefined)?.skipped ?? null) : null)),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
   };
@@ -227,6 +230,8 @@ async function savePerson(env: Env, who: Who, id: string, body: Body) {
   if (!await env.DB.prepare('SELECT 1 FROM groups WHERE hub = ? AND id = ?').bind(hub, grp).first()) bad(400, 'That group is gone');
   if (!current) {
     if (body.v !== undefined) bad(409, 'This person was removed somewhere else');
+    // Someone just removed under the same name still has setups being taken down: a new person waits, so they never inherit them.
+    if (await env.DB.prepare("SELECT 1 FROM secrets WHERE hub = ? AND owner = ? LIMIT 1").bind(hub, id).first()) bad(409, 'Someone with this name was just removed and is still being cleared away. Try again in a minute.');
     if ((await env.DB.prepare('SELECT COUNT(*) AS n FROM people WHERE hub = ?').bind(hub).first<{n: number}>())!.n >= MOST_PEOPLE) bad(403, `A hub carries up to ${MOST_PEOPLE} people for now.`);
     const invite = newToken('i');
     // The name is what they sign in with, so it has to be theirs alone in this hub.
@@ -244,6 +249,7 @@ const forget = (env: Env, hub: string, id: string) => [
   env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare('DELETE FROM sessions WHERE hub = ? AND person = ?').bind(hub, id),
 ];
 async function removePerson(env: Env, who: Who, id: string) {
+  forgetSeats(who.hub.id, id);
   await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_keys WHERE hub = ? AND person = ?').bind(who.hub.id, id), ...forgetTrakt(env, who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
   return {};
 }
@@ -314,12 +320,12 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       const access = text(body.access, 4000, 'Login').trim(), refresh = text(body.refresh, 4000, 'Login').trim(), redirect = text(body.redirect ?? '', 300, 'Address');
       if (!access || !refresh || (redirect && !/^https?:\/\/[^/]+\/api\/trakt\/callback$/.test(redirect))) bad(400, 'Trakt did not finish connecting. Try again.');
       await keepLink(env, hub, id, {access, refresh, expires: Math.floor(Number(body.created) || now()) + Math.floor(Number(body.lasts) || 7 * 86400), username: text(body.username ?? '', 80, 'Name').trim(), ...(redirect ? {redirect} : {})});
-      forgetSeats(id);
+      forgetSeats(hub, id);
       const data = await personData(env, hub, id); if (!data.trakt) await savePersonData(env, hub, id, withTraktRows(data, true)).run();
       return {state: 'connected'};
     }
     if (request.method === 'DELETE') {
-      await disconnect(env, hub, id); forgetSeats(id);
+      await disconnect(env, hub, id); forgetSeats(hub, id);
       // The Trakt rows stay only while AIOMetadata's own Trakt connection is still there to fill them.
       if (!await hasSecret(env, hub, id, 'trakt')) await savePersonData(env, hub, id, withTraktRows(await personData(env, hub, id), false)).run();
       return {};
@@ -327,21 +333,16 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
   }
   if (action === 'drift' && request.method === 'POST') {
     // Copying the plays one of Trakt and MDBList is missing, asked for from their own page, after a confirmation there.
-    if (who.person !== id && who.also?.person !== id) bad(403, 'Only they can do this, from their own page');
+    if (who.person !== id) bad(403, 'Only they can do this, from their own page');
     // A play they say is not right: left out from now on.
     if (body.skip !== undefined) {await skip(env, hub, id, text(body.skip, 200, 'Play')); return {};}
     const got = await fix(env, hub, id);
     if ('error' in got) bad(409, got.error);
     return got;
   }
-  if (action === 'unlock' && who.account && request.method === 'DELETE') {
-    // Signing out as this person, back to the manager's view alone.
-    if (who.also) await env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(who.also.session).run();
-    return {cookie: cookie('', 0, AS)['set-cookie']};
-  }
   if (action === 'carry') {
     // Someone's own watching: only they can look at it or move it, from their own page.
-    if (who.person !== id && who.also?.person !== id) bad(403, 'Only they can do this, from their own page');
+    if (who.person !== id) bad(403, 'Only they can do this, from their own page');
     const got = request.method === 'POST' ? await carry(env, hub, id) : await plan(env, hub, id);
     if ('error' in got) bad(409, got.error);
     return got;
@@ -430,12 +431,14 @@ async function join(request: Request, env: Env, body: Body, who: Who | null) {
   if (!row) return reply({gone: true});
   const about = {name: row.name, username: row.name, owner: row.owner, joined: !!row.joined};
   if (who?.person === row.id && who.hub.id === row.hub) return reply({ok: true});
-  // Their manager, in the same browser: once they have joined, the link signs in as them beside the manager's own sign-in (the
-  // manager could set their password anyway). Before that it waits for them, so their password stays theirs to choose.
+  // Their manager, in the same browser: once they have joined, the link opens their own view as if they had signed in (the
+  // manager could set their password anyway), with the manager's sign-in set aside to go back to. Before they join it waits for
+  // them, so their password stays theirs to choose.
   if (who?.account && who.hub.id === row.hub) {
     if (!row.joined) return reply({waiting: about});
-    if (who.also) await env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(who.also.session).run();
-    return reply({as: row.id}, 200, {'set-cookie': (await startSession(env, {hub: row.hub, person: row.id}))['set-cookie'].replace(`${COOKIE}=`, `${AS}=`)});
+    const out = reply({ok: true}, 200, cookie(await newSession(env, {hub: row.hub, person: row.id}), MONTH));
+    out.headers.append('set-cookie', cookie(cookieOf(request, COOKIE)!, MONTH, KEPT)['set-cookie']);
+    return out;
   }
   if (body.password === undefined) return reply({ask: about});
   if (await blocked(env, key)) bad(429, 'Too many tries. Wait ten minutes.');
@@ -588,6 +591,8 @@ async function removeHub(request: Request, env: Env, who: Who, body: Body) {
   const hub = who.hub.id;
   await env.DB.batch([...['devices', 'plays', 'starts', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
     env.DB.prepare('DELETE FROM hubs WHERE id = ?').bind(hub), env.DB.prepare('DELETE FROM passkeys WHERE account = ?').bind(who.account!.id), env.DB.prepare('DELETE FROM accounts WHERE id = ?').bind(who.account!.id)]);
+  // Player apps stop reaching it at once, not when this copy of the Worker next looks the hub up.
+  forgetHub(who.hub.code);
   return {};
 }
 
@@ -623,8 +628,14 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     const who = await whoIs(request, env);
     if (first === 'join' && method === 'POST') return await join(request, env, body, who);
     if (first === 'signout' && method === 'POST') {
-      if (who) await env.DB.prepare('DELETE FROM sessions WHERE id IN (?, ?)').bind(who.session, who.also?.session ?? '').run();
-      const out = reply({}, 200, cookie('', 0)); out.headers.append('set-cookie', cookie('', 0, AS)['set-cookie']); return out;
+      if (who) await env.DB.prepare('DELETE FROM sessions WHERE id IN (?, ?)').bind(who.session, who.manager?.session ?? '').run();
+      const out = reply({}, 200, cookie('', 0)); out.headers.append('set-cookie', cookie('', 0, KEPT)['set-cookie']); return out;
+    }
+    // From a person's view back to the manager's own, which was set aside when their link was opened.
+    if (first === 'back' && method === 'POST') {
+      if (!who?.person || !who.manager) return reply({message: 'Sign in first'}, 401);
+      await env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(who.session).run();
+      const out = reply({}, 200, cookie(who.manager.token, MONTH)); out.headers.append('set-cookie', cookie('', 0, KEPT)['set-cookie']); return out;
     }
     if (!who) return reply({message: 'Sign in first'}, 401);
     // Anyone signed in may ask for the players to be brought in step; what is sent comes only from what the hub has stored.
@@ -639,12 +650,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
       return reply({now: now(), plays: rows.results, starts: starts.results});
     }
     if (first === 'state' && method === 'GET') return reply(await state(env, who) ?? bad(401, 'Sign in first'));
-    if (first === 'people' && second && third) {
-      // Signing in as a person beside the manager hands back that person's own session cookie.
-      const done = await personAction(request, env, who, second, third, fourth, body, url.origin) as Record<string, unknown>;
-      if (third === 'unlock' && typeof done?.cookie === 'string') return reply({}, 200, {'set-cookie': done.cookie});
-      return reply(done);
-    }
+    if (first === 'people' && second && third) return reply(await personAction(request, env, who, second, third, fourth, body, url.origin));
     if (first === 'people' && second && method === 'PUT') return reply(await savePerson(env, who, second, body));
     if (who.person) bad(403, 'Not allowed');
     if (first === 'hub' && method === 'PUT') return reply(await saveHub(env, who, body));

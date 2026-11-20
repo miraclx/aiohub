@@ -33,7 +33,13 @@ export function changes(saved: Hub, shown: Hub, role: 'owner' | 'person'): Job[]
     if (saved.me.name !== shown.me.name || saved.me.theme !== shown.me.theme) jobs.push({method: 'PUT', path: '/api/account', body: {name: shown.me.name, theme: shown.me.theme}, kind: 'me', id: ''});
     for (const [id, group] of is.groups) if (!was.groups.has(id) || differs(groupBody(was.groups.get(id)!), groupBody(group))) jobs.push({method: 'PUT', path: `/api/groups/${id}`, body: {...groupBody(group), v: was.groups.get(id)?.v}, kind: 'group', id});
   }
-  for (const [id, person] of is.people) if (!was.people.has(id) || differs(personBody(was.people.get(id)!), personBody(person))) jobs.push({method: 'PUT', path: `/api/people/${id}`, body: {...personBody(person), v: was.people.get(id)?.v}, kind: 'person', id});
+  for (const [id, person] of is.people) {
+    const before = was.people.get(id);
+    // Removed and added again under the same name before the removal was sent: a new person, never the old one's record.
+    if (role === 'owner' && before?.v !== undefined && person.v === undefined) {
+      jobs.push({method: 'DELETE', path: `/api/people/${id}`, kind: 'person', id, gone: true}, {method: 'PUT', path: `/api/people/${id}`, body: personBody(person), kind: 'person', id});
+    } else if (!before || differs(personBody(before), personBody(person))) jobs.push({method: 'PUT', path: `/api/people/${id}`, body: {...personBody(person), v: before?.v}, kind: 'person', id});
+  }
   if (role === 'owner') {
     for (const id of was.people.keys()) if (!is.people.has(id)) jobs.push({method: 'DELETE', path: `/api/people/${id}`, kind: 'person', id, gone: true});
     for (const id of was.groups.keys()) if (!is.groups.has(id)) jobs.push({method: 'DELETE', path: `/api/groups/${id}`, kind: 'group', id, gone: true});

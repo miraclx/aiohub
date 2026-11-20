@@ -175,7 +175,7 @@ function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: 
    shared addresses the hub calls from for a while at times, and a browser is not affected. The proof that finishes the sign-in
    stays in this tab; the hub only gets the finished login, to keep and renew. */
 const TRAKT_AUTH = 'https://auth.trakt.tv', TRAKT_API = 'https://api.trakt.tv', SIGNING = 'trakt-signing';
-interface Signing {state: string; verifier: string; person: string; back: string}
+interface Signing {state: string; verifier: string; person: string; hub: string; back: string}
 let returned: {code: string; state: string; error: string} | null = null, lost = '';
 const packed = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const signing = () => {try {return JSON.parse(sessionStorage.getItem(SIGNING) ?? 'null') as Signing | null;} catch {return null;}};
@@ -207,7 +207,7 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
   // The sign-in Trakt just sent back here, if it was for this person: the code is exchanged for the login, once.
   useEffect(() => {
     const back = returned, saved = signing();
-    if (!live || !back || saved?.person !== person.id) return;
+    if (!live || !back || saved?.person !== person.id || saved.hub !== hub.code) return;
     returned = null; sessionStorage.removeItem(SIGNING);
     if (back.error || !back.code) return void toast(back.error === 'access_denied' ? 'Trakt wasn’t connected.' : 'Trakt didn’t finish signing in. Connect again.');
     if (back.state !== saved.state) return void toast('That Trakt sign-in wasn’t started here. Connect again.');
@@ -241,7 +241,7 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     setPhase('going');
     const verifier = packed(crypto.getRandomValues(new Uint8Array(48))), state = packed(crypto.getRandomValues(new Uint8Array(16)));
     const challenge = packed(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))));
-    sessionStorage.setItem(SIGNING, JSON.stringify({state, verifier, person: person.id, back: location.hash} satisfies Signing));
+    sessionStorage.setItem(SIGNING, JSON.stringify({state, verifier, person: person.id, hub: hub.code, back: location.hash} satisfies Signing));
     // Connecting for someone else, this browser may be signed in to Trakt as someone else: Trakt then asks who is signing in.
     const ask = new URLSearchParams({response_type: 'code', client_id: client, redirect_uri: `${location.origin}/api/trakt/callback`, state, code_challenge: challenge, code_challenge_method: 'S256', ...(mine ? {} : {prompt: 'login'})});
     location.assign(`${TRAKT_AUTH}/oauth/authorize?${ask}`);
@@ -264,8 +264,7 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
   const {update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
   const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [leaving, setLeaving] = useState(false);
   const their = mine ? 'your' : 'their', choice = person.lists ? 'mdblist' : keying ? 'mdblist' : 'here';
-  // Their own things (copying to MDBList, the Trakt/MDBList note): on their own page, or here once their password was given.
-  const self = mine || page.hub.also === person.id;
+  const self = mine;
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
   const pick = (value: 'here' | 'mdblist') => {
     if (value === 'mdblist' && !person.lists) {if (live) setKeying(true); else if (mine) edit(target => {target.lists = true;}, 'MDBList connected'); return;}
@@ -296,7 +295,6 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
       {live && self && person.lists && <Carry page={page} person={person}/>}
       {live && self && person.drift && <DriftNote page={page} person={person}/>}
       {live && !self && person.lists && <li><div><h3>What they watched here</h3><p>{person.name} can copy it to MDBList from their own page, under Accounts. It’s theirs, so it isn’t shown here.</p></div></li>}
-      {live && self && !mine && <li><div><p className="muted small">Signed in as {person.name} in this browser too.</p></div><button type="button" className="link small" onClick={() => void live.call('DELETE', `/api/people/${person.id}/unlock`).then(() => live.reload()).then(() => toast(`Signed out as ${person.name}`), fail(toast))}>Sign out as {person.name}</button></li>}
     </ul>
     {leaving && <Confirm title="Keep progress here?" body={`MDBList is disconnected from ${mine ? 'you' : person.name}. Whatever is already in that MDBList account stays there.`} action="Keep it here" onYes={leave} onClose={() => setLeaving(false)}/>}
   </>;
@@ -710,11 +708,10 @@ export function JoinPage(page: PageProps & {id: string; tab: string; base?: stri
 
 /* ---------- the real hub: opening an invite link, and signing in ---------- */
 interface Asked {name: string; username: string; owner: string; joined: boolean}
-/* An invite link. Opened by their manager in the same browser, it goes straight to their page as them once they have joined. */
-export function JoinGate({token, live, toast, manager, onIn, onAs}: {token: string; live: Live; toast: (text: string) => void; manager: boolean; onIn: () => void; onAs: (id: string) => void}) {
+/* An invite link. Opened by their manager in the same browser, it goes straight to their own view once they have joined. */
+export function JoinGate({token, live, toast, manager, onIn}: {token: string; live: Live; toast: (text: string) => void; manager: boolean; onIn: () => void}) {
   const [info, setInfo] = useState<Asked | 'gone' | null>(null), [waiting, setWaiting] = useState(false), [pass, setPass] = useState(''), [busy, setBusy] = useState(false);
-  useEffect(() => {void live.call<{gone?: boolean; ok?: boolean; ask?: Asked; as?: string; waiting?: Asked}>('POST', '/api/join', {token}).then(found => {
-    if (found.as) return onAs(found.as);
+  useEffect(() => {void live.call<{gone?: boolean; ok?: boolean; ask?: Asked; waiting?: Asked}>('POST', '/api/join', {token}).then(found => {
     if (found.ok) return onIn();
     setWaiting(!!found.waiting); setInfo(found.waiting ?? found.ask ?? 'gone');
   }, fail(toast));}, [token]);
