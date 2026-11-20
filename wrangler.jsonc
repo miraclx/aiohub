@@ -1,5 +1,7 @@
 {
   "name": "aiohub", "main": "worker/index.ts", "compatibility_date": "2026-11-08", "workers_dev": true, "observability": {"enabled": true},
+  // Cloudflare runs the Worker wherever its round trips to the database and the AIOStreams and AIOMetadata servers are quickest.
+  "placement": {"mode": "smart"},
   "assets": {"directory": "./dist", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": ["/h/*", "/api/*"]},
   "d1_databases": [{"binding": "DB", "database_name": "aiohub", "migrations_dir": "migrations"}],
   // Every five minutes, Trakt calls still waiting are tried again and plays left running by a player that went quiet are stopped on Trakt (only once TRAKT_CLIENT_ID is set).
