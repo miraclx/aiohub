@@ -66,7 +66,7 @@ export const traktRows = (): Row[] => [
 export const TRAKT_IDS = new Set(traktRows().map(row => row.id));
 /* Which accounts a person has connected: Trakt (to the hub, or the older way through AIOMetadata), and an MDBList key; and whether
    the hub can show something they watched (Trakt connected to the hub, an MDBList key, or a play here). */
-export interface Linked {trakt: boolean; lists: boolean; watched: boolean}
+export interface Linked {trakt: boolean; lists: boolean; watched: boolean; kids?: boolean}
 /* Whether a person's own row can be filled for them: the MDBList watchlist with MDBList, Recently Watched once there is something
    to put in it (from Trakt, else MDBList, else what they played here), the rest with Trakt. */
 export const reaches = (id: string, has: Linked) => id === 'recently-watched' ? has.watched : id === 'mdblist-watchlist' ? has.lists : has.trakt;
@@ -96,15 +96,17 @@ export function placed(rows: Row[]): Row[] {
    it is their only watchlist. */
 export function rowsOf(own: Row[] | null, shared: Row[], has: Linked, picks?: Record<string, boolean>): Row[] {
   const fits = (row: Row) => !TRAKT_IDS.has(row.id) || reaches(row.id, has);
+  // Under the Kids limit the rows for children come too (see KIDS_IDS), unless this Home has them already.
   if (own) {
     const out = own.filter(fits);
+    if (has.kids) for (const row of kidsRows()) if (!out.some(item => item.id === row.id)) out.push({...row, on: false});
     for (const row of traktRows()) if (reaches(row.id, has) && !out.some(item => item.id === row.id)) {
       if (row.id !== 'mdblist-watchlist') {out.push({...row, on: false}); continue;}
       out.splice(out.findIndex(item => item.id === 'watchlist') + 1, 0, {...row, on: !has.trakt});
     }
     return named(out);
   }
-  return named(placed(shared).filter(fits).map(row => !TRAKT_IDS.has(row.id) ? row : picks?.[row.id] !== undefined ? {...row, on: picks[row.id]} : row.id === 'mdblist-watchlist' && has.trakt ? {...row, on: false} : row));
+  return named(withKids(placed(shared), !!has.kids).filter(fits).map(row => !PICKABLE.has(row.id) ? row : picks?.[row.id] !== undefined ? {...row, on: picks[row.id]} : row.id === 'mdblist-watchlist' && has.trakt ? {...row, on: false} : row));
 }
 /* Collection folders under a content limit, known by their row and cover. Kids get only the folders made for children: the others
    are filtered title by title after fetching, so they come thin, and shows with a rating read loosely slip through. Teen loses Adult
@@ -115,7 +117,28 @@ const KIDS_ONLY: Record<string, string[]> = {
   'shows-by-genre': [`${FRK}kids-wide.png`, `${FRK}nature-wide.png`], 'mixed-genre': ['/covers/33.jpg'],
 };
 const NOT_FOR_TEEN: Record<string, string[]> = {'movies-by-genre': ['/covers/17.jpg']};
-export const folderFits = (row: string, image: string, limit: Limit) => limit === 'kids' ? !!KIDS_ONLY[row]?.includes(image) : limit !== 'teen' || !NOT_FOR_TEEN[row]?.includes(image);
+/* By-service folders under a limit come from TMDB's where-to-watch instead of the public lists, asking for rated titles only (and
+   for Kids, what is made for children): the lists let mature shows through. Provider ids and regions as AIOMetadata 4.1.0 uses them. */
+const SERVICES: Record<string, {provider: string; region: string}> = {
+  '/covers/00.jpg': {provider: '350', region: 'GB'}, '/covers/01.jpg': {provider: '8', region: 'GB'}, '/covers/02.jpg': {provider: '337', region: 'GB'}, '/covers/03.jpg': {provider: '1899', region: 'NL'}, '/covers/04.jpg': {provider: '9', region: 'US'}, '/covers/05.jpg': {provider: '2303', region: 'US'},
+  '/covers/08.jpg': {provider: '350', region: 'GB'}, '/covers/09.jpg': {provider: '8', region: 'GB'}, '/covers/10.jpg': {provider: '337', region: 'GB'}, '/covers/11.jpg': {provider: '1899', region: 'NL'}, '/covers/12.jpg': {provider: '9', region: 'US'}, '/covers/13.jpg': {provider: '2303', region: 'US'},
+};
+export const serviceOf = (row: string, image: string, limit: Limit) => limit !== 'all' && (row === 'movies-by-service' || row === 'shows-by-service') ? SERVICES[image] ?? null : null;
+export const folderFits = (row: string, image: string, limit: Limit) => serviceOf(row, image, limit) ? true : limit === 'kids' ? !!KIDS_ONLY[row]?.includes(image) : limit !== 'teen' || !NOT_FOR_TEEN[row]?.includes(image);
+/* The rows for children a Home under the Kids limit gets without anyone adding them: on, right after a person's own rows, and
+   switched off like a Trakt row (picks) by someone following the Home above. Any Home that has them keeps its own place and choice. */
+export const KIDS_IDS = new Set(['sg.kids-channels', 'sg.animation-studios']);
+/* A Home's rows with the rows for children added, under the Kids limit, where the Home does not have them already. */
+export const withKids = (rows: Row[], kids: boolean) => {
+  const young = kids ? kidsRows().filter(row => !rows.some(item => item.id === row.id)) : [], first = rows.findIndex(row => !TRAKT_IDS.has(row.id)), out = [...rows];
+  out.splice(first < 0 ? out.length : first, 0, ...young);
+  return out;
+};
+const kidsRows = (): Row[] => [...KIDS_IDS].map(id => suggestionOf(id)!).map(item => ({id: item.id, title: item.title, kind: item.kind, source: item.source, origin: 'hub', on: true}));
+/* Rows someone following the Home above can switch on or off for themselves. */
+export const PICKABLE = new Set([...TRAKT_IDS, ...KIDS_IDS]);
+/* Where a row's titles come from, as shown: Trending is Trakt's chart, or under a content limit a TMDB search (native.ts). */
+export const sourceShown = (row: Row, limit: Limit = 'all') => (row.id === 'trending-movies' || row.id === 'trending-series') && limit === 'all' ? 'Trakt' : row.source;
 export const isTrakt = (item: Row) => item.source === 'Trakt' || item.source.startsWith('Trakt ·');
 /* ---------- suggested rows ("Or pick one" in Add row) ----------
    Each is a real row: its id is the Home row it makes, so one already on a Home is not offered again. A part is one source:
@@ -215,7 +238,7 @@ export const hasLists = (person: Person) => person.lists || !!person.listsKept;
 /* Where a person's Recently Watched comes from: Trakt connected to the hub, else their MDBList, else what they played here. The
    older Trakt link through AIOMetadata does not count: the hub cannot read it. */
 export const sourceOf = (person: Person) => (person.history ? !person.history.again : SAMPLE && person.trakt) ? 'Trakt' : hasLists(person) ? 'MDBList' : 'Played here';
-export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), {trakt: hasTrakt(person), lists: hasLists(person), watched: SAMPLE || hasLists(person) || !!person.history && !person.history.again || !!person.played}, person.picks)
+export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), {trakt: hasTrakt(person), lists: hasLists(person), watched: SAMPLE || hasLists(person) || !!person.history && !person.history.again || !!person.played, kids: resolve(hub, hub.groups.find(item => item.id === person.groupId), person).values.limit === 'kids'}, person.picks)
   .map(row => row.id === 'recently-watched' ? {...row, source: sourceOf(person)} : row);
 
 const words = ['maple', 'river', 'copper', 'lantern', 'meadow', 'harbor', 'ember', 'willow', 'pebble', 'comet'];

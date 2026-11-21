@@ -2,7 +2,7 @@
 // What reaches the streaming server goes through ./native.
 import {carry, mdblist, plan} from './carry';
 import {fix, looked, skip, skippedOf} from './drift';
-import {defaultAddons, defaultRows, defaultSettings, slug, traktRows} from '../src/data';
+import {PICKABLE, defaultAddons, defaultRows, defaultSettings, slug, traktRows} from '../src/data';
 import type {Addon, Hub, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './native';
@@ -84,7 +84,7 @@ interface GroupRow {id: string; name: string; data: string; version: number}
 interface PersonRow {id: string; grp: string; name: string; data: string; joined: number; paused: number; version: number}
 interface DeviceRow {ref: string; person: string; app: string; name: string; seen: number; place: string; net: string}
 interface SignIn {password: string; pin: string | null}
-const TRAKT_ROWS = traktRows().map(row => row.id), HERE = 6 * 3600;
+const TRAKT_ROWS = [...PICKABLE], HERE = 6 * 3600;
 const cleanPicks = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).filter(([id, on]) => TRAKT_ROWS.includes(id) && typeof on === 'boolean')) as Record<string, boolean> : undefined;
 
 function ago(seen: number) {
@@ -807,7 +807,13 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     if (first === 'lists' && method === 'POST') return reply(await findList(env, who, body));
     if (first === 'sync' && method === 'POST') return reply(await syncPlayers(env, who.hub, url.origin));
     // An invited person gets their own rows; the manager can ask for anyone's.
-    if (first === 'previews' && method === 'GET') return reply({rows: await previews(env, who.hub, who.person ?? (url.searchParams.get('person') || undefined))});
+    if (first === 'previews' && method === 'GET') {
+      // A group's Home as someone in it starts with: from the setup of one who follows it as it is (no Home or settings of their
+      // own). With nobody like that, the hub's.
+      const group = !who.person ? url.searchParams.get('group') : null;
+      const member = group ? await env.DB.prepare("SELECT id FROM people WHERE hub = ? AND grp = ? AND json_extract(data, '$.rows') IS NULL AND json_extract(data, '$.settings') = '{}' ORDER BY created, id LIMIT 1").bind(who.hub.id, group).first<{id: string}>() : null;
+      return reply({rows: await previews(env, who.hub, who.person ?? (member?.id || url.searchParams.get('person') || undefined)), ...(group ? {as: member ? 'member' : 'hub'} : {})});
+    }
     if (first === 'activity' && method === 'GET') {
       // The manager sees everyone; an invited person sees only themselves.
       const rows = await env.DB.prepare(`SELECT person, item, title, detail, position, duration, device, playing, updated, art, place, net FROM plays WHERE hub = ?1 ${who.person ? 'AND person = ?2' : ''} ORDER BY updated DESC LIMIT 300`).bind(...(who.person ? [who.hub.id, who.person] : [who.hub.id])).all();

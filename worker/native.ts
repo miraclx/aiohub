@@ -1,7 +1,7 @@
 // The hub's own setup on the streaming server (AIOStreams): created once per hub, then kept in step with what the site holds.
 // The hub only ever talks to a setup it created itself, whose id and password it keeps in the vault. Nothing here names an id in an
 // error or a log line. Each request shape was proven by script against a live server first.
-import {folderFits, rowsOf, suggestionOf} from '../src/data';
+import {folderFits, rowsOf, serviceOf, suggestionOf} from '../src/data';
 import type {Addon, Limit, Part, Row, Settings} from '../src/data';
 import type {Env} from './util';
 import {gate, getSecret, hosted, inTurn, newToken, now, putSecret, sha, unseal} from './util';
@@ -254,6 +254,18 @@ const CERTS: Record<string, Record<'movie' | 'series', string>> = {kids: {movie:
 const rated = (type: string, limit: Limit) => CERTS[limit] ? {certification_country: 'US', certification: CERTS[limit][type === 'movie' ? 'movie' : 'series']} : {};
 // Trending under a limit: what is popular on TMDB now among recent, rated titles (films out in the last year, shows with an episode
 // in the last month).
+// Without a limit, Trending is Trakt's: what people are watching right now, counted from what their players report. A public chart:
+// AIOMetadata reads it with its own Trakt app, so it needs nobody's Trakt and no key of the hub's. Asked again every three hours.
+const TRAKT_CHART: Record<string, Catalog> = {
+  'trending-movies': {id: 'trakt.trending.movies', type: 'movie', source: 'trakt', cacheTTL: 10800, metadata: {traktEndpoint: 'trending/movies'}},
+  'trending-series': {id: 'trakt.trending.shows', type: 'series', source: 'trakt', cacheTTL: 10800, metadata: {traktEndpoint: 'trending/shows'}},
+};
+// Popular: the most popular on TMDB among what is new (films out in the last six months with a hundred votes, shows with an episode
+// in the last month). AIOMetadata's own "popular" is the newest films with fifty votes, latest first, so it is not used.
+const POPULAR_NOW: Record<string, Part & {discover: string}> = {
+  'popular-movies': {discover: 'popular', type: 'movie', params: {sort_by: 'popularity.desc', 'vote_count.gte': '100', 'primary_release_date.gte': '__tmdb_date__:last_180_days:from', 'primary_release_date.lte': '__tmdb_date__:today:to'}},
+  'popular-series': {discover: 'popular', type: 'series', params: {sort_by: 'popularity.desc', 'vote_count.gte': '50', 'air_date.gte': '__tmdb_date__:last_month:from'}},
+};
 const TRENDING_RATED: Record<string, Part & {discover: string}> = {
   'trending-movies': {discover: 'trending', type: 'movie', params: {sort_by: 'popularity.desc', 'primary_release_date.gte': '__tmdb_date__:last_year:from', 'primary_release_date.lte': '__tmdb_date__:today:to', 'vote_count.gte': '20'}},
   'trending-series': {discover: 'trending', type: 'series', params: {sort_by: 'popularity.desc', 'air_date.gte': '__tmdb_date__:last_month:from', 'vote_count.gte': '10'}},
@@ -264,11 +276,14 @@ interface Served {at: string; trakt: boolean}
    MDBList can be read for this Home; `trakt`: AIOMetadata's own Trakt fills the Trakt rows; `served`: the hub serves its rows. */
 function plainOf(row: Row, lists: boolean, trakt: boolean, served: Served | null, limit: Limit = 'all'): Catalog | null {
   const at = {name: row.title, enabled: row.on, showInHome: true};
-  if (CERTS[limit] && TRENDING_RATED[row.id]) {
-    // For Kids only what is made for children: a mild rating alone lets in talent shows and soaps.
-    const part = TRENDING_RATED[row.id], young = limit === 'kids' ? {with_genres: part.type === 'movie' ? '16|10751' : '16|10751|10762'} : {};
-    return {...partOf({...part, discover: `${part.discover}-${limit}`, params: {...part.params, ...young}}, row.title, limit), ...at};
+  // Under a limit Trending and Popular are TMDB searches for rated titles; for Kids only what is made for children, as a mild
+  // rating alone lets in talent shows and soaps.
+  const search = (CERTS[limit] && TRENDING_RATED[row.id]) || POPULAR_NOW[row.id];
+  if (search) {
+    const young = limit === 'kids' ? {with_genres: search.type === 'movie' ? '16|10751' : '16|10751|10762'} : {};
+    return {...partOf({...search, discover: CERTS[limit] ? `${search.discover}-${limit}` : search.discover, params: {...search.params, ...young}}, row.title, limit), ...at};
   }
+  if (TRAKT_CHART[row.id]) return {...TRAKT_CHART[row.id], ...at};
   if (TMDB_ROW[row.id]) return {...TMDB_ROW[row.id], ...at, source: 'tmdb'};
   if (served && servedOf(row.id) && (served.trakt || NO_TRAKT.has(row.id))) return catalogOf(served.at, row.id, row.title, row.on);
   if (trakt && !served?.trakt && TRAKT_ROW[row.id]) return {...TRAKT_ROW[row.id], ...at, source: 'trakt'};
@@ -296,9 +311,16 @@ export function homeOf(rows: Row[], lists: boolean, trakt = false, served: Serve
     else if (item && lists && row.on) {
       const folders = foldersOf(item, row.covers).filter(({folder}) => folderFits(item.row, folder.image, limit));
       if (!folders.length) continue;
+      // Under a limit a service's folder is TMDB's where-to-watch for it, rated (see serviceOf).
+      const made = folders.map(({folder, title}) => {
+        const on = serviceOf(item.row, folder.image, limit), type = folder.catalog.type === 'series' ? 'series' : 'movie';
+        const catalog = on ? partOf({discover: `service-${on.provider}-${on.region.toLowerCase()}-${limit}`, type, params: {with_watch_providers: on.provider, watch_region: on.region, with_watch_monetization_types: 'flatrate', sort_by: 'popularity.desc', 'vote_count.gte': '10',
+          ...(limit === 'kids' ? {with_genres: type === 'movie' ? '16|10751' : '16|10751|10762'} : {})}}, `${row.title}: ${title}`, limit) : folder.catalog;
+        return {folder, title, catalog, source: on ? {name: catalog.name, type, genre: 'None', baseType: type, catalogId: catalog.id} : folder.source};
+      });
       collections.push({kind: 'collection', id: item.id, title: row.title, hideTitle: false, backdropImageUrl: '', pinToTop: false, viewMode: item.viewMode, showAllTab: true, focusGlowEnabled: true, ...(above ? {after: above} : {}),
-        folders: folders.map(({folder, title}) => ({id: folder.id, title, shape: folder.shape, hideTitle: folder.hideTitle, coverImageUrl: folder.cover, coverEmoji: '', sources: [folder.source]}))});
-      for (const {folder} of folders) sources.set(`${folder.catalog.id}/${folder.catalog.type}`, {...folder.catalog, enabled: true, showInHome: false});
+        folders: made.map(({folder, title, source}) => ({id: folder.id, title, shape: folder.shape, hideTitle: folder.hideTitle, coverImageUrl: folder.cover, coverEmoji: '', sources: [source]}))});
+      for (const {catalog} of made) sources.set(`${catalog.id}/${catalog.type}`, {...catalog, enabled: true, showInHome: false});
     } else if (picked && row.on) {
       // A suggested row with tabs: a collection, one tab per part. Without MDBList only its TMDB tabs come; with none left, nothing.
       const parts = picked.parts.filter(({part}) => lists || !('mdblist' in part)).map(({title, part}) => ({title, catalog: partOf(part, `${picked.title}: ${title}`, limit)}));
@@ -440,7 +462,7 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
     const viaHub = !!env.TRAKT_CLIENT_ID && !((await held<{again?: boolean}>(env, vault, hub.id, person, LINK)) ?? {again: true}).again;
     // Only where the row is (its catalog id) matters here, never the address itself.
     served = vault.has(`${person}/${ROWS}`) ? {at: 'https://hub.invalid', trakt: viaHub} : null; trakt = !!mine.trakt;
-    rows = rowsOf(mine.rows, shared, {trakt: trakt || viaHub, lists: vault.has(`${person}/mdblist`), watched: viaHub || vault.has(`${person}/mdblist`) || plays.results.length > 0}, mine.picks); owners = [person, groupOwner(row.grp), HUB_OWNER];
+    rows = rowsOf(mine.rows, shared, {trakt: trakt || viaHub, lists: vault.has(`${person}/mdblist`), watched: viaHub || vault.has(`${person}/mdblist`) || plays.results.length > 0, kids: {...data.defaults, ...theirs.settings, ...mine.settings}.limit === 'kids'}, mine.picks); owners = [person, groupOwner(row.grp), HUB_OWNER];
   }
   // With AIOMetadata in front, a person's rows are on their own setup there.
   let made: Catalogs | null = person && env.FRONT === 'aiometadata' ? await held<Catalogs>(env, vault, hub.id, person, PLAYER) : null;
@@ -508,7 +530,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
     // their own setup (AIOMetadata in front). Without that, a kept key would only make them a setup of their own for nothing.
     const at = served.get(row.id), hubTrakt = viaHub.has(row.id) && !!at, trakt = !hubTrakt && own.trakt ? linked.get(row.id) ?? null : null, lists = own.lists ? watching.get(row.id) ?? null : null, reads = own.lists || env.FRONT !== 'aiometadata' ? null : watching.get(row.id) ?? null;
     // Someone with Trakt or MDBList connected and no Home of their own gets those rows above the shared ones.
-    return {id: row.id, name: row.name, group, above, want: {rows: rowsOf(own.rows, above.rows, {trakt: !!(trakt || hubTrakt), lists: keyed.has(row.id), watched: hubTrakt || keyed.has(row.id) || played.has(row.id)}, own.picks), settings: {...above.settings, ...own.settings}, trakt, lists, reads, served: at ? {at, trakt: hubTrakt} : null} as Want, tracks: !!lists, home: null as string | null, variants: [] as string[]};
+    return {id: row.id, name: row.name, group, above, want: {rows: rowsOf(own.rows, above.rows, {trakt: !!(trakt || hubTrakt), lists: keyed.has(row.id), watched: hubTrakt || keyed.has(row.id) || played.has(row.id), kids: {...above.settings, ...own.settings}.limit === 'kids'}, own.picks), settings: {...above.settings, ...own.settings}, trakt, lists, reads, served: at ? {at, trakt: hubTrakt} : null} as Want, tracks: !!lists, home: null as string | null, variants: [] as string[]};
   });
 
   // Home. The hub has one setup on AIOMetadata; a group or a person gets their own only while theirs differs from the one above.

@@ -221,7 +221,7 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   assert.equal(fake.homes.size, 2); assert.deepEqual(fake.homes.get('home-2').config.catalogs.slice(0, 2).map(row => row.name), ['Popular Shows', 'Popular Movies']);
   assert.deepEqual(setup.variants.map(item => item.id), ['hub-p-ada']); assert.match(setup.variants[0].script, /^set presets\[instanceId="h01"\]\.options\.manifestUrl = ".*\/stremio\/home-2\/manifest\.json\?v=\d+"$/);
   assert.deepEqual(setup.jellyfin.personas.map(user => user.variants ?? []), [['hub-p-ada'], []]);
-  assert.deepEqual(home.catalogs.map(row => [row.id, row.type, row.name, row.enabled]).slice(0, 2), [['tmdb.trending', 'movie', 'Trending Movies', true], ['tmdb.trending', 'series', 'Trending Shows', true]]);
+  assert.deepEqual(home.catalogs.map(row => [row.id, row.type, row.name, row.enabled]).slice(0, 2), [['trakt.trending.movies', 'movie', 'Trending Movies', true], ['trakt.trending.shows', 'series', 'Trending Shows', true]]);
   assert.deepEqual(home.catalogs.filter(row => !row.enabled).map(row => row.name), ['Popular Movies', 'Popular Shows']);
   // The site's row previews are the real contents of each row that is on, and are there for an invited person too.
   const real = (await owner('GET', '/api/previews')).body.rows; assert.deepEqual(real['trending-movies'], ['https://img.example/1.jpg', 'https://img.example/2.jpg']); assert.equal(real['popular-movies'], undefined);
@@ -244,7 +244,7 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   assert.equal((await owner('PUT', '/api/hub', {...now, rows: now.rows.map(row => row.id === 'trending-series' ? {...row, on: false, title: 'Hot Shows'} : row)})).status, 200);
   assert.deepEqual((await owner('POST', '/api/sync', {})).body, {state: 'ok'});
   const changed = [...fake.homes.values()][0].config; assert.equal(changed.keptByTheServer, true);
-  assert.deepEqual(changed.catalogs.find(row => row.id === 'tmdb.trending' && row.type === 'series').name, 'Hot Shows'); assert.equal(changed.catalogs.find(row => row.name === 'Hot Shows').enabled, false);
+  assert.deepEqual(changed.catalogs.find(row => row.id === 'trakt.trending.shows').name, 'Hot Shows'); assert.equal(changed.catalogs.find(row => row.name === 'Hot Shows').enabled, false);
   assert.notEqual([...fake.configs.values()][0].config.presets.find(item => item.type === 'custom').options.manifestUrl, pointer);
   // The collection rows need an MDBList key. Without one they stay out; with one they travel as folders over lists, each placed
   // after the plain row above it, and AIOStreams is told to show them as rows and to keep the lists behind them out of sight.
@@ -256,7 +256,7 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   const listed = [...fake.homes.values()][0].config; assert.equal(listed.apiKeys.mdblist, 'good-mdblist-key'); assert.equal(listed.apiKeys.tmdb, 'good-tmdb-key');
   assert.deepEqual(listed.collections.map(item => item.title), ['Movies by Service', 'Shows by Service', 'Movies by Genre', 'Shows by Genre', 'Mixed Genre Collections']);
   assert.deepEqual(listed.collections.map(item => item.folders.length), [8, 9, 50, 18, 5]);
-  assert.deepEqual(listed.collections[0].after, {id: 'tmdb.trending', type: 'series'}); assert.deepEqual(listed.collections[2].after, {id: 'tmdb.top_rated', type: 'series'});
+  assert.deepEqual(listed.collections[0].after, {id: 'trakt.trending.shows', type: 'series'}); assert.deepEqual(listed.collections[2].after, {id: 'tmdb.top_rated', type: 'series'});
   const folder = listed.collections[0].folders[0]; assert.equal(folder.title, 'Apple TV'); assert.match(folder.coverImageUrl, /^https:\/\//);
   assert.equal(listed.catalogs.find(item => item.id === folder.sources[0].catalogId && item.type === folder.sources[0].type).showInHome, false);
   const shown = [...fake.configs.values()][0].config.catalogModifications;
@@ -346,13 +346,13 @@ test('what a group or a person changes for themselves reaches the players as the
   assert.deepEqual(setup.jellyfin.personas.find(user => user.id === 'ben').variants, [`hub-g-${group.id}`, 'hub-p-ben']);
   // The spare source is in the setup, switched off for everyone else; the hub's own defaults are untouched.
   assert.equal(setup.presets.find(item => item.type === 'stremthruTorz').enabled, false); assert.deepEqual(setup.excludedResolutions, []);
-  // A content limit, subtitles in another language and a source added by its link also travel. The limit rides on the Home address,
-  // so it needs no second Home setup.
+  // A content limit, subtitles in another language and a source added by its link also travel. The limit rides on the Home address;
+  // the Kids limit also brings the rows for children, so whoever has a Home of their own in the group gets them there (one more setup).
   const mid = (await owner('GET', '/api/state')).body.hub, family = mid.groups[0], before = fake.homes.size;
   assert.equal((await owner('PUT', '/api/hub', {...mid, addons: [...mid.addons, {id: 'custom-9x', name: 'example.org', note: 'Added by link.', custom: true, url: 'http://example.org/manifest.json'}]})).status, 400);
   assert.equal((await owner('PUT', '/api/hub', {...mid, addons: [...mid.addons, {id: 'custom-9x', name: 'example.org', note: 'Added by link.', custom: true, url: 'https://example.org/manifest.json'}], defaults: {...mid.defaults, sources: [...mid.defaults.sources, 'custom-9x']}})).status, 200);
   assert.equal((await owner('PUT', `/api/groups/${family.id}`, {name: family.name, rows: family.rows, settings: {...family.settings, limit: 'kids', subtitles: ['French', 'Portuguese']}, v: family.v})).status, 200);
-  assert.deepEqual((await owner('POST', '/api/sync', {})).body, {state: 'ok'}); assert.equal(fake.homes.size, before);
+  assert.deepEqual((await owner('POST', '/api/sync', {})).body, {state: 'ok'}); assert.equal(fake.homes.size, before + 1);
   const wider = [...fake.configs.values()][0].config, extra = wider.presets.find(item => item.options.manifestUrl === 'https://example.org/manifest.json');
   assert.equal(extra.enabled, true); assert.deepEqual(extra.options.resources, ['stream']); assert.match(extra.instanceId, /^x[a-z0-9]+$/);
   const lines = wider.variants.find(item => item.id === `hub-g-${family.id}`).script.split('\n');
@@ -370,7 +370,7 @@ test('what a group or a person changes for themselves reaches the players as the
   assert.ok([...fake.configs.values()][0].config.variants.find(item => item.id === `hub-g-${group.id}`).script.includes('manifestUrl'));
   const again = (await owner('GET', '/api/state')).body.hub.groups[0];
   assert.equal((await owner('PUT', `/api/groups/${group.id}`, {name: group.name, rows: null, settings: {}, v: again.v})).status, 200);
-  assert.deepEqual((await owner('POST', '/api/sync', {})).body, {state: 'ok'}); assert.equal(fake.homes.size, homes);
+  assert.deepEqual((await owner('POST', '/api/sync', {})).body, {state: 'ok'}); assert.equal(fake.homes.size, homes - 1, 'the group’s, and (no Kids limit now) the one for the rows for children');
   assert.deepEqual([...fake.configs.values()][0].config.variants.map(item => item.id).sort(), ['hub-p-ada', 'hub-p-ben']);
 });
 

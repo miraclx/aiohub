@@ -306,7 +306,8 @@ const sql = command => JSON.parse(execFileSync('npx', ['wrangler', 'd1', 'execut
 const waiting = () => sql('SELECT kind, path FROM trakt_outbox ORDER BY id');
 // At 03:00 UTC unless told otherwise: before the day's Trakt and MDBList look, which the drift tests run on purpose.
 const cron = (time = Date.UTC(2026, 0, 1, 3)) => fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/5 * * * *')}&time=${time}`).then(answer => answer.text());
-const rowsOf = config => config.catalogs.filter(item => /^(trakt|custom)\./.test(item.id)).map(item => [item.id, item.type, item.name, item.enabled]);
+// A person's own rows (Trakt's public Trending charts are shared rows, not anyone's own).
+const rowsOf = config => config.catalogs.filter(item => /^(trakt|custom)\./.test(item.id) && !/^trakt\.(trending|popular)\./.test(item.id)).map(item => [item.id, item.type, item.name, item.enabled]);
 test('Trakt connected on AIOMetadata, as before: its own Trakt rows and Token ID in her setup', async () => {
   assert.deepEqual((await owner('POST', '/api/people/ada/trakt', {tokenId: 'aiom-trakt-token-id-1'})).body, {username: 'adatrakt'});
   assert.deepEqual(await syncAll(), {state: 'ok'});
@@ -670,7 +671,8 @@ test('suggested rows reach the player apps: TMDB ones with the TMDB key alone, M
   await hubRows([add('sg.bond', 'James Bond', 'Movies, in order'), add('sg.wizarding-world', 'Wizarding World'), add('sg.mcu', 'Marvel Cinematic Universe'), add('sg.star-wars', 'Star Wars'), add('mdblist.33459.movie', 'Best Picture Winners', 'Movies'), ...before]);
   const bond = catalogsOf('Ben').find(item => item.id === 'tmdb.collection.645');
   assert.deepEqual({...bond}, {id: 'tmdb.collection.645', type: 'movie', name: 'James Bond', source: 'tmdb', metadata: {listId: '645', sortDirection: 'asc', hideUnreleased: true}, enabled: true, showInHome: true});
-  const tabs = name => Object.fromEntries(collectionsOf(name).filter(item => item.id.startsWith('aiohub-')).map(item => [item.id, item.folders.map(folder => [folder.title, folder.sources[0].catalogId])]));
+  // The rows for children Ben gets under the Kids limit are left aside here (see the Kids test below).
+  const tabs = name => Object.fromEntries(collectionsOf(name).filter(item => item.id.startsWith('aiohub-') && !/sg-(kids-channels|animation-studios)$/.test(item.id)).map(item => [item.id, item.folders.map(folder => [folder.title, folder.sources[0].catalogId])]));
   assert.deepEqual(tabs('Ben'), {'aiohub-sg-wizarding-world': [['Harry Potter', 'tmdb.collection.1241'], ['Fantastic Beasts', 'tmdb.collection.435259']], 'aiohub-sg-mcu': [['Films', 'tmdb.discover.movie.mcu.aiohub']]});
   assert.deepEqual(tabs('Ada'), {'aiohub-sg-wizarding-world': [['Harry Potter', 'tmdb.collection.1241'], ['Fantastic Beasts', 'tmdb.collection.435259']], 'aiohub-sg-mcu': [['Films', 'tmdb.discover.movie.mcu.aiohub'], ['Shows', 'mdblist.32047']], 'aiohub-sg-star-wars': [['Films', 'mdblist.198749'], ['Shows', 'mdblist.202585']]});
   // A tab's source is in the setup, on, and kept off Home; the search carries its params, the content limit applies as everywhere.
@@ -682,7 +684,7 @@ test('suggested rows reach the player apps: TMDB ones with the TMDB key alone, M
   assert.ok(catalogsOf('Ada').some(item => item.id === 'mdblist.33459' && item.showInHome));
   // Taken off Home again: gone from both setups, and nothing else of theirs changed.
   await hubRows(before);
-  for (const name of ['Ada', 'Ben']) {assert.deepEqual(tabs(name), {}); assert.equal(catalogsOf(name).some(item => /^tmdb\.(collection|discover)\.(?!\w+\.trending-)|^mdblist\.(33459|32047|198749)$/.test(item.id)), false);}
+  for (const name of ['Ada', 'Ben']) {assert.deepEqual(tabs(name), {}); assert.deepEqual(catalogsOf(name).filter(item => /^tmdb\.(collection|discover)\.(?!\w+\.(trending|network|studio|popular)[-.])|^mdblist\.(33459|32047|198749)$/.test(item.id)).map(item => item.id), []);}
 });
 test('a pasted link is checked where the list lives; one that can’t be used says why', async () => {
   const find = (who, link) => who('POST', '/api/lists', {link});
@@ -892,10 +894,18 @@ test('a setup another request is still making is waited for quietly; one that ne
 });
 test('under the Kids limit Trending asks TMDB for rated titles, and only the folders made for children come', async () => {
   // Ben is under the Kids limit: his Trending rows are TMDB searches for rated, recent, popular titles, so they come full.
-  const trending = catalogsOf('Ben').filter(item => /^tmdb\.(trending|discover\.\w+\.trending)/.test(item.id)).map(item => [item.id, item.type, item.name, item.metadata?.discover?.params?.certification]);
+  const trending = catalogsOf('Ben').filter(item => /^tmdb\.(trending|discover\.\w+\.trending)/.test(item.id)).map(item => [item.id, item.type, item.name, item.metadata?.discover?.params?.certification]).sort((a, b) => a[1].localeCompare(b[1]));
   assert.deepEqual(trending, [['tmdb.discover.movie.trending-kids.aiohub', 'movie', 'Trending Movies', 'G|PG'], ['tmdb.discover.series.trending-kids.aiohub', 'series', 'Trending Shows', 'TV-Y|TV-Y7|TV-G|TV-PG']]);
-  // Ada has no limit: TMDB's own Trending, as before.
-  assert.deepEqual(catalogsOf('Ada').filter(item => /trending/.test(item.id)).map(item => item.id), ['tmdb.trending', 'tmdb.trending']);
+  // Ada has no limit: Trakt's public Trending charts, read by AIOMetadata's own Trakt app (nobody's Trakt, no key of the hub's).
+  assert.deepEqual(catalogsOf('Ada').filter(item => /trending/.test(item.id)).map(item => [item.id, item.source, item.metadata?.traktEndpoint]).sort(), [['trakt.trending.movies', 'trakt', 'trending/movies'], ['trakt.trending.shows', 'trakt', 'trending/shows']]);
+  // Ben gets the rows for children too, on, right after his own rows, without anyone adding them; switching one off is his choice.
+  assert.deepEqual(collectionsOf('Ben').filter(item => /sg-(kids-channels|animation-studios)$/.test(item.id)).map(item => [item.title, item.folders.length]), [['Kids’ Channels', 9], ['Animation Studios', 8]]);
+  assert.equal(catalogsOf('Ben').find(item => item.id === 'tmdb.discover.series.network-166.aiohub').metadata.discover.params.certification, 'TV-Y|TV-Y7|TV-G|TV-PG');
+  const ben = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ben');
+  const pick = async on => {const me = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ben'); assert.equal((await owner('PUT', '/api/people/ben', {name: me.name, groupId: me.groupId, rows: me.rows, picks: {...me.picks, 'sg.kids-channels': on}, settings: me.settings, can: me.can, paused: me.paused, trakt: me.trakt, lists: me.lists, v: me.v})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});};
+  await pick(false); assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ben').rows, ben.rows, 'still following');
+  assert.ok(!collectionsOf('Ben').some(item => /sg-kids-channels$/.test(item.id)));
+  await pick(true); assert.ok(collectionsOf('Ben').some(item => /sg-kids-channels$/.test(item.id)));
   // Folders: with Ada under the Kids limit and her MDBList key reading the lists, only the children's folders come; a collection with
   // none of them (by service) does not come at all. Under Teen she keeps every folder but Adult Animation.
   const limitAda = async limit => {const me = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
@@ -905,9 +915,15 @@ test('under the Kids limit Trending asks TMDB for rated titles, and only the fol
   const all = await limitAda('all');
   assert.ok(all['Movies by Genre'].includes('Adult Animation') && all['Movies by Service']?.length > 0, JSON.stringify(Object.keys(all)));
   const kids = await limitAda('kids');
-  assert.deepEqual(kids, {'Movies by Genre': ['Animated Comedies', 'Animation', 'Family Movie Night', 'Favorite Cartoons', 'Kids', 'Lovable Monsters'], 'Shows by Genre': ['Kids', 'Nature'], 'Mixed Genre Collections': ['Learning Corner']});
+  const services = ['Apple TV', 'Netflix', 'Disney+', 'HBO Max', 'Prime Video', 'Paramount+'];
+  assert.deepEqual(kids, {'Movies by Service': services, 'Shows by Service': services, 'Movies by Genre': ['Animated Comedies', 'Animation', 'Family Movie Night', 'Favorite Cartoons', 'Kids', 'Lovable Monsters'], 'Shows by Genre': ['Kids', 'Nature'], 'Mixed Genre Collections': ['Learning Corner']});
+  // A service's folder is TMDB's where-to-watch for it, rated and made for children, never the public list.
+  const netflix = collectionsOf('Ada').find(item => item.title === 'Shows by Service').folders.find(folder => folder.title === 'Netflix').sources[0].catalogId, search = catalogsOf('Ada').find(item => item.id === netflix);
+  assert.equal(netflix, 'tmdb.discover.series.service-8-gb-kids.aiohub');
+  assert.deepEqual(search.metadata.discover.params, {with_watch_providers: '8', watch_region: 'GB', with_watch_monetization_types: 'flatrate', sort_by: 'popularity.desc', 'vote_count.gte': '10', with_genres: '16|10751|10762', certification_country: 'US', certification: 'TV-Y|TV-Y7|TV-G|TV-PG'});
   const teen = await limitAda('teen');
   assert.deepEqual(teen['Movies by Genre'], all['Movies by Genre'].filter(title => title !== 'Adult Animation')); assert.deepEqual(teen['Movies by Service'], all['Movies by Service']);
+  assert.equal(collectionsOf('Ada').find(item => item.title === 'Shows by Service').folders.find(folder => folder.title === 'Crunchyroll').sources[0].catalogId, 'mdblist.99202', 'a service TMDB has no place for keeps its list');
   await limitAda('all');
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
