@@ -1,7 +1,7 @@
 // The hub's own setup on the streaming server (AIOStreams): created once per hub, then kept in step with what the site holds.
 // The hub only ever talks to a setup it created itself, whose id and password it keeps in the vault. Nothing here names an id in an
 // error or a log line. Each request shape was proven by script against a live server first.
-import {folderFits, rowsOf, serviceOf, suggestionOf} from '../src/data';
+import {folderFits, rowsOf, serviceOf, suggestionOf, withKids} from '../src/data';
 import type {Addon, Limit, Part, Row, Settings} from '../src/data';
 import type {Env} from './util';
 import {gate, getSecret, hosted, inTurn, newToken, now, putSecret, sha, unseal} from './util';
@@ -439,16 +439,17 @@ async function dropHome(env: Env, hub: string, owner: string, kind = 'catalogs')
    them from the setup they are on (so with its poster settings applied). Kept per hub, per person (the hub's own page as the hub) and
    per row, with the fingerprint of what that row was last sent as: a save that changes one row asks AIOMetadata for that row only. */
 const PREVIEW_KEEP = 3600, PREVIEW_WAIT = 8000, PREVIEWS_AT_ONCE = 4, PREVIEW = 'preview:';
-export async function previews(site: Env, hub: {id: string; data: string}, person?: string): Promise<Record<string, string[]>> {
+export async function previews(site: Env, hub: {id: string; data: string}, person?: string, group?: string): Promise<Record<string, string[]>> {
   const data = JSON.parse(hub.data) as HubData, env = hosted(site, data);
   if (!env.AIOM_ORIGIN) return {};
-  const who = person ?? HUB_OWNER;
+  const who = person ?? (group ? groupOwner(group) : HUB_OWNER);
   // One trip to the database: whose rows, the setups they could be on, and what was kept from before.
-  const [found, secrets, kept, plays] = await env.DB.batch([
+  const [found, secrets, kept, plays, grouped] = await env.DB.batch([
     env.DB.prepare('SELECT p.data AS mine, g.id AS grp, g.data AS theirs FROM people p JOIN groups g ON g.hub = p.hub AND g.id = p.grp WHERE p.hub = ? AND p.id = ?').bind(hub.id, person ?? ''),
     env.DB.prepare("SELECT owner, kind, value FROM secrets WHERE hub = ? AND (owner IN (?, ?) OR owner LIKE '#g:%') AND kind IN ('catalogs', 'mdblist', ?, ?, ?)").bind(hub.id, who, HUB_OWNER, PLAYER, LINK, ROWS),
     env.DB.prepare('SELECT kind, at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind LIKE ?').bind(hub.id, who, `${PREVIEW}%`),
     env.DB.prepare('SELECT 1 AS played FROM plays WHERE hub = ? AND person = ? LIMIT 1').bind(hub.id, person ?? ''),
+    env.DB.prepare('SELECT data FROM groups WHERE hub = ? AND id = ?').bind(hub.id, person ? '' : group ?? ''),
   ]);
   const vault: Vault = new Map((secrets.results as {owner: string; kind: string; value: string}[]).map(row => [`${row.owner}/${row.kind}`, row.value]));
   // A person's rows come from whichever Home setup they are on: their own, their group's, or the hub's.
@@ -463,6 +464,13 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
     // Only where the row is (its catalog id) matters here, never the address itself.
     served = vault.has(`${person}/${ROWS}`) ? {at: 'https://hub.invalid', trakt: viaHub} : null; trakt = !!mine.trakt;
     rows = rowsOf(mine.rows, shared, {trakt: trakt || viaHub, lists: vault.has(`${person}/mdblist`), watched: viaHub || vault.has(`${person}/mdblist`) || plays.results.length > 0, kids: {...data.defaults, ...theirs.settings, ...mine.settings}.limit === 'kids'}, mine.picks); owners = [person, groupOwner(row.grp), HUB_OWNER];
+  }
+  // A group's Home as someone in it starts with: from the group's own setup while it differs from the hub's (see homes in syncPlayers).
+  const theirs = grouped.results[0] as {data: string} | undefined;
+  if (!person && theirs) {
+    const own = JSON.parse(theirs.data) as {rows: Row[] | null; settings?: Partial<Settings>};
+    if (env.FRONT === 'aiometadata') limit = {...data.defaults, ...own.settings}.limit ?? 'all';
+    rows = withKids(own.rows ?? data.rows, {...data.defaults, ...own.settings}.limit === 'kids'); owners = [groupOwner(group!), HUB_OWNER];
   }
   // With AIOMetadata in front, a person's rows are on their own setup there.
   let made: Catalogs | null = person && env.FRONT === 'aiometadata' ? await held<Catalogs>(env, vault, hub.id, person, PLAYER) : null;
@@ -550,6 +558,13 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
       const theirs = wantedOf(group.want, keys); group.sig = JSON.stringify(theirs);
       // With each person on their own player setup, AIOStreams' Home is not what apps show, so only the hub's is kept.
       if (!front && group.sig !== sig && people.some(person => person.group === group)) {needed.add(groupOwner(group.id)); jobs.push({owner: groupOwner(group.id), wanted: theirs, done: address => {group.home = address;}});}
+      // With AIOMetadata in front a group that differs from the hub gets a setup of its own all the same, used by no app: it is the
+      // Home someone in the group starts with (their limit, the rows for children), so the site can show it exactly, even with
+      // nobody in the group yet. People's setups are still made from the settings, never copied from it.
+      if (front) {
+        const limit = group.want.settings.limit, shown: Wanted = {...wantedOf({...group.want, rows: withKids(group.want.rows, limit === 'kids')}, keys, limit), ageRating: RATING[limit] ?? 'None', ...(limit === 'kids' ? {allowUnratedContent: false} : {})};
+        if (JSON.stringify(shown) !== JSON.stringify({...wanted, ageRating: 'None'})) {needed.add(groupOwner(group.id)); jobs.push({owner: groupOwner(group.id), wanted: shown, done: () => {}});}
+      }
     }
     for (const person of people) {
       const theirs = wantedOf(person.want, keys);

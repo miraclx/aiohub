@@ -808,11 +808,9 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     if (first === 'sync' && method === 'POST') return reply(await syncPlayers(env, who.hub, url.origin));
     // An invited person gets their own rows; the manager can ask for anyone's.
     if (first === 'previews' && method === 'GET') {
-      // A group's Home as someone in it starts with: from the setup of one who follows it as it is (no Home or settings of their
-      // own). With nobody like that, the hub's.
-      const group = !who.person ? url.searchParams.get('group') : null;
-      const member = group ? await env.DB.prepare("SELECT id FROM people WHERE hub = ? AND grp = ? AND json_extract(data, '$.rows') IS NULL AND json_extract(data, '$.settings') = '{}' ORDER BY created, id LIMIT 1").bind(who.hub.id, group).first<{id: string}>() : null;
-      return reply({rows: await previews(env, who.hub, who.person ?? (member?.id || url.searchParams.get('person') || undefined)), ...(group ? {as: member ? 'member' : 'hub'} : {})});
+      // A group's Home as someone in it starts with comes from the group's own setup (see homes in native.ts), for its manager.
+      const group = !who.person ? url.searchParams.get('group') || undefined : undefined;
+      return reply({rows: await previews(env, who.hub, who.person ?? (group ? undefined : url.searchParams.get('person') || undefined), group)});
     }
     if (first === 'activity' && method === 'GET') {
       // The manager sees everyone; an invited person sees only themselves.

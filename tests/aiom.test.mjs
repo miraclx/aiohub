@@ -926,6 +926,28 @@ test('under the Kids limit Trending asks TMDB for rated titles, and only the fol
   assert.equal(collectionsOf('Ada').find(item => item.title === 'Shows by Service').folders.find(folder => folder.title === 'Crunchyroll').sources[0].catalogId, 'mdblist.99202', 'a service TMDB has no place for keeps its list');
   await limitAda('all');
 });
+test('a group that differs from the hub has a setup of its own, used by no app, so its Home shows as someone in it starts with', async () => {
+  const before = fake.homes.size;
+  // A new group under the Kids limit, nobody in it yet.
+  assert.equal((await owner('PUT', '/api/groups/little', {name: 'Little ones', rows: null, settings: {limit: 'kids'}, paused: false})).status, 200);
+  assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.equal(fake.homes.size, before + 1);
+  const [uuid, home] = [...fake.homes.entries()].find(([, item]) => item.config.ageRating === 'PG' && !item.config.jellyfinUserName);
+  assert.equal(home.config.allowUnratedContent, false);
+  assert.ok(home.config.catalogs.some(item => item.id === 'tmdb.discover.movie.trending-kids.aiohub'));
+  assert.ok((home.config.collections ?? []).some(item => /sg-kids-channels$/.test(item.id)), 'the rows for children are on it');
+  // Its Home tab's posters come from that setup, not the hub's or anyone's.
+  fake.catalogs = []; const shown = (await owner('GET', '/api/previews?group=little')).body.rows, asked = fake.catalogs.splice(0);
+  assert.ok(asked.length > 0 && asked.every(item => item.startsWith(`${uuid}/`)), JSON.stringify(asked));
+  assert.ok(asked.some(item => item.endsWith('/tmdb.discover.movie.trending-kids.aiohub')) && Object.keys(shown).length > 0);
+  // No app ever uses it: nobody's player setup points at it.
+  for (const [, item] of fake.homes) if (item.config.jellyfinUserName) assert.ok(!JSON.stringify(item.config).includes(uuid));
+  // Like the hub again: the setup goes. So does it when the group goes.
+  const little = (await owner('GET', '/api/state')).body.hub.groups.find(item => item.id === 'little');
+  assert.equal((await owner('PUT', '/api/groups/little', {name: 'Little ones', rows: null, settings: {}, paused: false, v: little.v})).status, 200);
+  assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(fake.homes.size, before);
+  assert.equal((await owner('DELETE', '/api/groups/little')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(fake.homes.size, before);
+});
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);
   for (const token_ of ['', token]) {
