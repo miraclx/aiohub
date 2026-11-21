@@ -218,11 +218,12 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   // Home rows: the hub made its own AIOMetadata setup with the TMDB key and the plain rows in the saved order, and pointed AIOStreams at it.
   const home = [...fake.homes.values()][0].config; assert.equal(home.apiKeys.tmdb, 'good-tmdb-key'); assert.equal(home.language, 'en-US'); assert.equal(home.search.providers.series, 'tmdb.search'); assert.equal(home.blurThumbs, false); assert.equal(home.hideUnreleasedDigital, true); assert.equal(home.posterRatingProvider, 'custom'); assert.equal(home.customPosterUrlPattern, 'https://btttr.cc/poster/imdb/poster-default/{imdb_id}.jpg');
   // Ada put her rows in her own order earlier, so she alone has a second Home setup, and a short list of changes that points her at it.
-  assert.equal(fake.homes.size, 2); assert.deepEqual(fake.homes.get('home-2').config.catalogs.slice(0, 2).map(row => row.name), ['Popular Shows', 'Popular Movies']);
+  assert.equal(fake.homes.size, 2); assert.deepEqual(fake.homes.get('home-2').config.catalogs.slice(0, 2).map(row => row.name), ['Top Rated Shows', 'Top Rated Movies']); // Popular, off, is not sent
   assert.deepEqual(setup.variants.map(item => item.id), ['hub-p-ada']); assert.match(setup.variants[0].script, /^set presets\[instanceId="h01"\]\.options\.manifestUrl = ".*\/stremio\/home-2\/manifest\.json\?v=\d+"$/);
   assert.deepEqual(setup.jellyfin.personas.map(user => user.variants ?? []), [['hub-p-ada'], []]);
   assert.deepEqual(home.catalogs.map(row => [row.id, row.type, row.name, row.enabled]).slice(0, 2), [['trakt.trending.movies', 'movie', 'Trending Movies', true], ['trakt.trending.shows', 'series', 'Trending Shows', true]]);
-  assert.deepEqual(home.catalogs.filter(row => !row.enabled).map(row => row.name), ['Popular Movies', 'Popular Shows']);
+  // Popular is off: a TMDB search that is off is not sent at all, as AIOMetadata would show it in the apps all the same.
+  assert.deepEqual(home.catalogs.filter(row => !row.enabled).map(row => row.name), []); assert.ok(!home.catalogs.some(row => row.name.startsWith('Popular')));
   // The site's row previews are the real contents of each row that is on, and are there for an invited person too.
   const real = (await owner('GET', '/api/previews')).body.rows; assert.deepEqual(real['trending-movies'], ['https://img.example/1.jpg', 'https://img.example/2.jpg']); assert.equal(real['popular-movies'], undefined);
   assert.equal((await stranger('GET', '/api/previews')).status, 401);
@@ -244,7 +245,8 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   assert.equal((await owner('PUT', '/api/hub', {...now, rows: now.rows.map(row => row.id === 'trending-series' ? {...row, on: false, title: 'Hot Shows'} : row)})).status, 200);
   assert.deepEqual((await owner('POST', '/api/sync', {})).body, {state: 'ok'});
   const changed = [...fake.homes.values()][0].config; assert.equal(changed.keptByTheServer, true);
-  assert.deepEqual(changed.catalogs.find(row => row.id === 'trakt.trending.shows').name, 'Hot Shows'); assert.equal(changed.catalogs.find(row => row.name === 'Hot Shows').enabled, false);
+  // Trending is Trakt's chart, which AIOMetadata would show while off: switched off, it leaves the setup.
+  assert.ok(!changed.catalogs.some(row => row.id === 'trakt.trending.shows' || row.name === 'Hot Shows'));
   assert.notEqual([...fake.configs.values()][0].config.presets.find(item => item.type === 'custom').options.manifestUrl, pointer);
   // The collection rows need an MDBList key. Without one they stay out; with one they travel as folders over lists, each placed
   // after the plain row above it, and AIOStreams is told to show them as rows and to keep the lists behind them out of sight.
@@ -256,7 +258,7 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   const listed = [...fake.homes.values()][0].config; assert.equal(listed.apiKeys.mdblist, 'good-mdblist-key'); assert.equal(listed.apiKeys.tmdb, 'good-tmdb-key');
   assert.deepEqual(listed.collections.map(item => item.title), ['Movies by Service', 'Shows by Service', 'Movies by Genre', 'Shows by Genre', 'Mixed Genre Collections']);
   assert.deepEqual(listed.collections.map(item => item.folders.length), [8, 9, 50, 18, 5]);
-  assert.deepEqual(listed.collections[0].after, {id: 'trakt.trending.shows', type: 'series'}); assert.deepEqual(listed.collections[2].after, {id: 'tmdb.top_rated', type: 'series'});
+  assert.deepEqual(listed.collections[0].after, {id: 'trakt.trending.movies', type: 'movie'}); // Trending Shows is off above, so not sent assert.deepEqual(listed.collections[2].after, {id: 'tmdb.top_rated', type: 'series'});
   const folder = listed.collections[0].folders[0]; assert.equal(folder.title, 'Apple TV'); assert.match(folder.coverImageUrl, /^https:\/\//);
   assert.equal(listed.catalogs.find(item => item.id === folder.sources[0].catalogId && item.type === folder.sources[0].type).showInHome, false);
   const shown = [...fake.configs.values()][0].config.catalogModifications;
