@@ -333,10 +333,15 @@ function Progress({page, person, mine}: {page: PageProps; person: Person; mine: 
         {choice === 'here' && chooses && <p className="muted small">Hiding what’s been watched needs MDBList. With progress kept here, watched titles stay in rows.</p>}
       </li>
       {live && self && <Trackers page={page} person={person} back={back} onBack={setBack}/>}
-      {live && !self && (person.lists || person.history) && <li><div><h3>What they watched</h3><p>{person.name}’s own page, under Accounts, shows what’s missing between where {their} progress is kept and Trakt. It’s theirs, so it isn’t shown here.</p></div></li>}
+      {live && !self && (person.lists || person.history) && <li><div><h3>What they watched</h3><p>{person.name}’s own page, under Accounts, shows what’s missing between where {their} progress is kept and Trakt. It’s theirs, so it isn’t shown here.</p>{person.joined && <OpenPage page={page} person={person}/>}</div></li>}
     </ul>
     {leaving && <Confirm title="Keep progress here?" body={`MDBList stops keeping ${mine ? 'your' : `${person.name}’s`} progress. What’s already in MDBList stays there.`} action="Keep it here" onYes={leave} onClose={() => setLeaving(false)}/>}
   </>;
+}
+/* Their own page, in a tab of its own: this one stays the manager's. */
+function OpenPage({page, person}: {page: PageProps; person: Person}) {
+  const [creds] = useCreds(page, person);
+  return creds?.link ? <a className="link" href={creds.link} target="_blank" rel="noopener">Open {person.name}’s page →</a> : null;
 }
 type Cell = 'has' | 'add' | 'none';
 type Place = 'here' | 'trakt' | 'lists';
@@ -490,7 +495,15 @@ export function PersonPage(page: PageProps & {id: string; tab: string}) {
   const person = hub.people.find(item => item.id === id);
   // Their own rows (Trakt, lists, a Home of their own) get real posters too, from the setup they are on.
   const [, redraw] = useState(0);
-  useEffect(() => {if (!live) return; addReal({}, id); void live.call<{rows: Record<string, string[]>}>('GET', `/api/previews?person=${encodeURIComponent(id)}`).then(found => {addReal(found.rows, id); redraw(count => count + 1);}, () => {});}, [id, person?.v]);
+  useEffect(() => {
+    if (!live) return;
+    let on = true;
+    const look = () => void live.call<{rows: Record<string, string[]>}>('GET', `/api/previews?person=${encodeURIComponent(id)}`).then(found => {if (on) {addReal(found.rows, id); redraw(count => count + 1);}}, () => {});
+    addReal({}, id); look();
+    // Once the apps are brought in step, their setup may hold something else: looked at again.
+    window.addEventListener('aiohub-synced', look);
+    return () => {on = false; window.removeEventListener('aiohub-synced', look);};
+  }, [id, person?.v]);
   if (!person) return <p className="empty">This person is gone. <a className="link" href="#/">Back to people</a></p>;
   const group = hub.groups.find(item => item.id === person.groupId)!;
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === id)!)); toast(note);};

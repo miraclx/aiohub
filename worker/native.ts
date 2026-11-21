@@ -406,10 +406,11 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
   if (!env.AIOM_ORIGIN) return {};
   const who = person ?? HUB_OWNER;
   // One trip to the database: whose rows, the setups they could be on, and what was kept from before.
-  const [found, secrets, kept] = await env.DB.batch([
+  const [found, secrets, kept, plays] = await env.DB.batch([
     env.DB.prepare('SELECT p.data AS mine, g.id AS grp, g.data AS theirs FROM people p JOIN groups g ON g.hub = p.hub AND g.id = p.grp WHERE p.hub = ? AND p.id = ?').bind(hub.id, person ?? ''),
     env.DB.prepare("SELECT owner, kind, value FROM secrets WHERE hub = ? AND (owner IN (?, ?) OR owner LIKE '#g:%') AND kind IN ('catalogs', 'mdblist', ?, ?, ?)").bind(hub.id, who, HUB_OWNER, PLAYER, LINK, ROWS),
     env.DB.prepare('SELECT kind, at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind LIKE ?').bind(hub.id, who, `${PREVIEW}%`),
+    env.DB.prepare('SELECT 1 AS played FROM plays WHERE hub = ? AND person = ? LIMIT 1').bind(hub.id, person ?? ''),
   ]);
   const vault: Vault = new Map((secrets.results as {owner: string; kind: string; value: string}[]).map(row => [`${row.owner}/${row.kind}`, row.value]));
   // A person's rows come from whichever Home setup they are on: their own, their group's, or the hub's.
@@ -421,7 +422,7 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
     const viaHub = !!env.TRAKT_CLIENT_ID && !((await held<{again?: boolean}>(env, vault, hub.id, person, LINK)) ?? {again: true}).again;
     // Only where the row is (its catalog id) matters here, never the address itself.
     served = vault.has(`${person}/${ROWS}`) ? {at: 'https://hub.invalid', trakt: viaHub} : null; trakt = !!mine.trakt;
-    rows = rowsOf(mine.rows, shared, {trakt: trakt || viaHub, lists: vault.has(`${person}/mdblist`)}, mine.picks); owners = [person, groupOwner(row.grp), HUB_OWNER];
+    rows = rowsOf(mine.rows, shared, {trakt: trakt || viaHub, lists: vault.has(`${person}/mdblist`), watched: viaHub || vault.has(`${person}/mdblist`) || plays.results.length > 0}, mine.picks); owners = [person, groupOwner(row.grp), HUB_OWNER];
   }
   // With AIOMetadata in front, a person's rows are on their own setup there.
   let made: Catalogs | null = person && env.FRONT === 'aiometadata' ? await held<Catalogs>(env, vault, hub.id, person, PLAYER) : null;
@@ -454,7 +455,9 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
 export async function syncPlayers(site: Env, hub: {id: string; data: string}, origin = ''): Promise<Synced> {
   const data = JSON.parse(hub.data) as HubData, service = data.defaults.debrid, env = hosted(site, data);
   // The vault, the groups and the people in one trip to the database: each trip costs as much as a call to AIOStreams.
-  const [secretRows, groupRows, personRows] = await env.DB.batch([env.DB.prepare('SELECT owner, kind, value FROM secrets WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, name, data FROM groups WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, grp, name, data FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id)]);
+  const [secretRows, groupRows, personRows, playRows] = await env.DB.batch([env.DB.prepare('SELECT owner, kind, value FROM secrets WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, name, data FROM groups WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, grp, name, data FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
+    env.DB.prepare('SELECT DISTINCT person FROM plays WHERE hub = ?').bind(hub.id)]);
+  const played = new Set((playRows.results as {person: string}[]).map(row => row.person));
   const vault = vaultFrom(secretRows.results), accounts = new Map<string, string>();
   for (const name of data.services) {const account = SERVICE[name] ? await held<string>(env, vault, hub.id, HUB_OWNER, `debrid:${name}`) : null; if (account) accounts.set(name, account);}
   const key = accounts.get(service);
@@ -464,7 +467,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
   // or on their way back to it, and ticks Here then never echo into MDBList.
   for (const name of vault.keys()) if (name.endsWith('/mdblist')) {const owner = name.slice(0, -8), own = await held<{key: string; moving?: string}>(env, vault, hub.id, owner, 'mdblist'); if (own?.key && !own.moving) watching.set(owner, own.key);}
   for (const name of vault.keys()) if (name.endsWith('/trakt')) {const owner = name.slice(0, -6), held_ = await held<{tokenId: string}>(env, vault, hub.id, owner, 'trakt'); if (held_?.tokenId) linked.set(owner, held_.tokenId);}
-  // Each person gets their own rows from the hub (rows.ts), at an address of their own made once: Recently Watched for everyone, the
+  // Each person gets their own rows from the hub (rows.ts), at an address of their own made once: Recently Watched once there is something in it, the
   // MDBList watchlist with their MDBList key, and their Trakt rows once Trakt is connected to the hub. If their Trakt is also
   // connected on AIOMetadata, the hub's wins and AIOMetadata's is no longer used. Without AIOMetadata in front a row of one's own
   // would give everyone a Home setup of their own, so there only those with Trakt or MDBList in use get the address.
@@ -487,7 +490,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
     // their own setup (AIOMetadata in front). Without that, a kept key would only make them a setup of their own for nothing.
     const at = served.get(row.id), hubTrakt = viaHub.has(row.id) && !!at, trakt = !hubTrakt && own.trakt ? linked.get(row.id) ?? null : null, lists = own.lists ? watching.get(row.id) ?? null : null, reads = own.lists || env.FRONT !== 'aiometadata' ? null : watching.get(row.id) ?? null;
     // Someone with Trakt or MDBList connected and no Home of their own gets those rows above the shared ones.
-    return {id: row.id, name: row.name, group, above, want: {rows: rowsOf(own.rows, above.rows, {trakt: !!(trakt || hubTrakt), lists: keyed.has(row.id)}, own.picks), settings: {...above.settings, ...own.settings}, trakt, lists, reads, served: at ? {at, trakt: hubTrakt} : null} as Want, tracks: !!lists, home: null as string | null, variants: [] as string[]};
+    return {id: row.id, name: row.name, group, above, want: {rows: rowsOf(own.rows, above.rows, {trakt: !!(trakt || hubTrakt), lists: keyed.has(row.id), watched: hubTrakt || keyed.has(row.id) || played.has(row.id)}, own.picks), settings: {...above.settings, ...own.settings}, trakt, lists, reads, served: at ? {at, trakt: hubTrakt} : null} as Want, tracks: !!lists, home: null as string | null, variants: [] as string[]};
   });
 
   // Home. The hub has one setup on AIOMetadata; a group or a person gets their own only while theirs differs from the one above.

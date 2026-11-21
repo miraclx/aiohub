@@ -19,7 +19,7 @@ export interface Device {id: string; app: string; name: string; seen: string; pl
 // Plays one of Trakt and MDBList has and the other lacks, from the daily look (drift.ts on the Worker).
 export interface Miss {kind: 'movie' | 'show'; tmdb: number; name: string; season?: number; episode?: number; at: number; key: string}
 export interface Drift {checked: number; since: number; toMdblist: Miss[]; toTrakt: Miss[]}
-export interface Person {moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
+export interface Person {played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
 export interface Hub {
@@ -64,11 +64,12 @@ export const traktRows = (): Row[] => [
   {id: 'recently-watched', title: 'Recently Watched', kind: 'Movies & shows, latest first', source: 'Trakt', origin: 'own', on: true, core: true},
 ];
 export const TRAKT_IDS = new Set(traktRows().map(row => row.id));
-/* Which accounts a person has connected: Trakt (to the hub, or the older way through AIOMetadata), and an MDBList key. */
-export interface Linked {trakt: boolean; lists: boolean}
-/* Whether a person's own row can be filled for them: the MDBList watchlist with MDBList, Recently Watched always (from Trakt, else
-   MDBList, else what they played here), the rest with Trakt. */
-export const reaches = (id: string, has: Linked) => id === 'recently-watched' || (id === 'mdblist-watchlist' ? has.lists : has.trakt);
+/* Which accounts a person has connected: Trakt (to the hub, or the older way through AIOMetadata), and an MDBList key; and whether
+   the hub can show something they watched (Trakt connected to the hub, an MDBList key, or a play here). */
+export interface Linked {trakt: boolean; lists: boolean; watched: boolean}
+/* Whether a person's own row can be filled for them: the MDBList watchlist with MDBList, Recently Watched once there is something
+   to put in it (from Trakt, else MDBList, else what they played here), the rest with Trakt. */
+export const reaches = (id: string, has: Linked) => id === 'recently-watched' ? has.watched : id === 'mdblist-watchlist' ? has.lists : has.trakt;
 /* Rows on the same Home with the same name, on together and from different places, each say where they come from ("Watchlist ·
    Trakt", "Watchlist · MDBList"); otherwise the plain name. Only what is shown changes: the name kept stays the plain one. */
 const placeOf = (row: Row) => row.source.split(' · ')[0];
@@ -198,7 +199,7 @@ export const hasLists = (person: Person) => person.lists || !!person.listsKept;
 /* Where a person's Recently Watched comes from: Trakt connected to the hub, else their MDBList, else what they played here. The
    older Trakt link through AIOMetadata does not count: the hub cannot read it. */
 export const sourceOf = (person: Person) => (person.history ? !person.history.again : SAMPLE && person.trakt) ? 'Trakt' : hasLists(person) ? 'MDBList' : 'Played here';
-export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), {trakt: hasTrakt(person), lists: hasLists(person)}, person.picks)
+export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), {trakt: hasTrakt(person), lists: hasLists(person), watched: SAMPLE || hasLists(person) || !!person.history && !person.history.again || !!person.played}, person.picks)
   .map(row => row.id === 'recently-watched' ? {...row, source: sourceOf(person)} : row);
 
 const words = ['maple', 'river', 'copper', 'lantern', 'meadow', 'harbor', 'ember', 'willow', 'pebble', 'comet'];

@@ -9,6 +9,7 @@ import type {Env} from './util';
 import {blocked, failed, getSecret, guesses, newId, newToken, now, putSecret, same, sha, unseal} from './util';
 import type {Target} from './trakt';
 import {LINK, deliver, history, progressOf, soon} from './trakt';
+import {syncPlayers} from './native';
 
 const MOUNT = '/jellyfin', SEEN_EVERY = 600, REMEMBER = 20_000, MOST_DEVICES = 30;
 // The headers are named one by one: in a browser, `*` does not cover Authorization.
@@ -123,7 +124,7 @@ async function seatOf(env: Env, hub: string, id: string): Promise<Seat | null> {
    they connected Trakt history (scrobble, below). */
 const REPORTS: Record<string, 'start' | 'progress' | 'stop'> = {'/sessions/playing': 'start', '/sessions/playing/progress': 'progress', '/sessions/playing/stopped': 'stop'};
 const noted = new Map<string, number>(), seen = new Map<string, {pos: number; at: number; paused: boolean}>();
-async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', text: string, where: {place: string; net: string}) {
+async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', text: string, where: {place: string; net: string}, origin: string) {
   let report: {ItemId?: string; PositionTicks?: number; IsPaused?: boolean};
   try {report = JSON.parse(text);} catch {return;}
   const item = String(report.ItemId ?? '').slice(0, 200), key = `${hub}/${seat.person}/${item}`, last = noted.get(key) ?? 0, paused = report.IsPaused === true;
@@ -139,6 +140,7 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
     await env.DB.prepare('INSERT INTO starts (hub, person, item, device, at) VALUES (?, ?, ?, ?, ?)').bind(hub, seat.person, item, seat.on, now()).run();
     if (Math.random() < 0.02) await env.DB.prepare('DELETE FROM starts WHERE hub = ? AND at < ?').bind(hub, now() - 180 * 86400).run();
   }
+  let firstHere = false;
   const known = await env.DB.prepare('SELECT art, duration FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{art: string; duration: number}>();
   const position = kind === 'mark' ? known?.duration ?? 0 : Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' || kind === 'mark' ? 0 : 1;
   // Rows from before pictures were kept are looked up once more, on their next start.
@@ -149,10 +151,15 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
     if (!about?.Name) return;
     const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
     const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
+    const first = !await env.DB.prepare('SELECT 1 FROM plays WHERE hub = ? AND person = ? LIMIT 1').bind(hub, seat.person).first();
     await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, device = excluded.device, updated = excluded.updated, art = excluded.art, place = excluded.place, net = excluded.net')
       .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), kind === 'mark' ? Math.round(Number(about.RunTimeTicks ?? 0) / 1e7) : position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art, where.place, where.net).run();
+    firstHere = first;
   }
   if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused, jumped);
+  // Their first play here: Recently Watched now has something in it, so their Home gets it without waiting for the site to be opened.
+  // Not for someone with Trakt connected to the hub: theirs was there already.
+  if (firstHere && !seat.scrobble) {const found = await env.DB.prepare('SELECT id, data FROM hubs WHERE id = ?').bind(hub).first<{id: string; data: string}>(); if (found) await syncPlayers(env, found, origin).catch(() => null);}
 }
 const asPerson = (seat: Seat) => `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`;
 /* Trakt history, for a person who connected it (see trakt.ts). Starting, pausing, carrying on, stopping and ticking as watched are
@@ -288,10 +295,10 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
     if (now() - seat.seen > SEEN_EVERY) {const where = whereOf(request, env); seat.seen = now(); ctx.waitUntil(env.DB.prepare('UPDATE devices SET seen = ?, place = ?, net = ? WHERE id = ?').bind(seat.seen, where.place, where.net, id).run());}
   }
   const body = reading ? undefined : await request.text();
-  if (seat && body && REPORTS[lower]) ctx.waitUntil(note(env, hub, seat, REPORTS[lower], body, whereOf(request, env)).catch(() => {}));
+  if (seat && body && REPORTS[lower]) ctx.waitUntil(note(env, hub, seat, REPORTS[lower], body, whereOf(request, env), url.origin).catch(() => {}));
   // Ticked as watched in an app without playing it: kept like a finished play, so it can be copied to MDBList later too.
   const ticked = seat && request.method === 'POST' ? /^\/(?:users\/[^/]+\/playeditems|userplayeditems)\/([\w-]{1,80})$/i.exec(path) : null;
-  if (seat && ticked) ctx.waitUntil(note(env, hub, seat, 'mark', JSON.stringify({ItemId: ticked[1]}), whereOf(request, env)).catch(() => {}));
+  if (seat && ticked) ctx.waitUntil(note(env, hub, seat, 'mark', JSON.stringify({ItemId: ticked[1]}), whereOf(request, env), url.origin).catch(() => {}));
   // AIOMetadata's libraries are its catalog rows, so "watched, in this library" only covers what the row shows today. In a real
   // Jellyfin server a library holds everything, which is what history readers (Trakt's own Jellyfin sync) rely on: they ask
   // library by library. So a watched list asked for under one of the person's own top-level libraries is answered from all of

@@ -112,6 +112,8 @@ function Hubbed() {
         said = message; loud = false;
         // What the sync itself changed (a sign-in made, a link checked) shows once nothing is waiting to be sent.
         if ((result?.state === 'ok' || result?.state === 'partial') && !pending()) await load();
+        // A person's page looks at their setup again: what it holds may have just changed (a new person's first setup, a Kids limit).
+        if (result?.state === 'ok' || result?.state === 'partial') window.dispatchEvent(new Event('aiohub-synced'));
       })();
     };
     const drain = async () => {
