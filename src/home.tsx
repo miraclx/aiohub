@@ -2,7 +2,7 @@ import {useState} from 'react';
 import type React from 'react';
 import {DragDropProvider} from '@dnd-kit/react';
 import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
-import {TRAKT_IDS, countries, suggestedFor, tongues} from './data';
+import {TRAKT_IDS, countries, folderFits, suggestedFor, tongues} from './data';
 import type {Cover, Level, Limit, Row} from './data';
 import {Art, Chips, NameField, Posters, Segments, Sheet, Switch, hash} from './ui';
 
@@ -16,20 +16,22 @@ const LATER: Record<string, string> = {
   'mdblist-watchlist': 'MDBList · Appears once someone connects MDBList. With Trakt too, it starts off',
 };
 const laterOf = (row: Row) => LATER[row.id] ?? `${row.source} · Appears once someone connects Trakt`;
-function RowCard({row, index, tag, locked, later, person, onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; later?: boolean; person?: string; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
+function RowCard({row, index, tag, locked, later, person, limit = 'all', onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; later?: boolean; person?: string; limit?: Limit; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
+  // Under a content limit only the folders that suit it are shown, as in the player apps.
+  const covers = row.covers?.filter(cover => folderFits(row.id, cover.image, limit)), none = !!row.covers?.length && !covers?.length;
   const sortable = useSortable({id: row.id, index, disabled: locked});
   return <li ref={sortable.ref} className={`row${sortable.isDragging ? ' dragging' : ''}${locked ? ' locked' : ''}${later ? ' later' : ''}`}>
     {!locked && <Grip handleRef={sortable.handleRef} label={`Move ${row.title}`}/>}
     <div className="row-main">
       <div className="row-head">
-        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? laterOf(row) : `${row.kind} · ${row.source}`}</p></div>
+        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? laterOf(row) : none ? 'Not shown under this content limit' : `${row.kind} · ${row.source}`}</p></div>
         {!locked && <div className="row-actions">
           {onArrange && <button type="button" className="ghost small" onClick={onArrange}>Edit</button>}
           {onRemove && <button type="button" className="ghost small" onClick={onRemove}>Remove</button>}
           <Switch checked={row.on} onChange={onToggle} label={`Show ${row.title} on Home`}/>
         </div>}
       </div>
-      {!later && <Art row={row} person={person}/>}
+      {!later && !none && <Art row={covers ? {...row, covers} : row} person={person}/>}
     </div>
   </li>;
 }
@@ -74,7 +76,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
       const from = on.findIndex(row => row.id === String(event.operation.source!.id)), to = event.operation.source.index;
       if (from >= 0 && from !== to) onChange([...moved(on, from, to), ...off], 'Order saved');
     }}>
-      <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={level !== 'own' && TRAKT_IDS.has(row.id)} person={person}
+      <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={level !== 'own' && TRAKT_IDS.has(row.id)} person={person} limit={limit}
         onToggle={() => set(row.id, {on: false}, `“${row.title}” is off Home`)}
         onArrange={find && !row.covers ? undefined : () => setArranging(row.id)}
         onRemove={row.origin === level && !row.core ? () => onChange(rows.filter(item => item.id !== row.id), `Removed “${row.title}”`) : undefined}/>)}</ol>

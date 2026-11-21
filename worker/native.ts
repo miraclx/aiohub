@@ -1,8 +1,8 @@
 // The hub's own setup on the streaming server (AIOStreams): created once per hub, then kept in step with what the site holds.
 // The hub only ever talks to a setup it created itself, whose id and password it keeps in the vault. Nothing here names an id in an
 // error or a log line. Each request shape was proven by script against a live server first.
-import {rowsOf, suggestionOf} from '../src/data';
-import type {Addon, Part, Row, Settings} from '../src/data';
+import {folderFits, rowsOf, suggestionOf} from '../src/data';
+import type {Addon, Limit, Part, Row, Settings} from '../src/data';
 import type {Env} from './util';
 import {gate, getSecret, hosted, inTurn, newToken, now, putSecret, sha, unseal} from './util';
 import {CUSTOM, NO_TRAKT, ROWS, addressOf, catalogOf, servedOf} from './rows';
@@ -243,17 +243,32 @@ function foldersOf(item: Shipped, covers: Row['covers']) {
 /* A part of a suggested row (SUGGESTED in data.ts) as the catalog AIOMetadata serves it. Shapes from AIOMetadata 4.1.0 (getCatalog.ts):
    a TMDB collection is read by its id and always comes in release order; a TMDB search by its params; an MDBList list by its id. */
 const DISCOVER = (part: {discover: string; type: string}) => `tmdb.discover.${part.type}.${part.discover}.aiohub`;
-function partOf(part: Part, name: string): Catalog {
+function partOf(part: Part, name: string, limit: Limit = 'all'): Catalog {
   if ('mdblist' in part) return {id: `mdblist.${part.mdblist}`, type: part.type, name, source: 'mdblist', sort: 'default'};
   if ('collection' in part) return {id: `tmdb.collection.${part.collection}`, type: 'movie', name, source: 'tmdb', metadata: {listId: String(part.collection), sortDirection: 'asc', hideUnreleased: true}};
-  return {id: DISCOVER(part), type: part.type, name, source: 'tmdb', metadata: {discover: {version: 2, source: 'tmdb', mediaType: part.type === 'movie' ? 'movie' : 'tv', params: part.params}}};
+  return {id: DISCOVER(part), type: part.type, name, source: 'tmdb', metadata: {discover: {version: 2, source: 'tmdb', mediaType: part.type === 'movie' ? 'movie' : 'tv', params: {...part.params, ...rated(part.type, limit)}}}};
 }
+/* Under a content limit a TMDB search asks TMDB for rated titles only (US ratings), so a row comes full. AIOMetadata's own check
+   runs after a page is fetched: on a row TMDB fills without it, such as Trending, a Kids page of twenty kept one or two. */
+const CERTS: Record<string, Record<'movie' | 'series', string>> = {kids: {movie: 'G|PG', series: 'TV-Y|TV-Y7|TV-G|TV-PG'}, teen: {movie: 'G|PG|PG-13', series: 'TV-Y|TV-Y7|TV-G|TV-PG|TV-14'}};
+const rated = (type: string, limit: Limit) => CERTS[limit] ? {certification_country: 'US', certification: CERTS[limit][type === 'movie' ? 'movie' : 'series']} : {};
+// Trending under a limit: what is popular on TMDB now among recent, rated titles (films out in the last year, shows with an episode
+// in the last month).
+const TRENDING_RATED: Record<string, Part & {discover: string}> = {
+  'trending-movies': {discover: 'trending', type: 'movie', params: {sort_by: 'popularity.desc', 'primary_release_date.gte': '__tmdb_date__:last_year:from', 'primary_release_date.lte': '__tmdb_date__:today:to', 'vote_count.gte': '20'}},
+  'trending-series': {discover: 'trending', type: 'series', params: {sort_by: 'popularity.desc', 'air_date.gte': '__tmdb_date__:last_month:from', 'vote_count.gte': '10'}},
+};
 /* A person's rows address on the hub, and whether the hub reads their Trakt (else it serves only the rows that need no Trakt). */
 interface Served {at: string; trakt: boolean}
 /* A Home row that is one catalog: its catalog, or null when it is not one (a collection, or a row this Home cannot fill). `lists`:
    MDBList can be read for this Home; `trakt`: AIOMetadata's own Trakt fills the Trakt rows; `served`: the hub serves its rows. */
-function plainOf(row: Row, lists: boolean, trakt: boolean, served: Served | null): Catalog | null {
+function plainOf(row: Row, lists: boolean, trakt: boolean, served: Served | null, limit: Limit = 'all'): Catalog | null {
   const at = {name: row.title, enabled: row.on, showInHome: true};
+  if (CERTS[limit] && TRENDING_RATED[row.id]) {
+    // For Kids only what is made for children: a mild rating alone lets in talent shows and soaps.
+    const part = TRENDING_RATED[row.id], young = limit === 'kids' ? {with_genres: part.type === 'movie' ? '16|10751' : '16|10751|10762'} : {};
+    return {...partOf({...part, discover: `${part.discover}-${limit}`, params: {...part.params, ...young}}, row.title, limit), ...at};
+  }
   if (TMDB_ROW[row.id]) return {...TMDB_ROW[row.id], ...at, source: 'tmdb'};
   if (served && servedOf(row.id) && (served.trakt || NO_TRAKT.has(row.id))) return catalogOf(served.at, row.id, row.title, row.on);
   if (trakt && !served?.trakt && TRAKT_ROW[row.id]) return {...TRAKT_ROW[row.id], ...at, source: 'trakt'};
@@ -265,27 +280,28 @@ function plainOf(row: Row, lists: boolean, trakt: boolean, served: Served | null
   const boxd = /^letterboxd\.([\w-]{1,60})$/.exec(row.id);
   if (boxd) return {id: row.id, type: 'all', ...at, source: 'letterboxd', enableRatingPosters: true, metadata: {isWatchlist: false, identifier: boxd[1]}};
   const picked = suggestionOf(row.id);
-  if (picked?.parts.length === 1 && (lists || !('mdblist' in picked.parts[0].part))) return {...partOf(picked.parts[0].part, row.title), ...at};
+  if (picked?.parts.length === 1 && (lists || !('mdblist' in picked.parts[0].part))) return {...partOf(picked.parts[0].part, row.title, limit), ...at};
   return null;
 }
 /* The collections the hub makes are known by this start, so they can be told from any made elsewhere. */
 const MINE = 'aiohub-';
 /* Home as AIOMetadata holds it. A collection sits right after the plain row above it, which is how AIOMetadata places one.
    `served`: the person's rows address on the hub, for the rows the hub serves them. */
-export function homeOf(rows: Row[], lists: boolean, trakt = false, served: Served | null = null): {catalogs: Catalog[]; collections: {id: string; [key: string]: unknown}[]} {
+export function homeOf(rows: Row[], lists: boolean, trakt = false, served: Served | null = null, limit: Limit = 'all'): {catalogs: Catalog[]; collections: {id: string; [key: string]: unknown}[]} {
   const catalogs: Catalog[] = [], collections: {id: string; [key: string]: unknown}[] = [], sources = new Map<string, Catalog>();
   let above: {id: string; type: string} | undefined;
   for (const row of rows) {
-    const plain = plainOf(row, lists, trakt, served), item = COLLECTIONS.get(row.id), picked = !plain ? suggestionOf(row.id) : undefined;
+    const plain = plainOf(row, lists, trakt, served, limit), item = COLLECTIONS.get(row.id), picked = !plain ? suggestionOf(row.id) : undefined;
     if (plain) {catalogs.push(plain); above = {id: plain.id, type: plain.type};}
     else if (item && lists && row.on) {
-      const folders = foldersOf(item, row.covers);
+      const folders = foldersOf(item, row.covers).filter(({folder}) => folderFits(item.row, folder.image, limit));
+      if (!folders.length) continue;
       collections.push({kind: 'collection', id: item.id, title: row.title, hideTitle: false, backdropImageUrl: '', pinToTop: false, viewMode: item.viewMode, showAllTab: true, focusGlowEnabled: true, ...(above ? {after: above} : {}),
         folders: folders.map(({folder, title}) => ({id: folder.id, title, shape: folder.shape, hideTitle: folder.hideTitle, coverImageUrl: folder.cover, coverEmoji: '', sources: [folder.source]}))});
       for (const {folder} of folders) sources.set(`${folder.catalog.id}/${folder.catalog.type}`, {...folder.catalog, enabled: true, showInHome: false});
     } else if (picked && row.on) {
       // A suggested row with tabs: a collection, one tab per part. Without MDBList only its TMDB tabs come; with none left, nothing.
-      const parts = picked.parts.filter(({part}) => lists || !('mdblist' in part)).map(({title, part}) => ({title, catalog: partOf(part, `${picked.title}: ${title}`)}));
+      const parts = picked.parts.filter(({part}) => lists || !('mdblist' in part)).map(({title, part}) => ({title, catalog: partOf(part, `${picked.title}: ${title}`, limit)}));
       if (!parts.length) continue;
       const id = `${MINE}${row.id.replace(/[^a-z0-9-]/g, '-')}`;
       collections.push({kind: 'collection', id, title: row.title, hideTitle: false, backdropImageUrl: '', pinToTop: false, viewMode: 'TABBED_GRID', showAllTab: false, focusGlowEnabled: true, ...(above ? {after: above} : {}),
@@ -316,7 +332,7 @@ const art = (settings: Settings, pattern: string = settings.ageBadge ? BETTER.re
 // `$lists` is the person's own MDBList key. With it, what they play is recorded to their MDBList and can be hidden from rows;
 // without it nothing is recorded anywhere (the hub's shared key is one account, so it is never used for that).
 // `$reads` is their MDBList key kept while progress is Here: it only reads their lists, and records and hides nothing.
-const wantedOf = (want: Want, keys: Keys): Wanted => ({...homeOf(want.rows, !!(keys.mdblist || want.lists || want.reads), !!want.trakt, want.served ?? null), ...looks(want.settings), ...art(want.settings), hideWatchedTrakt: !!want.trakt && want.settings.hideWatched, $trakt: want.trakt ?? null,
+const wantedOf = (want: Want, keys: Keys, limit: Limit = 'all'): Wanted => ({...homeOf(want.rows, !!(keys.mdblist || want.lists || want.reads), !!want.trakt, want.served ?? null, limit), ...looks(want.settings), ...art(want.settings), hideWatchedTrakt: !!want.trakt && want.settings.hideWatched, $trakt: want.trakt ?? null,
   playbackReporting: !!want.lists, mdblistWatchTracking: !!want.lists, hideWatchedMdblist: !!want.lists && want.settings.hideWatched, $lists: want.lists ?? null, ...(want.reads ? {$reads: want.reads} : {})});
 const LATER = 'AIOMetadata did not answer, so Home rows in the player apps were not updated. It will be tried again on your next change.';
 
@@ -414,11 +430,13 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
   ]);
   const vault: Vault = new Map((secrets.results as {owner: string; kind: string; value: string}[]).map(row => [`${row.owner}/${row.kind}`, row.value]));
   // A person's rows come from whichever Home setup they are on: their own, their group's, or the hub's.
-  let rows = data.rows, owners = [HUB_OWNER], served: Served | null = null, trakt = false;
+  let rows = data.rows, owners = [HUB_OWNER], served: Served | null = null, trakt = false, limit: Limit = 'all';
   if (person) {
     const row = found.results[0] as {mine: string; grp: string; theirs: string} | undefined;
     if (!row) return {};
-    const mine = JSON.parse(row.mine) as {rows: Row[] | null; trakt?: boolean; picks?: Record<string, boolean>}, shared = (JSON.parse(row.theirs) as {rows: Row[] | null}).rows ?? data.rows;
+    const mine = JSON.parse(row.mine) as {rows: Row[] | null; trakt?: boolean; picks?: Record<string, boolean>; settings?: Partial<Settings>}, theirs = JSON.parse(row.theirs) as {rows: Row[] | null; settings?: Partial<Settings>}, shared = theirs.rows ?? data.rows;
+    // Their own setup is made under their content limit (see plainOf): the rows are looked up as it holds them.
+    if (env.FRONT === 'aiometadata') limit = {...data.defaults, ...theirs.settings, ...mine.settings}.limit ?? 'all';
     const viaHub = !!env.TRAKT_CLIENT_ID && !((await held<{again?: boolean}>(env, vault, hub.id, person, LINK)) ?? {again: true}).again;
     // Only where the row is (its catalog id) matters here, never the address itself.
     served = vault.has(`${person}/${ROWS}`) ? {at: 'https://hub.invalid', trakt: viaHub} : null; trakt = !!mine.trakt;
@@ -430,7 +448,7 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
   if (!made) return {};
   const at = made.at ?? env.AIOM_ORIGIN, setup = made, out: Record<string, string[]> = {}, fresh: {row: string; sig: string; posters: string[]}[] = [];
   const before = new Map((kept.results as {kind: string; at: number; items: string}[]).map(row => [row.kind.slice(PREVIEW.length), {at: row.at, ...JSON.parse(row.items) as {sig: string; posters: string[]}}]));
-  const where = (row: Row) => plainOf(row, true, trakt, served);
+  const where = (row: Row) => plainOf(row, true, trakt, served, limit);
   // A hub or group Home keeps places for a person's own rows; only a person has anything in them.
   const wanted = rows.filter(row => row.on && where(row)).slice(0, 16), time = now();
   await inTurn(wanted.map(row => async () => {
@@ -630,7 +648,7 @@ async function syncFronts(env: Env, vault: Vault, hub: string, people: {id: stri
   const done = await inTurn(people.map(person => async () => {
     const kept = await held<Catalogs>(env, vault, hub, person.id, PLAYER), client = kept?.client ?? newToken('a');
     const variant = variants.some(item => item.id === `${OURS}c-${person.id}`) ? `/v/${OURS}c-${person.id}` : '';
-    const wanted: Wanted = {...wantedOf(person.want, keys), jellyfinUserName: person.name, jellyfinAppPassword: client, jellyfinStreamUrl: `${base}${variant}/manifest.json`, jellyfinResumeSource: 'auto', jellyfinUsers: [],
+    const wanted: Wanted = {...wantedOf(person.want, keys, person.want.settings.limit), jellyfinUserName: person.name, jellyfinAppPassword: client, jellyfinStreamUrl: `${base}${variant}/manifest.json`, jellyfinResumeSource: 'auto', jellyfinUsers: [],
       // What production carries on AIOStreams' Home address and in its personas, here set on the person's own server.
       ageRating: RATING[person.want.settings.limit] ?? 'None', jellyfinSkipSource: person.want.settings.skip ? 'auto' : 'off',
       // Kids: a title with no rating could be anything, so it is left out too. Only then is it set, so nobody else's setup changes.

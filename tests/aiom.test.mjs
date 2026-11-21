@@ -675,12 +675,14 @@ test('suggested rows reach the player apps: TMDB ones with the TMDB key alone, M
   assert.deepEqual(tabs('Ada'), {'aiohub-sg-wizarding-world': [['Harry Potter', 'tmdb.collection.1241'], ['Fantastic Beasts', 'tmdb.collection.435259']], 'aiohub-sg-mcu': [['Films', 'tmdb.discover.movie.mcu.aiohub'], ['Shows', 'mdblist.32047']], 'aiohub-sg-star-wars': [['Films', 'mdblist.198749'], ['Shows', 'mdblist.202585']]});
   // A tab's source is in the setup, on, and kept off Home; the search carries its params, the content limit applies as everywhere.
   const mcu = catalogsOf('Ben').find(item => item.id === 'tmdb.discover.movie.mcu.aiohub');
-  assert.equal(mcu.enabled, true); assert.equal(mcu.showInHome, false); assert.deepEqual(mcu.metadata.discover.params, {with_keywords: '180547', sort_by: 'primary_release_date.asc', 'primary_release_date.lte': '__tmdb_date__:today:to'});
+  assert.equal(mcu.enabled, true); assert.equal(mcu.showInHome, false); // Ben is under the Kids limit: TMDB itself is asked for rated titles only, so the tab comes full.
+  assert.deepEqual(mcu.metadata.discover.params, {with_keywords: '180547', sort_by: 'primary_release_date.asc', 'primary_release_date.lte': '__tmdb_date__:today:to', certification_country: 'US', certification: 'G|PG'});
+  assert.deepEqual(catalogsOf('Ada').find(item => item.id === 'tmdb.discover.movie.mcu.aiohub').metadata.discover.params, {with_keywords: '180547', sort_by: 'primary_release_date.asc', 'primary_release_date.lte': '__tmdb_date__:today:to'});
   assert.equal(catalogsOf('Ben').some(item => item.id.startsWith('mdblist.')), false, 'nothing that needs MDBList without a key');
   assert.ok(catalogsOf('Ada').some(item => item.id === 'mdblist.33459' && item.showInHome));
   // Taken off Home again: gone from both setups, and nothing else of theirs changed.
   await hubRows(before);
-  for (const name of ['Ada', 'Ben']) {assert.deepEqual(tabs(name), {}); assert.equal(catalogsOf(name).some(item => /^tmdb\.(collection|discover)\.|^mdblist\.(33459|32047|198749)$/.test(item.id)), false);}
+  for (const name of ['Ada', 'Ben']) {assert.deepEqual(tabs(name), {}); assert.equal(catalogsOf(name).some(item => /^tmdb\.(collection|discover)\.(?!\w+\.trending-)|^mdblist\.(33459|32047|198749)$/.test(item.id)), false);}
 });
 test('a pasted link is checked where the list lives; one that can’t be used says why', async () => {
   const find = (who, link) => who('POST', '/api/lists', {link});
@@ -887,6 +889,26 @@ test('a setup another request is still making is waited for quietly; one that ne
   assert.match((await owner('POST', '/api/sync', {})).body.message, /needs a look/); assert.equal(fake.made, made);
   sql("DELETE FROM ops WHERE target = 'cy'"); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.ok(playerOf('Cy'));
   assert.equal((await owner('DELETE', '/api/people/cy')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Cy'), undefined);
+});
+test('under the Kids limit Trending asks TMDB for rated titles, and only the folders made for children come', async () => {
+  // Ben is under the Kids limit: his Trending rows are TMDB searches for rated, recent, popular titles, so they come full.
+  const trending = catalogsOf('Ben').filter(item => /^tmdb\.(trending|discover\.\w+\.trending)/.test(item.id)).map(item => [item.id, item.type, item.name, item.metadata?.discover?.params?.certification]);
+  assert.deepEqual(trending, [['tmdb.discover.movie.trending-kids.aiohub', 'movie', 'Trending Movies', 'G|PG'], ['tmdb.discover.series.trending-kids.aiohub', 'series', 'Trending Shows', 'TV-Y|TV-Y7|TV-G|TV-PG']]);
+  // Ada has no limit: TMDB's own Trending, as before.
+  assert.deepEqual(catalogsOf('Ada').filter(item => /trending/.test(item.id)).map(item => item.id), ['tmdb.trending', 'tmdb.trending']);
+  // Folders: with Ada under the Kids limit and her MDBList key reading the lists, only the children's folders come; a collection with
+  // none of them (by service) does not come at all. Under Teen she keeps every folder but Adult Animation.
+  const limitAda = async limit => {const me = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
+    assert.equal((await owner('PUT', '/api/people/ada', {name: me.name, groupId: me.groupId, rows: me.rows, settings: {...me.settings, limit}, can: me.can, paused: me.paused, trakt: me.trakt, lists: me.lists, v: me.v})).status, 200);
+    assert.deepEqual(await syncAll(), {state: 'ok'});
+    return Object.fromEntries(collectionsOf('Ada').filter(item => !item.id.startsWith('aiohub-')).map(item => [item.title, item.folders.map(folder => folder.title)]));};
+  const all = await limitAda('all');
+  assert.ok(all['Movies by Genre'].includes('Adult Animation') && all['Movies by Service']?.length > 0, JSON.stringify(Object.keys(all)));
+  const kids = await limitAda('kids');
+  assert.deepEqual(kids, {'Movies by Genre': ['Animated Comedies', 'Animation', 'Family Movie Night', 'Favorite Cartoons', 'Kids', 'Lovable Monsters'], 'Shows by Genre': ['Kids', 'Nature'], 'Mixed Genre Collections': ['Learning Corner']});
+  const teen = await limitAda('teen');
+  assert.deepEqual(teen['Movies by Genre'], all['Movies by Genre'].filter(title => title !== 'Adult Animation')); assert.deepEqual(teen['Movies by Service'], all['Movies by Service']);
+  await limitAda('all');
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);

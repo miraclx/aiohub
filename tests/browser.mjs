@@ -158,7 +158,8 @@ await sheet.getByRole('heading', {name: 'Your lists'}).waitFor(); await sheet.ge
 await sheet.getByText('Trakt · 12 titles').waitFor();
 // Without an MDBList key only the TMDB picks are offered, and the rest are said to be waiting for one.
 const picks = await sheet.locator('.suggested li strong').allTextContents();
-assert.deepEqual(picks, ['Marvel Cinematic Universe', 'Wizarding World', 'Middle-earth', 'James Bond', 'Pixar', 'Studio Ghibli']);
+// The rows for children (TMDB only) come last without a content limit.
+assert.deepEqual(picks, ['Marvel Cinematic Universe', 'Wizarding World', 'Middle-earth', 'James Bond', 'Pixar', 'Studio Ghibli', 'Kids’ Channels', 'Animation Studios']);
 await sheet.getByText(/more picks read MDBList lists/).waitFor();
 await sheet.getByRole('button', {name: /^Heist nights/}).click(); await toast(guest).filter({hasText: 'Added “Heist nights”'}).waitFor();
 assert.equal((await onHome.allTextContents())[0], 'Heist nightsYours');

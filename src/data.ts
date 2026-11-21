@@ -106,6 +106,16 @@ export function rowsOf(own: Row[] | null, shared: Row[], has: Linked, picks?: Re
   }
   return named(placed(shared).filter(fits).map(row => !TRAKT_IDS.has(row.id) ? row : picks?.[row.id] !== undefined ? {...row, on: picks[row.id]} : row.id === 'mdblist-watchlist' && has.trakt ? {...row, on: false} : row));
 }
+/* Collection folders under a content limit, known by their row and cover. Kids get only the folders made for children: the others
+   are filtered title by title after fetching, so they come thin, and shows with a rating read loosely slip through. Teen loses Adult
+   Animation. The site shows the same folders the player apps get (native.ts). */
+const FRK = 'https://raw.githubusercontent.com/itsrenoria/fusion-starter-kit/refs/heads/main/resources/widgets/genres/wide/dannyrutledge/';
+const KIDS_ONLY: Record<string, string[]> = {
+  'movies-by-genre': [`${FRK}kids-wide.png`, `${FRK}family-movie-night-wide.png`, `${FRK}favorite-cartoons-wide.png`, `${FRK}lovable-monsters-wide.png`, '/covers/20.jpg', '/covers/21.jpg'],
+  'shows-by-genre': [`${FRK}kids-wide.png`, `${FRK}nature-wide.png`], 'mixed-genre': ['/covers/33.jpg'],
+};
+const NOT_FOR_TEEN: Record<string, string[]> = {'movies-by-genre': ['/covers/17.jpg']};
+export const folderFits = (row: string, image: string, limit: Limit) => limit === 'kids' ? !!KIDS_ONLY[row]?.includes(image) : limit !== 'teen' || !NOT_FOR_TEEN[row]?.includes(image);
 export const isTrakt = (item: Row) => item.source === 'Trakt' || item.source.startsWith('Trakt ·');
 /* ---------- suggested rows ("Or pick one" in Add row) ----------
    Each is a real row: its id is the Home row it makes, so one already on a Home is not offered again. A part is one source:
@@ -139,6 +149,12 @@ export const SUGGESTED: Suggestion[] = [
   list(101881, 'movie', 'IMDb Top 250 Movies', {hide: ['kids', 'teen']}),
   list(101882, 'series', 'IMDb Top 250 Shows', {hide: ['kids', 'teen']}),
   list(86934, 'movie', 'New on Digital', {hide: ['kids']}),
+  // Kids' TV channels and animation studios, from TMDB (network and company ids checked on 2026-11-21): under a limit each folder
+  // asks TMDB for rated titles only, so they come full.
+  tabs('sg.kids-channels', 'Kids’ Channels', [['Disney Channel', 54], ['Disney Junior', 281], ['Disney XD', 44], ['Cartoon Network', 56], ['Nickelodeon', 13], ['Nick Jr.', 35], ['PBS Kids', 122], ['CBeebies', 166], ['CBBC', 15]]
+    .map(([title, id]) => ({title: title as string, part: {discover: `network-${id}`, type: 'series' as const, params: {with_networks: String(id), sort_by: 'popularity.desc', 'vote_count.gte': '5'}}})), {kids: true}),
+  tabs('sg.animation-studios', 'Animation Studios', [['Pixar', 3], ['Disney Animation', 6125], ['DreamWorks', 521], ['Illumination', 6704], ['Sony Animation', 2251], ['Studio Ghibli', 10342], ['Aardman', 297], ['LAIKA', 11537]]
+    .map(([title, id]) => ({title: title as string, part: {discover: `studio-${id}`, type: 'movie' as const, params: {with_companies: String(id), sort_by: 'popularity.desc', 'with_runtime.gte': '40', 'primary_release_date.lte': TODAY}}})), {kids: true}),
   // For children. Suggested only, never on by default. (The hub's "Popular Animated Shows" list is not for children.)
   list(13621, 'movie', 'Kids’ Movies, around 7', {kids: true}),
   list(154863, 'series', 'Kids’ Shows, around 7', {kids: true}),
