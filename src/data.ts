@@ -69,10 +69,17 @@ export interface Linked {trakt: boolean; lists: boolean}
 /* Whether a person's own row can be filled for them: the MDBList watchlist with MDBList, Recently Watched always (from Trakt, else
    MDBList, else what they played here), the rest with Trakt. */
 export const reaches = (id: string, has: Linked) => id === 'recently-watched' || (id === 'mdblist-watchlist' ? has.lists : has.trakt);
-/* The two watchlists are told apart by name only while both are on this Home; otherwise the one there is just "Watchlist". */
+/* Rows on the same Home with the same name, on together and from different places, each say where they come from ("Watchlist ·
+   Trakt", "Watchlist · MDBList"); otherwise the plain name. Only what is shown changes: the name kept stays the plain one. */
+const placeOf = (row: Row) => row.source.split(' · ')[0];
+const plainName = (row: Row) => {const tail = ` · ${placeOf(row)}`; return row.title.endsWith(tail) ? row.title.slice(0, -tail.length) : row.title;};
 export function named(rows: Row[]): Row[] {
-  const trakt = rows.find(row => row.id === 'watchlist'), lists = rows.find(row => row.id === 'mdblist-watchlist'), both = !!trakt?.on && !!lists?.on;
-  return rows.map(row => row === trakt ? {...row, title: both ? 'Watchlist · Trakt' : 'Watchlist'} : row === lists ? {...row, title: both ? 'Watchlist · MDBList' : 'Watchlist'} : row);
+  const places = new Map<string, Set<string>>(), key = (row: Row) => plainName(row).trim().toLowerCase();
+  for (const row of rows) if (row.on) places.set(key(row), (places.get(key(row)) ?? new Set()).add(placeOf(row)));
+  return rows.map(row => {
+    const title = row.on && (places.get(key(row))?.size ?? 0) > 1 ? `${plainName(row)} · ${placeOf(row)}` : plainName(row);
+    return title === row.title ? row : {...row, title};
+  });
 }
 /* A Home's rows with each of a person's own rows in its place: where this Home put it, else right after the one before it in
    traktRows() (the first at the top). A hub or group Home keeps them even though only someone with the account gets them: that is
