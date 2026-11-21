@@ -19,13 +19,14 @@ const fail = (toast: (text: string) => void) => (error: Error) => toast(error.me
 /* A person's sign-in details. On the real hub they are fetched for one person at a time, only when a page shows them. */
 interface Creds {password: string; pin: string | null; link: string}
 function useCreds({live}: PageProps, person: Person): [Creds | null, () => void] {
-  const [creds, setCreds] = useState<Creds | null>(null), [turn, setTurn] = useState(0);
+  // Kept with whose they are: another person's page shows nothing until its own have come, never the last person's.
+  const [creds, setCreds] = useState<{id: string; creds: Creds} | null>(null), [turn, setTurn] = useState(0);
   useEffect(() => {
     if (!live) return; let on = true;
-    void live.settled().then(() => live.call<Creds>('GET', `/api/people/${person.id}/signin`)).then(found => {if (on) setCreds(found);}, () => {});
+    void live.settled().then(() => live.call<Creds>('GET', `/api/people/${person.id}/signin`)).then(found => {if (on) setCreds({id: person.id, creds: found});}, () => {});
     return () => {on = false;};
   }, [live, person.id, turn]);
-  return [live ? creds : {password: person.password, pin: person.pin, link: `${location.origin}/${location.search}#/join/${person.id}`}, () => setTurn(turn + 1)];
+  return [live ? creds?.id === person.id ? creds.creds : null : {password: person.password, pin: person.pin, link: `${location.origin}/${location.search}#/join/${person.id}`}, () => setTurn(turn + 1)];
 }
 function PasswordSheet({onClose, onSave, toast}: {onClose: () => void; onSave: (old: string, next: string) => Promise<unknown>; toast: (text: string) => void}) {
   const [old, setOld] = useState(''), [next, setNext] = useState(''), [busy, setBusy] = useState(false);
