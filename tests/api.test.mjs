@@ -222,7 +222,7 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   assert.deepEqual(setup.variants.map(item => item.id), ['hub-p-ada']); assert.match(setup.variants[0].script, /^set presets\[instanceId="h01"\]\.options\.manifestUrl = ".*\/stremio\/home-2\/manifest\.json\?v=\d+"$/);
   assert.deepEqual(setup.jellyfin.personas.map(user => user.variants ?? []), [['hub-p-ada'], []]);
   assert.deepEqual(home.catalogs.map(row => [row.id, row.type, row.name, row.enabled]).slice(0, 2), [['trakt.trending.movies', 'movie', 'Trending Movies', true], ['trakt.trending.shows', 'series', 'Trending Shows', true]]);
-  // Popular is off: a TMDB search that is off is not sent at all, as AIOMetadata would show it in the apps all the same.
+  // Popular is off: a TMDB search that is off is not sent at all.
   assert.deepEqual(home.catalogs.filter(row => !row.enabled).map(row => row.name), []); assert.ok(!home.catalogs.some(row => row.name.startsWith('Popular')));
   // The site's row previews are the real contents of each row that is on, and are there for an invited person too.
   const real = (await owner('GET', '/api/previews')).body.rows; assert.deepEqual(real['trending-movies'], ['https://img.example/1.jpg', 'https://img.example/2.jpg']); assert.equal(real['popular-movies'], undefined);
@@ -245,7 +245,7 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   assert.equal((await owner('PUT', '/api/hub', {...now, rows: now.rows.map(row => row.id === 'trending-series' ? {...row, on: false, title: 'Hot Shows'} : row)})).status, 200);
   assert.deepEqual((await owner('POST', '/api/sync', {})).body, {state: 'ok'});
   const changed = [...fake.homes.values()][0].config; assert.equal(changed.keptByTheServer, true);
-  // Trending is Trakt's chart, which AIOMetadata would show while off: switched off, it leaves the setup.
+  // Trending is Trakt's chart: switched off, it leaves the setup.
   assert.ok(!changed.catalogs.some(row => row.id === 'trakt.trending.shows' || row.name === 'Hot Shows'));
   assert.notEqual([...fake.configs.values()][0].config.presets.find(item => item.type === 'custom').options.manifestUrl, pointer);
   // The collection rows need an MDBList key. Without one they stay out; with one they travel as folders over lists, each placed

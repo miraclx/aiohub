@@ -309,8 +309,7 @@ export function homeOf(rows: Row[], lists: boolean, trakt = false, served: Serve
   let above: {id: string; type: string} | undefined;
   for (const row of rows) {
     const plain = plainOf(row, lists, trakt, served, limit), item = COLLECTIONS.get(row.id), picked = !plain ? suggestionOf(row.id) : undefined;
-    // A TMDB search, collection or list, or a Trakt chart, that is off is not sent at all: AIOMetadata shows those as a library in the
-    // apps even when switched off (seen on production, 2026-11-22). The rest it keeps out of the apps while off.
+    // A TMDB search, collection or list, or a Trakt chart, that is off is simply not sent: nothing reads it while it is off.
     if (plain && plain.enabled === false && /^(tmdb\.(discover|collection|list)|trakt\.(trending|popular))\./.test(plain.id)) continue;
     if (plain) {catalogs.push(plain); above = {id: plain.id, type: plain.type};}
     else if (item && lists && row.on) {
