@@ -9,7 +9,7 @@ fresh() {
   pkill -f "wrangler dev --local --port 8799"; sleep 1; rm -rf .wrangler/state
   npx wrangler d1 migrations apply aiohub --local >/dev/null 2>&1
   # TEST_WHERE: where a request came from is read from made-up test headers, never this machine's real location.
-  (npx wrangler dev --local --port 8799 --var TEST_WHERE:1 "$@" > /tmp/aiohub-dev.log 2>&1 &)
+  (npx wrangler dev --local --port 8799 --var TEST_WHERE:1 --var SITE_ORIGIN:http://127.0.0.1:8799 "$@" > /tmp/aiohub-dev.log 2>&1 &)
   for i in $(seq 1 60); do curl -s -o /dev/null http://localhost:8799/api/open && return; sleep 0.5; done
 }
 npx vite build >/dev/null 2>&1
