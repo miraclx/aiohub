@@ -368,5 +368,6 @@ await owner.getByRole('button', {name: 'Use a passkey'}).click(); await owner.ge
 // A copy of Ada is someone new: their page never shows Ada's invite link, not even for a moment while the copy is saved.
 await owner.goto(BASE + '/#/person/ada/settings'); await owner.locator('.share-text code').first().waitFor();
 await owner.locator('.setting', {hasText: 'Make a copy'}).getByRole('button', {name: 'Copy'}).click(); await owner.getByRole('dialog').getByRole('textbox').fill('Ada Two'); await owner.getByRole('dialog').getByRole('textbox').press('Enter');
-await owner.waitForURL(/#\/person\/ada-two/); for (let i = 0; i < 20; i++) {const shown = await owner.locator('.share-text code').allTextContents(); assert.ok(!shown.includes(link), 'the copy shows its own link, never Ada\'s'); await owner.waitForTimeout(150);}
+// The address changes a moment before the page is drawn: the copy's page is the one headed with its name.
+await owner.waitForURL(/#\/person\/ada-two/); await owner.getByRole('heading', {name: 'Ada Two', exact: true}).waitFor(); for (let i = 0; i < 20; i++) {const shown = await owner.locator('.share-text code').allTextContents(); assert.ok(!shown.includes(link), `the copy shows its own link, never Ada's (at ${owner.url().split('#')[1]}, try ${i}, shown ${JSON.stringify(shown.map(item => item.slice(-12)))}, Ada's ends ${link.slice(-12)})`); await owner.waitForTimeout(150);}
 console.log('browser flow ok; page errors:', JSON.stringify(errors)); await browser.close(); process.exit(errors.length ? 1 : 0);
