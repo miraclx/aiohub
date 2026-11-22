@@ -34,9 +34,9 @@ export const namesOf = (text: string): Record<string, string> => {
 /* What every place without a pick of its own holds: something popular, the same whoever looks and whatever the day, so a sync
    started by anyone writes the same thing. By place number; a fourth place onwards waits for its pick. */
 export const FALLBACKS: Pick[] = [
-  {kind: 'popular', key: 'popular:movie', name: 'Popular films lately', type: 'movie', params: {sort_by: 'popularity.desc', 'vote_count.gte': '200', 'primary_release_date.gte': '__tmdb_date__:last_year:from', 'primary_release_date.lte': TODAY}},
+  {kind: 'popular', key: 'popular:movie', name: 'Popular movies lately', type: 'movie', params: {sort_by: 'popularity.desc', 'vote_count.gte': '200', 'primary_release_date.gte': '__tmdb_date__:last_year:from', 'primary_release_date.lte': TODAY}},
   {kind: 'popular', key: 'popular:series', name: 'Popular shows lately', type: 'series', params: {sort_by: 'popularity.desc', 'vote_count.gte': '100', 'air_date.gte': '__tmdb_date__:last_month:from', without_genres: '10767,10763,10766,10764'}},
-  {kind: 'popular', key: 'acclaimed:movie', name: 'Well-liked films of recent years', type: 'movie', params: {sort_by: 'vote_average.desc', 'vote_count.gte': '1500', 'primary_release_date.gte': '__tmdb_date__:last_5_years:from', 'primary_release_date.lte': TODAY}},
+  {kind: 'popular', key: 'acclaimed:movie', name: 'Well-liked movies of recent years', type: 'movie', params: {sort_by: 'vote_average.desc', 'vote_count.gte': '1500', 'primary_release_date.gte': '__tmdb_date__:last_5_years:from', 'primary_release_date.lte': TODAY}},
 ];
 /* Whether a pick may fill a place now: not of a kind muted for this person, and under a content limit only a TMDB search, which
    asks TMDB for rated titles. Checked again at every sync, so a pick made before the limit changed is never used under it. */
@@ -118,7 +118,7 @@ export async function served(env: Env, hub: string, person: string, id: string, 
 
 /* ---------- picking ---------- */
 // Seasons (MM-DD, inclusive) and the TMDB keyword behind each, checked on themoviedb.org on 2026-11-22.
-const SEASONS = [{id: 'christmas', name: 'Christmas films', from: '11-15', to: '12-31', keyword: '207317'}, {id: 'halloween', name: 'Halloween films', from: '10-01', to: '11-01', keyword: '3335'}];
+const SEASONS = [{id: 'christmas', name: 'Christmas movies', from: '11-15', to: '12-31', keyword: '207317'}, {id: 'halloween', name: 'Halloween movies', from: '10-01', to: '11-01', keyword: '3335'}];
 const GENRES: Record<number, string> = {28: 'Action', 12: 'Adventure', 16: 'Animated', 35: 'Comedy', 80: 'Crime', 99: 'Documentary', 18: 'Drama', 10751: 'Family', 14: 'Fantasy', 36: 'History', 27: 'Horror', 10402: 'Music', 9648: 'Mystery',
   10749: 'Romance', 878: 'Sci-fi', 53: 'Thriller', 10752: 'War', 37: 'Western', 10759: 'Action', 10762: 'Kids', 10765: 'Sci-fi and fantasy', 10768: 'War and politics'};
 // The country a person's Top 10 is for: where they last played something here. FlixPatrol names its files by country.
@@ -173,7 +173,7 @@ async function candidates(ask: Ask, watched: Item[], plays: {item: string; detai
     if (who) await search('crew', `crew:${who[0]}`, `More from ${who[1]}`, 'movie', {with_crew: String(who[0]), sort_by: 'popularity.desc', 'vote_count.gte': '50', 'primary_release_date.lte': TODAY}, {seed: item.at});
   }
   const [favourite] = [...genres].sort((a, b) => b[1] - a[1]);
-  if (open('genres') && favourite && GENRES[favourite[0]] && favourite[1] >= 2) await search('genres', `genres:${favourite[0]}`, `${GENRES[favourite[0]]} films for you`, 'movie', {with_genres: String(favourite[0]), sort_by: 'vote_average.desc', 'vote_count.gte': '500', 'primary_release_date.lte': TODAY});
+  if (open('genres') && favourite && GENRES[favourite[0]] && favourite[1] >= 2) await search('genres', `genres:${favourite[0]}`, `${GENRES[favourite[0]]} movies for you`, 'movie', {with_genres: String(favourite[0]), sort_by: 'vote_average.desc', 'vote_count.gte': '500', 'primary_release_date.lte': TODAY});
   const season = SEASONS.find(item => mmdd >= item.from && mmdd <= item.to);
   if (open('seasonal') && season) await search('seasonal', `seasonal:${season.id}`, season.name, 'movie', {with_keywords: season.keyword, sort_by: 'popularity.desc', 'vote_count.gte': '50', 'primary_release_date.lte': TODAY}, {season: true});
   if (open('top10')) {
@@ -185,7 +185,7 @@ async function candidates(ask: Ask, watched: Item[], plays: {item: string; detai
     });
     for (const type of ['movie', 'series'] as const) {
       const left = unseen(charts?.[type] ?? [], type, seen);
-      if (left.length >= ENOUGH) out.push({pick: {kind: 'top10', key: `top10:${type}`, name: `Top 10 ${type === 'movie' ? 'films' : 'shows'} on Netflix in ${place}`, type, chart: {service: 'netflix', cc, slug}}, titles: left.length * 2, quality: 0.5});
+      if (left.length >= ENOUGH) out.push({pick: {kind: 'top10', key: `top10:${type}`, name: `Top 10 ${type === 'movie' ? 'movies' : 'shows'} on Netflix in ${place}`, type, chart: {service: 'netflix', cc, slug}}, titles: left.length * 2, quality: 0.5});
     }
   }
   return out;

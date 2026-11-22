@@ -703,8 +703,8 @@ test('suggested rows reach the player apps: TMDB ones with the TMDB key alone, M
   assert.deepEqual({...bond}, {id: 'tmdb.collection.645', type: 'movie', name: 'James Bond', source: 'tmdb', metadata: {listId: '645', sortDirection: 'asc', hideUnreleased: true}, enabled: true, showInHome: true});
   // The rows for children Ben gets under the Kids limit are left aside here (see the Kids test below).
   const tabs = name => Object.fromEntries(collectionsOf(name).filter(item => item.id.startsWith('aiohub-') && !/sg-(kids-channels|animation-studios)$/.test(item.id)).map(item => [item.id, item.folders.map(folder => [folder.title, folder.sources[0].catalogId])]));
-  assert.deepEqual(tabs('Ben'), {'aiohub-sg-wizarding-world': [['Harry Potter', 'tmdb.collection.1241'], ['Fantastic Beasts', 'tmdb.collection.435259']], 'aiohub-sg-mcu': [['Films', 'tmdb.discover.movie.mcu.aiohub']]});
-  assert.deepEqual(tabs('Ada'), {'aiohub-sg-wizarding-world': [['Harry Potter', 'tmdb.collection.1241'], ['Fantastic Beasts', 'tmdb.collection.435259']], 'aiohub-sg-mcu': [['Films', 'tmdb.discover.movie.mcu.aiohub'], ['Shows', 'mdblist.32047']], 'aiohub-sg-star-wars': [['Films', 'mdblist.198749'], ['Shows', 'mdblist.202585']]});
+  assert.deepEqual(tabs('Ben'), {'aiohub-sg-wizarding-world': [['Harry Potter', 'tmdb.collection.1241'], ['Fantastic Beasts', 'tmdb.collection.435259']], 'aiohub-sg-mcu': [['Movies', 'tmdb.discover.movie.mcu.aiohub']]});
+  assert.deepEqual(tabs('Ada'), {'aiohub-sg-wizarding-world': [['Harry Potter', 'tmdb.collection.1241'], ['Fantastic Beasts', 'tmdb.collection.435259']], 'aiohub-sg-mcu': [['Movies', 'tmdb.discover.movie.mcu.aiohub'], ['Shows', 'mdblist.32047']], 'aiohub-sg-star-wars': [['Movies', 'mdblist.198749'], ['Shows', 'mdblist.202585']]});
   // A tab's source is in the setup, on, and kept off Home; the search carries its params, the content limit applies as everywhere.
   const mcu = catalogsOf('Ben').find(item => item.id === 'tmdb.discover.movie.mcu.aiohub');
   assert.equal(mcu.enabled, true); assert.equal(mcu.showInHome, false); // Ben is under the Kids limit: TMDB itself is asked for rated titles only, so the tab comes full.
@@ -930,6 +930,11 @@ test('under the Kids limit Trending asks TMDB for rated titles, and only the fol
   assert.deepEqual(catalogsOf('Ada').filter(item => /trending/.test(item.id)).map(item => [item.id, item.source, item.metadata?.traktEndpoint]).sort(), [['trakt.trending.movies', 'trakt', 'trending/movies'], ['trakt.trending.shows', 'trakt', 'trending/shows']]);
   // Ben gets the rows for children too, on, right after his own rows, without anyone adding them; switching one off is his choice.
   assert.deepEqual(collectionsOf('Ben').filter(item => /sg-(kids-channels|animation-studios)$/.test(item.id)).map(item => [item.title, item.folders.length]), [['Kids’ Channels', 9], ['Animation Studios', 8]]);
+  // Each folder has its own tile: Kometa's art at a pinned commit, ours for CBBC; the art carries the name, so the title is hidden.
+  const tiles = collectionsOf('Ben').filter(item => /sg-(kids-channels|animation-studios)$/.test(item.id)).flatMap(item => item.folders);
+  assert.ok(tiles.every(folder => /^https:\/\/raw\.githubusercontent\.com\/(Kometa-Team\/Default-Images\/[0-9a-f]{40}|miraclx\/aiohub\/main\/public\/covers)\/.+\.jpg$/.test(folder.coverImageUrl) && folder.hideTitle));
+  assert.equal(tiles.find(folder => folder.title === 'CBBC').coverImageUrl, 'https://raw.githubusercontent.com/miraclx/aiohub/main/public/covers/cbbc.jpg');
+  assert.match(tiles.find(folder => folder.title === 'Nick Jr.').coverImageUrl, /\/network\/color\/Nick%20Jr\.jpg$/);
   assert.equal(catalogsOf('Ben').find(item => item.id === 'tmdb.discover.series.network-166.aiohub').metadata.discover.params.certification, 'TV-Y|TV-Y7|TV-G|TV-PG');
   const ben = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ben');
   const pick = async on => {const me = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ben'); assert.equal((await owner('PUT', '/api/people/ben', {name: me.name, groupId: me.groupId, rows: me.rows, picks: {...me.picks, 'sg.kids-channels': on}, settings: me.settings, can: me.can, paused: me.paused, trakt: me.trakt, lists: me.lists, v: me.v})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});};
@@ -990,7 +995,7 @@ test('For you: three places through each person’s Home, on their own setups on
   assert.equal((await owner('GET', '/api/state')).body.hub.front, true);
   // Before anything is picked each place holds something popular, the same for anyone, so any sync writes the same.
   const ids = catalogsOf('Ada').map(item => item.id), at = id => ids.indexOf(id);
-  assert.deepEqual(fyOf('Ada').map(item => [item.id, item.name]), [['tmdb.discover.movie.fy-popular-movie.aiohub', 'Popular films lately'], ['tmdb.discover.series.fy-popular-series.aiohub', 'Popular shows lately'], ['tmdb.discover.movie.fy-acclaimed-movie.aiohub', 'Well-liked films of recent years']]);
+  assert.deepEqual(fyOf('Ada').map(item => [item.id, item.name]), [['tmdb.discover.movie.fy-popular-movie.aiohub', 'Popular movies lately'], ['tmdb.discover.series.fy-popular-series.aiohub', 'Popular shows lately'], ['tmdb.discover.movie.fy-acclaimed-movie.aiohub', 'Well-liked movies of recent years']]);
   // After the second, fifth and eighth shared rows.
   assert.ok(at('trakt.trending.shows') < at('tmdb.discover.movie.fy-popular-movie.aiohub') && at('tmdb.discover.movie.fy-popular-movie.aiohub') < ids.lastIndexOf('tmdb.top_rated'), JSON.stringify(ids));
   assert.ok(at('tmdb.discover.series.fy-popular-series.aiohub') < at('tmdb.discover.movie.fy-acclaimed-movie.aiohub'));
@@ -1002,7 +1007,7 @@ test('For you: three places through each person’s Home, on their own setups on
   // Switched off while following the Home above: a pick, like a Trakt row; they still follow it.
   await setPerson('ada', me => ({picks: {...me.picks, 'for-you-2': false}})); assert.deepEqual(await syncAll(), {state: 'ok'});
   assert.equal((await owner('GET', '/api/state')).body.hub.people.find(item => item.id === 'ada').rows, null);
-  assert.deepEqual(fyOf('Ada').map(item => item.name), ['Popular films lately', 'Well-liked films of recent years']);
+  assert.deepEqual(fyOf('Ada').map(item => item.name), ['Popular movies lately', 'Well-liked movies of recent years']);
   await setPerson('ada', me => ({picks: {...me.picks, 'for-you-2': true}})); assert.deepEqual(await syncAll(), {state: 'ok'});
   // A place saved with a Home keeps no name of its own.
   const hubNow = (await owner('GET', '/api/state')).body.hub;
@@ -1033,7 +1038,7 @@ test('once a day after five (UTC) each person is picked for, one a run, and then
   // Ben is under the Kids limit: only TMDB searches for films, asked for rated titles. With nothing watched, the season leads.
   const ben = Object.values(picksOf('ben'));
   assert.ok(ben.every(pick => !pick.serve && !pick.chart && (pick.kind === 'popular' || (['crew', 'genres', 'seasonal'].includes(pick.kind) && pick.type === 'movie'))), JSON.stringify(ben));
-  assert.equal(ben[0].name, 'Christmas films');
+  assert.equal(ben[0].name, 'Christmas movies');
   assert.deepEqual(fyOf('Ben')[0].metadata.discover.params, {with_keywords: '207317', sort_by: 'popularity.desc', 'vote_count.gte': '50', 'primary_release_date.lte': '__tmdb_date__:today:to', certification_country: 'US', certification: 'G|PG'});
   // Done for the day: later runs ask nothing more and write nothing.
   const kept = sql('SELECT person, at FROM foryou ORDER BY person'), after = versions(); fake.tmdb = [];
@@ -1071,10 +1076,10 @@ test('a director she watched, her genre, and a show she left: searches AIOMetada
   await setPerson('ada', me => ({settings: {...me.settings, limit: 'all', forYouOff: only('crew', 'genres', 'pickup')}}));
   await cron(DEC + 100 * MIN); await settle(DEC + 105 * MIN);
   const picks = Object.values(picksOf('ada'));
-  assert.deepEqual(picks.map(pick => pick.name).sort(), ['Drama films for you', 'More from Christopher Nolan', 'Pick back up']);
+  assert.deepEqual(picks.map(pick => pick.name).sort(), ['Drama movies for you', 'More from Christopher Nolan', 'Pick back up']);
   const rows = Object.fromEntries(fyOf('Ada').map(item => [item.name, item]));
   assert.equal(rows['More from Christopher Nolan'].metadata.discover.params.with_crew, '525');
-  assert.deepEqual(rows['Drama films for you'].metadata.discover.params, {with_genres: '18', sort_by: 'vote_average.desc', 'vote_count.gte': '500', 'primary_release_date.lte': '__tmdb_date__:today:to'});
+  assert.deepEqual(rows['Drama movies for you'].metadata.discover.params, {with_genres: '18', sort_by: 'vote_average.desc', 'vote_count.gte': '500', 'primary_release_date.lte': '__tmdb_date__:today:to'});
   // Fargo: last played a month ago, at season 1 episode 3, with five seasons out. Breaking Bad, watched this week, is not in it.
   // Its id says upnext, so AIOMetadata does not hide a show part watched from it.
   assert.equal(rows['Pick back up'].id, 'custom.aiohub_rows.series.foryou_upnext_60622');
@@ -1084,7 +1089,7 @@ test('Top 10 comes from FlixPatrol through AIOMetadata, and a chart the hub put 
   await setPerson('ada', me => ({settings: {...me.settings, forYouOff: only('top10')}}));
   await cron(DEC + 120 * MIN); await settle(DEC + 125 * MIN);
   assert.deepEqual(fyOf('Ada').filter(item => item.source === 'flixpatrol').map(item => [item.id, item.type, item.name, item.metadata.countrySlug]),
-    [['flixpatrol.netflix.world.movie', 'movie', 'Top 10 films on Netflix in the world', 'world'], ['flixpatrol.netflix.world.series', 'series', 'Top 10 shows on Netflix in the world', 'world']]);
+    [['flixpatrol.netflix.world.movie', 'movie', 'Top 10 movies on Netflix in the world', 'world'], ['flixpatrol.netflix.world.series', 'series', 'Top 10 shows on Netflix in the world', 'world']]);
   assert.deepEqual(fake.flix, ['global'], 'the charts are read once a day per hub (the world’s are global.json)');
   await setPerson('ada', me => ({settings: {...me.settings, forYouOff: ['top10']}}));
   await cron(DEC + 150 * MIN); await settle(DEC + 155 * MIN);

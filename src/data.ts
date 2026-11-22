@@ -161,7 +161,7 @@ export function withForYou(rows: Row[], front: boolean): Row[] {
 /* The kinds of For you pick, in the order they are offered. `discover`: AIOMetadata fills it from a TMDB search, so it suits a content
    limit; the others are filled by the hub and are left out under one. */
 export const FOR_YOU_KINDS: {id: string; title: string; discover: boolean}[] = [
-  {id: 'because', title: 'Because you watched', discover: false}, {id: 'series', title: 'Next in a film series', discover: false},
+  {id: 'because', title: 'Because you watched', discover: false}, {id: 'series', title: 'Next in a movie series', discover: false},
   {id: 'pickup', title: 'Pick back up', discover: false}, {id: 'crew', title: 'More from a director', discover: true},
   {id: 'genres', title: 'Your genres', discover: true}, {id: 'seasonal', title: 'Seasonal', discover: true}, {id: 'top10', title: 'Top 10', discover: false},
 ];
@@ -178,7 +178,7 @@ export const isTrakt = (item: Row) => item.source === 'Trakt' || item.source.sta
 export type Part = {mdblist: number; type: 'movie' | 'series'} | {collection: number} | {discover: string; type: 'movie' | 'series'; params: Record<string, string>};
 export type Limit = Settings['limit'];
 export interface Suggestion {
-  id: string; title: string; kind: string; source: string; parts: {title: string; part: Part}[];
+  id: string; title: string; kind: string; source: string; parts: {title: string; part: Part; cover?: string}[];
   // hide: limits under which most of it would be filtered out; kids: a row for children, first under a limit; season: [from, to] as MM-DD.
   hide?: Limit[]; kids?: boolean; season?: [string, string];
 }
@@ -186,14 +186,18 @@ export interface Suggestion {
 const TODAY = '__tmdb_date__:today:to';
 const tmdbOnly = (parts: Suggestion['parts']) => parts.every(item => !('mdblist' in item.part));
 const one = (id: string, title: string, kind: string, part: Part, extra: Partial<Suggestion> = {}): Suggestion => ({id, title, kind, source: 'mdblist' in part ? 'MDBList' : 'TMDB', parts: [{title, part}], ...extra});
+// Folder art for suggested collections, shown as each folder's tile in the apps: Kometa's default images (pinned), and ours where it
+// has none (public/covers in this repository; the 2023 CBBC logo is public domain).
+const KOMETA = 'https://raw.githubusercontent.com/Kometa-Team/Default-Images/ab842c454921a738121e7744209e38def7e2a27d/';
+const OWN_ART = 'https://raw.githubusercontent.com/miraclx/aiohub/main/public/covers/';
 const tabs = (id: string, title: string, parts: Suggestion['parts'], extra: Partial<Suggestion> = {}): Suggestion => ({id, title, kind: `Collection · ${parts.length} tabs`, source: tmdbOnly(parts) ? 'TMDB' : 'mdblist' in parts[0].part && parts.every(item => 'mdblist' in item.part) ? 'MDBList' : 'TMDB and MDBList', parts, ...extra});
 const list = (id: number, type: 'movie' | 'series', title: string, extra: Partial<Suggestion> = {}) => one(`mdblist.${id}.${type}`, title, type === 'movie' ? 'Movies' : 'Series', {mdblist: id, type}, extra);
 // The order is the fixed popularity order: what most households reach for first.
 export const SUGGESTED: Suggestion[] = [
   list(8113, 'movie', 'Christmas Movies', {season: ['11-15', '12-31']}),
   list(41422, 'movie', 'Halloween Movies', {season: ['10-01', '11-01'], hide: ['kids', 'teen']}),
-  tabs('sg.star-wars', 'Star Wars', [{title: 'Films', part: {mdblist: 198749, type: 'movie'}}, {title: 'Shows', part: {mdblist: 202585, type: 'series'}}], {hide: ['kids']}),
-  tabs('sg.mcu', 'Marvel Cinematic Universe', [{title: 'Films', part: {discover: 'mcu', type: 'movie', params: {with_keywords: '180547', sort_by: 'primary_release_date.asc', 'primary_release_date.lte': TODAY}}}, {title: 'Shows', part: {mdblist: 32047, type: 'series'}}], {hide: ['kids']}),
+  tabs('sg.star-wars', 'Star Wars', [{title: 'Movies', part: {mdblist: 198749, type: 'movie'}}, {title: 'Shows', part: {mdblist: 202585, type: 'series'}}], {hide: ['kids']}),
+  tabs('sg.mcu', 'Marvel Cinematic Universe', [{title: 'Movies', part: {discover: 'mcu', type: 'movie', params: {with_keywords: '180547', sort_by: 'primary_release_date.asc', 'primary_release_date.lte': TODAY}}}, {title: 'Shows', part: {mdblist: 32047, type: 'series'}}], {hide: ['kids']}),
   tabs('sg.wizarding-world', 'Wizarding World', [{title: 'Harry Potter', part: {collection: 1241}}, {title: 'Fantastic Beasts', part: {collection: 435259}}], {hide: ['kids']}),
   tabs('sg.middle-earth', 'Middle-earth', [{title: 'The Lord of the Rings', part: {collection: 119}}, {title: 'The Hobbit', part: {collection: 121938}}], {hide: ['kids']}),
   one('sg.bond', 'James Bond', 'Movies, in order', {collection: 645}, {hide: ['kids']}),
@@ -205,10 +209,10 @@ export const SUGGESTED: Suggestion[] = [
   list(86934, 'movie', 'New on Digital', {hide: ['kids']}),
   // Kids' TV channels and animation studios, from TMDB (network and company ids checked on 2026-11-21): under a limit each folder
   // asks TMDB for rated titles only, so they come full.
-  tabs('sg.kids-channels', 'Kids’ Channels', [['Disney Channel', 54], ['Disney Junior', 281], ['Disney XD', 44], ['Cartoon Network', 56], ['Nickelodeon', 13], ['Nick Jr.', 35], ['PBS Kids', 122], ['CBeebies', 166], ['CBBC', 15]]
-    .map(([title, id]) => ({title: title as string, part: {discover: `network-${id}`, type: 'series' as const, params: {with_networks: String(id), sort_by: 'popularity.desc', 'vote_count.gte': '5'}}})), {kids: true}),
-  tabs('sg.animation-studios', 'Animation Studios', [['Pixar', 3], ['Disney Animation', 6125], ['DreamWorks', 521], ['Illumination', 6704], ['Sony Animation', 2251], ['Studio Ghibli', 10342], ['Aardman', 297], ['LAIKA', 11537]]
-    .map(([title, id]) => ({title: title as string, part: {discover: `studio-${id}`, type: 'movie' as const, params: {with_companies: String(id), sort_by: 'popularity.desc', 'with_runtime.gte': '40', 'primary_release_date.lte': TODAY}}})), {kids: true}),
+  tabs('sg.kids-channels', 'Kids’ Channels', ([['Disney Channel', 54], ['Disney Junior', 281], ['Disney XD', 44], ['Cartoon Network', 56], ['Nickelodeon', 13], ['Nick Jr.', 35, 'Nick Jr'], ['PBS Kids', 122], ['CBeebies', 166, 'Cbeebies'], ['CBBC', 15, null]] as [string, number, (string | null)?][])
+    .map(([title, id, art]) => ({title, cover: art === null ? `${OWN_ART}cbbc.jpg` : `${KOMETA}network/color/${encodeURIComponent(art ?? title)}.jpg`, part: {discover: `network-${id}`, type: 'series' as const, params: {with_networks: String(id), sort_by: 'popularity.desc', 'vote_count.gte': '5'}}})), {kids: true}),
+  tabs('sg.animation-studios', 'Animation Studios', ([['Pixar', 3], ['Disney Animation', 6125, 'Walt Disney Animation Studios'], ['DreamWorks', 521, 'DreamWorks Pictures'], ['Illumination', 6704, 'Illumination Entertainment'], ['Sony Animation', 2251, 'Sony Pictures Animation'], ['Studio Ghibli', 10342], ['Aardman', 297], ['LAIKA', 11537, 'Laika Entertainment']] as [string, number, string?][])
+    .map(([title, id, art]) => ({title, cover: `${KOMETA}studio/${encodeURIComponent(art ?? title)}.jpg`, part: {discover: `studio-${id}`, type: 'movie' as const, params: {with_companies: String(id), sort_by: 'popularity.desc', 'with_runtime.gte': '40', 'primary_release_date.lte': TODAY}}})), {kids: true}),
   // For children. Suggested only, never on by default. (The hub's "Popular Animated Shows" list is not for children.)
   list(13621, 'movie', 'Kids’ Movies, around 7', {kids: true}),
   list(154863, 'series', 'Kids’ Shows, around 7', {kids: true}),

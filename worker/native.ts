@@ -347,11 +347,11 @@ export function homeOf(rows: Row[], lists: boolean, trakt = false, served: Serve
       for (const {catalog} of made) sources.set(`${catalog.id}/${catalog.type}`, {...catalog, enabled: true, showInHome: false});
     } else if (picked && row.on) {
       // A suggested row with tabs: a collection, one tab per part. Without MDBList only its TMDB tabs come; with none left, nothing.
-      const parts = picked.parts.filter(({part}) => lists || !('mdblist' in part)).map(({title, part}) => ({title, catalog: partOf(part, `${picked.title}: ${title}`, limit)}));
+      const parts = picked.parts.filter(({part}) => lists || !('mdblist' in part)).map(({title, part, cover}) => ({title, cover, catalog: partOf(part, `${picked.title}: ${title}`, limit)}));
       if (!parts.length) continue;
       const id = `${MINE}${row.id.replace(/[^a-z0-9-]/g, '-')}`;
       collections.push({kind: 'collection', id, title: row.title, hideTitle: false, backdropImageUrl: '', pinToTop: false, viewMode: 'TABBED_GRID', showAllTab: false, focusGlowEnabled: true, ...(above ? {after: above} : {}),
-        folders: parts.map(({title, catalog}, n) => ({id: `${id}-${n + 1}`, title, shape: 'POSTER', hideTitle: false, coverImageUrl: '', coverEmoji: '', sources: [{name: catalog.name, type: catalog.type, genre: 'None', baseType: catalog.type, catalogId: catalog.id}]}))});
+        folders: parts.map(({title, catalog, cover}, n) => ({id: `${id}-${n + 1}`, title, shape: 'POSTER', hideTitle: !!cover, coverImageUrl: cover ?? '', coverEmoji: '', sources: [{name: catalog.name, type: catalog.type, genre: 'None', baseType: catalog.type, catalogId: catalog.id}]}))});
       for (const {catalog} of parts) sources.set(`${catalog.id}/${catalog.type}`, {...catalog, enabled: true, showInHome: false});
     }
   }
