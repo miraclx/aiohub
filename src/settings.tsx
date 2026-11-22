@@ -1,7 +1,7 @@
 import {useEffect, useMemo, useState} from 'react';
 import type {Live} from './live';
 import {FIXTURES, FormatterPreviewClient} from 'formatter-preview';
-import {allServices, defaultAddons, signUp} from './data';
+import {FOR_YOU_KINDS, allServices, defaultAddons, signUp} from './data';
 import type {Hub, Resolved, Settings, Template} from './data';
 import {Chips, Confirm, Segments, Setting, Switch, hash} from './ui';
 import type {Scope} from './ui';
@@ -47,6 +47,9 @@ export function PlaybackEditor({hub, resolved: {values, from}, scope, set, reset
       <Setting title="Hide unreleased titles" hint="Nothing that cannot be watched yet." {...line('unreleased')}><Switch label="Hide unreleased titles" checked={values.unreleased} onChange={value => set('unreleased', value)}/></Setting>
       {<Setting title="Posters" hint={values.posters === 'better' ? 'Better Posters: clean art with the rating on it.' : 'Standard art, nothing added.'} {...line('posters')}>
         <Segments label="Posters" value={values.posters} onChange={value => set('posters', value)} options={[{value: 'better', label: 'Better Posters'}, {value: 'plain', label: 'Plain'}]}/></Setting>}
+      {/* Only where For you places exist: each person's apps on their own AIOMetadata setup. */}
+      {hub.front && <Setting column title="For you" hint={`What the daily For you rows can pick from. Leave one out and it isn’t picked.${values.limit !== 'all' ? ' Under a content limit only director, genre and seasonal picks are made.' : ''}`} {...line('forYouOff')}>
+        <Chips all={FOR_YOU_KINDS.map(kind => kind.title)} value={FOR_YOU_KINDS.filter(kind => !(values.forYouOff ?? []).includes(kind.id)).map(kind => kind.title)} onChange={value => set('forYouOff', FOR_YOU_KINDS.filter(kind => !value.includes(kind.title)).map(kind => kind.id))}/></Setting>}
       {values.posters === 'better' && <Setting title="Age rating on posters" hint="Adds the age rating, such as PG-13 or TV-MA, to a corner of each poster." {...line('ageBadge')}><Switch label="Age rating on posters" checked={!!values.ageBadge} onChange={value => set('ageBadge', value)}/></Setting>}
     </div>
   </section>;

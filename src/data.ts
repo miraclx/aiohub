@@ -13,13 +13,15 @@ export interface Settings {
   subtitles: string[]; skip: boolean;
   limit: 'all' | 'teen' | 'kids'; hideWatched: boolean; spoilers: boolean; unreleased: boolean; posters: 'better' | 'plain'; ageBadge?: boolean;
   debrid: string; sources: string[]; formatter: Template;
+  // Kinds of For you pick left out (FOR_YOU_KINDS). Missing or empty: every kind may be picked.
+  forYouOff?: string[];
 }
 export type Overrides = Partial<Settings>;
 export interface Device {id: string; app: string; name: string; seen: string; place?: string; net?: string}
 // Plays one of Trakt and MDBList has and the other lacks, from the daily look (drift.ts on the Worker).
 export interface Miss {kind: 'movie' | 'show'; tmdb: number; name: string; season?: number; episode?: number; at: number; key: string}
 export interface Drift {checked: number; since: number; toMdblist: Miss[]; toTrakt: Miss[]}
-export interface Person {played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
+export interface Person {forYou?: Record<string, string>; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
 export interface Hub {
@@ -28,7 +30,8 @@ export interface Hub {
   jobs?: {last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number};
   // In a person's view: their manager's own sign-in is set aside in this browser, to go back to.
   manager?: boolean;
-  v?: number; serverName?: string; tmdb?: boolean; mdblist?: boolean; scrobble?: boolean; traktClient?: string; metaUrl?: string; missing?: string[]; traktLink?: string; name: string; code: string; host: string; hostUrl: string; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; groups: Group[]; people: Person[];
+  // front: each person's apps sign in to their own AIOMetadata setup; only then are there For you places.
+  front?: boolean; v?: number; serverName?: string; tmdb?: boolean; mdblist?: boolean; scrobble?: boolean; traktClient?: string; metaUrl?: string; missing?: string[]; traktLink?: string; name: string; code: string; host: string; hostUrl: string; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; groups: Group[]; people: Person[];
   me: {name: string; theme: 'dark' | 'light' | 'auto'; passkeys: {id: string; name: string; added: string}[]};
 }
 
@@ -66,7 +69,7 @@ export const traktRows = (): Row[] => [
 export const TRAKT_IDS = new Set(traktRows().map(row => row.id));
 /* Which accounts a person has connected: Trakt (to the hub, or the older way through AIOMetadata), and an MDBList key; and whether
    the hub can show something they watched (Trakt connected to the hub, an MDBList key, or a play here). */
-export interface Linked {trakt: boolean; lists: boolean; watched: boolean; kids?: boolean}
+export interface Linked {trakt: boolean; lists: boolean; watched: boolean; kids?: boolean; front?: boolean}
 /* Whether a person's own row can be filled for them: the MDBList watchlist with MDBList, Recently Watched once there is something
    to put in it (from Trakt, else MDBList, else what they played here), the rest with Trakt. */
 export const reaches = (id: string, has: Linked) => id === 'recently-watched' ? has.watched : id === 'mdblist-watchlist' ? has.lists : has.trakt;
@@ -98,7 +101,7 @@ export function rowsOf(own: Row[] | null, shared: Row[], has: Linked, picks?: Re
   const fits = (row: Row) => !TRAKT_IDS.has(row.id) || reaches(row.id, has);
   // Under the Kids limit the rows for children come too (see KIDS_IDS), unless this Home has them already.
   if (own) {
-    const out = own.filter(fits);
+    const out = withForYou(own.filter(fits), !!has.front);
     if (has.kids) for (const row of kidsRows()) if (!out.some(item => item.id === row.id)) out.push({...row, on: false});
     for (const row of traktRows()) if (reaches(row.id, has) && !out.some(item => item.id === row.id)) {
       if (row.id !== 'mdblist-watchlist') {out.push({...row, on: false}); continue;}
@@ -106,7 +109,7 @@ export function rowsOf(own: Row[] | null, shared: Row[], has: Linked, picks?: Re
     }
     return named(out);
   }
-  return named(withKids(placed(shared), !!has.kids).filter(fits).map(row => !PICKABLE.has(row.id) ? row : picks?.[row.id] !== undefined ? {...row, on: picks[row.id]} : row.id === 'mdblist-watchlist' && has.trakt ? {...row, on: false} : row));
+  return named(withForYou(withKids(placed(shared), !!has.kids), !!has.front).filter(fits).map(row => !pickable(row.id) ? row : picks?.[row.id] !== undefined ? {...row, on: picks[row.id]} : row.id === 'mdblist-watchlist' && has.trakt ? {...row, on: false} : row));
 }
 /* Collection folders under a content limit, known by their row and cover. Kids get only the folders made for children: the others
    are filtered title by title after fetching, so they come thin, and shows with a rating read loosely slip through. Teen loses Adult
@@ -135,8 +138,36 @@ export const withKids = (rows: Row[], kids: boolean) => {
   return out;
 };
 const kidsRows = (): Row[] => [...KIDS_IDS].map(id => suggestionOf(id)!).map(item => ({id: item.id, title: item.title, kind: item.kind, source: item.source, origin: 'hub', on: true}));
+/* "For you" places: rows the hub fills for each person every day with something picked for them (foryou.ts on the Worker),
+   only where each person's apps sign in to their own AIOMetadata setup. A Home without any gets three, spread through it; a place
+   has no Remove and no name of its own (the pick names it), and is switched off like a Trakt row. More can be added from Add row. */
+export const PLACE = /^for-you-(\d{1,2})$/;
+export const isPlace = (id: string) => PLACE.test(id);
+export const placeRow = (n: number, on = true): Row => ({id: `for-you-${n}`, title: 'For you', kind: 'For you', source: 'Picked daily', origin: 'hub', on, core: true});
+/* The next free place on a Home. */
+export const nextPlace = (rows: Row[]) => {let n = 1; while (rows.some(row => row.id === `for-you-${n}`)) n++; return placeRow(n);};
+/* A Home's rows with the three For you places added where it has none: after the second, fifth and eighth of its shared rows that
+   are on (a person's own rows, at the top, are not counted), or at the end of a short Home. */
+export function withForYou(rows: Row[], front: boolean): Row[] {
+  if (!front || rows.some(row => isPlace(row.id))) return rows;
+  const out = [...rows];
+  for (const [n, after] of [[1, 2], [2, 5], [3, 8]]) {
+    let seen = 0, at = out.length;
+    for (let i = 0; i < out.length; i++) if (out[i].on && !TRAKT_IDS.has(out[i].id) && !isPlace(out[i].id) && ++seen === after) {at = i + 1; break;}
+    out.splice(at, 0, placeRow(n));
+  }
+  return out;
+}
+/* The kinds of For you pick, in the order they are offered. `discover`: AIOMetadata fills it from a TMDB search, so it suits a content
+   limit; the others are filled by the hub and are left out under one. */
+export const FOR_YOU_KINDS: {id: string; title: string; discover: boolean}[] = [
+  {id: 'because', title: 'Because you watched', discover: false}, {id: 'series', title: 'Next in a film series', discover: false},
+  {id: 'pickup', title: 'Pick back up', discover: false}, {id: 'crew', title: 'More from a director', discover: true},
+  {id: 'genres', title: 'Your genres', discover: true}, {id: 'seasonal', title: 'Seasonal', discover: true}, {id: 'top10', title: 'Top 10', discover: false},
+];
 /* Rows someone following the Home above can switch on or off for themselves. */
 export const PICKABLE = new Set([...TRAKT_IDS, ...KIDS_IDS]);
+export const pickable = (id: string) => PICKABLE.has(id) || isPlace(id);
 /* Where a row's titles come from, as shown: Trending is Trakt's chart, or under a content limit a TMDB search (native.ts). */
 export const sourceShown = (row: Row, limit: Limit = 'all') => (row.id === 'trending-movies' || row.id === 'trending-series') && limit === 'all' ? 'Trakt' : row.source;
 export const isTrakt = (item: Row) => item.source === 'Trakt' || item.source.startsWith('Trakt ·');
@@ -221,7 +252,7 @@ export const defaultSettings = (): Settings => ({
   quality: 'balanced', maxSizeGb: 25, languages: ['English'], cachedFirst: true, search: 'balanced',
   subtitles: ['English'], skip: true,
   limit: 'all', hideWatched: false, spoilers: false, unreleased: true, posters: 'better', ageBadge: false,
-  debrid: 'TorBox', sources: ['library', 'torrentio', 'comet', 'meteor'], formatter: formatter as Template,
+  debrid: 'TorBox', sources: ['library', 'torrentio', 'comet', 'meteor'], formatter: formatter as Template, forYouOff: [],
 });
 export interface Resolved {values: Settings; from: Record<keyof Settings, Level>}
 export function resolve(hub: Hub, group?: Group, person?: Person): Resolved {
@@ -238,8 +269,8 @@ export const hasLists = (person: Person) => person.lists || !!person.listsKept;
 /* Where a person's Recently Watched comes from: Trakt connected to the hub, else their MDBList, else what they played here. The
    older Trakt link through AIOMetadata does not count: the hub cannot read it. */
 export const sourceOf = (person: Person) => (person.history ? !person.history.again : SAMPLE && person.trakt) ? 'Trakt' : hasLists(person) ? 'MDBList' : 'Played here';
-export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), {trakt: hasTrakt(person), lists: hasLists(person), watched: SAMPLE || hasLists(person) || !!person.history && !person.history.again || !!person.played, kids: resolve(hub, hub.groups.find(item => item.id === person.groupId), person).values.limit === 'kids'}, person.picks)
-  .map(row => row.id === 'recently-watched' ? {...row, source: sourceOf(person)} : row);
+export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), {trakt: hasTrakt(person), lists: hasLists(person), watched: SAMPLE || hasLists(person) || !!person.history && !person.history.again || !!person.played, kids: resolve(hub, hub.groups.find(item => item.id === person.groupId), person).values.limit === 'kids', front: !!hub.front}, person.picks)
+  .map(row => row.id === 'recently-watched' ? {...row, source: sourceOf(person)} : isPlace(row.id) && person.forYou?.[row.id] ? {...row, title: person.forYou[row.id]} : row);
 
 const words = ['maple', 'river', 'copper', 'lantern', 'meadow', 'harbor', 'ember', 'willow', 'pebble', 'comet'];
 function seed(text: string) {let h = 11; for (const c of text) h = (h * 33 + c.charCodeAt(0)) >>> 0; return h;}

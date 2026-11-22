@@ -2,7 +2,7 @@
 // What reaches the streaming server goes through ./native.
 import {carry, mdblist, plan} from './carry';
 import {fix, looked, skip, skippedOf} from './drift';
-import {PICKABLE, defaultAddons, defaultRows, defaultSettings, slug, traktRows} from '../src/data';
+import {FOR_YOU_KINDS, PICKABLE, defaultAddons, defaultRows, defaultSettings, isPlace, pickable, slug, traktRows} from '../src/data';
 import type {Addon, Hub, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './native';
@@ -11,6 +11,7 @@ import {LINK, disconnect, forgetTrakt, keepLink, links, read} from './trakt';
 import {rows} from './rows';
 import {PAIRS, copy, forgetShown, moving, shown} from './places';
 import {because} from './suggest';
+import {namesOf} from './foryou';
 import type {Env} from './util';
 import {blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp, unseal} from './util';
 
@@ -38,7 +39,8 @@ function cleanRows(value: unknown): Row[] | null {
   const seen = new Set<string>();
   return (value as Record<string, unknown>[]).map(item => {
     const id = text(item?.id, 120, 'Row'); if (seen.has(id)) bad(400, 'A row is listed twice'); seen.add(id);
-    const row: Row = {id, title: text(item.title, 160, 'Row title'), kind: text(item.kind, 80, 'Row'), source: text(item.source, 400, 'Row'), origin: oneOf(item.origin, ['hub', 'group', 'own'] as const, 'Row'), on: flag(item.on)};
+    // A For you place is named by what is picked for it each day, never by a name saved with it.
+    const row: Row = {id, title: isPlace(id) ? 'For you' : text(item.title, 160, 'Row title'), kind: text(item.kind, 80, 'Row'), source: text(item.source, 400, 'Row'), origin: oneOf(item.origin, ['hub', 'group', 'own'] as const, 'Row'), on: flag(item.on)};
     if (item.core === true) row.core = true;
     if (item.watched !== undefined) row.watched = oneOf(item.watched, ['hide', 'show'] as const, 'Row');
     if (item.covers !== undefined) row.covers = Array.isArray(item.covers) && item.covers.length <= 80 ? (item.covers as Record<string, unknown>[]).map(cover => ({title: text(cover?.title, 120, 'Folder name'), image: text(cover.image, 400, 'Folder')})) : bad(400, 'Folders are not valid');
@@ -56,9 +58,10 @@ const CHECK: {[K in keyof Settings]-?: (value: unknown) => Settings[K]} = {
   posters: value => oneOf(value, ['better', 'plain'] as const, 'Posters'),
   ageBadge: flag,
   debrid: value => text(value, 40, 'Account'), sources: value => list(value, 60, 80, 'Sources'),
+  forYouOff: value => list(value, 20, 20, 'For you').filter(id => FOR_YOU_KINDS.some(kind => kind.id === id)),
   formatter: value => ({name: text((value as Record<string, unknown>)?.name, 20_000, 'Stream label'), description: text((value as Record<string, unknown>).description, 20_000, 'Stream label')}),
 };
-const LATER = new Set<keyof Settings>(['ageBadge']);
+const LATER = new Set<keyof Settings>(['ageBadge', 'forYouOff']);
 function cleanSettings(value: unknown, whole: boolean): Overrides {
   if (!value || typeof value !== 'object' || Array.isArray(value)) bad(400, 'Settings are not valid');
   const out: Record<string, unknown> = {};
@@ -85,7 +88,7 @@ interface PersonRow {id: string; grp: string; name: string; data: string; joined
 interface DeviceRow {ref: string; person: string; app: string; name: string; seen: number; place: string; net: string}
 interface SignIn {password: string; pin: string | null}
 const TRAKT_ROWS = [...PICKABLE], HERE = 6 * 3600;
-const cleanPicks = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).filter(([id, on]) => TRAKT_ROWS.includes(id) && typeof on === 'boolean')) as Record<string, boolean> : undefined;
+const cleanPicks = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).filter(([id, on]) => pickable(id) && typeof on === 'boolean')) as Record<string, boolean> : undefined;
 
 function ago(seen: number) {
   const gap = now() - seen;
@@ -141,7 +144,7 @@ async function newSession(env: Env, subject: {account: string} | {hub: string; p
 /* ---------- what a page loads ---------- */
 async function state(env: Env, who: Who) {
   const hub = who.hub, data = JSON.parse(hub.data) as HubData, mine = who.person;
-  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, drifts, jobs, plays] = await env.DB.batch([
+  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, drifts, jobs, plays, picked] = await env.DB.batch([
     env.DB.prepare('SELECT id, name, data, version FROM groups WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? AND id = ?').bind(hub.id, mine) : env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? AND person = ? ORDER BY seen DESC').bind(hub.id, mine) : env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? ORDER BY seen DESC').bind(hub.id),
@@ -160,7 +163,10 @@ async function state(env: Env, who: Who) {
       (SELECT max(day) FROM drift WHERE hub = ?1 AND work IS NULL) AS checked, (SELECT count(*) FROM drift WHERE hub = ?1 AND day = (SELECT max(day) FROM drift WHERE hub = ?1) AND work IS NULL) AS people, (SELECT count(*) FROM drift WHERE hub = ?1 AND work IS NOT NULL) AS checking`).bind(hub.id),
     // Who has played something here: their Recently Watched has something in it even without Trakt or MDBList.
     env.DB.prepare('SELECT DISTINCT person FROM plays WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
+    // What each For you place holds today, by name only (the manager sees them on that person's Home tab).
+    env.DB.prepare('SELECT person, picks FROM foryou WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
   ]);
+  const forYou = new Map((picked.results as {person: string; picks: string}[]).map(row => [row.person, namesOf(row.picks)]));
   // Which MDBList account each person's progress goes to (the name only; the key never leaves the vault).
   const listsName: Record<string, string> = {};
   const moves: Record<string, string> = {}, keyed = new Set<string>();
@@ -176,9 +182,9 @@ async function state(env: Env, who: Who) {
   return {
     role: mine ? 'person' : 'owner', personId: mine ?? null,
     hub: {
-      name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID, traktClient: env.TRAKT_CLIENT_ID ?? '',
+      name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID, traktClient: env.TRAKT_CLIENT_ID ?? '', front: env.FRONT === 'aiometadata',
       ...(mine ? {manager: !!who.manager} : {jobs: jobs.results[0] as Hub['jobs']}),
-      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? looked(drifts.results[0] as {result: string | null; skipped: string | null; at: number} | undefined) : null, moves[row.id] ?? null, keyed.has(row.id), playedHere.has(row.id))),
+      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? looked(drifts.results[0] as {result: string | null; skipped: string | null; at: number} | undefined) : null, moves[row.id] ?? null, keyed.has(row.id), playedHere.has(row.id))).map(person => forYou.get(person.id) ? {...person, forYou: forYou.get(person.id)} : person),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
   };
@@ -231,7 +237,8 @@ async function savePerson(env: Env, who: Who, id: string, body: Body) {
       if (rows && !before.can.add) {
         const group = await env.DB.prepare('SELECT data FROM groups WHERE hub = ? AND id = ?').bind(hub, current!.grp).first<{data: string}>();
         const known = new Set([...TRAKT_ROWS, ...(before.rows ?? []).map(row => row.id), ...((JSON.parse(group!.data) as GroupData).rows ?? (JSON.parse(who.hub.data) as HubData).rows).map(row => row.id)]);
-        if (rows.some(row => !known.has(row.id))) bad(403, 'Adding rows is turned off for you');
+        // A For you place is the hub's, not a row of their own: moving or switching one is arranging.
+        if (rows.some(row => !known.has(row.id) && !isPlace(row.id))) bad(403, 'Adding rows is turned off for you');
       }
       next.rows = rows;
     }
@@ -269,7 +276,7 @@ const forget = (env: Env, hub: string, id: string) => [
 ];
 async function removePerson(env: Env, who: Who, id: string) {
   forgetSeats(who.hub.id, id);
-  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_keys WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_cache WHERE hub = ? AND person = ?').bind(who.hub.id, id), ...forgetTrakt(env, who.hub.id, id), env.DB.prepare("DELETE FROM ops WHERE hub = ? AND target = ? AND kind = 'carry'").bind(who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
+  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_keys WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_cache WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM foryou WHERE hub = ? AND person = ?').bind(who.hub.id, id), ...forgetTrakt(env, who.hub.id, id), env.DB.prepare("DELETE FROM ops WHERE hub = ? AND target = ? AND kind = 'carry'").bind(who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
   return {};
 }
 /* A person's stored choices, read fresh, and written back as a new version. */
@@ -748,7 +755,7 @@ async function removeHub(request: Request, env: Env, who: Who, body: Body) {
   if (!await checkPassword(String(body.password ?? ''), stored!.pass)) {await failed(env, key); bad(403, 'That is not your password');}
   if (!await removePlayers(env, who.hub)) bad(502, 'The streaming server did not confirm the removal, so nothing was deleted. Try again in a moment.');
   const hub = who.hub.id;
-  await env.DB.batch([...['devices', 'plays', 'starts', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
+  await env.DB.batch([...['devices', 'plays', 'starts', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'foryou', 'foryou_sync', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
     env.DB.prepare('DELETE FROM hubs WHERE id = ?').bind(hub), env.DB.prepare('DELETE FROM passkeys WHERE account = ?').bind(who.account!.id), env.DB.prepare('DELETE FROM accounts WHERE id = ?').bind(who.account!.id)]);
   // Player apps stop reaching it at once, not when this copy of the Worker next looks the hub up.
   forgetHub(who.hub.code);

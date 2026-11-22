@@ -12,6 +12,7 @@ import {getSecret, newToken, now, putSecret, sha} from './util';
 import {LINK, read} from './trakt';
 import {mdblist} from './carry';
 import {unpacked} from './here';
+import {FOR_YOU_SERVED, served as forYouServed} from './foryou';
 
 export const ROWS = 'rows';
 const MANIFEST = 'aiohub.rows', PAGE = 20;
@@ -36,6 +37,9 @@ const listServed = (whose: string, id: string): Served => ({id: `list_${whose}_$
   ask: whose === 'mine' ? `/users/me/lists/${id}/items?limit=100` : `/lists/${id}/items?limit=100`});
 /* The rows the hub serves without Trakt: everyone has a Recently Watched, and the MDBList watchlist needs only their MDBList key. */
 export const NO_TRAKT = new Set(['recently-watched', 'mdblist-watchlist']);
+/* A For you pick the hub fills itself (foryou.ts). Its catalog id carries what fills it, so a row's name and its titles always
+   come from the same write of the setup. */
+export const forYouRow = (id: string, type: string): Served | undefined => FOR_YOU_SERVED.test(id) && (type === 'movie' || type === 'series') ? {id, type, name: 'For you', ttl: 3600, kind: 'history'} : undefined;
 /* What the hub serves for a Home row, if it does. */
 export function servedOf(rowId: string): Served | undefined {
   const list = LIST_ROW.exec(rowId);
@@ -45,8 +49,8 @@ export function servedOf(rowId: string): Served | undefined {
 export const customId = (row: Served) => `custom.${MANIFEST.replace(/[^a-zA-Z0-9]/g, '_')}.${row.type}.${row.id}`;
 export const CUSTOM = new RegExp(`^custom\\.${MANIFEST.replace(/[^a-zA-Z0-9]/g, '_')}\\.`);
 /* One row as AIOMetadata stores an imported catalog (the shape its own import makes), here kept on a short cache time. */
-export function catalogOf(address: string, rowId: string, name: string, on: boolean) {
-  const row = servedOf(rowId)!;
+export const catalogOf = (address: string, rowId: string, name: string, on: boolean) => catalogFor(address, servedOf(rowId)!, name, on);
+export function catalogFor(address: string, row: Served, name: string, on: boolean) {
   return {id: customId(row), type: row.type, name, enabled: on, showInHome: true, source: 'custom', sourceUrl: `${address}/catalog/${row.type}/${row.id}.json`,
     genres: ['None'], cacheTTL: row.ttl, enableRatingPosters: true, manifestData: {type: row.type, id: row.id, name, extra: [{name: 'skip'}], idPrefixes: ['tt', 'tmdb']}};
 }
@@ -59,11 +63,12 @@ export async function addressOf(env: Env, hub: string, person: string, origin: s
 }
 
 /* ---------- reading Trakt ---------- */
-interface Item {id: string; type: 'movie' | 'series'; name: string}
+// `tmdb` and `at` (when it was watched, for what was watched) are kept for For you (foryou.ts); a row lists only id, type and name.
+export interface Item {id: string; type: 'movie' | 'series'; name: string; tmdb?: number; at?: number}
 interface Media {title?: string; ids?: {imdb?: string | null; tmdb?: number | null}}
-const itemOf = (media: Media | undefined, type: Item['type']): Item | null => {
-  const ids = media?.ids ?? {}, id = /^tt\d+$/.test(ids.imdb ?? '') ? ids.imdb! : Number(ids.tmdb) > 0 ? `tmdb:${ids.tmdb}` : '';
-  return id ? {id, type, name: String(media?.title ?? '').slice(0, 200)} : null;
+const itemOf = (media: Media | undefined, type: Item['type'], when?: string): Item | null => {
+  const ids = media?.ids ?? {}, id = /^tt\d+$/.test(ids.imdb ?? '') ? ids.imdb! : Number(ids.tmdb) > 0 ? `tmdb:${ids.tmdb}` : '', at = Math.floor(Date.parse(when ?? '') / 1000);
+  return id ? {id, type, name: String(media?.title ?? '').slice(0, 200), ...(Number(ids.tmdb) > 0 ? {tmdb: Number(ids.tmdb)} : {}), ...(at > 0 ? {at} : {})} : null;
 };
 const once = (items: (Item | null)[]) => {const seen = new Set<string>(); return items.filter((item): item is Item => !!item && !seen.has(item.id) && !!seen.add(item.id));};
 // Long lists are read a hundred at a time, a further page only once someone scrolls that far, up to this many pages.
@@ -80,8 +85,8 @@ const ASK: Record<Exclude<Kind, 'list' | 'mdb_watchlist' | 'mdb_history'>, strin
   next: '/sync/progress/up_next?page=1&limit=50',
   aired: '/sync/progress/up_next?page=1&limit=50&sort_by=recently-aired&sort_how=desc',
 };
-type Answer = (Media & {type?: string; movie?: Media; show?: Media})[];
-const titles = (got: Answer) => once(got.map(entry => entry.type === 'movie' ? itemOf(entry.movie, 'movie') : itemOf(entry.show, 'series')));
+type Answer = (Media & {type?: string; movie?: Media; show?: Media; watched_at?: string})[];
+const titles = (got: Answer) => once(got.map(entry => entry.type === 'movie' ? itemOf(entry.movie, 'movie', entry.watched_at) : itemOf(entry.show, 'series', entry.watched_at)));
 const ITEMS: Record<Exclude<Kind, 'mdb_watchlist' | 'mdb_history'>, (got: Answer) => Item[]> = {
   watchlist: titles, history: titles, list: titles,
   movies: got => once(got.map(media => itemOf(media, 'movie'))),
@@ -153,8 +158,8 @@ async function fromMdblist(env: Env, key: string, kind: 'mdb_watchlist' | 'mdb_h
   }
   const got = await ask('/sync/watched?limit=1000'), body = got.body as {movies?: Watched[]; shows?: Watched[]; episodes?: Watched[]} | null;
   if (got.status !== 200 || !body || Array.isArray(body)) return null;
-  const all = [...(body.movies ?? []).map(entry => ({at: entry.last_watched_at, item: itemOf(entry.movie, 'movie')})), ...(body.shows ?? []).map(entry => ({at: entry.last_watched_at, item: itemOf(entry.show, 'series')})),
-    ...(body.episodes ?? []).map(entry => ({at: entry.last_watched_at, item: itemOf(entry.episode?.show, 'series')}))];
+  const all = [...(body.movies ?? []).map(entry => ({at: entry.last_watched_at, item: itemOf(entry.movie, 'movie', entry.last_watched_at)})), ...(body.shows ?? []).map(entry => ({at: entry.last_watched_at, item: itemOf(entry.show, 'series', entry.last_watched_at)})),
+    ...(body.episodes ?? []).map(entry => ({at: entry.last_watched_at, item: itemOf(entry.episode?.show, 'series', entry.last_watched_at)}))];
   const when = (at?: string) => Date.parse(at ?? '') || 0;
   return {items: once(all.sort((a, b) => when(b.at) - when(a.at)).map(entry => entry.item)).slice(0, MDB_KEPT), end: true};
 }
@@ -162,16 +167,28 @@ async function fromMdblist(env: Env, key: string, kind: 'mdb_watchlist' | 'mdb_h
 /* ---------- what they played here ---------- */
 /* Newest first, a show once. A title is known by what Trakt was told it is, or else by its id on their own server, which carries
    its IMDb or TMDB id (here.ts); a play on any other server that Trakt was never told about is left out. */
-async function played(env: Env, hub: string, person: string): Promise<Item[]> {
-  const got = await env.DB.prepare('SELECT item, ids, title FROM plays WHERE hub = ? AND person = ? ORDER BY updated DESC LIMIT 300').bind(hub, person).all<{item: string; ids: string | null; title: string}>();
+export async function played(env: Env, hub: string, person: string): Promise<Item[]> {
+  const got = await env.DB.prepare('SELECT item, ids, title, updated FROM plays WHERE hub = ? AND person = ? ORDER BY updated DESC LIMIT 300').bind(hub, person).all<{item: string; ids: string | null; title: string; updated: number}>();
   return once(got.results.map(play => {
     let target: {movie?: Media; show?: Media} | null = null;
     try {target = play.ids ? JSON.parse(play.ids) : null;} catch {target = null;}
-    if (target?.movie || target?.show) return itemOf({...(target.movie ?? target.show), title: play.title}, target.movie ? 'movie' : 'series');
-    const known = unpacked(play.item);
-    return known ? {...known, name: play.title.slice(0, 200)} : null;
+    const told = target?.movie || target?.show ? itemOf({...(target.movie ?? target.show), title: play.title}, target.movie ? 'movie' : 'series') : null;
+    if (told) return {...told, at: play.updated};
+    if (target?.movie || target?.show) return null;
+    const known = unpacked(play.item), tmdb = /^tmdb:(\d+)$/.exec(known?.id ?? '');
+    return known ? {...known, name: play.title.slice(0, 200), ...(tmdb ? {tmdb: Number(tmdb[1])} : {}), at: play.updated} : null;
   }));
 }
+/* What a person watched, newest first, from what was read of their accounts and their plays here. `fresh`: Recently Watched is
+   read again first when what was kept of it is older than its time (one call at most); otherwise only what is kept is used. */
+export async function watchedOf(env: Env, hub: string, person: string, fresh: boolean): Promise<Item[]> {
+  const kept = await env.DB.prepare("SELECT items FROM rows_cache WHERE hub = ? AND person = ? AND (kind = 'history' OR kind LIKE 'history.%' OR kind = 'mdb_history' OR kind LIKE 'mdb_history.%') ORDER BY kind").bind(hub, person).all<{items: string}>();
+  const lists = [...(fresh ? [await fill(env, hub, person, SERVED['recently-watched'], PAGE)] : []), ...kept.results.map(row => JSON.parse(row.items) as Item[]), await played(env, hub, person)];
+  return once(lists.flat()).sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+}
+
+/* Shows with an episode still to watch, as Trakt has them (Up Next), when their Trakt is connected to the hub. */
+export const upNextOf = (env: Env, hub: string, person: string) => fill(env, hub, person, SERVED['up-next'], 50);
 
 /* ---------- the addon ---------- */
 const answer = (status: number, body: unknown) => new Response(JSON.stringify(body), {status, headers: {'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*'}});
@@ -185,10 +202,12 @@ export async function rows(env: Env, path: string[]): Promise<Response> {
     resources: ['catalog'], types: ['movie', 'series'], idPrefixes: ['tt', 'tmdb'], catalogs: Object.values(SERVED).map(row => ({type: row.type, id: row.id, name: row.name, extra: [{name: 'skip'}]}))});
   const name = (extra ?? id ?? '').replace(/\.json$/, ''), catalog = extra ? id : name;
   const list = /^list_(mine|liked)_(\d{1,12})$/.exec(catalog ?? '');
-  const row = what !== 'catalog' ? undefined : list ? (type === 'all' ? listServed(list[1], list[2]) : undefined) : Object.values(SERVED).find(item => item.type === type && item.id === catalog);
+  const mine = what === 'catalog' && forYouRow(catalog ?? '', type ?? '');
+  const row = what !== 'catalog' ? undefined : list ? (type === 'all' ? listServed(list[1], list[2]) : undefined) : mine || Object.values(SERVED).find(item => item.type === type && item.id === catalog);
   if (!row) return answer(404, {err: 'Not found'});
   const skip = Math.max(0, Number(new URLSearchParams(extra ? name : '').get('skip') ?? 0) || 0);
-  return answer(200, {metas: (await fill(env, owner.hub, owner.person, row, skip + PAGE)).slice(skip, skip + PAGE)});
+  const items = mine ? await forYouServed(env, owner.hub, owner.person, row.id, row.type as 'movie' | 'series') : await fill(env, owner.hub, owner.person, row, skip + PAGE);
+  return answer(200, {metas: items.slice(skip, skip + PAGE).map(item => ({id: item.id, type: item.type, name: item.name}))});
 }
 /* A row's titles, from this person's own accounts only. Trakt disconnected from the hub, or MDBList's key removed: nothing, even if it
    was read a moment ago. Never an error, which AIOMetadata would keep. */

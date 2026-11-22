@@ -1,13 +1,15 @@
 /// <reference types="@cloudflare/workers-types" />
 export interface Env {
   ASSETS: Fetcher; DB: D1Database;
-  UP_ORIGIN: string; VAULT_KEY: string; CLAIM_CODE?: string; TMDB_CHECK?: string; TMDB_API?: string; MDBLIST_API?: string; AIOM_ORIGIN?: string; MAX_HUBS?: string;
+  UP_ORIGIN: string; VAULT_KEY: string; CLAIM_CODE?: string; TMDB_CHECK?: string; TMDB_API?: string; FLIXPATROL_API?: string; MDBLIST_API?: string; AIOM_ORIGIN?: string; MAX_HUBS?: string;
   // 'aiometadata': every person's player apps are served by their own AIOMetadata config (streams still come from AIOStreams).
   FRONT?: string;
   // Trakt history (see trakt.ts). Without a client id it stays off: nothing offered, nothing sent.
   TRAKT_CLIENT_ID?: string; TRAKT_API?: string; TRAKT_AUTH?: string;
   // This site's own public address. AIOMetadata reads each person's Trakt rows from it (see rows.ts). Unset: the address the sync was asked on.
   SITE_ORIGIN?: string;
+  // The hour (UTC) the daily For you picking starts (foryou.ts). Unset: five.
+  FORYOU_HOUR?: string;
   // Only the local test run sets this: where a request came from is then read from test headers (see whereOf in front.ts).
   TEST_WHERE?: string;
 }

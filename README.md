@@ -9,6 +9,7 @@ signs people in and keeps their setups on AIOStreams and AIOMetadata in step wit
 
 - Groups and people, each inheriting from the level above and able to change anything for themselves.
 - Home rows, collections by service and by genre, lists by link, content limits, posters.
+- For you rows: picked every day for each person from what they watch, such as more from a director, the next film in a series, or a seasonal set.
 - Quality, size, languages, sources, subtitles and the stream label, per hub, group or person.
 - Each person's own Trakt (rows) and MDBList (watch history).
 - Per-app sign-ins you can see and take away, Quick Connect for TVs, pause for a person, passkeys for the manager.

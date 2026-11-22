@@ -81,22 +81,22 @@ function compare(work: Work): Found {
   return {since: work.since, trakt: count(work.trakt), mdblist: count(work.mdblist), toMdblist: toMdblist.sort(newest).slice(0, KEPT), toTrakt: toTrakt.sort(newest).slice(0, KEPT)};
 }
 
-/* One step of the day's look, from the cron. `time` is when the cron run was due. */
-export async function drift(env: Env, time: number) {
+/* One step of the day's look, from the cron. `time` is when the cron run was due. True when it asked Trakt or MDBList anything. */
+export async function drift(env: Env, time: number): Promise<boolean> {
   const date = new Date(time), day = date.toISOString().slice(0, 10);
-  if (!env.TRAKT_CLIENT_ID || date.getUTCHours() < HOUR) return;
+  if (!env.TRAKT_CLIENT_ID || date.getUTCHours() < HOUR) return false;
   // One person a run: whoever is part way through, else whoever has not had today's look.
   // Only someone whose progress is kept in MDBList: a key kept while progress is Here is not compared.
   const who = await env.DB.prepare(`SELECT s.hub, s.owner AS person, d.day, d.work FROM secrets s JOIN secrets m ON m.hub = s.hub AND m.owner = s.owner AND m.kind = 'mdblist'
     JOIN people p ON p.hub = s.hub AND p.id = s.owner AND json_extract(p.data, '$.lists') = 1
     LEFT JOIN drift d ON d.hub = s.hub AND d.person = s.owner WHERE s.kind = ?1 AND (d.day IS NULL OR d.day < ?2 OR d.work IS NOT NULL) ORDER BY d.work IS NULL LIMIT 1`)
     .bind(LINK, day).first<{hub: string; person: string; day: string | null; work: string | null}>();
-  if (!who) return;
+  if (!who) return false;
   const {hub, person} = who;
   // A play still waiting to reach Trakt would look missing there: the look waits for the outbox.
-  if (await env.DB.prepare('SELECT 1 FROM trakt_outbox WHERE hub = ? AND person = ? LIMIT 1').bind(hub, person).first()) return;
+  if (await env.DB.prepare('SELECT 1 FROM trakt_outbox WHERE hub = ? AND person = ? LIMIT 1').bind(hub, person).first()) return false;
   const lists = await getSecret<{key: string}>(env, hub, person, 'mdblist');
-  if (!lists?.key) return;
+  if (!lists?.key) return false;
   const start = now(), ask = mdblist(env, lists.key);
   const work: Work = who.work && who.day === day ? JSON.parse(who.work) as Work
     : {since: start - SPAN, until: start - FRESH, page: 1, listed: false, tries: 0, titles: {}, todo: [], skipped: [], trakt: [], mdblist: []};
@@ -127,9 +127,10 @@ export async function drift(env: Env, time: number) {
       work.todo.shift();
     } else break;
   }
-  if (failed) return void await keep(++work.tries >= TRIES ? null : work, null);
-  if (work.page || !work.listed || work.todo.length) return void await keep(work, null);
+  if (failed) {await keep(++work.tries >= TRIES ? null : work, null); return true;}
+  if (work.page || !work.listed || work.todo.length) {await keep(work, null); return true;}
   await keep(null, compare(work));
+  return true;
 }
 
 /* A play by title, episode and time: what a person skips is kept by this, so it stays skipped through later looks. */

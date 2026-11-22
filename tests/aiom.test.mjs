@@ -15,7 +15,27 @@ function client() {
 }
 // Stand-ins: AIOStreams (setups, its server id) and AIOMetadata (setups by uuid, each also a Jellyfin server once it has an app password).
 // `slow`: how long AIOMetadata takes over reading or writing a setup; `most`: the most it was asked to at once; `catalogs`: rows asked for.
-const fake = {configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: [], ticks: [], positions: [], slow: 0, busy: 0, most: 0, catalogs: []};
+// TMDB as For you reads it: recommendations, a film's series and director, a show's newest episode, and searches.
+const films = (from, count, vote = 7.5) => Array.from({length: count}, (_, n) => ({id: from + n, title: `Title ${from + n}`, vote_average: vote, release_date: '2020-01-01'}));
+const NOLAN = [{id: 27205, title: 'Inception', vote_average: 8.4}, {id: 155, title: 'The Dark Knight', vote_average: 8.5}, {id: 157336, title: 'Interstellar', vote_average: 8.4}, {id: 1124, title: 'The Prestige', vote_average: 8.2}, {id: 77, title: 'Memento', vote_average: 8.2}, {id: 49026, title: 'The Dark Knight Rises', vote_average: 7.8}];
+const XMAS = films(8800, 12, 6.8);
+const TMDB = {
+  'movie/27205/recommendations': {results: [{id: 550, title: 'Fight Club', vote_average: 8.4}, ...NOLAN.slice(1), ...films(7000, 6)]},
+  'movie/155/recommendations': {results: [{id: 272, title: 'Batman Begins', vote_average: 7.7}, {id: 27205, title: 'Inception', vote_average: 8.4}, ...films(7100, 8)]},
+  'movie/550/recommendations': {results: films(7200, 10)},
+  'tv/1396/recommendations': {results: films(7300, 10).map(({title, ...item}) => ({...item, name: title}))},
+  'movie/27205': {belongs_to_collection: null, genres: [{id: 878}, {id: 28}]},
+  'movie/155': {belongs_to_collection: {id: 263, name: 'The Dark Knight Collection'}, genres: [{id: 28}, {id: 80}, {id: 18}]},
+  'movie/550': {belongs_to_collection: null, genres: [{id: 18}]},
+  'collection/263': {name: 'The Dark Knight Collection', parts: [{id: 49026, title: 'The Dark Knight Rises', release_date: '2012-07-16', vote_average: 7.8}, {id: 272, title: 'Batman Begins', release_date: '2005-06-10', vote_average: 7.7},
+    {id: 155, title: 'The Dark Knight', release_date: '2008-07-14', vote_average: 8.5}, {id: 999001, title: 'Not Out Yet', release_date: '2099-01-01', vote_average: 0}]},
+  'movie/27205/credits': {crew: [{id: 525, name: 'Christopher Nolan', job: 'Director'}, {id: 1, name: 'Someone', job: 'Writer'}]},
+  'movie/155/credits': {crew: [{id: 525, name: 'Christopher Nolan', job: 'Director'}]},
+  'movie/550/credits': {crew: [{id: 7467, name: 'David Fincher', job: 'Director'}]},
+  'tv/60622': {name: 'Fargo', genres: [{id: 80}, {id: 18}], last_episode_to_air: {season_number: 5, episode_number: 10}},
+  'tv/1396': {name: 'Breaking Bad', genres: [{id: 18}], last_episode_to_air: {season_number: 5, episode_number: 16}},
+};
+const fake = {tmdb: [], flix: [], configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: [], ticks: [], positions: [], slow: 0, busy: 0, most: 0, catalogs: []};
 const uuidOf = n => `${String(n).padStart(8, '0')}-0000-4000-8000-0000000000aa`, ITEM = 'a1110100-0000-eaf7-78ff-ffffff010000';
 // What Ada's own server holds: a film she watched, an episode she is partway through, one MDBList already has, and their show.
 const FILM = 'a1110100-0000-eaf7-78ff-ffffff050000', LEFT = 'a1110100-0000-eaf7-78ff-ffffff060000', EP3 = 'a1110100-0000-eaf7-78ff-ffffff070000';
@@ -96,6 +116,16 @@ http.createServer(async (request, answer) => {
   if (request.url.startsWith('/trakt/')) return traktAnswer(request, request.url.slice(6), body, send, answer);
   // TMDB's public lists, by number: one with titles, one empty.
   if (request.url.startsWith('/tmdb3/list/')) {const id = request.url.split('/')[3].split('?')[0]; return !request.url.includes('api_key=good-tmdb-key') ? send(401, {}) : id === '8300' ? send(200, {name: 'Festival picks', item_count: 14}) : id === '8301' ? send(200, {name: 'Empty', item_count: 0}) : send(404, {});}
+  // TMDB for For you, and FlixPatrol's public charts. Every ask is noted (`fake.tmdb`).
+  if (request.url.startsWith('/tmdb3/')) {
+    const [where, query] = request.url.slice(7).split('?'), ask = new URLSearchParams(query ?? ''); fake.tmdb.push(where);
+    if (ask.get('api_key') !== 'good-tmdb-key') return send(401, {});
+    // Under a limit no director here has a rated film.
+    const answer = TMDB[where] ?? (where === 'discover/movie' ? {results: ask.get('with_crew') && ask.get('certification') ? [] : ask.get('with_crew') === '525' ? NOLAN : ask.get('with_keywords') === '207317' ? XMAS : films(8000, 20)} : where === 'discover/tv' ? {results: films(8500, 20)} : null);
+    return answer ? send(200, answer) : send(404, {});
+  }
+  const chart = /^\/flix\/([a-z-]+)\.json$/.exec(request.url);
+  if (chart) {fake.flix.push(chart[1]); return send(200, {region: chart[1], charts: [{catalog_id: 'netflix.movies', entries: films(7700, 10).map((item, n) => ({rank: n + 1, title: item.title, tmdb: {id: item.id, media_type: 'movie'}}))}, {catalog_id: 'netflix.series', entries: films(7800, 10).map((item, n) => ({rank: n + 1, title: item.title, tmdb: {id: item.id, media_type: 'tv'}}))}]});}
   if (request.url.startsWith('/tmdb')) return send(request.url.includes('api_key=good-tmdb-key') ? 200 : 401, {});
   // AIOMetadata's own Letterboxd lookup: the list's Letterboxd identifier, then the list through StremThru.
   if (request.url === '/api/letterboxd/extract-identifier') return /letterboxd\.com\/someone\/list\/noir\/$/.test(body.url) ? send(200, {identifier: 'aBc12', isWatchlist: false}) : send(404, {error: 'not found'});
@@ -684,7 +714,7 @@ test('suggested rows reach the player apps: TMDB ones with the TMDB key alone, M
   assert.ok(catalogsOf('Ada').some(item => item.id === 'mdblist.33459' && item.showInHome));
   // Taken off Home again: gone from both setups, and nothing else of theirs changed.
   await hubRows(before);
-  for (const name of ['Ada', 'Ben']) {assert.deepEqual(tabs(name), {}); assert.deepEqual(catalogsOf(name).filter(item => /^tmdb\.(collection|discover)\.(?!\w+\.(trending|network|studio|popular)[-.])|^mdblist\.(33459|32047|198749)$/.test(item.id)).map(item => item.id), []);}
+  for (const name of ['Ada', 'Ben']) {assert.deepEqual(tabs(name), {}); assert.deepEqual(catalogsOf(name).filter(item => /^tmdb\.(collection|discover)\.(?!\w+\.(trending|network|studio|popular|fy)[-.])|^mdblist\.(33459|32047|198749)$/.test(item.id)).map(item => item.id), []);}
 });
 test('a pasted link is checked where the list lives; one that can’t be used says why', async () => {
   const find = (who, link) => who('POST', '/api/lists', {link});
@@ -947,6 +977,139 @@ test('a group that differs from the hub has a setup of its own, used by no app, 
   assert.equal((await owner('PUT', '/api/groups/little', {name: 'Little ones', rows: null, settings: {}, paused: false, v: little.v})).status, 200);
   assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(fake.homes.size, before);
   assert.equal((await owner('DELETE', '/api/groups/little')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(fake.homes.size, before);
+});
+/* ---------- For you ---------- */
+const DEC = Date.UTC(2026, 11, 1, 5, 5), MIN = 60e3;
+const fyOf = name => catalogsOf(name).filter(item => /\.fy-|foryou_|^flixpatrol\./.test(item.id));
+const picksOf = person => JSON.parse(sql(`SELECT picks FROM foryou WHERE person = '${person}'`)[0]?.picks ?? 'null');
+const settle = async time => {for (let n = 0; n < 6 && (sql('SELECT hub FROM foryou_sync').length || n === 0); n++) await cron(time + n * 5 * MIN); assert.deepEqual(sql('SELECT hub FROM foryou_sync'), []);};
+const setPerson = async (id, change) => {const me = (await owner('GET', '/api/state')).body.hub.people.find(item => item.id === id);
+  const got = await owner('PUT', `/api/people/${id}`, {name: me.name, groupId: me.groupId, rows: me.rows, picks: me.picks, settings: me.settings, can: me.can, paused: me.paused, trakt: me.trakt, lists: me.lists, v: me.v, ...change(me)}); assert.equal(got.status, 200, JSON.stringify(got.body));};
+const KINDS = ['because', 'series', 'pickup', 'crew', 'genres', 'seasonal', 'top10'], only = (...kinds) => KINDS.filter(kind => !kinds.includes(kind));
+test('For you: three places through each person’s Home, on their own setups only, each switched off like a Trakt row', async () => {
+  assert.equal((await owner('GET', '/api/state')).body.hub.front, true);
+  // Before anything is picked each place holds something popular, the same for anyone, so any sync writes the same.
+  const ids = catalogsOf('Ada').map(item => item.id), at = id => ids.indexOf(id);
+  assert.deepEqual(fyOf('Ada').map(item => [item.id, item.name]), [['tmdb.discover.movie.fy-popular-movie.aiohub', 'Popular films lately'], ['tmdb.discover.series.fy-popular-series.aiohub', 'Popular shows lately'], ['tmdb.discover.movie.fy-acclaimed-movie.aiohub', 'Well-liked films of recent years']]);
+  // After the second, fifth and eighth shared rows.
+  assert.ok(at('trakt.trending.shows') < at('tmdb.discover.movie.fy-popular-movie.aiohub') && at('tmdb.discover.movie.fy-popular-movie.aiohub') < ids.lastIndexOf('tmdb.top_rated'), JSON.stringify(ids));
+  assert.ok(at('tmdb.discover.series.fy-popular-series.aiohub') < at('tmdb.discover.movie.fy-acclaimed-movie.aiohub'));
+  // Under the Kids limit the same, asked for rated titles; shows only made for children (AIOMetadata sends TMDB no rating for shows).
+  const ben = Object.fromEntries(fyOf('Ben').map(item => [item.id, item.metadata.discover.params]));
+  assert.equal(ben['tmdb.discover.movie.fy-popular-movie-kids.aiohub'].certification, 'G|PG'); assert.equal(ben['tmdb.discover.series.fy-popular-series-kids.aiohub'].with_genres, '16|10751|10762');
+  // Nothing for the hub's own setup or a group's: only a person has anything to pick for.
+  for (const [, home] of fake.homes) if (!home.config.jellyfinUserName) assert.ok(!home.config.catalogs.some(item => /\.fy-|foryou_/.test(item.id)));
+  // Switched off while following the Home above: a pick, like a Trakt row; they still follow it.
+  await setPerson('ada', me => ({picks: {...me.picks, 'for-you-2': false}})); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.equal((await owner('GET', '/api/state')).body.hub.people.find(item => item.id === 'ada').rows, null);
+  assert.deepEqual(fyOf('Ada').map(item => item.name), ['Popular films lately', 'Well-liked films of recent years']);
+  await setPerson('ada', me => ({picks: {...me.picks, 'for-you-2': true}})); assert.deepEqual(await syncAll(), {state: 'ok'});
+  // A place saved with a Home keeps no name of its own.
+  const hubNow = (await owner('GET', '/api/state')).body.hub;
+  assert.equal((await owner('PUT', '/api/hub', {...hubNow, rows: [{id: 'for-you-1', title: 'Mine now', kind: 'For you', source: 'Picked daily', origin: 'hub', on: true, core: true}, ...hubNow.rows]})).status, 200);
+  assert.equal((await owner('GET', '/api/state')).body.hub.rows[0].title, 'For you');
+  assert.equal((await owner('PUT', '/api/hub', {...(await owner('GET', '/api/state')).body.hub, rows: hubNow.rows})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+});
+test('once a day after five (UTC) each person is picked for, one a run, and then a run of its own brings their setups in step', async () => {
+  // What Ada watched (MDBList): Inception yesterday, The Dark Knight, an episode of Breaking Bad, Fight Club; and here, Fargo a month ago.
+  lists.recent = {movies: [{last_watched_at: ago(1), movie: MOVIE.inception}, {last_watched_at: ago(2), movie: MOVIE.knight}, {last_watched_at: ago(6), movie: MOVIE.fight}], shows: [], episodes: [{last_watched_at: ago(4), episode: {season: 1, number: 2, show: BB}}]};
+  sql("DELETE FROM rows_cache WHERE kind LIKE 'mdb_history%'"); sql("DELETE FROM plays WHERE person = 'ada'"); const hubId = sql('SELECT id FROM hubs')[0].id;
+  sql(`INSERT INTO plays (hub, person, item, title, detail, updated, ids) VALUES ('${hubId}', 'ada', 'fargo-s1e3', 'Fargo', 'Season 1 · Episode 3', ${Math.floor(Date.now() / 1000) - 30 * DAY}, '{"show":{"ids":{"tmdb":60622}},"episode":{"season":1,"number":3}}')`);
+  const versions = () => playerOf('Ada')[1].config.configVersion;
+  await cron(DEC - 40 * MIN); assert.deepEqual(sql('SELECT person FROM foryou'), [], 'nothing before five');
+  fake.tmdb = []; await cron(DEC);
+  assert.deepEqual(sql('SELECT person FROM foryou'), [{person: 'ada'}], 'one person a run');
+  assert.ok(fake.tmdb.length > 0 && fake.tmdb.length <= 22, `${fake.tmdb.length} calls`);
+  const v = versions(); await cron(DEC + 5 * MIN);
+  assert.deepEqual(sql('SELECT person FROM foryou ORDER BY person'), [{person: 'ada'}, {person: 'ben'}]); assert.equal(versions(), v, 'nobody’s setup is written while people are still being picked');
+  await settle(DEC + 10 * MIN);
+  const ada = picksOf('ada'), kinds = Object.values(ada).map(pick => pick.kind);
+  assert.deepEqual(Object.keys(ada), ['for-you-1', 'for-you-2', 'for-you-3']); assert.equal(new Set(Object.values(ada).map(pick => pick.key)).size, 3);
+  assert.equal(new Set(kinds).size, 3, `one of each kind: ${kinds}`); assert.ok(kinds.some(kind => ['because', 'series', 'pickup'].includes(kind)), kinds.join());
+  // Each place's catalog is named by its pick, in the same write.
+  assert.deepEqual(fyOf('Ada').map(item => item.name), Object.values(ada).map(pick => pick.name));
+  // The manager sees the names on her Home tab.
+  assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(item => item.id === 'ada').forYou, Object.fromEntries(Object.entries(ada).map(([place, pick]) => [place, pick.name])));
+  // Ben is under the Kids limit: only TMDB searches for films, asked for rated titles. With nothing watched, the season leads.
+  const ben = Object.values(picksOf('ben'));
+  assert.ok(ben.every(pick => !pick.serve && !pick.chart && (pick.kind === 'popular' || (['crew', 'genres', 'seasonal'].includes(pick.kind) && pick.type === 'movie'))), JSON.stringify(ben));
+  assert.equal(ben[0].name, 'Christmas films');
+  assert.deepEqual(fyOf('Ben')[0].metadata.discover.params, {with_keywords: '207317', sort_by: 'popularity.desc', 'vote_count.gte': '50', 'primary_release_date.lte': '__tmdb_date__:today:to', certification_country: 'US', certification: 'G|PG'});
+  // Done for the day: later runs ask nothing more and write nothing.
+  const kept = sql('SELECT person, at FROM foryou ORDER BY person'), after = versions(); fake.tmdb = [];
+  await cron(DEC + 40 * MIN); assert.deepEqual(sql('SELECT person, at FROM foryou ORDER BY person'), kept); assert.deepEqual(fake.tmdb, []);
+  assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(versions(), after, 'a sync from the site writes the same');
+});
+test('a pick the hub fills comes from its own id, less what was watched, never under a limit; name and titles change in one write', async () => {
+  // Only "because you watched": her three newest titles each have a row, the newest first.
+  await setPerson('ada', me => ({settings: {...me.settings, forYouOff: only('because')}}));
+  await cron(DEC + 60 * MIN); await settle(DEC + 65 * MIN);
+  assert.deepEqual(Object.values(picksOf('ada')).map(pick => [pick.name, pick.serve]), [['Because you watched Inception', 'foryou_because_m27205'], ['Because you watched The Dark Knight', 'foryou_because_m155'], ['Because you watched Breaking Bad', 'foryou_because_s1396']]);
+  const rows = fyOf('Ada'), inception = rows.find(item => item.id === 'custom.aiohub_rows.movie.foryou_because_m27205');
+  assert.equal(inception.name, 'Because you watched Inception'); assert.match(inception.sourceUrl, /\/api\/rows\/r[\w-]{20,}\/catalog\/movie\/foryou_because_m27205\.json$/);
+  // Its titles: TMDB's recommendations for Inception, less Fight Club and The Dark Knight, which she watched.
+  const metas = (await (await fetch(inception.sourceUrl)).json()).metas;
+  assert.equal(metas[0].id, 'tmdb:157336'); assert.ok(!metas.some(item => ['tmdb:550', 'tmdb:155', 'tmdb:27205'].includes(item.id)) && metas.length === 10, JSON.stringify(metas.map(item => item.id)));
+  // Next in the series: The Dark Knight's films that are out and she has not seen, in release order.
+  await setPerson('ada', me => ({settings: {...me.settings, forYouOff: only('series')}}));
+  const before = playerOf('Ada')[1].config.configVersion; await cron(DEC + 90 * MIN); await settle(DEC + 95 * MIN);
+  const after = playerOf('Ada')[1].config, series = after.catalogs.find(item => item.id === 'custom.aiohub_rows.movie.foryou_series_263');
+  // One write took the old rows out and put the new one in, name and address together.
+  assert.equal(after.configVersion, before + 1); assert.equal(series.name, 'Next in The Dark Knight'); assert.ok(!after.catalogs.some(item => /foryou_because/.test(item.id)));
+  assert.deepEqual((await (await fetch(series.sourceUrl)).json()).metas.map(item => item.name), ['Batman Begins', 'The Dark Knight Rises']);
+  // An address is read by its id alone, whatever is picked today: the old one still lists Inception's.
+  assert.equal((await (await fetch(inception.sourceUrl)).json()).metas[0].id, 'tmdb:157336');
+  // Under a limit the hub fills nothing, whatever is asked: Ben's own address answers empty for the same row.
+  const bens = catalogsOf('Ben').find(item => item.id === 'custom.aiohub_rows.all.history');
+  if (bens) assert.deepEqual((await (await fetch(bens.sourceUrl.replace('/catalog/all/history.json', '/catalog/movie/foryou_because_m27205.json'))).json()).metas, []);
+});
+test('a director she watched, her genre, and a show she left: searches AIOMetadata runs, and a row of shows to pick back up', async () => {
+  // Under the Kids limit she would have no director's row: none of his films is rated for children, so it is not picked.
+  await setPerson('ada', me => ({settings: {...me.settings, limit: 'kids', forYouOff: only('crew')}}));
+  await cron(DEC + 96 * MIN); await settle(DEC + 98 * MIN);
+  assert.deepEqual(Object.values(picksOf('ada')).map(pick => pick.kind), ['popular', 'popular', 'popular']);
+  await setPerson('ada', me => ({settings: {...me.settings, limit: 'all', forYouOff: only('crew', 'genres', 'pickup')}}));
+  await cron(DEC + 100 * MIN); await settle(DEC + 105 * MIN);
+  const picks = Object.values(picksOf('ada'));
+  assert.deepEqual(picks.map(pick => pick.name).sort(), ['Drama films for you', 'More from Christopher Nolan', 'Pick back up']);
+  const rows = Object.fromEntries(fyOf('Ada').map(item => [item.name, item]));
+  assert.equal(rows['More from Christopher Nolan'].metadata.discover.params.with_crew, '525');
+  assert.deepEqual(rows['Drama films for you'].metadata.discover.params, {with_genres: '18', sort_by: 'vote_average.desc', 'vote_count.gte': '500', 'primary_release_date.lte': '__tmdb_date__:today:to'});
+  // Fargo: last played a month ago, at season 1 episode 3, with five seasons out. Breaking Bad, watched this week, is not in it.
+  // Its id says upnext, so AIOMetadata does not hide a show part watched from it.
+  assert.equal(rows['Pick back up'].id, 'custom.aiohub_rows.series.foryou_upnext_60622');
+  assert.deepEqual((await (await fetch(rows['Pick back up'].sourceUrl)).json()).metas, [{id: 'tmdb:60622', type: 'series', name: 'Fargo'}]);
+});
+test('Top 10 comes from FlixPatrol through AIOMetadata, and a chart the hub put in is taken out again; picks move on the next day', async () => {
+  await setPerson('ada', me => ({settings: {...me.settings, forYouOff: only('top10')}}));
+  await cron(DEC + 120 * MIN); await settle(DEC + 125 * MIN);
+  assert.deepEqual(fyOf('Ada').filter(item => item.source === 'flixpatrol').map(item => [item.id, item.type, item.name, item.metadata.countrySlug]),
+    [['flixpatrol.netflix.world.movie', 'movie', 'Top 10 films on Netflix in the world', 'world'], ['flixpatrol.netflix.world.series', 'series', 'Top 10 shows on Netflix in the world', 'world']]);
+  assert.deepEqual(fake.flix, ['global'], 'the charts are read once a day per hub (the world’s are global.json)');
+  await setPerson('ada', me => ({settings: {...me.settings, forYouOff: ['top10']}}));
+  await cron(DEC + 150 * MIN); await settle(DEC + 155 * MIN);
+  assert.ok(!catalogsOf('Ada').some(item => item.id.startsWith('flixpatrol.')), 'gone with the pick');
+  // The next day what filled a place yesterday counts for less, so the places move on.
+  const today = Object.values(picksOf('ada')).map(pick => pick.key);
+  await cron(DEC + 86400e3); await cron(DEC + 86400e3 + 5 * MIN); await settle(DEC + 86400e3 + 10 * MIN);
+  assert.deepEqual(JSON.parse(sql("SELECT before FROM foryou WHERE person = 'ada'")[0].before), today);
+  assert.notDeepEqual(Object.values(picksOf('ada')).map(pick => pick.key), today);
+  // Back to following the hub's choice (her own empty list would keep every kind on whatever the hub mutes).
+  await setPerson('ada', me => {const {forYouOff: _, ...settings} = me.settings; return {settings};}); sql("DELETE FROM plays WHERE item = 'fargo-s1e3'");
+});
+test('a fourth place holds nothing until it has a pick; a kind muted for the whole hub is picked for nobody', async () => {
+  const day3 = DEC + 2 * 86400e3, hubNow = (await owner('GET', '/api/state')).body.hub, place = n => ({id: `for-you-${n}`, title: 'For you', kind: 'For you', source: 'Picked daily', origin: 'hub', on: true, core: true});
+  await cron(day3); await cron(day3 + 5 * MIN); await settle(day3 + 10 * MIN);
+  assert.equal(Object.values(picksOf('ben'))[0].kind, 'seasonal');
+  // The hub's Home gets a fourth place and the hub mutes the season.
+  assert.equal((await owner('PUT', '/api/hub', {...hubNow, rows: [...hubNow.rows, place(1), place(2), place(3), place(4)], defaults: {...hubNow.defaults, forYouOff: ['seasonal']}})).status, 200);
+  assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.equal(fyOf('Ada').length, 3, 'nothing for the new place before its pick');
+  await cron(day3 + 30 * MIN); await cron(day3 + 35 * MIN); await settle(day3 + 40 * MIN);
+  assert.deepEqual(Object.keys(picksOf('ada')), ['for-you-1', 'for-you-2', 'for-you-3', 'for-you-4']); assert.equal(fyOf('Ada').length, 4);
+  assert.ok(!Object.values(picksOf('ben')).some(pick => pick.kind === 'seasonal') && !Object.values(picksOf('ada')).some(pick => pick.kind === 'seasonal'), JSON.stringify(sql('SELECT person, day, sig FROM foryou')) + JSON.stringify([picksOf('ada'), picksOf('ben')]));
+  const back = (await owner('GET', '/api/state')).body.hub;
+  assert.equal((await owner('PUT', '/api/hub', {...back, rows: hubNow.rows, defaults: hubNow.defaults})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);

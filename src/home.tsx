@@ -2,7 +2,7 @@ import {useState} from 'react';
 import type React from 'react';
 import {DragDropProvider} from '@dnd-kit/react';
 import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
-import {TRAKT_IDS, countries, folderFits, sourceShown, suggestedFor, tongues} from './data';
+import {TRAKT_IDS, countries, folderFits, isPlace, nextPlace, sourceShown, suggestedFor, tongues} from './data';
 import type {Cover, Level, Limit, Row} from './data';
 import {Art, Chips, Confirm, NameField, Posters, Segments, Sheet, Switch, hash} from './ui';
 
@@ -15,7 +15,9 @@ const LATER: Record<string, string> = {
   'recently-watched': 'Fills for each person from Trakt, MDBList or what they play here',
   'mdblist-watchlist': 'MDBList · Appears once someone connects MDBList. With Trakt too, it starts off',
 };
-const laterOf = (row: Row) => LATER[row.id] ?? `${row.source} · Appears once someone connects Trakt`;
+const laterOf = (row: Row) => isPlace(row.id) ? 'For you · Picked daily for each person, from what they watch' : LATER[row.id] ?? `${row.source} · Appears once someone connects Trakt`;
+// On a hub or group Home a For you place is kept for each person too: what fills it is picked for them every day.
+const placeHeld = (row: Row, level: Level) => level !== 'own' && (TRAKT_IDS.has(row.id) || isPlace(row.id));
 function RowCard({row, index, tag, locked, later, person, limit = 'all', onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; later?: boolean; person?: string; limit?: Limit; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
   // Under a content limit only the folders that suit it are shown, as in the player apps.
   const covers = row.covers?.filter(cover => folderFits(row.id, cover.image, limit)), none = !!row.covers?.length && !covers?.length;
@@ -54,8 +56,10 @@ export interface HomeProps {
   /* The content limit this Home is seen under, whether MDBList lists can be read for it, and (a person's own Home, in their own
      view only) which suggestions their watching points to. `keyHint`: what to say when picks wait for an MDBList key. */
   limit?: Limit; listsOk?: boolean; because?: Record<string, string>; keyHint?: React.ReactNode;
+  /* Each person's apps sign in to their own AIOMetadata setup: For you places can be added. */
+  front?: boolean;
 }
-export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, onBuild, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint}: HomeProps) {
+export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, onBuild, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false}: HomeProps) {
   const [country, setCountry] = useState(''), [tongue, setTongue] = useState(''), [kinds, setKinds] = useState(['Movies']), [adding, setAdding] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
   const on = rows.filter(row => row.on), off = rows.filter(row => !row.on);
   const set = (id: string, next: Partial<Row>, note: string) => onChange(rows.map(row => row.id === id ? {...row, ...next} : row), note);
@@ -80,14 +84,14 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
       const from = on.findIndex(row => row.id === String(event.operation.source!.id)), to = event.operation.source.index;
       if (from >= 0 && from !== to) onChange([...moved(on, from, to), ...off], 'Order saved');
     }}>
-      <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={level !== 'own' && TRAKT_IDS.has(row.id)} person={person} limit={limit}
+      <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={placeHeld(row, level)} person={person} limit={limit}
         onToggle={() => set(row.id, {on: false}, `“${row.title}” is off Home`)}
-        onArrange={() => setArranging(row.id)}
+        onArrange={isPlace(row.id) ? undefined : () => setArranging(row.id)}
         onRemove={row.origin === level && !row.core ? () => setDropping(row) : undefined}/>)}</ol>
     </DragDropProvider>
     {!on.length && <p className="empty">Nothing on Home yet. Add a row or turn one on below.</p>}
     {!!off.length && <details className="off" open={off.length <= 4}><summary>Not on Home <span className="count">{off.length}</span></summary>
-      <ul>{off.map(row => {const place = level !== 'own' && TRAKT_IDS.has(row.id);
+      <ul>{off.map(row => {const place = placeHeld(row, level);
         return <li key={row.id} className={place ? 'later' : undefined}><div><h3>{row.title}</h3><p>{place ? laterOf(row) : `${row.kind} · ${sourceShown(row, limit)}`}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>;})}</ul>
     </details>}
     {adding && <Sheet title="Add a row" onClose={() => setAdding(false)}>
@@ -104,6 +108,8 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
       {(!!theirs.length || (!find && listsHint && level === 'own')) && <><h3 className="sheet-sub">{mine ? 'Your lists' : 'Their lists'}</h3>
         {theirs.length ? <ul className="picks compact mine">{theirs.map(item => <li key={item.id}><button type="button" disabled={has(item)} onClick={() => add(item)}><span><strong>{item.title}</strong><small>{has(item) ? 'Added' : `${item.source.split(' · ')[0]} · ${item.kind.replace(/^List · /, '')}`}</small></span></button></li>)}</ul>
           : <p className="muted small">{listsHint}</p>}</>}
+      {front && !mine ? <><h3 className="sheet-sub">For you</h3>
+        <ul className="picks compact"><li><button type="button" onClick={() => {const place = nextPlace(rows); onChange([{...place, origin: level}, ...rows], 'Added a For you place'); setAdding(false);}}><span><strong>For you place</strong><small>A row picked for each person every day, from what they watch</small></span></button></li></ul></> : null}
       {find && <><h3 className="sheet-sub">Or pick one</h3>
         {picked.picks.length ? <ul className="picks compact suggested">{picked.picks.map(item => <li key={item.id}><button type="button" onClick={() => add({id: item.id, title: item.title, kind: item.kind, source: item.source})}><span><strong>{item.title}</strong><small>{because[item.id] && level === 'own' ? `Because you watched ${because[item.id]}` : item.kind}</small></span></button></li>)}</ul>
           : <p className="muted small">Every pick is already on this Home.</p>}
