@@ -8,7 +8,7 @@ import {PlaybackEditor, SourcesEditor} from './settings';
 import type {EditorProps} from './settings';
 import {addPasskey, beAs, canPasskey, leaveAs, usePasskey} from './live';
 import type {Live} from './live';
-import {Avatar, NameField, Secret, Segments, Setting, Sheet, Switch, Tabs, addReal} from './ui';
+import {Avatar, Confirm, NameField, Secret, Segments, Setting, Sheet, Switch, Tabs, addReal} from './ui';
 
 /* `live` is there when the page is backed by the real hub; without it everything runs on the preview's sample data. */
 export interface PageProps {hub: Hub; go: (to: string) => void; update: (change: (hub: Hub) => void) => void; toast: (text: string) => void; live?: Live}
@@ -47,9 +47,6 @@ function editor({hub, update, toast, live}: PageProps, group?: Group, person?: P
     set: (key, value, note = 'Saved') => {update(next => {(target(next) as Partial<Settings>)[key] = value;}); toast(note);},
     reset: key => {update(next => {delete (target(next) as Partial<Settings>)[key];}); toast(`Following ${person ? group!.name : HUB} again`);},
   };
-}
-function Confirm({title, body, action, onYes, onClose, plain}: {title: string; body: string; action: string; onYes: () => void; onClose: () => void; plain?: boolean}) {
-  return <Sheet title={title} onClose={onClose}><p className="muted sheet-lead">{body}</p><div className="split"><button type="button" className="ghost" onClick={onClose}>Cancel</button><button type="button" className={plain ? 'primary' : 'primary danger-fill'} onClick={onYes}>{action}</button></div></Sheet>;
 }
 function copyOf(hub: Hub, source: Person, name: string, groupId = source.groupId): Person {
   const copy = newPerson(hub, name, groupId);
@@ -123,6 +120,7 @@ const seenAt = (device: Device) => {
 function Devices({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {update, toast, live} = page;
   const [code, setCode] = useState(''), [pin, setPin] = useState<string | null>(null);
+  const [ask, setAsk] = useState<{title: string; body: string; action: string; yes: () => void} | null>(null);
   const [creds, refresh] = useCreds(page, person), at = `/api/people/${person.id}`;
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
   const act = (work: Promise<unknown>, note: string) => {void work.then(async () => {await live!.reload(); refresh(); toast(note);}, fail(toast));};
@@ -155,7 +153,8 @@ function Devices({page, person, mine}: {page: PageProps; person: Person; mine: b
       </Setting>}
     </div></>}
     <h3 className="sub">Signed in</h3>
-    {person.devices.length ? <><ul className="feed">{person.devices.map(device => <li key={device.id}><div className="quiet-name">{live ? <NameField label={`Name of ${device.name}`} value={device.name} onSave={value => act(live.call('PUT', `${at}/devices/${device.id}`, {name: value}), 'Renamed')}/> : <strong>{device.name}</strong>}<small>{device.app} · {device.seen === 'Now' ? 'active now' : `last used ${device.seen.toLowerCase()}`}{seenAt(device)}</small></div><button type="button" className="ghost small" onClick={() => live ? act(live.call('DELETE', `${at}/devices/${device.id}`), `${device.name} signed out`) : edit(target => {target.devices = target.devices.filter(item => item.id !== device.id);}, `${device.name} signed out`)}>Sign out</button></li>)}</ul>
+    {ask && <Confirm title={ask.title} body={ask.body} action={ask.action} onYes={() => {const yes = ask.yes; setAsk(null); yes();}} onClose={() => setAsk(null)}/>}
+    {person.devices.length ? <><ul className="feed">{person.devices.map(device => <li key={device.id}><div className="quiet-name">{live ? <NameField label={`Name of ${device.name}`} value={device.name} onSave={value => act(live.call('PUT', `${at}/devices/${device.id}`, {name: value}), 'Renamed')}/> : <strong>{device.name}</strong>}<small>{device.app} · {device.seen === 'Now' ? 'active now' : `last used ${device.seen.toLowerCase()}`}{seenAt(device)}</small></div><button type="button" className="ghost small" onClick={() => setAsk({title: `Sign out ${device.name}?`, body: `The app on ${device.name} has to sign in again before it plays anything. Nothing else changes.`, action: 'Sign out', yes: () => live ? act(live.call('DELETE', `${at}/devices/${device.id}`), `${device.name} signed out`) : edit(target => {target.devices = target.devices.filter(item => item.id !== device.id);}, `${device.name} signed out`)})}>Sign out</button></li>)}</ul>
       <button type="button" className="link below" onClick={() => live ? act(live.call('POST', `${at}/rotate`, {}), 'Signed out everywhere. New password set.') : edit(target => {target.devices = []; target.password = samplePassword(person.id);}, 'Signed out everywhere. New password set.')}>Sign {who} out everywhere</button></>
       : <p className="muted">No device yet.</p>}
   </section>;
@@ -207,6 +206,7 @@ async function patiently(ask: () => Promise<Response>, waiting: () => void): Pro
 function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {hub, update, toast, live} = page, at = `/api/people/${person.id}/scrobble`, link = person.history;
   const [phase, setPhase] = useState<'' | 'going' | 'connecting' | 'busy'>(''), busy = !!phase, [dropping, setDropping] = useState(false);
+  const [older, setOlder] = useState(false);
   const their = mine ? 'your' : 'their', client = hub.traktClient ?? '';
   // The sign-in Trakt just sent back here, if it was for this person: the code is exchanged for the login, once.
   useEffect(() => {
@@ -260,7 +260,8 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     {phase === 'connecting' || phase === 'busy' ? <p className="muted small" role="status">{phase === 'busy' ? 'Trakt is busy, trying again…' : 'Connecting to Trakt…'}</p>
       : !on && !mine && hub.scrobble && client ? <p className="muted small">Trakt asks who’s signing in, so {person.name} can use their own Trakt account.</p> : null}
     {person.aiomTrakt && <div className="quiet-note"><p className="muted small">{on ? 'An older Trakt link, made through AIOMetadata, is still there. Nothing uses it any more.' : 'Home’s Trakt rows come from an older link made through AIOMetadata for now. Connecting here takes over from it.'}</p>
-      <button type="button" className="link small" disabled={busy} onClick={() => work(live.call('DELETE', `/api/people/${person.id}/trakt`), 'Older Trakt link removed')}>Disconnect it</button></div>}
+      <button type="button" className="link small" disabled={busy} onClick={() => on ? work(live.call('DELETE', `/api/people/${person.id}/trakt`), 'Older Trakt link removed') : setOlder(true)}>Disconnect it</button></div>}
+    {older && <Confirm title="Disconnect the older Trakt link?" body={`Home’s Trakt rows come from it for now, so they leave ${their} Home until Trakt is connected above. Nothing on Trakt itself changes.`} action="Disconnect" onYes={() => {setOlder(false); work(live.call('DELETE', `/api/people/${person.id}/trakt`), 'Older Trakt link removed');}} onClose={() => setOlder(false)}/>}
     {dropping && <Confirm title="Disconnect Trakt?" body={`Trakt stops following along, and ${their} Trakt rows leave Home. Plays still waiting to reach Trakt are dropped. Nothing on Trakt itself changes, and connecting again brings the rows back.`} action="Disconnect" onYes={() => {setDropping(false); work(live.call('DELETE', at), 'Trakt disconnected');}} onClose={() => setDropping(false)}/>}
   </li>;
 }
@@ -700,6 +701,7 @@ function Servers({hub, live, toast}: {hub: Hub; live: Live; toast: (text: string
 
 /* ---------- the manager's own account ---------- */
 export function AccountPage({hub, update, toast, go, live}: PageProps) {
+  const [ask, setAsk] = useState<{title: string; body: string; action: string; yes: () => void} | null>(null);
   const [codes, setCodes] = useState<string[] | null>(null), [changing, setChanging] = useState(false), [ending, setEnding] = useState(false), [pass, setPass] = useState(''), [busy, setBusy] = useState(false), [adding, setAdding] = useState(false);
   const samples = Array.from({length: 10}, (_, i) => `sample-${String(1000 + i * 731 % 9000)}-${String(2000 + i * 419 % 8000)}`);
   return <>
@@ -712,7 +714,8 @@ export function AccountPage({hub, update, toast, go, live}: PageProps) {
       <Setting title="Recovery codes" hint={live ? 'Ten spare keys for the day you lose your password. Any one gets you back in, once. They are shown only when made; making new ones retires the old.' : 'Ten one-time codes for the day you lose your password.'}><button type="button" className="ghost small" onClick={() => live ? void live.call<{codes: string[]}>('POST', '/api/account/recovery', {}).then(made => setCodes(made.codes), fail(toast)) : setCodes(samples)}>{live ? 'New codes' : 'Show'}</button></Setting>
     </div>
     {(SAMPLE || canPasskey()) && <><h3 className="sub">Passkeys</h3>
-    <ul className="accounts">{hub.me.passkeys.map(key => <li key={key.id}><div><h3>{key.name}</h3><p>Added {key.added}</p></div><button type="button" className="ghost small" onClick={() => {if (live) return void live.call('DELETE', `/api/account/passkeys/${key.id}`).then(() => live.reload()).then(() => toast('Passkey removed'), fail(toast)); update(next => {next.me.passkeys = next.me.passkeys.filter(item => item.id !== key.id);}); toast('Passkey removed');}}>Remove</button></li>)}
+    {ask && <Confirm title={ask.title} body={ask.body} action={ask.action} onYes={() => {const yes = ask.yes; setAsk(null); yes();}} onClose={() => setAsk(null)}/>}
+    <ul className="accounts">{hub.me.passkeys.map(key => <li key={key.id}><div><h3>{key.name}</h3><p>Added {key.added}</p></div><button type="button" className="ghost small" onClick={() => setAsk({title: `Remove the passkey on ${key.name}?`, body: 'That device can no longer sign in with it. Your password and other passkeys still work.', action: 'Remove', yes: () => {if (live) return void live.call('DELETE', `/api/account/passkeys/${key.id}`).then(() => live.reload()).then(() => toast('Passkey removed'), fail(toast)); update(next => {next.me.passkeys = next.me.passkeys.filter(item => item.id !== key.id);}); toast('Passkey removed');}})}>Remove</button></li>)}
       <li><div><h3>Add a passkey</h3><p>Sign in with a fingerprint or face on this device, with no hub code to type. Optional; the password always works.</p></div><button type="button" className="ghost small" disabled={adding} onClick={() => {if (live) {setAdding(true); return void addPasskey().then(() => live.reload()).then(() => toast('Passkey added'), (error: Error) => toast(error.name === 'NotAllowedError' ? 'No passkey was added' : error.name === 'InvalidStateError' ? 'This device already has a passkey here' : error.message)).finally(() => setAdding(false));} update(next => {next.me.passkeys.push({id: `k${Date.now()}`, name: 'This device', added: 'today'});}); toast('Passkey added');}}>Add</button></li></ul></>}
     <h3 className="sub">Appearance</h3>
     <div className="card settings"><Setting title="Theme"><Segments label="Theme" value={hub.me.theme} onChange={value => update(next => {next.me.theme = value;})} options={[{value: 'dark', label: 'Dark'}, {value: 'light', label: 'Light'}, {value: 'auto', label: 'Match device'}]}/></Setting></div>

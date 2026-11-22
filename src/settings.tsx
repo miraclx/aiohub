@@ -3,7 +3,7 @@ import type {Live} from './live';
 import {FIXTURES, FormatterPreviewClient} from 'formatter-preview';
 import {allServices, defaultAddons, signUp} from './data';
 import type {Hub, Resolved, Settings, Template} from './data';
-import {Chips, Segments, Setting, Switch, hash} from './ui';
+import {Chips, Confirm, Segments, Setting, Switch, hash} from './ui';
 import type {Scope} from './ui';
 
 export interface EditorProps {
@@ -84,14 +84,16 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
   const line = (key: keyof Settings) => ({from: from[key], scope, onReset: () => reset(key)});
   const [service, setService] = useState(''), [key, setKey] = useState(''), [link, setLink] = useState(''), [tmdb, setTmdb] = useState(''), [lists, setLists] = useState(''), [replacing, setReplacing] = useState(''), [fresh, setFresh] = useState('');
   const free = allServices.filter(item => !hub.services.includes(item)), shipped = defaultAddons(); // the wording of a built-in source's note is the site's, not what a hub happened to save
+  const [ask, setAsk] = useState<{title: string; body: string; action: string; yes: () => void} | null>(null);
   return <section>
+    {ask && <Confirm title={ask.title} body={ask.body} action={ask.action} onYes={() => {const yes = ask.yes; setAsk(null); yes();}} onClose={() => setAsk(null)}/>}
     <div className="section-head"><div><h2>Sources</h2><p className="muted">Where streams come from and how they are listed.</p></div></div>
     {scope.level === 'hub' && <><h3 className="sub first">Debrid accounts</h3>
       <ul className="accounts">{hub.services.map(item => <li key={item}><div><h3>{item}</h3><p>{(names => names ? `Used by ${names}.` : 'No group uses it.')(hub.groups.filter(group => (group.settings.debrid ?? hub.defaults.debrid) === item).map(group => group.name).join(', '))}</p></div>
         {live && (replacing === item
           ? <form className="field-row narrow" onSubmit={event => {event.preventDefault(); service_('PUT', item, {key: fresh}, `${item} key replaced`); setReplacing(''); setFresh('');}}><input type="password" aria-label={`New ${item} key`} placeholder="New API key" autoComplete="off" autoFocus value={fresh} onChange={event => setFresh(event.target.value)}/><button className="ghost small" disabled={!fresh.trim()}>Save</button></form>
           : <button type="button" className="ghost small" onClick={() => {setReplacing(item); setFresh('');}}>Replace key</button>)}
-        {hub.services.length > 1 && <button type="button" className="ghost small" disabled={values.debrid === item || hub.groups.some(group => group.settings.debrid === item) || hub.people.some(person => person.settings.debrid === item)} title="Move every group off this account first" onClick={() => {if (live) return service_('DELETE', item, undefined, `${item} disconnected`); update(next => {next.services = next.services.filter(other => other !== item);}); toast(`${item} disconnected`);}}>Disconnect</button>}</li>)}
+        {hub.services.length > 1 && <button type="button" className="ghost small" disabled={values.debrid === item || hub.groups.some(group => group.settings.debrid === item) || hub.people.some(person => person.settings.debrid === item)} title="Move every group off this account first" onClick={() => setAsk({title: `Disconnect ${item}?`, body: `Its key leaves the hub, and nothing plays from ${item} until it is connected again.`, action: 'Disconnect', yes: () => {if (live) return service_('DELETE', item, undefined, `${item} disconnected`); update(next => {next.services = next.services.filter(other => other !== item);}); toast(`${item} disconnected`);}})}>Disconnect</button>}</li>)}
         {!!free.length && <li><form className="connect" onSubmit={event => {event.preventDefault(); const name = service || free[0]; if (live) service_('PUT', name, {key}, `${name} connected`); else {update(next => {next.services.push(name);}); toast(`${name} connected`);} setKey(''); setService('');}}>
           <select aria-label="Service" value={service || free[0]} onChange={event => setService(event.target.value)}>{free.map(item => <option key={item}>{item}</option>)}</select>
           <input type="password" aria-label="API key" placeholder="API key" autoComplete="off" value={key} onChange={event => setKey(event.target.value)}/>
@@ -111,7 +113,7 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
         const field = (label: string) => <form className="field-row" onSubmit={event => {event.preventDefault(); save();}}><input type="password" aria-label={`${item.name} API key`} placeholder={item.on ? 'New API key' : 'API key'} autoComplete="off" autoFocus={item.on} value={item.value} onChange={event => item.setValue(event.target.value)}/><button className="ghost small" disabled={!item.value.trim()}>{label}</button></form>;
         return <li key={item.id} className={!item.on || replacing === item.id ? 'stacked' : ''}><div><h3>{item.name}</h3><p>{item.on ? item.does : item.missing}</p>{!item.on && <a className="link small" href={item.get} target="_blank" rel="noreferrer">Get a key</a>}</div>
           {!item.on ? field('Connect') : replacing === item.id ? field('Save') : <button type="button" className="ghost small" onClick={() => {setReplacing(item.id); item.setValue('');}}>Replace key</button>}
-          {item.on && item.id === 'mdblist' && replacing !== item.id && <button type="button" className="ghost small" onClick={() => void live.call('DELETE', '/api/keys/mdblist').then(() => {toast('MDBList key removed'); live.apps(); return live.reload();}, (error: Error) => toast(error.message))}>Remove</button>}</li>;
+          {item.on && item.id === 'mdblist' && replacing !== item.id && <button type="button" className="ghost small" onClick={() => setAsk({title: 'Remove the hub’s MDBList key?', body: 'The collections and lists that read MDBList leave everyone’s Home, except for people who connected their own MDBList.', action: 'Remove', yes: () => void live.call('DELETE', '/api/keys/mdblist').then(() => {toast('MDBList key removed'); live.apps(); return live.reload();}, (error: Error) => toast(error.message))})}>Remove</button>}</li>;
       })}</ul></>}
     <h3 className="sub">Stream sources</h3>
     <div className="card settings">

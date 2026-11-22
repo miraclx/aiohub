@@ -90,3 +90,7 @@ export function NameField({value, label, onSave}: {value: string; label: string;
   const commit = () => {const next = text.trim(); if (next && next !== value) onSave(next); else setText(value);};
   return <input aria-label={label} value={text} onChange={event => setText(event.target.value)} onBlur={commit} onKeyDown={event => {if (event.key === 'Enter') event.currentTarget.blur();}} autoComplete="off"/>;
 }
+/* Asks before something that throws work away. */
+export function Confirm({title, body, action, onYes, onClose, plain}: {title: string; body: string; action: string; onYes: () => void; onClose: () => void; plain?: boolean}) {
+  return <Sheet title={title} onClose={onClose}><p className="muted sheet-lead">{body}</p><div className="split"><button type="button" className="ghost" onClick={onClose}>Cancel</button><button type="button" className={plain ? 'primary' : 'primary danger-fill'} onClick={onYes}>{action}</button></div></Sheet>;
+}

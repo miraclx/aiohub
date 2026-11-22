@@ -4,7 +4,7 @@ import {DragDropProvider} from '@dnd-kit/react';
 import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
 import {TRAKT_IDS, countries, folderFits, sourceShown, suggestedFor, tongues} from './data';
 import type {Cover, Level, Limit, Row} from './data';
-import {Art, Chips, NameField, Posters, Segments, Sheet, Switch, hash} from './ui';
+import {Art, Chips, Confirm, NameField, Posters, Segments, Sheet, Switch, hash} from './ui';
 
 type Pick = {id: string; title: string; kind: string; source: string};
 export function Grip({handleRef, label}: {handleRef: (element: Element | null) => void; label: string}) {
@@ -59,6 +59,8 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
   const [country, setCountry] = useState(''), [tongue, setTongue] = useState(''), [kinds, setKinds] = useState(['Movies']), [adding, setAdding] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
   const on = rows.filter(row => row.on), off = rows.filter(row => !row.on);
   const set = (id: string, next: Partial<Row>, note: string) => onChange(rows.map(row => row.id === id ? {...row, ...next} : row), note);
+  // Following the Home above again, or removing a row, throws work away: both ask first.
+  const [following, setFollowing] = useState(false), [dropping, setDropping] = useState<Row | null>(null);
   function add(item: Pick) {
     if (rows.some(row => row.id === item.id)) return;
     onChange([{...item, origin: level, on: true}, ...rows], `Added “${item.title}”`); setAdding(false); setLink('');
@@ -69,7 +71,9 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
   const folder = rows.find(row => row.id === arranging);
   return <section>
     <div className="section-head"><div><h2>Home</h2><p className="muted">{mine ? 'What you see first when you open the player.' : level === 'own' ? 'What they see first when they open the player.' : 'The Home everyone here starts with.'}{canArrange ? ' Drag to reorder.' : ''}</p></div>{canAdd && <button type="button" className="primary" onClick={() => setAdding(true)}>+ Add row</button>}</div>
-    {onFollow && <div className="notice"><span>This Home has its own changes.</span><button type="button" className="link" onClick={onFollow}>{followLabel}</button></div>}
+    {onFollow && <div className="notice"><span>This Home has its own changes.</span><button type="button" className="link" onClick={() => setFollowing(true)}>{followLabel}</button></div>}
+    {following && onFollow && <Confirm title={`${followLabel}?`} body="This Home’s own changes are dropped: the order, which rows are on, rows added here and any new names. It shows the Home above it again, and follows its changes from then on." action={followLabel ?? 'Follow again'} onYes={() => {setFollowing(false); onFollow();}} onClose={() => setFollowing(false)}/>}
+    {dropping && <Confirm title={`Remove “${dropping.title}”?`} body={dropping.covers ? 'It leaves this Home, with its folder order and names. It can be added again from Add row, as it first came.' : 'It leaves this Home. It can be added again from Add row.'} action="Remove" onYes={() => {const row = dropping; setDropping(null); onChange(rows.filter(item => item.id !== row.id), `Removed “${row.title}”`);}} onClose={() => setDropping(null)}/>}
     <p className="pinned"><strong>Always first:</strong> Continue watching and Upcoming. The player adds these itself.</p>
     <DragDropProvider onDragEnd={event => {
       if (event.canceled || !canArrange || !isSortableOperation(event.operation) || !event.operation.source) return;
@@ -79,7 +83,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
       <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={level !== 'own' && TRAKT_IDS.has(row.id)} person={person} limit={limit}
         onToggle={() => set(row.id, {on: false}, `“${row.title}” is off Home`)}
         onArrange={() => setArranging(row.id)}
-        onRemove={row.origin === level && !row.core ? () => onChange(rows.filter(item => item.id !== row.id), `Removed “${row.title}”`) : undefined}/>)}</ol>
+        onRemove={row.origin === level && !row.core ? () => setDropping(row) : undefined}/>)}</ol>
     </DragDropProvider>
     {!on.length && <p className="empty">Nothing on Home yet. Add a row or turn one on below.</p>}
     {!!off.length && <details className="off" open={off.length <= 4}><summary>Not on Home <span className="count">{off.length}</span></summary>
