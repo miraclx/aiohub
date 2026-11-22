@@ -231,7 +231,8 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
       .then(() => {toast(username ? `Trakt connected as ${username}` : 'Trakt connected'); live!.apps(); void live!.reload();}, fail(toast));
     setPhase('');
   };
-  const about = `Trakt follows along as things are watched here, and ${their} Trakt watchlist, picks and next episodes show up on Home.`;
+  // What Trakt does once connected (front.ts scrobbling, rows.ts, places.ts): said plainly, in the order people notice it.
+  const about = `What ${mine ? 'you watch' : `${person.name} watches`} here is added to ${their} Trakt as it plays. ${mine ? 'Your' : 'Their'} Trakt watchlist, recommendations and recently watched show up on Home, and anything watched somewhere else can be brought over.`;
   if (!live) {
     const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
     return <li><div><h3>Trakt</h3><p>{person.trakt ? `Connected. ${about}` : about}</p></div>
@@ -270,7 +271,7 @@ function MdbList({page, person, mine}: {page: PageProps; person: Person; mine: b
   const {update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
   const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [dropping, setDropping] = useState(false);
   const their = mine ? 'your' : 'their', moving = person.moving ?? null, connected = person.lists || (!!live && (!!person.listsKept || !!moving));
-  const about = `Optional and free. It can keep ${their} progress in ${their} own MDBList account, where other apps read it too, and it lets rows hide what’s been watched.`;
+  const about = `Optional and free. ${mine ? 'Your' : 'Their'} MDBList watchlist and lists show up on Home, and it can keep ${their} progress instead of this hub, where other apps that read MDBList see it too.`;
   if (!live) {
     const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
     return <li><div><h3>MDBList</h3><p>{person.lists ? `Connected. Keeps ${their} progress.` : about}</p></div>
@@ -284,7 +285,7 @@ function MdbList({page, person, mine}: {page: PageProps; person: Person; mine: b
     }, fail(toast)).finally(() => setBusy(false));
   };
   const forget = () => {setDropping(false); setBusy(true); void live.call('DELETE', `${at}/key`).then(() => {toast('MDBList disconnected'); live.apps(); return live.reload();}, fail(toast)).finally(() => setBusy(false));};
-  const state = !connected ? about : person.lists ? `Keeps ${their} progress.` : moving ? '' : `Not keeping progress; it reads ${their} lists.`;
+  const state = !connected ? about : person.lists ? `Keeps ${their} progress, so rows can hide what’s been watched. ${mine ? 'Your' : 'Their'} watchlist and lists show up on Home.` : moving ? '' : `Not keeping progress. ${mine ? 'Your' : 'Their'} watchlist and lists show up on Home.`;
   return <li className="stacked"><div className="account-row"><div><h3>MDBList</h3>{connected && <Who name={person.listsName ?? ''}/>}{state && <p>{state}</p>}
 </div>
     {connected ? <button type="button" className="ghost small" disabled={busy} onClick={() => setDropping(true)}>Disconnect</button>
@@ -361,10 +362,14 @@ function Trackers({page, person, back, onBack}: {page: PageProps; person: Person
   // What each pair holds, kept with whose it is: a look at someone else never shows here.
   const whose = `${hub.code}/${person.id}`, lookOf = (pair: Pair) => looks[`${whose}/${pair}/${person.v}`];
   const want: Pair[] = moving === 'mdblist' ? ['here-mdblist'] : lists && (back || moving === 'here') ? ['mdblist-here'] : lists ? (trakt ? ['here-mdblist', 'mdblist-trakt'] : ['here-mdblist']) : trakt ? ['here-trakt'] : [];
+  const [checking, setChecking] = useState(false);
+  const lookAt = (pair: Pair, fresh = false) => {const at = `${whose}/${pair}/${person.v}`; return live!.call<Look>('GET', `/api/people/${person.id}/compare/${pair}${fresh ? '?fresh=1' : ''}`).then(got => setLooks(was => ({...was, [at]: got})), () => setLooks(was => ({...was, [at]: 'failed'})));};
   useEffect(() => {
     if (!live) return;
-    for (const pair of want) {const at = `${whose}/${pair}/${person.v}`; if (!looks[at]) void live.call<Look>('GET', `/api/people/${person.id}/compare/${pair}`).then(got => setLooks(was => ({...was, [at]: got})), () => setLooks(was => ({...was, [at]: 'failed'})));}
+    for (const pair of want) if (!looks[`${whose}/${pair}/${person.v}`]) void lookAt(pair);
   }, [whose, want.join(), person.v]);
+  // Looks again now instead of using the last look (kept up to six hours); the hub waits two minutes between looks.
+  const again = checking ? null : <button type="button" className="link small" onClick={() => {setChecking(true); void Promise.all(want.map(pair => lookAt(pair, true))).finally(() => setChecking(false));}}>Check again</button>;
   if (!live || (!trakt && !lists && !moving)) return null;
   const leftover = lookOf('here-mdblist'), leftovers = lists && !moving && !back && leftover && leftover !== 'failed' && leftover.lines.length > 0;
   // Which state the card is in: the pair, its two columns, and its words.
@@ -421,13 +426,13 @@ function Trackers({page, person, back, onBack}: {page: PageProps; person: Person
     } catch (error) {toast((error as Error).message);} finally {setBusy('');}
   };
   if (looked === 'failed') return <li className="trackers quiet"><span className="dot wait" aria-hidden="true"/><p><strong>{state.title}</strong> <span className="muted">· couldn’t look just now</span></p></li>;
-  if (!lines.length && !moves) return state.kind === 'lists' && !leftover ? null : <li className="trackers quiet"><span className="dot ok" aria-hidden="true"/><p><strong>{state.kind === 'both' ? 'Trakt and MDBList' : state.kind === 'here-trakt' ? 'Here and Trakt' : 'MDBList'}</strong> <span className="muted">· all in step{checkedAt ? ` · checked ${when(checkedAt)}` : ''}</span></p></li>;
+  if (!lines.length && !moves) return state.kind === 'lists' && !leftover ? null : <li className="trackers quiet"><span className="dot ok" aria-hidden="true"/><p><strong>{state.kind === 'both' ? 'Trakt and MDBList' : state.kind === 'here-trakt' ? 'Here and Trakt' : 'MDBList'}</strong> <span className="muted">· all in step{checkedAt ? ` · checked ${when(checkedAt)}` : ''}</span> {checking ? <span className="muted small">Checking…</span> : again}</p></li>;
   const cell = (state_: Cell | undefined, off: boolean) => !state_ || state_ === 'none' ? <span className="cell none" aria-hidden="true">–</span> : <span className={`cell ${state_}${off ? ' off' : ''}`} aria-hidden="true">{state_ === 'has' ? '✓' : '+'}</span>;
   const arrow = (line: Line) => line[right] === 'add' && line[left] === 'add' ? '← →' : line[right] === 'add' ? '→' : '←';
   const visible = all ? lines : lines.slice(0, SHOWN);
   const label = busy ? `${moves || state.kind === 'finish' ? 'Moving' : 'Adding'}…${busy.trim() === '…' ? '' : busy}` : moves ? (kept.length ? `Move ${plays(kept.length)} and switch` : state.kind === 'to-lists' ? 'Switch to MDBList' : 'Switch back to Here') : state.kind === 'finish' ? `Move ${plays(kept.length)}` : `Add ${plays(kept.length)}`;
   return <li className="stacked trackers">
-    <div className="trackers-head"><h3>{state.title}</h3>{checkedAt ? <span className="muted small">Checked {when(checkedAt)}</span> : null}</div>
+    <div className="trackers-head"><h3>{state.title}</h3><span className="muted small">{checkedAt ? `Checked ${when(checkedAt)} · ` : ''}{checking ? 'Checking…' : again}</span></div>
     <p className="muted small">{lines.length ? `${plays(lines.length)} ${state.count}` : 'Nothing to move'}{(looked as Look | undefined)?.more ? ', and more after these' : ''}</p>
     {!!lines.length && <div className="trackers-cols muted small" aria-hidden="true"><span>{NAMES[left]}</span><span>{NAMES[right]}</span></div>}
     {!!lines.length && <ul className="plays">{visible.map(line => {const off = out.has(line.key); return <li key={line.key}>

@@ -89,6 +89,14 @@ await owner.locator('.rows .row.later', {hasText: 'Recently Watched'}).getByText
 // All seven, Recently Watched among those on Home (it is on by default); the Not on Home ones keep Show at the right edge.
 assert.deepEqual(await owner.locator('.rows .row.later h3').allTextContents(), ['Watchlist · Trakt', 'Watchlist · MDBList', 'Recommended Movies', 'Recommended Shows', 'Recently Watched']);
 assert.deepEqual(await owner.locator('.off li.later h3').allTextContents(), ['Up Next', 'Recently Aired for You']);
+// Any row can be renamed from its Edit sheet: only the name changes, and it can be put back.
+const rename = async (from, to) => {
+  await owner.locator('.rows .row', {has: owner.locator('h3', {hasText: new RegExp(`^${from}$`)})}).getByRole('button', {name: 'Edit'}).click();
+  const field = owner.getByRole('textbox', {name: 'Name of this row'}); await field.fill(to); await field.press('Enter');
+  await toast(owner).filter({hasText: `Renamed to “${to}”`}).waitFor(); await owner.getByRole('button', {name: 'Close'}).click();
+  await owner.locator('.rows .row h3', {hasText: new RegExp(`^${to}$`)}).waitFor();
+};
+await rename('Top Rated Movies', 'Best Films'); await rename('Best Films', 'Top Rated Movies');
 // Not on Home is names only: no pictures beside any line, so places and plain rows start at the same edge.
 await owner.locator('.off').evaluate(list => {list.open = true;}); await owner.locator('.off li').first().waitFor(); assert.equal(await owner.locator('.off .posters, .off .covers').count(), 0);
 for (const width of [390, 1280]) {
@@ -118,7 +126,7 @@ await guest.getByLabel('Password').fill('my own password'); await guest.getByRol
 
 // Accounts, on her own page. Trakt is one card with one Connect; progress is kept here until she picks MDBList.
 await guest.goto(BASE + '/#/me/accounts'); const trakt = guest.locator('.accounts li', {has: guest.getByRole('heading', {name: 'Trakt', exact: true})});
-await trakt.getByText('Trakt follows along as things are watched here').waitFor(); assert.equal(await guest.getByText('Trakt history').count(), 0);
+await trakt.getByText('is added to your Trakt as it plays', {exact: false}).waitFor(); assert.equal(await guest.getByText('Trakt history').count(), 0);
 // MDBList is an account like Trakt, optional; with none connected there is nothing to choose for progress.
 const mdb = guest.locator('.accounts li', {has: guest.getByRole('heading', {name: 'MDBList', exact: true})}).first();
 await mdb.getByText('Optional and free.', {exact: false}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).count(), 0);
@@ -196,7 +204,7 @@ holds('here-trakt', []); await guest.reload(); await guest.getByText('Here and T
 // Connecting MDBList only saves the key: progress stays Here, and the choice appears.
 await mdb.getByRole('button', {name: 'Connect'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key');
 await guest.getByRole('button', {name: 'Save'}).click(); await toast(guest).filter({hasText: 'MDBList connected'}).waitFor();
-await mdb.getByText('Not keeping progress; it reads your lists.', {exact: false}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
+await mdb.getByText('Not keeping progress. Your watchlist and lists show up on Home.', {exact: false}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
 await both(guest, '12b-mdblist-connected');
 // With Trakt and MDBList both connected, on the Home of her own: MDBList's watchlist comes in after Trakt's, off, and each is plainly
 // "Watchlist" while only one is on. Turning MDBList's on names both; turning it off again keeps it there, off.
@@ -222,12 +230,12 @@ await both(guest, '13e-card-moving-to-mdblist');
 // Staying on Here keeps MDBList connected, not keeping progress, with Disconnect beside it. Her card pairs Here and Trakt.
 await card.getByRole('button', {name: 'Stay on Here'}).click(); await toast(guest).filter({hasText: 'Staying on Here'}).waitFor();
 assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true'); await guest.locator('li.trackers', {hasText: 'Here and Trakt'}).waitFor();
-await mdb.getByText('Not keeping progress; it reads your lists.').waitFor(); await mdb.getByRole('button', {name: 'Disconnect'}).waitFor();
+await mdb.getByText('Not keeping progress. Your watchlist and lists show up on Home.').waitFor(); await mdb.getByRole('button', {name: 'Disconnect'}).waitFor();
 await both(guest, '13i-kept-key');
 // The manager connects it for her instead (from the manager's view it switches at once). Plays from before stay Here until she
 // finishes moving them: the card shows that first.
 // Her saved key is taken up again: nothing to paste.
-await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Not keeping progress; it reads their lists.').waitFor();
+await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Not keeping progress. Their watchlist and lists show up on Home.').waitFor();
 await owner.getByRole('radio', {name: 'MDBList'}).click(); assert.equal(await owner.getByLabel('MDBList API key').count(), 0);
 await toast(owner).filter({hasText: 'Back on MDBList as adalists'}).waitFor();
 holds('here-mdblist', [play('w:show/66276:6:6', 'Slow Horses', 'Season 6 · Episode 6', 15, {here: 'has', lists: 'add'}), play('w:movie/603', 'The Matrix', 'Movie', 20, {here: 'has', lists: 'add'})]);

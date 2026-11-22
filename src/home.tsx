@@ -78,7 +78,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
     }}>
       <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={level !== 'own' && TRAKT_IDS.has(row.id)} person={person} limit={limit}
         onToggle={() => set(row.id, {on: false}, `“${row.title}” is off Home`)}
-        onArrange={find && !row.covers ? undefined : () => setArranging(row.id)}
+        onArrange={() => setArranging(row.id)}
         onRemove={row.origin === level && !row.core ? () => onChange(rows.filter(item => item.id !== row.id), `Removed “${row.title}”`) : undefined}/>)}</ol>
     </DragDropProvider>
     {!on.length && <p className="empty">Nothing on Home yet. Add a row or turn one on below.</p>}
@@ -122,7 +122,9 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
       {!mine && onBuild && <p className="muted small foot">Want one that isn’t here? <button type="button" className="link" onClick={onBuild}>Build it in AIOMetadata</button> and it shows up in this list.</p>}
     </Sheet>}
     {folder && <Sheet title={folder.title} onClose={() => setArranging(null)}>
-      {!find && <><h3 className="sheet-sub first">Titles already watched</h3>
+      {/* The name shown on Home and in the apps; what fills the row stays the same. */}
+      <h3 className="sheet-sub first">Name</h3><NameField label="Name of this row" value={folder.title} onSave={title => set(folder.id, {title}, `Renamed to “${title}”`)}/>
+      {!find && <><h3 className="sheet-sub">Titles already watched</h3>
       <Segments label="Titles already watched" value={folder.watched ?? 'follow'} onChange={value => set(folder.id, {watched: value === 'follow' ? undefined : value}, 'Saved')} options={[{value: 'follow', label: 'Default'}, {value: 'hide', label: 'Hide here'}, {value: 'show', label: 'Show here'}]}/>
       <p className="muted small note">Default uses the “Hide what’s been watched” switch on the Playback tab.</p></>}
       {folder.covers && <><h3 className="sheet-sub">Folders</h3><p className="muted sheet-lead">Drag to choose what comes first. Tap a name to change it. Inside a folder, titles keep the list’s own ranking.</p>

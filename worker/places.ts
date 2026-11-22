@@ -213,13 +213,13 @@ export async function copy(env: Env, hub: string, person: string, pair: Pair, sk
 }
 
 /* What the card shows, worked out when it opens and kept for six hours per person and pair: MDBList allows a person 1,000 calls a
-   day, and Trakt turns away busy callers. */
-const KEPT = 6 * 3600;
-export async function shown(env: Env, hub: string, person: string, pair: Pair, skip: Set<string>): Promise<Look | Failed> {
+   day, and Trakt turns away busy callers. Checking again (`fresh`) looks anew unless the last look is under two minutes old. */
+const KEPT = 6 * 3600, AGAIN = 120;
+export async function shown(env: Env, hub: string, person: string, pair: Pair, skip: Set<string>, fresh = false): Promise<Look | Failed> {
   const row = await env.DB.prepare('SELECT here FROM drift WHERE hub = ? AND person = ?').bind(hub, person).first<{here: string | null}>();
   let kept: Record<string, {at: number; look: Look}> = {};
   try {kept = row?.here ? JSON.parse(row.here) : {};} catch {kept = {};}
-  if (kept[pair] && now() - kept[pair].at < KEPT) return {...kept[pair].look, checked: kept[pair].at};
+  if (kept[pair] && now() - kept[pair].at < (fresh ? AGAIN : KEPT)) return {...kept[pair].look, checked: kept[pair].at};
   const got = await look(env, hub, person, pair, skip);
   if ('error' in got) return got;
   const {incoming: _, ...look_} = got;

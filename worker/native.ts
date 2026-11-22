@@ -264,7 +264,9 @@ const TRAKT_CHART: Record<string, Catalog> = {
 // in the last month). AIOMetadata's own "popular" is the newest films with fifty votes, latest first, so it is not used.
 const POPULAR_NOW: Record<string, Part & {discover: string}> = {
   'popular-movies': {discover: 'popular', type: 'movie', params: {sort_by: 'popularity.desc', 'vote_count.gte': '100', 'primary_release_date.gte': '__tmdb_date__:last_180_days:from', 'primary_release_date.lte': '__tmdb_date__:today:to'}},
-  'popular-series': {discover: 'popular', type: 'series', params: {sort_by: 'popularity.desc', 'vote_count.gte': '50', 'air_date.gte': '__tmdb_date__:last_month:from'}},
+  // Talk, news and soaps are left out: a new episode most weekdays keeps them high on TMDB, yet Trakt's Trending (what people's
+  // players report) had none of them. They stay searchable.
+  'popular-series': {discover: 'popular', type: 'series', params: {sort_by: 'popularity.desc', 'vote_count.gte': '50', 'air_date.gte': '__tmdb_date__:last_month:from', without_genres: '10767,10763,10766'}},
 };
 const TRENDING_RATED: Record<string, Part & {discover: string}> = {
   'trending-movies': {discover: 'trending', type: 'movie', params: {sort_by: 'popularity.desc', 'primary_release_date.gte': '__tmdb_date__:last_year:from', 'primary_release_date.lte': '__tmdb_date__:today:to', 'vote_count.gte': '20'}},
