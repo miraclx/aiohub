@@ -35,8 +35,8 @@ export function Posters({seed, dim, person, blank}: {seed: string; dim?: boolean
     return <span key={i} style={{backgroundImage: `url(/posters/${poster}.webp), linear-gradient(${150 + (h % 60)}deg, hsl(${a} 55% 42%), hsl(${b} 60% 20%))`}}/>;
   })}</div>;
 }
-export function Covers({items, dim}: {items: {title: string; image: string}[]; dim?: boolean}) {
-  return <div className={`covers${dim ? ' dim' : ''}`} aria-hidden="true">{items.slice(0, 9).map(item => <span key={item.image} style={{backgroundImage: `url(${item.image})`}}/>)}</div>;
+export function Covers({items, dim, tall}: {items: {title: string; image: string}[]; dim?: boolean; tall?: boolean}) {
+  return <div className={`covers${dim ? ' dim' : ''}${tall ? ' tall' : ''}`} aria-hidden="true">{items.slice(0, 9).map(item => <span key={item.image} style={{backgroundImage: `url(${item.image})`}}/>)}</div>;
 }
 export function Art({row, dim, person, blank}: {row: Row; dim?: boolean; person?: string; blank?: boolean}) {return row.covers?.length ? <Covers items={row.covers} dim={dim}/> : <Posters seed={row.id} dim={dim} person={person} blank={blank}/>;}
 export function Avatar({name, size = 44}: {name: string; size?: number}) {

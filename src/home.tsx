@@ -2,9 +2,9 @@ import {useState} from 'react';
 import type React from 'react';
 import {DragDropProvider} from '@dnd-kit/react';
 import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
-import {TRAKT_IDS, countries, folderFits, isPlace, nextPlace, sourceShown, suggestedFor, tongues} from './data';
+import {TRAKT_IDS, countries, folderFits, isPlace, nextPlace, sourceShown, suggestedFor, suggestionOf, tongues} from './data';
 import type {Cover, Level, Limit, Row} from './data';
-import {Art, Chips, Confirm, NameField, Posters, Segments, Sheet, Switch, hash} from './ui';
+import {Art, Chips, Confirm, Covers, NameField, Posters, Segments, Sheet, Switch, hash} from './ui';
 
 type Pick = {id: string; title: string; kind: string; source: string};
 export function Grip({handleRef, label}: {handleRef: (element: Element | null) => void; label: string}) {
@@ -21,6 +21,9 @@ const placeHeld = (row: Row, level: Level) => level !== 'own' && (TRAKT_IDS.has(
 function RowCard({row, index, tag, locked, later, person, limit = 'all', onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; later?: boolean; person?: string; limit?: Limit; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
   // Under a content limit only the folders that suit it are shown, as in the player apps.
   const covers = row.covers?.filter(cover => folderFits(row.id, cover.image, limit)), none = !!row.covers?.length && !covers?.length;
+  // A suggested collection of tabs has no one catalog to show posters from: its folders' own art instead, as the apps show them.
+  // Small copies kept on this site (public/covers/kids), by the art's file name: the apps' own are full size.
+  const tiles = !row.covers ? suggestionOf(row.id)?.parts.flatMap(({title, cover}) => cover ? [{title, image: `/covers/kids/${decodeURIComponent(cover.split('/').pop()!).replace(/\.jpg$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.jpg`}] : []) : undefined;
   const sortable = useSortable({id: row.id, index, disabled: locked});
   return <li ref={sortable.ref} className={`row${sortable.isDragging ? ' dragging' : ''}${locked ? ' locked' : ''}${later ? ' later' : ''}`}>
     {!locked && <Grip handleRef={sortable.handleRef} label={`Move ${row.title}`}/>}
@@ -33,7 +36,7 @@ function RowCard({row, index, tag, locked, later, person, limit = 'all', onToggl
           <Switch checked={row.on} onChange={onToggle} label={`Show ${row.title} on Home`}/>
         </div>}
       </div>
-      {!later && !none && <Art row={covers ? {...row, covers} : row} person={person}/>}
+      {!later && !none && (tiles?.length ? <Covers items={tiles} tall/> : <Art row={covers ? {...row, covers} : row} person={person}/>)}
     </div>
   </li>;
 }
