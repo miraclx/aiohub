@@ -143,7 +143,7 @@ async function candidates(ask: Ask, watched: Item[], plays: {item: string; detai
     const left = unseen(await discover(ask, type, rated(params), day) ?? [], type, seen);
     if (left.length >= ENOUGH) out.push({pick: {kind, key, name, type, params}, titles: left.length, quality: mean(left), ...extra});
   };
-  if (open('because')) for (const item of seeds.slice(0, 3)) {
+  if (open('because')) for (const item of seeds.slice(0, 6)) {
     const titles = await recommended(ask, item.type, item.tmdb!), left = unseen(titles ?? [], item.type, seen), tag = `${item.type === 'movie' ? 'm' : 's'}${item.tmdb}`;
     if (left.length >= ENOUGH) out.push({pick: {kind: 'because', key: `because:${tag}`, name: `Because you watched ${item.name}`, type: item.type, serve: `foryou_because_${tag}`}, seed: item.at, titles: left.length, quality: mean(left)});
   }

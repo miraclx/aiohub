@@ -164,7 +164,7 @@ const Who = ({name}: {name: string}) => <p className="who" title={name || undefi
 function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {hub, live} = page, group = hub.groups.find(item => item.id === person.groupId)!;
   return <section>
-    <div className="section-head"><div><h2>Accounts</h2><p className="muted">{mine ? 'Connect your own. Nobody else sees them.' : live ? <>{person.name} can connect their own from their page, or you can do it here with them.</> : <>Only {person.name} can connect these, from their own page. <a className="link" href={`#/person/${person.id}/settings`}>Get their link</a></>}</p></div></div>
+    <div className="section-head"><div><h2>Accounts</h2><p className="muted">{mine ? `Connect your own; nobody else sees them. Both are optional: without them, progress is kept here${hub.front ? ' and For you learns from what you play' : ''}.` : live ? <>{person.name} can connect their own from their page, or you can do it here with them.</> : <>Only {person.name} can connect these, from their own page. <a className="link" href={`#/person/${person.id}/settings`}>Get their link</a></>}</p></div></div>
     <ul className="accounts">
       <li><div><h3>Streams</h3><p>Played through the shared {resolve(hub, group, person).values.debrid} account. Nothing to set up.</p></div><span className="pill ok">Shared</span></li>
       <Trakt page={page} person={person} mine={mine}/>
@@ -232,7 +232,7 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     setPhase('');
   };
   // What Trakt does once connected (front.ts scrobbling, rows.ts, places.ts): said plainly, in the order people notice it.
-  const about = `What ${mine ? 'you watch' : `${person.name} watches`} here is added to ${their} Trakt as it plays. ${mine ? 'Your' : 'Their'} Trakt watchlist, recommendations and recently watched show up on Home, and anything watched somewhere else can be brought over.`;
+  const about = `Free. ${hub.front ? `For you gets to know ${mine ? 'your' : `${person.name}’s`} taste from the start, picking from everything on ${their} Trakt. ` : ''}${mine ? 'Your' : 'Their'} Trakt watchlist, recommendations and recently watched show up on Home, and what ${mine ? 'you watch' : `${person.name} watches`} here is added to ${their} Trakt as it plays.`;
   if (!live) {
     const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
     return <li><div><h3>Trakt</h3><p>{person.trakt ? `Connected. ${about}` : about}</p></div>
@@ -272,7 +272,7 @@ function MdbList({page, person, mine}: {page: PageProps; person: Person; mine: b
   const {update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
   const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [dropping, setDropping] = useState(false);
   const their = mine ? 'your' : 'their', moving = person.moving ?? null, connected = person.lists || (!!live && (!!person.listsKept || !!moving));
-  const about = `Optional and free. ${mine ? 'Your' : 'Their'} MDBList watchlist and lists show up on Home, and it can keep ${their} progress instead of this hub, where other apps that read MDBList see it too.`;
+  const about = `Free. Keep ${their} progress there and rows can leave out what ${mine ? 'you’ve' : 'they’ve'} already seen. ${mine ? 'Your' : 'Their'} MDBList watchlist and lists show up on Home too.`;
   if (!live) {
     const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
     return <li><div><h3>MDBList</h3><p>{person.lists ? `Connected. Keeps ${their} progress.` : about}</p></div>
@@ -286,7 +286,7 @@ function MdbList({page, person, mine}: {page: PageProps; person: Person; mine: b
     }, fail(toast)).finally(() => setBusy(false));
   };
   const forget = () => {setDropping(false); setBusy(true); void live.call('DELETE', `${at}/key`).then(() => {toast('MDBList disconnected'); live.apps(); return live.reload();}, fail(toast)).finally(() => setBusy(false));};
-  const state = !connected ? about : person.lists ? `Keeps ${their} progress, so rows can hide what’s been watched. ${mine ? 'Your' : 'Their'} watchlist and lists show up on Home.` : moving ? '' : `Not keeping progress. ${mine ? 'Your' : 'Their'} watchlist and lists show up on Home.`;
+  const state = !connected ? about : person.lists ? `Keeps ${their} progress, so rows can hide what’s been watched. ${mine ? 'Your' : 'Their'} watchlist and lists show up on Home.` : moving ? '' : `Not keeping progress, so rows still show what’s been watched. Choose MDBList under Where progress is kept to leave it out. ${mine ? 'Your' : 'Their'} watchlist and lists show up on Home.`;
   return <li className="stacked"><div className="account-row"><div><h3>MDBList</h3>{connected && <Who name={person.listsName ?? ''}/>}{state && <p>{state}</p>}
 </div>
     {connected ? <button type="button" className="ghost small" disabled={busy} onClick={() => setDropping(true)}>Disconnect</button>
@@ -482,7 +482,7 @@ function PersonSections({page, person, tab, mine}: {page: PageProps; person: Per
         if (flipped.length === 1 && pickable(flipped[0].id)) target.picks = {...target.picks, [flipped[0].id]: flipped[0].on}; else target.rows = next;
       }, note)}
       onFollow={person.rows && canArrange ? () => edit(target => {target.rows = null;}, `Following ${group.name} again`) : undefined} followLabel={`Follow ${group.name} again`}/>}
-    {tab === 'playback' && <PlaybackEditor {...props}/>}
+    {tab === 'playback' && <PlaybackEditor {...props} kept={!!person.lists}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
     {tab === 'activity' && <Activity hub={hub} personId={person.id} toast={toast} live={page.live}/>}
     {tab === 'devices' && <Devices page={page} person={person} mine={mine}/>}

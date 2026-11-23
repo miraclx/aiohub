@@ -33,7 +33,7 @@ function RowCard({row, index, tag, locked, later, person, limit = 'all', onToggl
         {!locked && <div className="row-actions">
           {onArrange && <button type="button" className="ghost small" onClick={onArrange}>Edit</button>}
           {onRemove && <button type="button" className="ghost small" onClick={onRemove}>Remove</button>}
-          <Switch checked={row.on} onChange={onToggle} label={`Show ${row.title} on Home`}/>
+          {!isPlace(row.id) && <Switch checked={row.on} onChange={onToggle} label={`Show ${row.title} on Home`}/>}
         </div>}
       </div>
       {!later && !none && (tiles?.length ? <Covers items={tiles} tall/> : <Art row={covers ? {...row, covers} : row} person={person}/>)}
@@ -64,7 +64,7 @@ export interface HomeProps {
 }
 export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, onBuild, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false}: HomeProps) {
   const [country, setCountry] = useState(''), [tongue, setTongue] = useState(''), [kinds, setKinds] = useState(['Movies']), [adding, setAdding] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
-  const on = rows.filter(row => row.on), off = rows.filter(row => !row.on);
+  const on = rows.filter(row => row.on), off = rows.filter(row => !row.on), offShown = off.filter(row => !isPlace(row.id));
   const set = (id: string, next: Partial<Row>, note: string) => onChange(rows.map(row => row.id === id ? {...row, ...next} : row), note);
   // Following the Home above again, or removing a row, throws work away: both ask first.
   const [following, setFollowing] = useState(false), [dropping, setDropping] = useState<Row | null>(null);
@@ -90,11 +90,12 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
       <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={placeHeld(row, level)} person={person} limit={limit}
         onToggle={() => set(row.id, {on: false}, `“${row.title}” is off Home`)}
         onArrange={isPlace(row.id) ? undefined : () => setArranging(row.id)}
-        onRemove={row.origin === level && !row.core ? () => setDropping(row) : undefined}/>)}</ol>
+        // A For you place is one of several alike: removing it only switches it off, out of sight, and Add row brings it back.
+        onRemove={isPlace(row.id) ? () => set(row.id, {on: false}, 'Removed a For you place') : row.origin === level && !row.core ? () => setDropping(row) : undefined}/>)}</ol>
     </DragDropProvider>
     {!on.length && <p className="empty">Nothing on Home yet. Add a row or turn one on below.</p>}
-    {!!off.length && <details className="off" open={off.length <= 4}><summary>Not on Home <span className="count">{off.length}</span></summary>
-      <ul>{off.map(row => {const place = placeHeld(row, level);
+    {!!offShown.length && <details className="off" open={offShown.length <= 4}><summary>Not on Home <span className="count">{offShown.length}</span></summary>
+      <ul>{offShown.map(row => {const place = placeHeld(row, level);
         return <li key={row.id} className={place ? 'later' : undefined}><div><h3>{row.title}</h3><p>{place ? laterOf(row) : `${row.kind} · ${sourceShown(row, limit)}`}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>;})}</ul>
     </details>}
     {adding && <Sheet title="Add a row" onClose={() => setAdding(false)}>
@@ -112,7 +113,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
         {theirs.length ? <ul className="picks compact mine">{theirs.map(item => <li key={item.id}><button type="button" disabled={has(item)} onClick={() => add(item)}><span><strong>{item.title}</strong><small>{has(item) ? 'Added' : `${item.source.split(' · ')[0]} · ${item.kind.replace(/^List · /, '')}`}</small></span></button></li>)}</ul>
           : <p className="muted small">{listsHint}</p>}</>}
       {front && !mine ? <><h3 className="sheet-sub">For you</h3>
-        <ul className="picks compact"><li><button type="button" onClick={() => {const place = nextPlace(rows); onChange([{...place, origin: level}, ...rows], 'Added a For you place'); setAdding(false);}}><span><strong>For you place</strong><small>A row picked for each person every day, from what they watch</small></span></button></li></ul></> : null}
+        <ul className="picks compact"><li><button type="button" onClick={() => {const asleep = rows.find(row => isPlace(row.id) && !row.on); if (asleep) set(asleep.id, {on: true}, `“${asleep.title}” is on Home`); else {const place = nextPlace(rows); onChange([{...place, origin: level}, ...rows], 'Added a For you place');} setAdding(false);}}><span><strong>For you place</strong><small>A row picked for each person every day, from what they watch</small></span></button></li></ul></> : null}
       {find && <><h3 className="sheet-sub">Or pick one</h3>
         {picked.picks.length ? <ul className="picks compact suggested">{picked.picks.map(item => <li key={item.id}><button type="button" onClick={() => add({id: item.id, title: item.title, kind: item.kind, source: item.source})}><span><strong>{item.title}</strong><small>{because[item.id] && level === 'own' ? `Because you watched ${because[item.id]}` : item.kind}</small></span></button></li>)}</ul>
           : <p className="muted small">Every pick is already on this Home.</p>}

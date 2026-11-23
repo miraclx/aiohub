@@ -129,7 +129,7 @@ await guest.goto(BASE + '/#/me/accounts'); const trakt = guest.locator('.account
 await trakt.getByText('is added to your Trakt as it plays', {exact: false}).waitFor(); assert.equal(await guest.getByText('Trakt history').count(), 0);
 // MDBList is an account like Trakt, optional; with none connected there is nothing to choose for progress.
 const mdb = guest.locator('.accounts li', {has: guest.getByRole('heading', {name: 'MDBList', exact: true})}).first();
-await mdb.getByText('Optional and free.', {exact: false}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).count(), 0);
+await mdb.getByText('Keep your progress there and rows can leave out', {exact: false}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).count(), 0);
 await guest.getByText('Connect MDBList to keep it there instead.', {exact: false}).waitFor();
 await shot(guest, '12-accounts');
 // Connect asks for her key; Cancel before saving leaves nothing changed.
@@ -204,7 +204,7 @@ holds('here-trakt', []); await guest.reload(); await guest.getByText('Here and T
 // Connecting MDBList only saves the key: progress stays Here, and the choice appears.
 await mdb.getByRole('button', {name: 'Connect'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key');
 await guest.getByRole('button', {name: 'Save'}).click(); await toast(guest).filter({hasText: 'MDBList connected'}).waitFor();
-await mdb.getByText('Not keeping progress. Your watchlist and lists show up on Home.', {exact: false}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
+await mdb.getByText('Not keeping progress, so rows still show what’s been watched.', {exact: false}).waitFor(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
 await both(guest, '12b-mdblist-connected');
 // With Trakt and MDBList both connected, on the Home of her own: MDBList's watchlist comes in after Trakt's, off, and each is plainly
 // "Watchlist" while only one is on. Turning MDBList's on names both; turning it off again keeps it there, off.
@@ -230,12 +230,12 @@ await both(guest, '13e-card-moving-to-mdblist');
 // Staying on Here keeps MDBList connected, not keeping progress, with Disconnect beside it. Her card pairs Here and Trakt.
 await card.getByRole('button', {name: 'Stay on Here'}).click(); await toast(guest).filter({hasText: 'Staying on Here'}).waitFor();
 assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true'); await guest.locator('li.trackers', {hasText: 'Here and Trakt'}).waitFor();
-await mdb.getByText('Not keeping progress. Your watchlist and lists show up on Home.').waitFor(); await mdb.getByRole('button', {name: 'Disconnect'}).waitFor();
+await mdb.getByText('Not keeping progress, so rows still show what’s been watched.', {exact: false}).waitFor(); await mdb.getByRole('button', {name: 'Disconnect'}).waitFor();
 await both(guest, '13i-kept-key');
 // The manager connects it for her instead (from the manager's view it switches at once). Plays from before stay Here until she
 // finishes moving them: the card shows that first.
 // Her saved key is taken up again: nothing to paste.
-await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Not keeping progress. Their watchlist and lists show up on Home.').waitFor();
+await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Their watchlist and lists show up on Home.', {exact: false}).waitFor();
 await owner.getByRole('radio', {name: 'MDBList'}).click(); assert.equal(await owner.getByLabel('MDBList API key').count(), 0);
 await toast(owner).filter({hasText: 'Back on MDBList as adalists'}).waitFor();
 holds('here-mdblist', [play('w:show/66276:6:6', 'Slow Horses', 'Season 6 · Episode 6', 15, {here: 'has', lists: 'add'}), play('w:movie/603', 'The Matrix', 'Movie', 20, {here: 'has', lists: 'add'})]);
@@ -286,7 +286,7 @@ await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later').first
 // From the manager's view, back to Here asks first, then MDBList is let go at once.
 await owner.goto(BASE + '/#/person/ada/accounts'); await owner.getByRole('radio', {name: 'Here'}).click(); await owner.getByRole('button', {name: 'Keep it here'}).click();
 await toast(owner).filter({hasText: 'Progress kept here'}).waitFor(); await guest.reload(); assert.equal(await guest.getByRole('radio', {name: 'Here'}).getAttribute('aria-checked'), 'true');
-await owner.goto(BASE + '/#/hub/playback'); await owner.getByText('It needs progress kept in MDBList').waitFor();
+await owner.goto(BASE + '/#/hub/playback'); await owner.getByText('for anyone whose progress is kept in MDBList', {exact: false}).waitFor();
 
 // Activity keeps where each play was reported from behind a small pin: folded until pressed, and absent when unknown.
 // (Two plays made here directly in the local database, one with a made-up place and one without.)
