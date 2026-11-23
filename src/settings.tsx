@@ -95,7 +95,9 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
     {ask && <Confirm title={ask.title} body={ask.body} action={ask.action} onYes={() => {const yes = ask.yes; setAsk(null); yes();}} onClose={() => setAsk(null)}/>}
     <div className="section-head"><div><h2>Sources</h2><p className="muted">Where streams come from and how they are listed.</p></div></div>
     {scope.level === 'hub' && <><h3 className="sub first">Debrid accounts</h3>
-      <ul className="accounts">{hub.services.map(item => <li key={item}><div><h3>{item}</h3><p>{(names => names ? `Used by ${names}.` : 'No group uses it.')(hub.groups.filter(group => (group.settings.debrid ?? hub.defaults.debrid) === item).map(group => group.name).join(', '))}</p></div>
+      <ul className="accounts">{hub.services.map(item => <li key={item}><div><h3>{item}</h3><p>{(names => names ? `Used by ${names}.` : 'No group uses it.')(hub.groups.filter(group => (group.settings.debrid ?? hub.defaults.debrid) === item).map(group => group.name).join(', '))}</p>
+        {/* Real-Debrid lets an account stream to one IP at a time; the hub leaves AIOStreams' proxy setting alone, so one set there stays. */}
+        {item === 'Real-Debrid' && live && <p className="muted small">Real-Debrid allows one IP at a time, so people watching from different places can trip it. A proxy set in AIOStreams avoids that; its login is under <a className="link" href="#/hub/general">General, Advanced</a>.</p>}</div>
         {live && (replacing === item
           ? <form className="field-row narrow" onSubmit={event => {event.preventDefault(); service_('PUT', item, {key: fresh}, `${item} key replaced`); setReplacing(''); setFresh('');}}><input type="password" aria-label={`New ${item} key`} placeholder="New API key" autoComplete="off" autoFocus value={fresh} onChange={event => setFresh(event.target.value)}/><button className="ghost small" disabled={!fresh.trim()}>Save</button></form>
           : <button type="button" className="ghost small" onClick={() => {setReplacing(item); setFresh('');}}>Replace key</button>)}
