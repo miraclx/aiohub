@@ -855,7 +855,7 @@ export function JoinPage(page: PageProps & {id: string; tab: string; base?: stri
 /* ---------- the real hub: opening an invite link, and signing in ---------- */
 interface Asked {name: string; username: string; owner: string; joined: boolean}
 /* An invite link. Opened by their manager in the same browser, it goes straight to their own view once they have joined. */
-export function JoinGate({token, live, toast, manager, onIn}: {token: string; live: Live; toast: (text: string) => void; manager: boolean; onIn: () => void}) {
+export function JoinGate({token, live, toast, manager, signedAs, onIn}: {token: string; live: Live; toast: (text: string) => void; manager: boolean; signedAs?: string; onIn: () => void}) {
   const [info, setInfo] = useState<Asked | 'gone' | null>(null), [waiting, setWaiting] = useState(false), [pass, setPass] = useState(''), [busy, setBusy] = useState(false);
   useEffect(() => {void live.call<{gone?: boolean; ok?: boolean; as?: string; ask?: Asked; waiting?: Asked}>('POST', '/api/join', {token}).then(found => {
     if (found.as) beAs(found.as);
@@ -867,7 +867,7 @@ export function JoinGate({token, live, toast, manager, onIn}: {token: string; li
   if (waiting) return <p className="empty">{info.name} hasn’t joined yet. Send them this link, so they can choose their own password. <a className="link" href="#/">Back to people</a></p>;
   if (manager) return <p className="empty">This is {info.name}’s link, for another hub. Send it to them instead of opening it here. <a className="link" href="#/">Back to people</a></p>;
   return <form className="setup stack gate" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call('POST', '/api/join', {token, password: pass}).then(onIn, fail(toast)).finally(() => setBusy(false));}}>
-    <div className="stack center"><Avatar name={info.name} size={84}/><h1>Hi {info.name}</h1><p className="muted">{info.joined ? 'Type your password to open your page.' : 'You’ve been invited. Choose a password for your page here. Only you know it.'}</p></div>
+    <div className="stack center"><Avatar name={info.name} size={84}/><h1>Hi {info.name}</h1><p className="muted">{info.joined ? 'Type your password to open your page.' : 'You’ve been invited. Choose a password for your page here. Only you know it.'}</p>{signedAs && <p className="muted small">{signedAs} is signed in on this browser. Continuing signs {info.name} in instead.</p>}</div>
     {/* Their name is their username. It only matters on the Devices tab, so it is not mentioned here; the hidden field lets a password manager file the password under it. */}
     <input type="text" value={info.username} readOnly autoComplete="username" hidden/>
     <label htmlFor="join-pass">Password</label><input id="join-pass" type="password" value={pass} onChange={event => setPass(event.target.value)} autoComplete={info.joined ? 'current-password' : 'new-password'} autoFocus placeholder={info.joined ? '' : 'At least 8 characters'}/>
