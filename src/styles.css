@@ -237,13 +237,14 @@ input:not([type=range]):focus { outline: 2px solid var(--accent); outline-offset
 .now .posters span:nth-child(n+2) { display: none; }
 .now-text { flex: 1; min-width: 0; display: grid; gap: 3px; }
 .now-text small, .feed small { color: var(--muted); font-size: 14px; }
-.bar { position: relative; display: block; height: 5px; border-radius: 999px; background: var(--raised); margin-top: 8px; overflow: hidden; }
+.bar { position: relative; display: block; height: 5px; border-radius: 999px; background: var(--raised); margin-top: 8px; }
 .bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
 /* Only the parts that were played are filled; the thin mark is where it is now. */
-.bar .part { position: absolute; top: 0; border-radius: 0; }
-.bar.timed { cursor: pointer; }
-.ranges { display: none; }
-li:hover .ranges, .ranges.open { display: block; }
+.bar .part { position: absolute; top: 0; border-radius: 0; min-width: 2px; outline: none; }
+/* A taller place to point at than the thin bar, and the part's times above it. */
+.bar .part::before { content: ''; position: absolute; inset: -8px -2px; }
+.bar .part[data-time]:hover::after, .bar .part[data-time]:focus::after { content: attr(data-time); position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); white-space: nowrap; background: var(--text); color: var(--bg); font-size: 12px; line-height: 1; padding: 5px 8px; border-radius: 6px; pointer-events: none; z-index: 2; }
+.bar .part[data-time]:hover { filter: brightness(1.15); }
 .bar b { position: absolute; top: 0; width: 2px; height: 100%; margin-left: -1px; background: var(--text); }
 .feed { list-style: none; margin: 0; padding: 0; background: var(--surface); border-radius: var(--radius); }
 .feed li { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
