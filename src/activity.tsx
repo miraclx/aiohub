@@ -24,9 +24,10 @@ function told(row: Noted, now: number, code: string): Play | null {
 const partsOf = (row: Noted) => (row.parts ?? '').split(' ').map(part => part.split('-').map(Number)).filter(([a, b]) => b > a) as [number, number][];
 const played = (parts: [number, number][]) => parts.reduce((sum, [a, b]) => sum + b - a, 0);
 const TIMES = ['', 'once', 'twice'], minutes = (seconds: number) => Math.max(1, Math.round(seconds / 60));
-/* One line when there is something to say: a skip (the gaps between the parts played, not before the first) or a pause. */
+/* One line when there is something to say: a skip (the gaps between the parts played, not before the first, and only those
+   behind where it is now: after a jump back, what lies ahead was not skipped yet) or a pause. */
 function lineOf(row: Noted, parts: [number, number][]) {
-  const skipped = parts.slice(1).reduce((sum, [a], i) => sum + a - parts[i][1], 0), pauses = row.pauses ?? 0, idle = row.idle ?? 0;
+  const skipped = parts.slice(1).reduce((sum, [a], i) => sum + (a <= row.position ? a - parts[i][1] : 0), 0), pauses = row.pauses ?? 0, idle = row.idle ?? 0;
   if (skipped < 60 && !pauses) return undefined;
   const watched = parts.length ? `Watched ${minutes(played(parts))}${row.duration ? ` of ${minutes(row.duration)}` : ''} min` : '';
   const paused = pauses ? `paused ${TIMES[pauses] ?? `${pauses} times`}${idle >= 60 ? pauses === 1 ? ` for ${span(idle)}` : `, ${span(idle)} in all` : ''}` : '';
