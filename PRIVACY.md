@@ -7,7 +7,7 @@ AIOHub is a small site that sets up Jellyfin player apps for a household or a gr
 - **Sign-in:** the manager's username, a hashed password and any passkeys. Sessions expire.
 - **People and groups:** the names the manager gives them and their Home and playback settings.
 - **Devices:** the name and app of each signed-in player, when it was last seen, and the rough place (city, country, network name) the request came from, so a manager can spot a device they don't know.
-- **What's watched:** for each person, the titles played in their apps, how far in, on which device and from roughly where. Managers see this on the hub's Activity page.
+- **What's watched:** for each person, the titles played in their apps, how far in, which parts were played and how often they were paused, on which device and from roughly where. Managers see this on the hub's Activity page.
 - **Connected accounts:** a person's Trakt sign-in and MDBList key, encrypted before they are stored. Nobody else in the hub can see or use them.
 
 ## Trakt

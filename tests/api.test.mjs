@@ -11,6 +11,7 @@ function client() {
   };
 }
 import http from 'node:http';
+import {execFileSync} from 'node:child_process';
 // A stand-in for AIOStreams: holds setups, counts sign-ins, accepts only the token it last gave out, and can be told to refuse everything.
 const AIOM_CFG = '0c0f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b', AIOM_ITEM = 'a1110100-0000-eaf7-78ff-ffffff010000';
 const fake = {signIns: 0, creates: 0, valid: '', refuseAll: false, configs: new Map(), homes: new Map()};
@@ -56,11 +57,14 @@ http.createServer(async (request, answer) => {
   }
   const token = /Token="([^"]+)"/.exec(request.headers.authorization ?? '')?.[1];
   if (fake.refuseAll || token !== fake.valid) return send(401, {});
+  if (request.url.includes('/Items/film-9')) return send(200, {Name: 'Paper Kites', Type: 'Movie', RunTimeTicks: 3000 * 1e7});
   if (request.url.includes('/Items/ep-7')) return send(200, {Name: 'The One With The Test', Type: 'Episode', SeriesName: 'Harbor Lights', SeriesId: 'show-3', ParentIndexNumber: 2, IndexNumber: 4, RunTimeTicks: 3000 * 1e7});
   if (request.url.startsWith('/jellyfin/Sessions/Playing')) return send(204, {});
   send(200, {Id: 'upstream-user-id', Name: 'x', Via: 'http://127.0.0.1:8798/jellyfin/thing'});
 }).listen(8798, '127.0.0.1').unref();
 const owner = client(), stranger = client(), guest = client();
+// Reads the local test database directly.
+const sql = command => JSON.parse(execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--json', '--command', command], {cwd: new URL('..', import.meta.url), encoding: 'utf8', env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: ['ignore', 'pipe', 'ignore']}))[0].results;
 let hub, link, password, offer;
 
 test('nothing is readable signed out', async () => {
@@ -318,8 +322,54 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   await say('/Sessions/Playing/Stopped', {ItemId: 'ep-7', PositionTicks: 1500 * 1e7}, 'Lagos');
   let seen; for (let i = 0; i < 20 && (seen = (await owner('GET', '/api/activity')).body.plays[0])?.position !== 1500; i++) await new Promise(done => setTimeout(done, 150));
   assert.ok(seen.since >= held.since, 'stopped at, from the stop');
-  assert.deepEqual({...seen, updated: 0, since: 0}, {person: 'ada', item: 'ep-7', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', position: 1500, duration: 3000, device: 'Test · TV', playing: 0, paused: 0, since: 0, updated: 0, art: 'show-3', place: 'Lagos, NG', net: 'Example Fibre, Inc.'}, 'an episode is pictured by its show, and kept where it was last reported from');
+  assert.deepEqual({...seen, updated: 0, since: 0, idle: 0}, {person: 'ada', item: 'ep-7', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', position: 1500, duration: 3000, device: 'Test · TV', playing: 0, paused: 0, since: 0, updated: 0, art: 'show-3', place: 'Lagos, NG', net: 'Example Fibre, Inc.', parts: '', pauses: 1, idle: 0}, 'an episode is pictured by its show, and kept where it was last reported from');
   assert.equal((await guest('GET', '/api/activity')).body.plays.length, 1); assert.equal((await stranger('GET', '/api/activity')).status, 401);
+  // Which parts were played. Each report says how long ago it was made (a test header), so an evening plays through in seconds,
+  // from two hours ago up to now. The film is 50 minutes long.
+  const ago = (path, body, seconds) => stranger('POST', `${at}${path}`, body, {...app(first.body.AccessToken), 'x-test-ago': String(seconds)});
+  const film = async () => (await owner('GET', '/api/activity')).body.plays.find(play => play.item === 'film-9');
+  // A report that is noted: wait until the row says it was heard then. One that is not noted only goes by.
+  const noted = async (path, body, seconds) => {
+    await ago(path, {ItemId: 'film-9', ...body}, seconds);
+    for (let i = 0; i < 30; i++) {const row = await film(); if (row && row.updated >= Math.floor(Date.now() / 1000) - seconds - 1) return row; await new Promise(done => setTimeout(done, 100));}
+    assert.fail(`a report from ${seconds} s ago was not noted`);
+  };
+  const ignored = async (path, body, seconds) => {const before = await film(); await ago(path, {ItemId: 'film-9', ...body}, seconds); await new Promise(done => setTimeout(done, 300)); assert.equal((await film()).updated, before.updated, `a report from ${seconds} s ago is not noted`);};
+  await noted('/Sessions/Playing', {PositionTicks: 0}, 7200);
+  await noted('/Sessions/Playing', {PositionTicks: 0}, 7190); // sent twice, as some apps do
+  // Steady progress makes one part.
+  await noted('/Sessions/Playing/Progress', {PositionTicks: 600e7}, 6600);
+  assert.equal((await noted('/Sessions/Playing/Progress', {PositionTicks: 1200e7}, 6000)).parts, '0-1200');
+  // A jump forward a few seconds later leaves a gap; what follows it is a part of its own. The field names of what the app sends
+  // are kept for a while (below), never their values.
+  await ignored('/Sessions/Playing/Progress', {PositionTicks: 2000e7, EventName: 'TimeUpdate', PlayMethod: 'DirectPlay', MediaSourceId: 'source-value-77'}, 5990);
+  assert.equal((await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7}, 5940)).parts, '0-1200 2000-2060');
+  // A pause is noted at once and counted; a player that sits paused and keeps saying so is noted once in ten minutes.
+  const resting = await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 5930);
+  assert.deepEqual([resting.paused, resting.pauses, resting.parts], [1, 1, '0-1200 2000-2060']);
+  await ignored('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 5870);
+  await ignored('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 5400);
+  assert.equal((await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 5320)).since, resting.since, 'still paused since then');
+  // Carrying on ends the pause (ten and a half minutes in all); it plays on and stops.
+  await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7}, 5300);
+  await noted('/Sessions/Playing/Progress', {PositionTicks: 2660e7}, 4700);
+  const ended = await noted('/Sessions/Playing/Stopped', {PositionTicks: 2700e7}, 4680);
+  assert.deepEqual([ended.playing, ended.parts, ended.pauses], [0, '0-1200 2000-2700', 1]); assert.ok(Math.abs(ended.idle - 630) <= 2, `paused for ${ended.idle} s`);
+  // Watched again from the start: the parts start over. A start sent again mid-play keeps them.
+  const again = await noted('/Sessions/Playing', {PositionTicks: 0}, 3000);
+  assert.deepEqual([again.parts, again.pauses, again.idle], ['', 0, 0]);
+  await noted('/Sessions/Playing/Progress', {PositionTicks: 240e7}, 2760);
+  assert.equal((await noted('/Sessions/Playing', {PositionTicks: 240e7}, 2750)).parts, '0-240');
+  // Starting it twice within five minutes on the same device was one sitting; watching it again later was another.
+  assert.equal((await owner('GET', '/api/activity')).body.starts.filter(start => start.item === 'film-9').length, 2);
+  // For one week only (front.ts, HEARD_UNTIL): the shape of each kind of report, per app. Names, and only two values.
+  if (Date.now() < Date.UTC(2026, 11, 2)) {
+    const shapes = sql('SELECT app, kind, sig FROM heard_fields ORDER BY kind, sig');
+    assert.ok(shapes.length >= 3 && shapes.every(shape => shape.app === 'Test'));
+    assert.ok(shapes.some(shape => shape.kind === 'progress' && shape.sig === 'EventName,ItemId,MediaSourceId,PlayMethod,PositionTicks EventName=TimeUpdate PlayMethod=DirectPlay'));
+    assert.ok(shapes.some(shape => shape.kind === 'stop' && shape.sig === 'ItemId,PositionTicks EventName= PlayMethod='));
+    assert.ok(!JSON.stringify(shapes).match(/film-9|ep-7|source-value|2060|Ibadan/), 'no values');
+  }
   // AIOStreams stops accepting the kept sign-in: the hub renews it once and the app never notices.
   fake.valid = 'rotated-away';
   assert.equal((await stranger('GET', `${at}/Users/Me`, undefined, app(first.body.AccessToken))).status, 200); assert.equal(fake.signIns, 2);

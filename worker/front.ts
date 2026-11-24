@@ -32,6 +32,8 @@ function whereOf(request: Request, env: Env) {
   const cf = (env.TEST_WHERE === '1' ? {city: request.headers.get('x-test-city') ?? '', country: request.headers.get('x-test-country') ?? '', asOrganization: request.headers.get('x-test-net') ?? ''} : request.cf ?? {}) as {city?: string; country?: string; asOrganization?: string};
   return {place: [cf.city, cf.country].filter(Boolean).join(', ').slice(0, 60), net: String(cf.asOrganization ?? '').slice(0, 60)};
 }
+/* When a report was made: now. The test run may say it was made some seconds ago (x-test-ago), to play through an evening in seconds. */
+const whenOf = (request: Request, env: Env) => Date.now() - (env.TEST_WHERE === '1' ? Number(request.headers.get('x-test-ago')) * 1000 || 0 : 0);
 
 // Where each picture lives. Asking AIOStreams costs 0.2-1.8 s per poster (measured 2026-11-18), and the answer is a redirect that
 // rarely changes, so each running copy of the Worker remembers it for an hour and browsers keep it for a day. Adds no requests.
@@ -39,7 +41,7 @@ const pictures = new Map<string, {location: string; until: number}>(), PICTURE =
 interface Upstream {user: string; pass: string; auth?: string; base?: string}
 interface Answer {AccessToken: string; User: {Id: string; Name?: string}; SessionInfo?: Record<string, unknown>}
 // hub: which hub the sign-in belongs to; a remembered seat answers only for that hub.
-interface Seat {hub: string; person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string; base: string; kind: string; scrobble: boolean}
+interface Seat {hub: string; person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string; app: string; base: string; kind: string; scrobble: boolean}
 // Kept for a few seconds per running copy of the Worker, so a page of posters is one lookup, not fifty.
 const hubs = new Map<string, {id: string; up: string; at: number; pictures: string; name: string}>(), seats = new Map<string, Seat>();
 /* A person's top-level libraries on their own server, asked for once and kept ten minutes per running copy. */
@@ -116,15 +118,18 @@ async function seatOf(env: Env, hub: string, id: string): Promise<Seat | null> {
   const kind = row.via ? VIA : 'upstream', upstream = await unseal<Upstream>(env, `${hub}/${row.person}/${kind}`, row.via ?? row.value);
   const answer = upstream?.auth ? JSON.parse(upstream.auth) as Answer : upstream ? await mint(env, hub, row.person, row.jf, upstream, kind) : null;
   if (!answer) return null;
-  const seat = {hub, person: row.person, jf: row.jf, paused: !!row.paused, seen: row.seen, up: answer.AccessToken, upId: answer.User.Id, at: Date.now(), on: [row.app, row.name].filter(Boolean).join(' · '), base: upstream?.base ?? env.UP_ORIGIN + MOUNT, kind, scrobble: !!row.scrobble && !!env.TRAKT_CLIENT_ID};
+  const seat = {hub, person: row.person, jf: row.jf, paused: !!row.paused, seen: row.seen, up: answer.AccessToken, upId: answer.User.Id, at: Date.now(), on: [row.app, row.name].filter(Boolean).join(' · '), app: row.app ?? '', base: upstream?.base ?? env.UP_ORIGIN + MOUNT, kind, scrobble: !!row.scrobble && !!env.TRAKT_CLIENT_ID};
   if (seats.size > 2000) seats.clear(); seats.set(id, seat); return seat;
 }
 /* Activity: players report what they are playing and how far in. The hub notes the latest state per person and title as those
-   reports pass through: on start, on stop, and at most once a minute in between. Nothing is sent on a person's behalf unless
-   they connected Trakt history (scrobble, below). */
+   reports pass through: on start, on stop, and at most once a minute in between (once in ten minutes while it sits paused).
+   Nothing is sent on a person's behalf unless they connected Trakt history (scrobble, below). */
 const REPORTS: Record<string, 'start' | 'progress' | 'stop'> = {'/sessions/playing': 'start', '/sessions/playing/progress': 'progress', '/sessions/playing/stopped': 'stop'};
 const noted = new Map<string, number>(), seen = new Map<string, {pos: number; at: number; paused: boolean}>();
-async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', text: string, where: {place: string; net: string}, origin: string) {
+// A paused player that keeps reporting is noted once in ten minutes: still heard on Activity (src/activity.tsx), and well inside the
+// half hour after which Trakt is told a quiet play stopped (QUIET in trakt.ts).
+const EVERY = 60_000, PAUSED_EVERY = 600_000;
+async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', text: string, where: {place: string; net: string}, origin: string, when = Date.now()) {
   let report: {ItemId?: string; PositionTicks?: number; IsPaused?: boolean};
   try {report = JSON.parse(text);} catch {return;}
   const item = String(report.ItemId ?? '').slice(0, 200), key = `${hub}/${seat.person}/${item}`, last = noted.get(key) ?? 0, paused = report.IsPaused === true;
@@ -132,23 +137,26 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   const turned = kind === 'progress' && seat.scrobble && told.get(key) !== (paused ? 'paused' : 'playing');
   // So does a jump forward or back: Trakt counts on from where it was last told, so a skip leaves it behind until told again.
   const at = Math.max(0, Number(report.PositionTicks ?? 0) / 1e7), before = seen.get(key);
-  const jumped = kind === 'progress' && !!seat.scrobble && !paused && !!before && Math.abs(at - before.pos - (before.paused ? 0 : (Date.now() - before.at) / 1000)) > 60;
-  if (kind === 'stop' || kind === 'mark') seen.delete(key); else {if (seen.size > 5000) seen.clear(); seen.set(key, {pos: at, at: Date.now(), paused});}
+  const jumped = kind === 'progress' && !!seat.scrobble && !paused && !!before && Math.abs(at - before.pos - (before.paused ? 0 : (when - before.at) / 1000)) > 60;
+  if (kind === 'stop' || kind === 'mark') seen.delete(key); else {if (seen.size > 5000) seen.clear(); seen.set(key, {pos: at, at: when, paused});}
   // A pause or carrying on is noted as it happens too, so Activity knows since when; the reports between still count as heard from.
   const flipped = kind === 'progress' && !!before && before.paused !== paused;
-  if (!item || (kind === 'progress' && !turned && !jumped && !flipped && Date.now() - last < 60_000)) return;
-  if (noted.size > 5000) noted.clear(); noted.set(key, Date.now());
+  if (!item || (kind === 'progress' && !turned && !jumped && !flipped && when - last < (paused ? PAUSED_EVERY : EVERY))) return;
+  if (noted.size > 5000) noted.clear(); noted.set(key, when);
+  const stamp = Math.floor(when / 1000);
   if (kind === 'start') {
-    await env.DB.prepare('INSERT INTO starts (hub, person, item, device, at) VALUES (?, ?, ?, ?, ?)').bind(hub, seat.person, item, seat.on, now()).run();
-    if (Math.random() < 0.02) await env.DB.prepare('DELETE FROM starts WHERE hub = ? AND at < ?').bind(hub, now() - 180 * 86400).run();
+    // The same title started again on the same device within five minutes is the same sitting: some apps send a start twice.
+    await env.DB.prepare('INSERT INTO starts (hub, person, item, device, at) SELECT ?1, ?2, ?3, ?4, ?5 WHERE NOT EXISTS (SELECT 1 FROM starts WHERE hub = ?1 AND at > ?5 - 300 AND person = ?2 AND item = ?3 AND device = ?4)').bind(hub, seat.person, item, seat.on, stamp).run();
+    if (Math.random() < 0.02) await env.DB.prepare('DELETE FROM starts WHERE hub = ? AND at < ?').bind(hub, stamp - 180 * 86400).run();
   }
   let firstHere = false;
-  const known = await env.DB.prepare('SELECT art, duration, paused, since FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{art: string; duration: number; paused: number; since: number}>();
+  const known = await env.DB.prepare('SELECT art, duration, position, playing, paused, since, updated, parts, pauses, idle FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<Noted>();
   const position = kind === 'mark' ? known?.duration ?? 0 : Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' || kind === 'mark' ? 0 : 1;
   // Since when it has been as it is now: kept while a paused (or playing) title stays so, started again on any change.
-  const pausedNow = kind === 'progress' && paused ? 1 : 0, since = known && kind === 'progress' && known.paused === pausedNow && known.since ? known.since : now();
+  const pausedNow = kind === 'progress' && paused ? 1 : 0, since = known && kind === 'progress' && known.paused === pausedNow && known.since ? known.since : stamp;
+  const {parts, pauses, idle} = watched(known, kind, position, pausedNow, stamp, before && kind !== 'start' ? before : undefined);
   // Rows from before pictures were kept are looked up once more, on their next start.
-  if (known && (known.art || kind !== 'start')) await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, paused = ?, since = ?, device = ?, updated = ?, place = ?, net = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, pausedNow, since, seat.on, now(), where.place, where.net, hub, seat.person, item).run();
+  if (known && (known.art || kind !== 'start')) await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, paused = ?, since = ?, device = ?, updated = ?, place = ?, net = ?, parts = ?, pauses = ?, idle = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, pausedNow, since, seat.on, stamp, where.place, where.net, parts, pauses, idle, hub, seat.person, item).run();
   else {
     // First report for this title: ask AIOStreams what it is called, as this person.
     const about = await fetch(`${seat.base}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: asPerson(seat)}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string} | null;
@@ -156,14 +164,67 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
     const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
     const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
     const first = !await env.DB.prepare('SELECT 1 FROM plays WHERE hub = ? AND person = ? LIMIT 1').bind(hub, seat.person).first();
-    await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net, paused, since) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, paused = excluded.paused, since = excluded.since, device = excluded.device, updated = excluded.updated, art = excluded.art, place = excluded.place, net = excluded.net')
-      .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), kind === 'mark' ? Math.round(Number(about.RunTimeTicks ?? 0) / 1e7) : position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art, where.place, where.net, pausedNow, now()).run();
+    await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net, paused, since, parts, pauses, idle) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, paused = excluded.paused, since = excluded.since, device = excluded.device, updated = excluded.updated, art = excluded.art, place = excluded.place, net = excluded.net, parts = excluded.parts, pauses = excluded.pauses, idle = excluded.idle')
+      .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), kind === 'mark' ? Math.round(Number(about.RunTimeTicks ?? 0) / 1e7) : position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, stamp, art, where.place, where.net, pausedNow, stamp, parts, pauses, idle).run();
     firstHere = first;
   }
   if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused, jumped);
   // Their first play here: Recently Watched now has something in it, so their Home gets it without waiting for the site to be opened.
   // Not for someone with Trakt connected to the hub: theirs was there already.
   if (firstHere && !seat.scrobble) {const found = await env.DB.prepare('SELECT id, data FROM hubs WHERE id = ?').bind(hub).first<{id: string; data: string}>(); if (found) await syncPlayers(env, found, origin).catch(() => null);}
+}
+/* Which parts of a title were played, as merged "from-to" seconds. Nothing reports a seek or the playback speed, so a position
+   that moved on by about the time that passed (up to twice it, plus 20 s, for faster playback and late reports) was played, and
+   anything else was a jump forward or back: the next part starts where it landed. The report just before this one, where this
+   running copy saw it, is a step in between, so a jump loses at most the seconds between two reports, not a minute.
+   A rewatch starts over: a start near the beginning of a title last left at 90% or more, or of one not heard from in a week (what
+   Activity shows). A start sent again mid-play, as some apps do, keeps what is there. */
+interface Noted {art: string; duration: number; position: number; playing: number; paused: number; since: number; updated: number; parts: string; pauses: number; idle: number}
+const MOST_PARTS = 24, WEEK = 7 * 86400;
+function watched(row: Noted | null, kind: string, position: number, pausedNow: number, at: number, before?: {pos: number; at: number; paused: boolean}) {
+  if (!row) return {parts: '', pauses: pausedNow, idle: 0};
+  const length = row.duration;
+  if (kind === 'start' && ((length > 0 && row.position >= length * 0.9 && position < length * 0.1) || at - row.updated > WEEK)) return {parts: '', pauses: 0, idle: 0};
+  let parts = row.parts.split(' ').map(part => part.split('-').map(Number)).filter(([a, b]) => b > a) as [number, number][];
+  // A pause ends when the player carries on, stops or goes quiet (no word for fifteen minutes after it was last heard).
+  const pauses = row.pauses + (!row.paused && pausedNow ? 1 : 0), idle = row.idle + (row.paused && !pausedNow && row.since ? Math.max(0, Math.min(at, row.updated + 900) - row.since) : 0);
+  if ((kind === 'progress' || kind === 'stop') && row.playing) {
+    const steps = [{pos: row.position, at: row.updated, paused: !!row.paused}];
+    if (before && before.at / 1000 > row.updated && before.at / 1000 < at) steps.push({pos: Math.round(before.pos), at: before.at / 1000, paused: before.paused});
+    steps.push({pos: position, at, paused: !!pausedNow});
+    for (let i = 1; i < steps.length; i++) {
+      const from = steps[i - 1], to = steps[i], moved = to.pos - from.pos, took = to.at - from.at;
+      if (moved > 0 && took < 900 && moved <= took * 2 + 20 && !(from.paused && to.paused)) parts = merge([...parts, [from.pos, length ? Math.min(to.pos, length) : to.pos]]);
+    }
+  }
+  const text = parts.map(([a, b]) => `${a}-${b}`).join(' ');
+  return {parts: text.length <= 400 ? text : row.parts, pauses, idle};
+}
+/* Overlapping parts become one; past MOST_PARTS, the two closest are joined (the gap between them counts as played). */
+function merge(parts: [number, number][]) {
+  const out: [number, number][] = [];
+  for (const [a, b] of parts.filter(([a, b]) => b > a).sort((x, y) => x[0] - y[0])) {const end = out[out.length - 1]; if (end && a <= end[1] + 1) end[1] = Math.max(end[1], b); else out.push([a, b]);}
+  while (out.length > MOST_PARTS) {
+    let near = 1; for (let i = 2; i < out.length; i++) if (out[i][0] - out[i - 1][1] < out[near][0] - out[near - 1][1]) near = i;
+    out[near - 1][1] = out[near][1]; out.splice(near, 1);
+  }
+  return out;
+}
+/* For one week only, to learn what player apps really send (Strand is closed source): the names of the fields in each kind of
+   playback report, never their values, except EventName and PlayMethod. One row per hub, app and shape, written when a running
+   copy of the Worker first sees that shape, so `count` is how many copies saw it, not how many reports came.
+   TEMPORARY: remove this, its call below and the heard_fields table (migration 0022) after HEARD_UNTIL. */
+const HEARD_UNTIL = Date.UTC(2026, 11, 2), heard = new Set<string>();
+async function listen(env: Env, hub: string, seat: Seat, kind: string, text: string) {
+  let report: unknown; try {report = JSON.parse(text);} catch {return;}
+  if (Date.now() > HEARD_UNTIL || !report || typeof report !== 'object' || Array.isArray(report)) return;
+  const body = report as Record<string, unknown>, word = (value: unknown) => value == null ? '' : typeof value === 'string' && /^[A-Za-z][\w-]{0,39}$/.test(value) ? value : '?';
+  const names = Object.keys(body).filter(name => /^[A-Za-z][\w-]{0,59}$/.test(name)).sort().slice(0, 80);
+  const sig = `${names.join(',')} EventName=${word(body.EventName)} PlayMethod=${word(body.PlayMethod)}`, app = seat.app.slice(0, 60) || '?', key = `${hub}/${app}/${kind}/${sig}`;
+  if (heard.has(key)) return;
+  if (heard.size > 2000) heard.clear(); heard.add(key);
+  const at = now();
+  await env.DB.prepare('INSERT INTO heard_fields (hub, app, kind, sig, first, last) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (hub, app, kind, sig) DO UPDATE SET last = excluded.last, count = count + 1').bind(hub, app, kind, sig, at, at).run();
 }
 const asPerson = (seat: Seat) => `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`;
 /* Trakt history, for a person who connected it (see trakt.ts). Starting, pausing, carrying on, stopping and ticking as watched are
@@ -299,10 +360,11 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
     if (now() - seat.seen > SEEN_EVERY) {const where = whereOf(request, env); seat.seen = now(); ctx.waitUntil(env.DB.prepare('UPDATE devices SET seen = ?, place = ?, net = ? WHERE id = ?').bind(seat.seen, where.place, where.net, id).run());}
   }
   const body = reading ? undefined : await request.text();
-  if (seat && body && REPORTS[lower]) ctx.waitUntil(note(env, hub, seat, REPORTS[lower], body, whereOf(request, env), url.origin).catch(() => {}));
+  if (seat && body && REPORTS[lower]) ctx.waitUntil(listen(env, hub, seat, REPORTS[lower], body).catch(() => {}));
+  if (seat && body && REPORTS[lower]) ctx.waitUntil(note(env, hub, seat, REPORTS[lower], body, whereOf(request, env), url.origin, whenOf(request, env)).catch(() => {}));
   // Ticked as watched in an app without playing it: kept like a finished play, so it can be copied to MDBList later too.
   const ticked = seat && request.method === 'POST' ? /^\/(?:users\/[^/]+\/playeditems|userplayeditems)\/([\w-]{1,80})$/i.exec(path) : null;
-  if (seat && ticked) ctx.waitUntil(note(env, hub, seat, 'mark', JSON.stringify({ItemId: ticked[1]}), whereOf(request, env), url.origin).catch(() => {}));
+  if (seat && ticked) ctx.waitUntil(note(env, hub, seat, 'mark', JSON.stringify({ItemId: ticked[1]}), whereOf(request, env), url.origin, whenOf(request, env)).catch(() => {}));
   // AIOMetadata's libraries are its catalog rows, so "watched, in this library" only covers what the row shows today. In a real
   // Jellyfin server a library holds everything, which is what history readers (Trakt's own Jellyfin sync) rely on: they ask
   // library by library. So a watched list asked for under one of the person's own top-level libraries is answered from all of

@@ -237,8 +237,11 @@ input:not([type=range]):focus { outline: 2px solid var(--accent); outline-offset
 .now .posters span:nth-child(n+2) { display: none; }
 .now-text { flex: 1; min-width: 0; display: grid; gap: 3px; }
 .now-text small, .feed small { color: var(--muted); font-size: 14px; }
-.bar { display: block; height: 5px; border-radius: 999px; background: var(--raised); margin-top: 8px; overflow: hidden; }
+.bar { position: relative; display: block; height: 5px; border-radius: 999px; background: var(--raised); margin-top: 8px; overflow: hidden; }
 .bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+/* Only the parts that were played are filled; the thin mark is where it is now. */
+.bar .part { position: absolute; top: 0; border-radius: 0; }
+.bar b { position: absolute; top: 0; width: 2px; height: 100%; margin-left: -1px; background: var(--text); }
 .feed { list-style: none; margin: 0; padding: 0; background: var(--surface); border-radius: var(--radius); }
 .feed li { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
 .feed li + li { border-top: 1px solid var(--line); }

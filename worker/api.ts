@@ -756,7 +756,7 @@ async function removeHub(request: Request, env: Env, who: Who, body: Body) {
   if (!await checkPassword(String(body.password ?? ''), stored!.pass)) {await failed(env, key); bad(403, 'That is not your password');}
   if (!await removePlayers(env, who.hub)) bad(502, 'The streaming server did not confirm the removal, so nothing was deleted. Try again in a moment.');
   const hub = who.hub.id;
-  await env.DB.batch([...['devices', 'plays', 'starts', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'foryou', 'foryou_sync', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
+  await env.DB.batch([...['devices', 'plays', 'starts', 'heard_fields', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'foryou', 'foryou_sync', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
     env.DB.prepare('DELETE FROM hubs WHERE id = ?').bind(hub), env.DB.prepare('DELETE FROM passkeys WHERE account = ?').bind(who.account!.id), env.DB.prepare('DELETE FROM accounts WHERE id = ?').bind(who.account!.id)]);
   // Player apps stop reaching it at once, not when this copy of the Worker next looks the hub up.
   forgetHub(who.hub.code);
@@ -822,8 +822,8 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     }
     if (first === 'activity' && method === 'GET') {
       // The manager sees everyone; an invited person sees only themselves.
-      const rows = await env.DB.prepare(`SELECT person, item, title, detail, position, duration, device, playing, paused, since, updated, art, place, net FROM plays WHERE hub = ?1 ${who.person ? 'AND person = ?2' : ''} ORDER BY updated DESC LIMIT 300`).bind(...(who.person ? [who.hub.id, who.person] : [who.hub.id])).all();
-      const starts = await env.DB.prepare(`SELECT person, at FROM starts WHERE hub = ?1 AND at > ?2 ${who.person ? 'AND person = ?3' : ''} ORDER BY at DESC LIMIT 2000`).bind(...(who.person ? [who.hub.id, now() - 7 * 86400, who.person] : [who.hub.id, now() - 7 * 86400])).all();
+      const rows = await env.DB.prepare(`SELECT person, item, title, detail, position, duration, device, playing, paused, since, updated, art, place, net, parts, pauses, idle FROM plays WHERE hub = ?1 ${who.person ? 'AND person = ?2' : ''} ORDER BY updated DESC LIMIT 300`).bind(...(who.person ? [who.hub.id, who.person] : [who.hub.id])).all();
+      const starts = await env.DB.prepare(`SELECT person, item, device, at FROM starts WHERE hub = ?1 AND at > ?2 ${who.person ? 'AND person = ?3' : ''} ORDER BY at DESC LIMIT 2000`).bind(...(who.person ? [who.hub.id, now() - 7 * 86400, who.person] : [who.hub.id, now() - 7 * 86400])).all();
       return reply({now: now(), plays: rows.results, starts: starts.results});
     }
     if (first === 'state' && method === 'GET') return reply(await state(env, who) ?? bad(401, 'Sign in first'));
