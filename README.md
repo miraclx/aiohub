@@ -57,6 +57,11 @@ npm test -- <path to a Chromium binary>     # starts the Worker locally against 
 `src/` is the site (React, hand-written CSS), `worker/` is the Worker (API, the player-app sign-in front, and the code that
 keeps AIOStreams and AIOMetadata in step), `migrations/` is the database, `formatter-preview/` renders the stream-label preview.
 
+## Trakt and privacy
+
+AIOHub uses Trakt but is not endorsed or certified by Trakt. What a hub keeps, and what it does with a connected Trakt
+account, is in [PRIVACY.md](PRIVACY.md).
+
 ## Licence
 
 AGPL-3.0-only. The stream-label preview reuses formatter code from AIOStreams under the same licence; see
