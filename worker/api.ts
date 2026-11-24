@@ -821,7 +821,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     }
     if (first === 'activity' && method === 'GET') {
       // The manager sees everyone; an invited person sees only themselves.
-      const rows = await env.DB.prepare(`SELECT person, item, title, detail, position, duration, device, playing, updated, art, place, net FROM plays WHERE hub = ?1 ${who.person ? 'AND person = ?2' : ''} ORDER BY updated DESC LIMIT 300`).bind(...(who.person ? [who.hub.id, who.person] : [who.hub.id])).all();
+      const rows = await env.DB.prepare(`SELECT person, item, title, detail, position, duration, device, playing, paused, since, updated, art, place, net FROM plays WHERE hub = ?1 ${who.person ? 'AND person = ?2' : ''} ORDER BY updated DESC LIMIT 300`).bind(...(who.person ? [who.hub.id, who.person] : [who.hub.id])).all();
       const starts = await env.DB.prepare(`SELECT person, at FROM starts WHERE hub = ?1 AND at > ?2 ${who.person ? 'AND person = ?3' : ''} ORDER BY at DESC LIMIT 2000`).bind(...(who.person ? [who.hub.id, now() - 7 * 86400, who.person] : [who.hub.id, now() - 7 * 86400])).all();
       return reply({now: now(), plays: rows.results, starts: starts.results});
     }

@@ -5,15 +5,21 @@ import type {Live} from './live';
 import {Avatar, Posters, Segments, Sheet} from './ui';
 
 /* What the hub noted as players reported it, put into the words the screen uses. Times are shown in this device's own time zone. */
-interface Noted {art?: string; person: string; item: string; title: string; detail: string; position: number; duration: number; device: string; playing: number; updated: number; place?: string | null; net?: string | null}
+interface Noted {art?: string; person: string; item: string; title: string; detail: string; position: number; duration: number; device: string; playing: number; paused?: number; since?: number; updated: number; place?: string | null; net?: string | null}
 function told(row: Noted, now: number, code: string): Play | null {
   const at = new Date(row.updated * 1000), today = new Date(now * 1000), days = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() - new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime()) / 86400000);
   if (days > 6) return null;
-  const live = !!row.playing && now - row.updated < 180, share = row.duration ? Math.min(100, Math.round(row.position / row.duration * 100)) : 0;
-  const end = live ? '' : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
-  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}`, personId: row.person, title: row.title, detail: row.detail + end, progress: live || (share && share < 90) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
-    when: live ? 'Now' : days > 1 ? at.toLocaleDateString(undefined, {weekday: 'long'}) : at.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'}), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
+  // `updated` is when the player was last heard from: a player left open keeps reporting, paused or not. One that went quiet
+  // without saying it stopped is shown with when it was last heard.
+  const heard = !!row.playing && now - row.updated < 180, live = heard && !row.paused, share = row.duration ? Math.min(100, Math.round(row.position / row.duration * 100)) : 0;
+  const quiet = !!row.playing && !heard, last = new Date(row.updated * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'});
+  const end = live ? '' : row.paused && row.playing ? ` · paused at ${clock(row.position)}${heard && row.since ? ` for ${span(now - row.since)}` : ''}` : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
+  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}`, personId: row.person, title: row.title, detail: row.detail + end, progress: heard || (share && share < 90) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
+    when: heard ? 'Now' : quiet && days === 0 ? `Last heard ${last}` : days > 1 ? at.toLocaleDateString(undefined, {weekday: 'long'}) : at.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'}), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
 }
+/* 33:28, or 1:02:05 for an hour or more in; and how long something has lasted, roughly. */
+const clock = (seconds: number) => {const s = Math.max(0, Math.round(seconds)), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, rest = String(s % 60).padStart(2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${rest}` : `${m}:${rest}`;};
+const span = (seconds: number) => seconds < 3600 ? `${Math.max(1, Math.round(seconds / 60))} min` : seconds < 86400 ? `${Math.round(seconds / 3600)}h` : `${Math.round(seconds / 86400)} days`;
 /* A network's everyday name: "SpaceX Services, Inc." is SpaceX. Company endings are dropped; a name that would go empty is kept. */
 const ENDINGS = /\s+(inc|llc|ltd|limited|plc|corp|corporation|gmbh|services|communications?|networks?)\.?$/i;
 function brief(net?: string | null) {

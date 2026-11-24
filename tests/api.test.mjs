@@ -311,9 +311,14 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   // Each report also notes roughly where the device was (made-up places here, from test headers): the latest one is kept.
   const say = (path, body, city = 'Ibadan') => stranger('POST', `${at}${path}`, body, {...app(first.body.AccessToken), 'x-test-city': city, 'x-test-country': 'NG', 'x-test-net': 'Example Fibre, Inc.'});
   await say('/Sessions/Playing', {ItemId: 'ep-7', PositionTicks: 0}); await say('/Sessions/Playing/Progress', {ItemId: 'ep-7', PositionTicks: 600 * 1e7});
+  // A pause is noted as it happens, with since when; a player left paused still counts as there (`updated`) as it keeps reporting.
+  await say('/Sessions/Playing/Progress', {ItemId: 'ep-7', PositionTicks: 700 * 1e7, IsPaused: true});
+  let held; for (let i = 0; i < 20 && !(held = (await owner('GET', '/api/activity')).body.plays[0])?.paused; i++) await new Promise(done => setTimeout(done, 150));
+  assert.deepEqual([held.position, held.playing, held.paused, held.since > 0], [700, 1, 1, true]);
   await say('/Sessions/Playing/Stopped', {ItemId: 'ep-7', PositionTicks: 1500 * 1e7}, 'Lagos');
-  let seen; for (let i = 0; i < 20 && !(seen = (await owner('GET', '/api/activity')).body.plays[0])?.position; i++) await new Promise(done => setTimeout(done, 150));
-  assert.deepEqual({...seen, updated: 0}, {person: 'ada', item: 'ep-7', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', position: 1500, duration: 3000, device: 'Test · TV', playing: 0, updated: 0, art: 'show-3', place: 'Lagos, NG', net: 'Example Fibre, Inc.'}, 'an episode is pictured by its show, and kept where it was last reported from');
+  let seen; for (let i = 0; i < 20 && (seen = (await owner('GET', '/api/activity')).body.plays[0])?.position !== 1500; i++) await new Promise(done => setTimeout(done, 150));
+  assert.ok(seen.since >= held.since, 'stopped at, from the stop');
+  assert.deepEqual({...seen, updated: 0, since: 0}, {person: 'ada', item: 'ep-7', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', position: 1500, duration: 3000, device: 'Test · TV', playing: 0, paused: 0, since: 0, updated: 0, art: 'show-3', place: 'Lagos, NG', net: 'Example Fibre, Inc.'}, 'an episode is pictured by its show, and kept where it was last reported from');
   assert.equal((await guest('GET', '/api/activity')).body.plays.length, 1); assert.equal((await stranger('GET', '/api/activity')).status, 401);
   // AIOStreams stops accepting the kept sign-in: the hub renews it once and the app never notices.
   fake.valid = 'rotated-away';

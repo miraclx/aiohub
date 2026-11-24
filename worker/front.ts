@@ -134,17 +134,21 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   const at = Math.max(0, Number(report.PositionTicks ?? 0) / 1e7), before = seen.get(key);
   const jumped = kind === 'progress' && !!seat.scrobble && !paused && !!before && Math.abs(at - before.pos - (before.paused ? 0 : (Date.now() - before.at) / 1000)) > 60;
   if (kind === 'stop' || kind === 'mark') seen.delete(key); else {if (seen.size > 5000) seen.clear(); seen.set(key, {pos: at, at: Date.now(), paused});}
-  if (!item || (kind === 'progress' && !turned && !jumped && Date.now() - last < 60_000)) return;
+  // A pause or carrying on is noted as it happens too, so Activity knows since when; the reports between still count as heard from.
+  const flipped = kind === 'progress' && !!before && before.paused !== paused;
+  if (!item || (kind === 'progress' && !turned && !jumped && !flipped && Date.now() - last < 60_000)) return;
   if (noted.size > 5000) noted.clear(); noted.set(key, Date.now());
   if (kind === 'start') {
     await env.DB.prepare('INSERT INTO starts (hub, person, item, device, at) VALUES (?, ?, ?, ?, ?)').bind(hub, seat.person, item, seat.on, now()).run();
     if (Math.random() < 0.02) await env.DB.prepare('DELETE FROM starts WHERE hub = ? AND at < ?').bind(hub, now() - 180 * 86400).run();
   }
   let firstHere = false;
-  const known = await env.DB.prepare('SELECT art, duration FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{art: string; duration: number}>();
+  const known = await env.DB.prepare('SELECT art, duration, paused, since FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{art: string; duration: number; paused: number; since: number}>();
   const position = kind === 'mark' ? known?.duration ?? 0 : Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' || kind === 'mark' ? 0 : 1;
+  // Since when it has been as it is now: kept while a paused (or playing) title stays so, started again on any change.
+  const pausedNow = kind === 'progress' && paused ? 1 : 0, since = known && kind === 'progress' && known.paused === pausedNow && known.since ? known.since : now();
   // Rows from before pictures were kept are looked up once more, on their next start.
-  if (known && (known.art || kind !== 'start')) await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, device = ?, updated = ?, place = ?, net = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, seat.on, now(), where.place, where.net, hub, seat.person, item).run();
+  if (known && (known.art || kind !== 'start')) await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, paused = ?, since = ?, device = ?, updated = ?, place = ?, net = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, pausedNow, since, seat.on, now(), where.place, where.net, hub, seat.person, item).run();
   else {
     // First report for this title: ask AIOStreams what it is called, as this person.
     const about = await fetch(`${seat.base}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: asPerson(seat)}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string} | null;
@@ -152,8 +156,8 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
     const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
     const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
     const first = !await env.DB.prepare('SELECT 1 FROM plays WHERE hub = ? AND person = ? LIMIT 1').bind(hub, seat.person).first();
-    await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, device = excluded.device, updated = excluded.updated, art = excluded.art, place = excluded.place, net = excluded.net')
-      .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), kind === 'mark' ? Math.round(Number(about.RunTimeTicks ?? 0) / 1e7) : position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art, where.place, where.net).run();
+    await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net, paused, since) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, paused = excluded.paused, since = excluded.since, device = excluded.device, updated = excluded.updated, art = excluded.art, place = excluded.place, net = excluded.net')
+      .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), kind === 'mark' ? Math.round(Number(about.RunTimeTicks ?? 0) / 1e7) : position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, now(), art, where.place, where.net, pausedNow, now()).run();
     firstHere = first;
   }
   if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused, jumped);
