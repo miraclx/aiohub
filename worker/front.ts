@@ -229,13 +229,24 @@ function watched(row: Noted | null, kind: string, position: number, pausedNow: n
   // Nothing played yet keeps what was there (the empty part a start left).
   return {parts: text && text.length <= 400 ? text : row.parts, pauses, idle};
 }
-/* Overlapping parts become one; past MOST_PARTS, the two closest are joined (the gap between them counts as played). */
+/* Parts in the order they were first played: one that grows into another, or meets it, keeps the earlier one's place. Past
+   MOST_PARTS, the two closest along the title are joined (the gap between them counts as played). */
 function merge(parts: [number, number][]) {
-  const out: [number, number][] = [];
-  for (const [a, b] of parts.filter(([a, b]) => b > a).sort((x, y) => x[0] - y[0])) {const end = out[out.length - 1]; if (end && a <= end[1] + 1) end[1] = Math.max(end[1], b); else out.push([a, b]);}
+  const out: [number, number][] = [], meets = (x: [number, number], y: [number, number]) => x[0] <= y[1] + 1 && y[0] <= x[1] + 1;
+  for (const part of parts.filter(([a, b]) => b > a)) {
+    let at = out.findIndex(held => meets(held, part));
+    if (at < 0) {out.push([...part]); continue;}
+    out[at] = [Math.min(out[at][0], part[0]), Math.max(out[at][1], part[1])];
+    for (let other = out.findIndex((held, k) => k !== at && meets(held, out[at])); other >= 0; other = out.findIndex((held, k) => k !== at && meets(held, out[at]))) {
+      const keep = Math.min(at, other), drop = Math.max(at, other);
+      out[keep] = [Math.min(out[at][0], out[other][0]), Math.max(out[at][1], out[other][1])]; out.splice(drop, 1); at = keep;
+    }
+  }
   while (out.length > MOST_PARTS) {
-    let near = 1; for (let i = 2; i < out.length; i++) if (out[i][0] - out[i - 1][1] < out[near][0] - out[near - 1][1]) near = i;
-    out[near - 1][1] = out[near][1]; out.splice(near, 1);
+    const along = out.map((part, k) => ({part, k})).sort((x, y) => x.part[0] - y.part[0]);
+    let near = 1; for (let i = 2; i < along.length; i++) if (along[i].part[0] - along[i - 1].part[1] < along[near].part[0] - along[near - 1].part[1]) near = i;
+    const [x, y] = [along[near - 1], along[near]], keep = Math.min(x.k, y.k), drop = Math.max(x.k, y.k);
+    out[keep] = [x.part[0], y.part[1]]; out.splice(drop, 1);
   }
   return out;
 }

@@ -15,9 +15,9 @@ function told(row: Noted, now: number, code: string): Play | null {
   // A paused player is noted once in ten minutes (front.ts), so it counts as heard for fifteen.
   const heard = !!row.playing && now - row.updated < (row.paused ? 900 : 180), live = heard && !row.paused, share = row.duration ? Math.min(100, Math.round(row.position / row.duration * 100)) : 0;
   const quiet = !!row.playing && !heard, last = new Date(row.updated * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'});
-  const end = live ? '' : row.paused && row.playing ? ` · paused at ${clock(row.position)}${row.since ? heard ? ` for ${span(now - row.since)}` : ` since ${new Date(row.since * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}` : ''}` : row.parts?.split(' ').includes('marked') ? ' · marked as watched' : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
+  const end = live ? '' : row.paused && row.playing ? ` · paused at ${clock(row.position)}${row.since ? heard ? ` for ${span(now - row.since)}` : ` since ${new Date(row.since * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}` : ''}` : row.parts?.split(' ').includes('marked') && Math.max(0, ...partsOf(row).map(([, b]) => b)) < row.duration * 0.9 ? ' · marked as watched' : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
   const parts = partsOf(row), seen = row.duration && row.parts ? parts.map(([a, b]) => [a / row.duration * 100, (b - a) / row.duration * 100] as [number, number]) : undefined;
-  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}/${row.started}`, personId: row.person, title: row.title, detail: row.detail + end, parts: seen, mark: row.duration ? Math.min(100, row.position / row.duration * 100) : undefined, ranges: parts.map(([a, b]) => `${clock(a)}–${clock(b)}`), line: lineOf(row, parts), progress: heard || (share && share < 90) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
+  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}/${row.started}`, personId: row.person, title: row.title, detail: row.detail + end, parts: seen, mark: row.duration ? Math.min(100, row.position / row.duration * 100) : undefined, ranges: parts.map(([a, b], n) => `${parts.length > 1 ? `${n ? 'Then' : 'First'} · ` : ''}${clock(a)}–${clock(b)}`), line: lineOf(row, parts), progress: heard || (share && share < 90) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
     when: heard ? 'Now' : quiet && days === 0 ? `Last heard ${last}` : days > 1 ? at.toLocaleDateString(undefined, {weekday: 'long'}) : at.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'}), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
 }
 /* The parts of a title that were played, as the hub noted them (front.ts): seconds, from and to. Rows from before it have none. */
@@ -28,7 +28,7 @@ const minutes = (seconds: number) => Math.max(1, Math.round(seconds / 60));
    where it is now: after a jump back, what lies ahead was not skipped yet). How often or how long it was paused is not said:
    only whether it is paused now (above). */
 function lineOf(row: Noted, parts: [number, number][]) {
-  const skipped = parts.slice(1).reduce((sum, [a], i) => sum + (a <= row.position ? a - parts[i][1] : 0), 0);
+  const along = [...parts].sort((x, y) => x[0] - y[0]), skipped = along.slice(1).reduce((sum, [a], i) => sum + (a <= row.position ? Math.max(0, a - along[i][1]) : 0), 0);
   if (skipped < 60) return undefined;
   return `Watched ${minutes(played(parts))}${row.duration ? ` of ${minutes(row.duration)}` : ''} min · skipped ${minutes(skipped)} min`;
 }
