@@ -162,7 +162,7 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
     const goes = latest && stamp - latest.updated <= APART ? latest : null;
     if (goes) {
       const got = watched({...goes, duration: length, art: ''}, kind, at, pausedNow, stamp, before && kind !== 'start' ? before : undefined, true), from = kind === 'progress' && goes.paused === pausedNow && goes.since ? goes.since : stamp;
-      return [env.DB.prepare('UPDATE sittings SET position = ?, playing = ?, paused = ?, since = ?, updated = ?, place = ?, net = ?, parts = ?, pauses = ?, idle = ? WHERE hub = ? AND person = ? AND item = ? AND started = ?').bind(at, playing, pausedNow, from, stamp, where.place, where.net, got.parts, got.pauses, got.idle, hub, seat.person, item, goes.started)];
+      return [env.DB.prepare('UPDATE sittings SET position = ?, playing = ?, paused = ?, since = ?, updated = ?, place = ?, net = ?, parts = ?, pauses = ?, idle = ? WHERE hub = ? AND person = ? AND item = ? AND started = ?').bind(at, playing, pausedNow, from, stamp, where.place, where.net, kind === 'mark' ? `${got.parts.replace(/ ?marked/g, '')} marked`.trim() : got.parts, got.pauses, got.idle, hub, seat.person, item, goes.started)];
     }
     // A stop with no sitting under way opens none: nothing was watched just then. A tick as watched is a line of its own
     // (parts "marked"), so Activity still shows it.

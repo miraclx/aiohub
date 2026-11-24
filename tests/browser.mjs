@@ -305,7 +305,7 @@ const lined = async (page, label) => {const got = await lineUp(page); assert.ok(
 const where = async page => {
   await page.getByText('Paper Kites').waitFor(); await page.getByText('Small Engines').waitFor();
   // Only the parts played are filled in, with a mark where it is now; a skip or a pause gets one line.
-  await page.getByText('Watched 40 of 50 min · skipped 5 min · paused twice').waitFor(); assert.equal(await page.locator('.bar .part').count(), 2); assert.equal(await page.locator('.bar b').count(), 1);
+  await page.getByText('Watched 40 of 50 min · skipped 5 min').waitFor(); assert.equal(await page.locator('.bar .part').count(), 2); assert.equal(await page.locator('.bar b').count(), 1);
   assert.equal(await page.getByText('skipped', {exact: false}).count(), 1, 'no line for a play with nothing to say');
   if (page === owner) {await page.getByText(/^3 episodes in a row (today|yesterday)$/).waitFor(); assert.match(await page.locator('.feed li', {hasText: 'Ada'}).first().textContent(), /6 titles · .* · pressed play 7 times/);}
   assert.equal(await page.locator('.feed li', {hasText: 'Season 1 · Episode 1'}).count(), 2, 'each sitting is its own entry');

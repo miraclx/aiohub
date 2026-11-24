@@ -15,7 +15,7 @@ function told(row: Noted, now: number, code: string): Play | null {
   // A paused player is noted once in ten minutes (front.ts), so it counts as heard for fifteen.
   const heard = !!row.playing && now - row.updated < (row.paused ? 900 : 180), live = heard && !row.paused, share = row.duration ? Math.min(100, Math.round(row.position / row.duration * 100)) : 0;
   const quiet = !!row.playing && !heard, last = new Date(row.updated * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'});
-  const end = live ? '' : row.paused && row.playing ? ` · paused at ${clock(row.position)}${row.since ? heard ? ` for ${span(now - row.since)}` : ` since ${new Date(row.since * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}` : ''}` : row.parts === 'marked' ? ' · marked as watched' : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
+  const end = live ? '' : row.paused && row.playing ? ` · paused at ${clock(row.position)}${row.since ? heard ? ` for ${span(now - row.since)}` : ` since ${new Date(row.since * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}` : ''}` : row.parts?.split(' ').includes('marked') ? ' · marked as watched' : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
   const parts = partsOf(row), seen = row.duration && row.parts ? parts.map(([a, b]) => [a / row.duration * 100, (b - a) / row.duration * 100] as [number, number]) : undefined;
   return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}/${row.started}`, personId: row.person, title: row.title, detail: row.detail + end, parts: seen, mark: row.duration ? Math.min(100, row.position / row.duration * 100) : undefined, ranges: parts.map(([a, b]) => `${clock(a)}–${clock(b)}`), line: lineOf(row, parts), progress: heard || (share && share < 90) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
     when: heard ? 'Now' : quiet && days === 0 ? `Last heard ${last}` : days > 1 ? at.toLocaleDateString(undefined, {weekday: 'long'}) : at.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'}), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
@@ -23,16 +23,14 @@ function told(row: Noted, now: number, code: string): Play | null {
 /* The parts of a title that were played, as the hub noted them (front.ts): seconds, from and to. Rows from before it have none. */
 const partsOf = (row: Noted) => (row.parts ?? '').split(' ').map(part => part.split('-').map(Number)).filter(([a, b]) => b > a) as [number, number][];
 const played = (parts: [number, number][]) => parts.reduce((sum, [a, b]) => sum + b - a, 0);
-const TIMES = ['', 'once', 'twice'], minutes = (seconds: number) => Math.max(1, Math.round(seconds / 60));
-/* One line when there is something to say: a skip (the gaps between the parts played, not before the first, and only those
-   behind where it is now: after a jump back, what lies ahead was not skipped yet) or a pause. */
+const minutes = (seconds: number) => Math.max(1, Math.round(seconds / 60));
+/* One line, only when something was skipped (the gaps between the parts played, not before the first, and only those behind
+   where it is now: after a jump back, what lies ahead was not skipped yet). How often or how long it was paused is not said:
+   only whether it is paused now (above). */
 function lineOf(row: Noted, parts: [number, number][]) {
-  const skipped = parts.slice(1).reduce((sum, [a], i) => sum + (a <= row.position ? a - parts[i][1] : 0), 0), pauses = row.pauses ?? 0, idle = row.idle ?? 0;
-  if (skipped < 60 && !pauses) return undefined;
-  const watched = parts.length ? `Watched ${minutes(played(parts))}${row.duration ? ` of ${minutes(row.duration)}` : ''} min` : '';
-  const paused = pauses ? `paused ${TIMES[pauses] ?? `${pauses} times`}${idle >= 60 ? pauses === 1 ? ` for ${span(idle)}` : `, ${span(idle)} in all` : ''}` : '';
-  const line = [watched, skipped >= 60 ? `skipped ${minutes(skipped)} min` : '', paused].filter(Boolean).join(' · ');
-  return line.charAt(0).toUpperCase() + line.slice(1);
+  const skipped = parts.slice(1).reduce((sum, [a], i) => sum + (a <= row.position ? a - parts[i][1] : 0), 0);
+  if (skipped < 60) return undefined;
+  return `Watched ${minutes(played(parts))}${row.duration ? ` of ${minutes(row.duration)}` : ''} min · skipped ${minutes(skipped)} min`;
 }
 /* 33:28, or 1:02:05 for an hour or more in; and how long something has lasted, roughly. */
 const clock = (seconds: number) => {const s = Math.max(0, Math.round(seconds)), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, rest = String(s % 60).padStart(2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${rest}` : `${m}:${rest}`;};
