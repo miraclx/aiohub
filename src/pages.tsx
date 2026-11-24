@@ -62,7 +62,7 @@ export function PeoplePage(page: PageProps) {
   const [adding, setAdding] = useState<string | null>(null), [name, setName] = useState(''), [from, setFrom] = useState(''), [grouping, setGrouping] = useState(false), [ordering, setOrdering] = useState(false);
   // Who is watching something right now, said beside their name. The rest of it is under Activity.
   const [playing, setPlaying] = useState<Record<string, string>>({});
-  useEffect(() => {if (!page.live) return; void page.live.call<{now: number; plays: {person: string; title: string; playing: number; paused?: number; updated: number}[]}>('GET', '/api/activity').then(found => setPlaying(Object.fromEntries(found.plays.filter(play => play.playing && !play.paused && found.now - play.updated < 600).reverse().map(play => [play.person, play.title]))), () => {});}, [hub.v]);
+  useEffect(() => {if (!page.live) return; void page.live.call<{now: number; sittings: {person: string; title: string; playing: number; paused?: number; updated: number}[]}>('GET', '/api/activity').then(found => setPlaying(Object.fromEntries(found.sittings.filter(play => play.playing && !play.paused && found.now - play.updated < 600).reverse().map(play => [play.person, play.title]))), () => {});}, [hub.v]);
   return <>
     <div className="page-head"><div className="title-row"><h1>People</h1>{hub.groups.length > 1 && <button type="button" className="link" onClick={() => setOrdering(true)}>Reorder groups</button>}</div><p className="muted">Everyone you share streaming with. Each person gets their own Home.</p></div>
     {hub.groups.map(group => {

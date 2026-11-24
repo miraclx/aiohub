@@ -296,6 +296,9 @@ test('a person copies what they watched here to their MDBList, after seeing the 
   assert.equal((await say('/Sessions/Playing/Stopped', {ItemId: EP, PositionTicks: 600e7})).status, 204);
   assert.equal((await say(`/Users/${jf}/PlayedItems/${EP_HELD}`, {})).status, 200);
   await new Promise(resolve => setTimeout(resolve, 500));
+  // On Activity, the tick is a line of its own.
+  const ticked = (await owner('GET', '/api/activity')).body.sittings.filter(row => row.person === 'ada' && row.item === EP_HELD);
+  assert.deepEqual(ticked.map(row => [row.item, row.parts, row.playing]), [[EP_HELD, 'marked', 0]]);
   // Only Ada, from her own page.
   assert.equal((await owner('GET', '/api/people/ada/carry')).status, 403);
   const ada = client(), link = (await owner('GET', '/api/people/ada/signin')).body.link.split('/join/')[1];

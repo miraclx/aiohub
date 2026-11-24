@@ -128,7 +128,7 @@ const REPORTS: Record<string, 'start' | 'progress' | 'stop'> = {'/sessions/playi
 const noted = new Map<string, number>(), seen = new Map<string, {pos: number; at: number; paused: boolean}>();
 // A paused player that keeps reporting is noted once in ten minutes: still heard on Activity (src/activity.tsx), and well inside the
 // half hour after which Trakt is told a quiet play stopped (QUIET in trakt.ts).
-const EVERY = 60_000, PAUSED_EVERY = 600_000;
+const EVERY = 60_000, PAUSED_EVERY = 600_000, APART = 1800;
 async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', text: string, where: {place: string; net: string}, origin: string, when = Date.now()) {
   let report: {ItemId?: string; PositionTicks?: number; IsPaused?: boolean};
   try {report = JSON.parse(text);} catch {return;}
@@ -144,19 +144,38 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   if (!item || (kind === 'progress' && !turned && !jumped && !flipped && when - last < (paused ? PAUSED_EVERY : EVERY))) return;
   if (noted.size > 5000) noted.clear(); noted.set(key, when);
   const stamp = Math.floor(when / 1000);
-  if (kind === 'start') {
-    // The same title started again on the same device within five minutes is the same sitting: some apps send a start twice.
-    await env.DB.prepare('INSERT INTO starts (hub, person, item, device, at) SELECT ?1, ?2, ?3, ?4, ?5 WHERE NOT EXISTS (SELECT 1 FROM starts WHERE hub = ?1 AND at > ?5 - 300 AND person = ?2 AND item = ?3 AND device = ?4)').bind(hub, seat.person, item, seat.on, stamp).run();
-    if (Math.random() < 0.02) await env.DB.prepare('DELETE FROM starts WHERE hub = ? AND at < ?').bind(hub, stamp - 180 * 86400).run();
-  }
   let firstHere = false;
-  const known = await env.DB.prepare('SELECT art, duration, position, playing, paused, since, updated, parts, pauses, idle FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<Noted>();
+  // The title as last noted, and this device's latest sitting with it, in one trip.
+  const [found, sat] = await env.DB.batch([env.DB.prepare('SELECT art, duration, position, playing, paused, since, updated, parts, pauses, idle FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item),
+    env.DB.prepare('SELECT started, position, playing, paused, since, updated, parts, pauses, idle FROM sittings WHERE hub = ? AND person = ? AND item = ? AND device = ? ORDER BY started DESC LIMIT 1').bind(hub, seat.person, item, seat.on)]);
+  const known = (found.results[0] ?? null) as Noted | null, latest = (sat.results[0] ?? null) as (Noted & {started: number}) | null;
   const position = kind === 'mark' ? known?.duration ?? 0 : Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' || kind === 'mark' ? 0 : 1;
   // Since when it has been as it is now: kept while a paused (or playing) title stays so, started again on any change.
   const pausedNow = kind === 'progress' && paused ? 1 : 0, since = known && kind === 'progress' && known.paused === pausedNow && known.since ? known.since : stamp;
   const {parts, pauses, idle} = watched(known, kind, position, pausedNow, stamp, before && kind !== 'start' ? before : undefined);
+  // Activity shows each sitting as its own play: watched last night, again today and again tonight is three. A report carries on
+  // this device's latest sitting with the title while that was heard from in the last half hour, whatever came between: jumps
+  // around, a stop and a start again a minute later, a start sent twice. A paused player that keeps reporting is heard every ten
+  // minutes, so it stays one sitting; one that goes quiet while paused and carries on hours later starts another. Another device
+  // has its own. (Apps make a new PlaySessionId each time the player opens, so it says nothing about a sitting.)
+  const sitting = (length: number, at: number) => {
+    const goes = latest && stamp - latest.updated <= APART ? latest : null;
+    if (goes) {
+      const got = watched({...goes, duration: length, art: ''}, kind, at, pausedNow, stamp, before && kind !== 'start' ? before : undefined, true), from = kind === 'progress' && goes.paused === pausedNow && goes.since ? goes.since : stamp;
+      return [env.DB.prepare('UPDATE sittings SET position = ?, playing = ?, paused = ?, since = ?, updated = ?, place = ?, net = ?, parts = ?, pauses = ?, idle = ? WHERE hub = ? AND person = ? AND item = ? AND started = ?').bind(at, playing, pausedNow, from, stamp, where.place, where.net, got.parts, got.pauses, got.idle, hub, seat.person, item, goes.started)];
+    }
+    // A stop with no sitting under way opens none: nothing was watched just then. A tick as watched is a line of its own
+    // (parts "marked"), so Activity still shows it.
+    if (kind === 'stop') return [];
+    // A new sitting holds the empty part where it began (see watched). Not if another report opened one since this one looked:
+    // two can arrive at once.
+    return [env.DB.prepare('INSERT OR IGNORE INTO sittings (hub, person, item, started, device, position, playing, paused, since, updated, place, net, parts) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?4, ?4, ?9, ?10, ?11 WHERE NOT EXISTS (SELECT 1 FROM sittings WHERE hub = ?1 AND person = ?2 AND item = ?3 AND device = ?5 AND started > ?12)')
+      .bind(hub, seat.person, item, stamp, seat.on, at, playing, pausedNow, where.place, where.net, kind === 'mark' ? 'marked' : `${at}-${at}`, latest?.started ?? -1)];
+  };
+  // Sittings not heard from in 180 days go, now and then (and what is left of the starts once kept, migration 0010).
+  const tidy = Math.random() < 0.02 ? [env.DB.prepare('DELETE FROM sittings WHERE hub = ? AND updated < ?').bind(hub, stamp - 180 * 86400), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND at < ?').bind(hub, stamp - 180 * 86400)] : [];
   // Rows from before pictures were kept are looked up once more, on their next start.
-  if (known && (known.art || kind !== 'start')) await env.DB.prepare('UPDATE plays SET position = ?, playing = ?, paused = ?, since = ?, device = ?, updated = ?, place = ?, net = ?, parts = ?, pauses = ?, idle = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, pausedNow, since, seat.on, stamp, where.place, where.net, parts, pauses, idle, hub, seat.person, item).run();
+  if (known && (known.art || kind !== 'start')) await env.DB.batch([env.DB.prepare('UPDATE plays SET position = ?, playing = ?, paused = ?, since = ?, device = ?, updated = ?, place = ?, net = ?, parts = ?, pauses = ?, idle = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, pausedNow, since, seat.on, stamp, where.place, where.net, parts, pauses, idle, hub, seat.person, item), ...sitting(known.duration, position), ...tidy]);
   else {
     // First report for this title: ask AIOStreams what it is called, as this person.
     const about = await fetch(`${seat.base}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: asPerson(seat)}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string} | null;
@@ -164,8 +183,9 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
     const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
     const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
     const first = !await env.DB.prepare('SELECT 1 FROM plays WHERE hub = ? AND person = ? LIMIT 1').bind(hub, seat.person).first();
-    await env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net, paused, since, parts, pauses, idle) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, paused = excluded.paused, since = excluded.since, device = excluded.device, updated = excluded.updated, art = excluded.art, place = excluded.place, net = excluded.net, parts = excluded.parts, pauses = excluded.pauses, idle = excluded.idle')
-      .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), kind === 'mark' ? Math.round(Number(about.RunTimeTicks ?? 0) / 1e7) : position, Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), seat.on, playing, stamp, art, where.place, where.net, pausedNow, stamp, parts, pauses, idle).run();
+    const length = Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), at = kind === 'mark' ? length : position;
+    await env.DB.batch([env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net, paused, since, parts, pauses, idle) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, paused = excluded.paused, since = excluded.since, device = excluded.device, updated = excluded.updated, art = excluded.art, place = excluded.place, net = excluded.net, parts = excluded.parts, pauses = excluded.pauses, idle = excluded.idle')
+      .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), at, length, seat.on, playing, stamp, art, where.place, where.net, pausedNow, stamp, parts, pauses, idle), ...sitting(length, at), ...tidy]);
     firstHere = first;
   }
   if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused, jumped);
@@ -177,17 +197,18 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
    that moved on by about the time that passed (up to twice it, plus 20 s, for faster playback and late reports) was played, and
    anything else was a jump forward or back: the next part starts where it landed. The report just before this one, where this
    running copy saw it, is a step in between, so a jump loses at most the seconds between two reports, not a minute.
-   A rewatch starts over: a start near the beginning of a title last left at 90% or more, or of one not heard from in a week (what
-   Activity shows). A start sent again mid-play, as some apps do, keeps what is there. */
+   On the title's own row (plays), a rewatch starts over: a start near the beginning of a title last left at 90% or more, or of one
+   not heard from in a week. A sitting (`own`) never does: watching again is a sitting of its own. A start sent again mid-play, as
+   some apps do, keeps what is there. */
 interface Noted {art: string; duration: number; position: number; playing: number; paused: number; since: number; updated: number; parts: string; pauses: number; idle: number}
 const MOST_PARTS = 24, WEEK = 7 * 86400;
-function watched(row: Noted | null, kind: string, position: number, pausedNow: number, at: number, before?: {pos: number; at: number; paused: boolean}) {
+function watched(row: Noted | null, kind: string, position: number, pausedNow: number, at: number, before?: {pos: number; at: number; paused: boolean}, own = false) {
   // A title just started holds an empty part where it began ("2290-2290"), so the site knows parts are kept for it before the
   // first one is played; anything played replaces it.
   const begun = `${Math.round(position)}-${Math.round(position)}`;
   if (!row) return {parts: begun, pauses: pausedNow, idle: 0};
   const length = row.duration;
-  if (kind === 'start' && ((length > 0 && row.position >= length * 0.9 && position < length * 0.1) || at - row.updated > WEEK)) return {parts: begun, pauses: 0, idle: 0};
+  if (!own && kind === 'start' && ((length > 0 && row.position >= length * 0.9 && position < length * 0.1) || at - row.updated > WEEK)) return {parts: begun, pauses: 0, idle: 0};
   // A title noted before parts were kept gets its start mark the next time it is started.
   if (kind === 'start' && !row.parts) return {parts: begun, pauses: row.pauses, idle: row.idle};
   let parts = row.parts.split(' ').map(part => part.split('-').map(Number)).filter(([a, b]) => b > a) as [number, number][];

@@ -277,7 +277,7 @@ const forget = (env: Env, hub: string, id: string) => [
 ];
 async function removePerson(env: Env, who: Who, id: string) {
   forgetSeats(who.hub.id, id);
-  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_keys WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_cache WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM foryou WHERE hub = ? AND person = ?').bind(who.hub.id, id), ...forgetTrakt(env, who.hub.id, id), env.DB.prepare("DELETE FROM ops WHERE hub = ? AND target = ? AND kind = 'carry'").bind(who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
+  await env.DB.batch([...forget(env, who.hub.id, id), env.DB.prepare('DELETE FROM plays WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM sittings WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_keys WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM rows_cache WHERE hub = ? AND person = ?').bind(who.hub.id, id), env.DB.prepare('DELETE FROM foryou WHERE hub = ? AND person = ?').bind(who.hub.id, id), ...forgetTrakt(env, who.hub.id, id), env.DB.prepare("DELETE FROM ops WHERE hub = ? AND target = ? AND kind = 'carry'").bind(who.hub.id, id), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind NOT IN ('catalogs', 'catalogs-pending', 'aiom', 'aiom-pending')").bind(who.hub.id, id), env.DB.prepare('DELETE FROM people WHERE hub = ? AND id = ?').bind(who.hub.id, id)]);
   return {};
 }
 /* A person's stored choices, read fresh, and written back as a new version. */
@@ -756,7 +756,7 @@ async function removeHub(request: Request, env: Env, who: Who, body: Body) {
   if (!await checkPassword(String(body.password ?? ''), stored!.pass)) {await failed(env, key); bad(403, 'That is not your password');}
   if (!await removePlayers(env, who.hub)) bad(502, 'The streaming server did not confirm the removal, so nothing was deleted. Try again in a moment.');
   const hub = who.hub.id;
-  await env.DB.batch([...['devices', 'plays', 'starts', 'heard_fields', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'foryou', 'foryou_sync', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
+  await env.DB.batch([...['devices', 'plays', 'sittings', 'starts', 'heard_fields', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'foryou', 'foryou_sync', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
     env.DB.prepare('DELETE FROM hubs WHERE id = ?').bind(hub), env.DB.prepare('DELETE FROM passkeys WHERE account = ?').bind(who.account!.id), env.DB.prepare('DELETE FROM accounts WHERE id = ?').bind(who.account!.id)]);
   // Player apps stop reaching it at once, not when this copy of the Worker next looks the hub up.
   forgetHub(who.hub.code);
@@ -821,10 +821,9 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
       return reply({rows: await previews(env, who.hub, who.person ?? (group ? undefined : url.searchParams.get('person') || undefined), group)});
     }
     if (first === 'activity' && method === 'GET') {
-      // The manager sees everyone; an invited person sees only themselves.
-      const rows = await env.DB.prepare(`SELECT person, item, title, detail, position, duration, device, playing, paused, since, updated, art, place, net, parts, pauses, idle FROM plays WHERE hub = ?1 ${who.person ? 'AND person = ?2' : ''} ORDER BY updated DESC LIMIT 300`).bind(...(who.person ? [who.hub.id, who.person] : [who.hub.id])).all();
-      const starts = await env.DB.prepare(`SELECT person, item, device, at FROM starts WHERE hub = ?1 AND at > ?2 ${who.person ? 'AND person = ?3' : ''} ORDER BY at DESC LIMIT 2000`).bind(...(who.person ? [who.hub.id, now() - 7 * 86400, who.person] : [who.hub.id, now() - 7 * 86400])).all();
-      return reply({now: now(), plays: rows.results, starts: starts.results});
+      // The manager sees everyone; an invited person sees only themselves. Each sitting of the last week (front.ts), with its title.
+      const rows = await env.DB.prepare(`SELECT s.person, s.item, s.started, p.title, p.detail, s.position, p.duration, s.device, s.playing, s.paused, s.since, s.updated, p.art, s.place, s.net, s.parts, s.pauses, s.idle FROM sittings s JOIN plays p ON p.hub = s.hub AND p.person = s.person AND p.item = s.item WHERE s.hub = ?1 AND s.updated > ?2 ${who.person ? 'AND s.person = ?3' : ''} ORDER BY s.updated DESC LIMIT 1000`).bind(...(who.person ? [who.hub.id, now() - 7 * 86400, who.person] : [who.hub.id, now() - 7 * 86400])).all();
+      return reply({now: now(), sittings: rows.results});
     }
     if (first === 'state' && method === 'GET') return reply(await state(env, who) ?? bad(401, 'Sign in first'));
     if (first === 'people' && second && third) return reply(await personAction(request, env, who, second, third, fourth, body, url.origin));

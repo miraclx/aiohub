@@ -317,17 +317,18 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   await say('/Sessions/Playing', {ItemId: 'ep-7', PositionTicks: 0}); await say('/Sessions/Playing/Progress', {ItemId: 'ep-7', PositionTicks: 600 * 1e7});
   // A pause is noted as it happens, with since when; a player left paused still counts as there (`updated`) as it keeps reporting.
   await say('/Sessions/Playing/Progress', {ItemId: 'ep-7', PositionTicks: 700 * 1e7, IsPaused: true});
-  let held; for (let i = 0; i < 20 && !(held = (await owner('GET', '/api/activity')).body.plays[0])?.paused; i++) await new Promise(done => setTimeout(done, 150));
+  let held; for (let i = 0; i < 20 && !(held = (await owner('GET', '/api/activity')).body.sittings[0])?.paused; i++) await new Promise(done => setTimeout(done, 150));
   assert.deepEqual([held.position, held.playing, held.paused, held.since > 0], [700, 1, 1, true]);
   await say('/Sessions/Playing/Stopped', {ItemId: 'ep-7', PositionTicks: 1500 * 1e7}, 'Lagos');
-  let seen; for (let i = 0; i < 20 && (seen = (await owner('GET', '/api/activity')).body.plays[0])?.position !== 1500; i++) await new Promise(done => setTimeout(done, 150));
+  let seen; for (let i = 0; i < 20 && (seen = (await owner('GET', '/api/activity')).body.sittings[0])?.position !== 1500; i++) await new Promise(done => setTimeout(done, 150));
   assert.ok(seen.since >= held.since, 'stopped at, from the stop');
-  assert.deepEqual({...seen, updated: 0, since: 0, idle: 0}, {person: 'ada', item: 'ep-7', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', position: 1500, duration: 3000, device: 'Test · TV', playing: 0, paused: 0, since: 0, updated: 0, art: 'show-3', place: 'Lagos, NG', net: 'Example Fibre, Inc.', parts: '0-0', pauses: 0, idle: 0}, 'an episode is pictured by its show, and kept where it was last reported from');
-  assert.equal((await guest('GET', '/api/activity')).body.plays.length, 1); assert.equal((await stranger('GET', '/api/activity')).status, 401);
+  assert.ok(seen.started > 0 && seen.started <= held.since); assert.deepEqual({...seen, started: 0, updated: 0, since: 0, idle: 0}, {person: 'ada', item: 'ep-7', started: 0, title: 'Harbor Lights', detail: 'Season 2 · Episode 4', position: 1500, duration: 3000, device: 'Test · TV', playing: 0, paused: 0, since: 0, updated: 0, art: 'show-3', place: 'Lagos, NG', net: 'Example Fibre, Inc.', parts: '0-0', pauses: 0, idle: 0}, 'an episode is pictured by its show, and kept where it was last reported from');
+  assert.equal((await guest('GET', '/api/activity')).body.sittings.length, 1); assert.equal((await stranger('GET', '/api/activity')).status, 401);
   // Which parts were played. Each report says how long ago it was made (a test header), so an evening plays through in seconds,
-  // from two hours ago up to now. The film is 50 minutes long.
+  // from almost four hours ago up to now. The film is 50 minutes long. Each sitting has its own parts; the latest one heard is
+  // the first in the list.
   const ago = (path, body, seconds) => stranger('POST', `${at}${path}`, body, {...app(first.body.AccessToken), 'x-test-ago': String(seconds)});
-  const film = async () => (await owner('GET', '/api/activity')).body.plays.find(play => play.item === 'film-9');
+  const sittings = async () => (await owner('GET', '/api/activity')).body.sittings.filter(play => play.item === 'film-9'), film = async () => (await sittings())[0];
   // A report that is noted: wait until the row says it was heard then. One that is not noted only goes by.
   const noted = async (path, body, seconds) => {
     await ago(path, {ItemId: 'film-9', ...body}, seconds);
@@ -335,34 +336,56 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
     assert.fail(`a report from ${seconds} s ago was not noted`);
   };
   const ignored = async (path, body, seconds) => {const before = await film(); await ago(path, {ItemId: 'film-9', ...body}, seconds); await new Promise(done => setTimeout(done, 300)); assert.equal((await film()).updated, before.updated, `a report from ${seconds} s ago is not noted`);};
-  await noted('/Sessions/Playing', {PositionTicks: 0}, 7200);
-  await noted('/Sessions/Playing', {PositionTicks: 0}, 7190); // sent twice, as some apps do
+  await noted('/Sessions/Playing', {PositionTicks: 0}, 13200);
+  await noted('/Sessions/Playing', {PositionTicks: 0}, 13190); // sent twice, as some apps do
   // Steady progress makes one part.
-  await noted('/Sessions/Playing/Progress', {PositionTicks: 600e7}, 6600);
-  assert.equal((await noted('/Sessions/Playing/Progress', {PositionTicks: 1200e7}, 6000)).parts, '0-1200');
+  await noted('/Sessions/Playing/Progress', {PositionTicks: 600e7}, 12600);
+  assert.equal((await noted('/Sessions/Playing/Progress', {PositionTicks: 1200e7}, 12000)).parts, '0-1200');
   // A jump forward a few seconds later leaves a gap; what follows it is a part of its own. The field names of what the app sends
   // are kept for a while (below), never their values.
-  await ignored('/Sessions/Playing/Progress', {PositionTicks: 2000e7, EventName: 'TimeUpdate', PlayMethod: 'DirectPlay', MediaSourceId: 'source-value-77'}, 5990);
-  assert.equal((await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7}, 5940)).parts, '0-1200 2000-2060');
+  await ignored('/Sessions/Playing/Progress', {PositionTicks: 2000e7, EventName: 'TimeUpdate', PlayMethod: 'DirectPlay', MediaSourceId: 'source-value-77'}, 11990);
+  assert.equal((await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7}, 11940)).parts, '0-1200 2000-2060');
   // A pause is noted at once, and counted once it has lasted a minute (so not the one above); a player that sits paused and
   // keeps saying so is noted once in ten minutes.
-  const resting = await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 5930);
+  const resting = await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 11930);
   assert.deepEqual([resting.paused, resting.pauses, resting.parts], [1, 0, '0-1200 2000-2060']);
-  await ignored('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 5870);
-  await ignored('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 5400);
-  assert.equal((await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 5320)).since, resting.since, 'still paused since then');
+  await ignored('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 11870);
+  await ignored('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 11400);
+  assert.equal((await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 11320)).since, resting.since, 'still paused since then');
   // Carrying on ends the pause (ten and a half minutes in all); it plays on and stops.
-  await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7}, 5300);
-  await noted('/Sessions/Playing/Progress', {PositionTicks: 2660e7}, 4700);
-  const ended = await noted('/Sessions/Playing/Stopped', {PositionTicks: 2700e7}, 4680);
-  assert.deepEqual([ended.playing, ended.parts, ended.pauses], [0, '0-1200 2000-2700', 1]); assert.ok(Math.abs(ended.idle - 630) <= 2, `paused for ${ended.idle} s`);
-  // Watched again from the start: the parts start over. A start sent again mid-play keeps them.
-  const again = await noted('/Sessions/Playing', {PositionTicks: 0}, 3000);
-  assert.deepEqual([again.parts, again.pauses, again.idle], ['0-0', 0, 0]);
-  await noted('/Sessions/Playing/Progress', {PositionTicks: 240e7}, 2760);
-  assert.equal((await noted('/Sessions/Playing', {PositionTicks: 240e7}, 2750)).parts, '0-240');
-  // Starting it twice within five minutes on the same device was one sitting; watching it again later was another.
-  assert.equal((await owner('GET', '/api/activity')).body.starts.filter(start => start.item === 'film-9').length, 2);
+  await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7}, 11300);
+  await noted('/Sessions/Playing/Progress', {PositionTicks: 2660e7}, 10700);
+  const ended = await noted('/Sessions/Playing/Stopped', {PositionTicks: 2700e7}, 10680);
+  assert.deepEqual([ended.playing, ended.parts, ended.pauses, ended.started], [0, '0-1200 2000-2700', 1, resting.started]); assert.ok(Math.abs(ended.idle - 630) <= 2, `paused for ${ended.idle} s`);
+  // Watched again over half an hour later: a sitting of its own, with its own parts. The first keeps what it had.
+  const again = await noted('/Sessions/Playing', {PositionTicks: 0}, 8800);
+  assert.deepEqual([again.parts, again.pauses, again.idle], ['0-0', 0, 0]); assert.notEqual(again.started, ended.started);
+  // A start sent again mid-play, jumps, and stopping then starting again two minutes later somewhere else all stay that sitting.
+  await noted('/Sessions/Playing/Progress', {PositionTicks: 240e7}, 8560);
+  assert.equal((await noted('/Sessions/Playing', {PositionTicks: 240e7}, 8550)).parts, '0-240');
+  await noted('/Sessions/Playing/Stopped', {PositionTicks: 300e7}, 8500);
+  await noted('/Sessions/Playing', {PositionTicks: 1500e7}, 8380);
+  const back = await noted('/Sessions/Playing/Progress', {PositionTicks: 1560e7}, 8320);
+  assert.deepEqual([back.started, back.parts, back.playing], [again.started, '0-300 1500-1560', 1]);
+  // A player left paused that keeps saying so (as Strand does) stays one sitting, however long: it is heard every ten minutes.
+  await noted('/Sessions/Playing/Progress', {PositionTicks: 1560e7, IsPaused: true}, 8310);
+  for (const seconds of [7700, 7090, 6480, 5870]) assert.equal((await noted('/Sessions/Playing/Progress', {PositionTicks: 1560e7, IsPaused: true}, seconds)).started, again.started);
+  const woke = await noted('/Sessions/Playing/Progress', {PositionTicks: 1560e7}, 5860);
+  assert.deepEqual([woke.started, woke.pauses], [again.started, 1]); assert.ok(Math.abs(woke.idle - 2450) <= 2, `paused for ${woke.idle} s`);
+  await noted('/Sessions/Playing/Progress', {PositionTicks: 1620e7}, 5800);
+  // One that goes quiet while paused (as Streamyfin does) and carries on over half an hour later starts another sitting, where it was.
+  await noted('/Sessions/Playing/Progress', {PositionTicks: 1620e7, IsPaused: true}, 5790);
+  const later = await noted('/Sessions/Playing/Progress', {PositionTicks: 1620e7}, 3000);
+  assert.deepEqual([later.parts, later.pauses, later.playing], ['1620-1620', 0, 1]); assert.ok(later.started > again.started);
+  assert.equal((await noted('/Sessions/Playing/Progress', {PositionTicks: 1680e7}, 2940)).parts, '1620-1680');
+  // Three sittings, newest first, each with its own parts; the one left paused still says so.
+  const all = await sittings();
+  assert.deepEqual(all.map(play => [play.parts, play.paused]), [['1620-1680', 0], ['0-300 1500-1620', 1], ['0-1200 2000-2700', 0]]);
+  // A stop long after anything was heard opens no sitting.
+  await ago('/Sessions/Playing/Stopped', {ItemId: 'film-9', PositionTicks: 100e7}, 0);
+  for (let i = 0; i < 30 && sql("SELECT position FROM plays WHERE item = 'film-9'")[0].position !== 100; i++) await new Promise(done => setTimeout(done, 100));
+  assert.equal(sql("SELECT position FROM plays WHERE item = 'film-9'")[0].position, 100, 'the title itself took the stop');
+  assert.deepEqual([(await sittings()).length, (await film()).position], [3, 1680]);
   // For one week only (front.ts, HEARD_UNTIL): the shape of each kind of report, per app. Names, and only two values.
   if (Date.now() < Date.UTC(2026, 11, 2)) {
     const shapes = sql('SELECT app, kind, sig FROM heard_fields ORDER BY kind, sig');
@@ -371,6 +394,10 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
     assert.ok(shapes.some(shape => shape.kind === 'stop' && shape.sig === 'ItemId,PositionTicks EventName= PlayMethod='));
     assert.ok(!JSON.stringify(shapes).match(/film-9|ep-7|source-value|2060|Ibadan/), 'no values');
   }
+  // Another device has a sitting of its own, even while this one is under way (after the shapes above, which are all from one app).
+  await stranger('POST', `${at}/Sessions/Playing`, {ItemId: 'film-9', PositionTicks: 0}, {authorization: `${tv.authorization}, Token="${onTv.body.AccessToken}"`});
+  let elsewhere; for (let i = 0; i < 30 && (elsewhere = await sittings()).length < 4; i++) await new Promise(done => setTimeout(done, 100));
+  assert.deepEqual([elsewhere.length, elsewhere[0].device, elsewhere[0].parts], [4, 'TV App · Living room', '0-0']);
   // AIOStreams stops accepting the kept sign-in: the hub renews it once and the app never notices.
   fake.valid = 'rotated-away';
   assert.equal((await stranger('GET', `${at}/Users/Me`, undefined, app(first.body.AccessToken))).status, 200); assert.equal(fake.signIns, 2);
@@ -549,7 +576,8 @@ test('staging: a person served by their own AIOMetadata config never sees its id
   d1(`DELETE FROM secrets WHERE hub = '${hubId}' AND owner = 'ben' AND kind = 'upstream-aiom'`);
 });
 test('removing a person removes their sign-in', async () => {
-  assert.equal((await owner('DELETE', '/api/people/ada')).status, 200);
+  const theirs = () => sql("SELECT count(*) AS n FROM sittings WHERE person = 'ada'")[0].n;
+  assert.ok(theirs() > 0); assert.equal((await owner('DELETE', '/api/people/ada')).status, 200); assert.equal(theirs(), 0, 'and what they watched');
   assert.equal((await guest('GET', '/api/state')).status, 401);
   assert.deepEqual((await client()('POST', '/api/join', {token: link})).body, {gone: true});
 });
@@ -558,7 +586,7 @@ test('deleting the hub also removes its setup on the streaming server', async ()
   assert.deepEqual([...fake.configs.values()][0].config.jellyfin.personas.map(user => user.name), ['Benjamin'], 'a removed person must leave the players too');
   assert.equal((await guest('POST', '/api/hub/delete', {password: 'x'})).status, 401);
   assert.equal((await owner('POST', '/api/hub/delete', {password: 'not it'})).status, 403); assert.equal(fake.configs.size, 1);
-  assert.equal((await owner('POST', '/api/hub/delete', {password: 'recovered password'})).status, 200); assert.equal(fake.configs.size, 0); assert.equal(fake.homes.size, 0);
+  assert.equal((await owner('POST', '/api/hub/delete', {password: 'recovered password'})).status, 200); assert.equal(sql('SELECT count(*) AS n FROM sittings')[0].n, 0); assert.equal(fake.configs.size, 0); assert.equal(fake.homes.size, 0);
   assert.equal((await owner('GET', '/api/state')).status, 401); assert.equal((await stranger('GET', '/api/open')).body.signup, true);
 });
 test('wrong guesses are cut off', async () => {
