@@ -103,8 +103,10 @@ function weeks(rows: Noted[], now: number, all: Start[] = []): Week[] {
 const hours = (seconds: number) => seconds < 3600 ? `${Math.max(1, Math.round(seconds / 60))} min` : `about ${Math.round(seconds / 3600)} h`;
 /* How far in, or, once parts are kept, only the parts played, with a mark where it was left. Shown for past plays too. */
 function Bar({play}: {play: Play}) {
-  return <span className="bar" title={play.ranges?.length ? `Played ${play.ranges.join(', ')}` : undefined} role="progressbar" aria-valuenow={play.progress} aria-valuemin={0} aria-valuemax={100} aria-label={play.parts ? `${Math.round(play.parts.reduce((sum, [, width]) => sum + width, 0))}% watched, now at ${play.progress}%` : `${play.progress}% watched`}>
-        {play.parts ? <>{play.parts.map(([left, width], index) => <i key={left} className="part" title={play.ranges?.[index]} style={{left: `${left}%`, width: `${width}%`}}/>)}{play.progress !== undefined && <b style={{left: `${play.progress}%`}}/>}</> : <i style={{width: `${play.progress}%`}}/>}</span>;
+  // The times of each part played: under the bar while the row is pointed at, or after a tap on the bar (phones can't hover).
+  const [open, setOpen] = useState(false), ranges = play.ranges?.length ? `Played ${play.ranges.join(' · ')}` : '';
+  return <><span className={`bar${ranges ? ' timed' : ''}`} onClick={ranges ? () => setOpen(!open) : undefined} role="progressbar" aria-valuenow={play.progress} aria-valuemin={0} aria-valuemax={100} aria-label={play.parts ? `${Math.round(play.parts.reduce((sum, [, width]) => sum + width, 0))}% watched, now at ${play.progress}%` : `${play.progress}% watched`}>
+        {play.parts ? <>{play.parts.map(([left, width]) => <i key={left} className="part" style={{left: `${left}%`, width: `${width}%`}}/>)}{play.progress !== undefined && <b style={{left: `${play.progress}%`}}/>}</> : <i style={{width: `${play.progress}%`}}/>}</span>{ranges && <small className={`ranges${open ? ' open' : ''}`}>{ranges}</small>}</>;
 }
 /* The title's own picture, as the player apps show it. */
 const Picture = ({url}: {url: string}) => <div className="posters" aria-hidden="true"><span style={{backgroundImage: `url(${JSON.stringify(url)})`}}/></div>;

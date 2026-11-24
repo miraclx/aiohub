@@ -241,6 +241,9 @@ input:not([type=range]):focus { outline: 2px solid var(--accent); outline-offset
 .bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
 /* Only the parts that were played are filled; the thin mark is where it is now. */
 .bar .part { position: absolute; top: 0; border-radius: 0; }
+.bar.timed { cursor: pointer; }
+.ranges { display: none; }
+li:hover .ranges, .ranges.open { display: block; }
 .bar b { position: absolute; top: 0; width: 2px; height: 100%; margin-left: -1px; background: var(--text); }
 .feed { list-style: none; margin: 0; padding: 0; background: var(--surface); border-radius: var(--radius); }
 .feed li { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
