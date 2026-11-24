@@ -233,7 +233,7 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     setPhase('');
   };
   // What Trakt does once connected (front.ts scrobbling, rows.ts, places.ts): said plainly, in the order people notice it.
-  const about = `Free. ${hub.front ? `For you gets to know ${mine ? 'your' : `${person.name}’s`} taste from the start, picking from everything on ${their} Trakt. ` : ''}${mine ? 'Your' : 'Their'} Trakt watchlist, recommendations and recently watched show up on Home, and what ${mine ? 'you watch' : `${person.name} watches`} here is added to ${their} Trakt as it plays.`;
+  const about = `Free. ${hub.front ? `The For you rows pick from everything on ${their} Trakt, so they know ${mine ? 'your' : `${person.name}’s`} taste from the start. ` : ''}${mine ? 'Your' : 'Their'} Trakt watchlist, recommendations and recently watched show up on Home, and what ${mine ? 'you watch' : `${person.name} watches`} here is added to ${their} Trakt as it plays.`;
   if (!live) {
     const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
     return <li><div><h3>Trakt</h3><p>{person.trakt ? `Connected. ${about}` : about}</p></div>
