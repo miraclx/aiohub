@@ -10,10 +10,10 @@ function told(row: Noted, now: number, code: string): Play | null {
   const at = new Date(row.updated * 1000), today = new Date(now * 1000), days = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() - new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime()) / 86400000);
   if (days > 6) return null;
   // `updated` is when the player was last heard from: a player left open keeps reporting, paused or not. One that went quiet
-  // without saying it stopped is shown with when it was last heard.
+  // without saying it stopped is shown with when it was last heard, and, if it sat paused, when that pause began.
   const heard = !!row.playing && now - row.updated < 180, live = heard && !row.paused, share = row.duration ? Math.min(100, Math.round(row.position / row.duration * 100)) : 0;
   const quiet = !!row.playing && !heard, last = new Date(row.updated * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'});
-  const end = live ? '' : row.paused && row.playing ? ` · paused at ${clock(row.position)}${heard && row.since ? ` for ${span(now - row.since)}` : ''}` : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
+  const end = live ? '' : row.paused && row.playing ? ` · paused at ${clock(row.position)}${row.since ? heard ? ` for ${span(now - row.since)}` : ` since ${new Date(row.since * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}` : ''}` : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
   return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}`, personId: row.person, title: row.title, detail: row.detail + end, progress: heard || (share && share < 90) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
     when: heard ? 'Now' : quiet && days === 0 ? `Last heard ${last}` : days > 1 ? at.toLocaleDateString(undefined, {weekday: 'long'}) : at.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'}), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
 }
