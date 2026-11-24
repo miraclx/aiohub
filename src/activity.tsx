@@ -17,7 +17,7 @@ function told(row: Noted, now: number, code: string): Play | null {
   const quiet = !!row.playing && !heard, last = new Date(row.updated * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'});
   const end = live ? '' : row.paused && row.playing ? ` · paused at ${clock(row.position)}${row.since ? heard ? ` for ${span(now - row.since)}` : ` since ${new Date(row.since * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}` : ''}` : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
   const parts = partsOf(row), seen = row.duration && row.parts ? parts.map(([a, b]) => [a / row.duration * 100, (b - a) / row.duration * 100] as [number, number]) : undefined;
-  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}`, personId: row.person, title: row.title, detail: row.detail + end, parts: seen, line: lineOf(row, parts), progress: heard || (share && share < 90) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
+  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}`, personId: row.person, title: row.title, detail: row.detail + end, parts: seen, ranges: parts.map(([a, b]) => `${clock(a)}–${clock(b)}`), line: lineOf(row, parts), progress: heard || (share && share < 90) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
     when: heard ? 'Now' : quiet && days === 0 ? `Last heard ${last}` : days > 1 ? at.toLocaleDateString(undefined, {weekday: 'long'}) : at.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'}), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
 }
 /* The parts of a title that were played, as the hub noted them (front.ts): seconds, from and to. Rows from before it have none. */
@@ -102,8 +102,8 @@ function weeks(rows: Noted[], now: number, all: Start[] = []): Week[] {
 const hours = (seconds: number) => seconds < 3600 ? `${Math.max(1, Math.round(seconds / 60))} min` : `about ${Math.round(seconds / 3600)} h`;
 /* How far in, or, once parts are kept, only the parts played, with a mark where it was left. Shown for past plays too. */
 function Bar({play}: {play: Play}) {
-  return <span className="bar" role="progressbar" aria-valuenow={play.progress} aria-valuemin={0} aria-valuemax={100} aria-label={play.parts ? `${Math.round(play.parts.reduce((sum, [, width]) => sum + width, 0))}% watched, now at ${play.progress}%` : `${play.progress}% watched`}>
-        {play.parts ? <>{play.parts.map(([left, width]) => <i key={left} className="part" style={{left: `${left}%`, width: `${width}%`}}/>)}{play.progress !== undefined && <b style={{left: `${play.progress}%`}}/>}</> : <i style={{width: `${play.progress}%`}}/>}</span>;
+  return <span className="bar" title={play.ranges?.length ? `Played ${play.ranges.join(', ')}` : undefined} role="progressbar" aria-valuenow={play.progress} aria-valuemin={0} aria-valuemax={100} aria-label={play.parts ? `${Math.round(play.parts.reduce((sum, [, width]) => sum + width, 0))}% watched, now at ${play.progress}%` : `${play.progress}% watched`}>
+        {play.parts ? <>{play.parts.map(([left, width], index) => <i key={left} className="part" title={play.ranges?.[index]} style={{left: `${left}%`, width: `${width}%`}}/>)}{play.progress !== undefined && <b style={{left: `${play.progress}%`}}/>}</> : <i style={{width: `${play.progress}%`}}/>}</span>;
 }
 /* The title's own picture, as the player apps show it. */
 const Picture = ({url}: {url: string}) => <div className="posters" aria-hidden="true"><span style={{backgroundImage: `url(${JSON.stringify(url)})`}}/></div>;
