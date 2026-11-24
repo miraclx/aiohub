@@ -188,9 +188,13 @@ function watched(row: Noted | null, kind: string, position: number, pausedNow: n
   if (!row) return {parts: begun, pauses: pausedNow, idle: 0};
   const length = row.duration;
   if (kind === 'start' && ((length > 0 && row.position >= length * 0.9 && position < length * 0.1) || at - row.updated > WEEK)) return {parts: begun, pauses: 0, idle: 0};
+  // A title noted before parts were kept gets its start mark the next time it is started.
+  if (kind === 'start' && !row.parts) return {parts: begun, pauses: row.pauses, idle: row.idle};
   let parts = row.parts.split(' ').map(part => part.split('-').map(Number)).filter(([a, b]) => b > a) as [number, number][];
   // A pause ends when the player carries on, stops or goes quiet (no word for fifteen minutes after it was last heard).
-  const pauses = row.pauses + (!row.paused && pausedNow ? 1 : 0), idle = row.idle + (row.paused && !pausedNow && row.since ? Math.max(0, Math.min(at, row.updated + 900) - row.since) : 0);
+  // Only a pause of a minute or more counts: some apps report one for a moment around every jump (Streamyfin does).
+  const ended = row.paused && !pausedNow && row.since ? Math.max(0, Math.min(at, row.updated + 900) - row.since) : 0, long = ended >= 60;
+  const pauses = row.pauses + (long ? 1 : 0), idle = row.idle + (long ? ended : 0);
   if ((kind === 'progress' || kind === 'stop') && row.playing) {
     const steps = [{pos: row.position, at: row.updated, paused: !!row.paused}];
     if (before && before.at / 1000 > row.updated && before.at / 1000 < at) steps.push({pos: Math.round(before.pos), at: before.at / 1000, paused: before.paused});

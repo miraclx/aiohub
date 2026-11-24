@@ -322,7 +322,7 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   await say('/Sessions/Playing/Stopped', {ItemId: 'ep-7', PositionTicks: 1500 * 1e7}, 'Lagos');
   let seen; for (let i = 0; i < 20 && (seen = (await owner('GET', '/api/activity')).body.plays[0])?.position !== 1500; i++) await new Promise(done => setTimeout(done, 150));
   assert.ok(seen.since >= held.since, 'stopped at, from the stop');
-  assert.deepEqual({...seen, updated: 0, since: 0, idle: 0}, {person: 'ada', item: 'ep-7', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', position: 1500, duration: 3000, device: 'Test · TV', playing: 0, paused: 0, since: 0, updated: 0, art: 'show-3', place: 'Lagos, NG', net: 'Example Fibre, Inc.', parts: '0-0', pauses: 1, idle: 0}, 'an episode is pictured by its show, and kept where it was last reported from');
+  assert.deepEqual({...seen, updated: 0, since: 0, idle: 0}, {person: 'ada', item: 'ep-7', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', position: 1500, duration: 3000, device: 'Test · TV', playing: 0, paused: 0, since: 0, updated: 0, art: 'show-3', place: 'Lagos, NG', net: 'Example Fibre, Inc.', parts: '0-0', pauses: 0, idle: 0}, 'an episode is pictured by its show, and kept where it was last reported from');
   assert.equal((await guest('GET', '/api/activity')).body.plays.length, 1); assert.equal((await stranger('GET', '/api/activity')).status, 401);
   // Which parts were played. Each report says how long ago it was made (a test header), so an evening plays through in seconds,
   // from two hours ago up to now. The film is 50 minutes long.
@@ -344,9 +344,10 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   // are kept for a while (below), never their values.
   await ignored('/Sessions/Playing/Progress', {PositionTicks: 2000e7, EventName: 'TimeUpdate', PlayMethod: 'DirectPlay', MediaSourceId: 'source-value-77'}, 5990);
   assert.equal((await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7}, 5940)).parts, '0-1200 2000-2060');
-  // A pause is noted at once and counted; a player that sits paused and keeps saying so is noted once in ten minutes.
+  // A pause is noted at once, and counted once it has lasted a minute (so not the one above); a player that sits paused and
+  // keeps saying so is noted once in ten minutes.
   const resting = await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 5930);
-  assert.deepEqual([resting.paused, resting.pauses, resting.parts], [1, 1, '0-1200 2000-2060']);
+  assert.deepEqual([resting.paused, resting.pauses, resting.parts], [1, 0, '0-1200 2000-2060']);
   await ignored('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 5870);
   await ignored('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 5400);
   assert.equal((await noted('/Sessions/Playing/Progress', {PositionTicks: 2060e7, IsPaused: true}, 5320)).since, resting.since, 'still paused since then');
