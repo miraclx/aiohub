@@ -171,8 +171,21 @@ export async function flush(env: Env, only?: {hub: string; person: string}) {
   return !!await left.first();
 }
 
+/* A sitting with too little played to count: under two minutes (under half, for anything shorter than four), as when an episode
+   is opened, run to the end and left on realising it was seen. It goes neither to Trakt (a stop, a tick from the app, the sweep
+   below) nor on Activity once over. Real finishes are not lost: one resumed from 80% or more was counted when it stopped there,
+   and getting to 80% from below takes over two minutes of anything longer than ten. An app that says only start and stop leaves
+   no parts played (front.ts), so for it the time between the two is what was played. A tick with nothing played (parts
+   "marked", from the library) is not a sitting of this kind. */
+export function brief(sitting: {parts?: string | null; started: number; updated: number}, duration: number) {
+  const held = (sitting.parts ?? '').split(' ').filter(part => part && part !== 'marked');
+  if (!held.length) return false;
+  const spans = held.map(part => part.split('-').map(Number)).filter(([a, b]) => b > a), least = duration > 0 ? Math.min(120, duration / 2) : 120;
+  return (spans.length ? spans.reduce((sum, [a, b]) => sum + b - a, 0) : sitting.updated - sitting.started) < least;
+}
 /* Players that went quiet without saying stop (closed, crashed, out of battery). After half an hour Trakt is told it stopped where
-   it was last seen: from 80% that counts as watched, and below that Trakt keeps the spot. A few at a time; the next run takes
+   it was last seen: from 80% that counts as watched, and below that Trakt keeps the spot (not for a sitting with too little
+   played, see brief). A few at a time; the next run takes
    the rest. Then whatever is waiting in the outbox. */
 export async function sweep(env: Env) {
   if (!env.TRAKT_CLIENT_ID) return;
@@ -181,7 +194,9 @@ export async function sweep(env: Env) {
   for (const row of rows) {
     const target = row.ids ? JSON.parse(row.ids) as Target : null, progress = row.duration ? progressOf(row.position, row.duration) : 0;
     // Dated by when it was last seen, which a finished watch is added to history at if it has to wait (see `late`).
-    if (target && progress >= 1) await deliver(env, row.hub, row.person, row.item, {kind: 'stop', path: '/scrobble/stop', body: {...target, progress}}, row.updated);
+    // The latest sitting with it: one with too little played is let go without a word to Trakt (see brief).
+    const sat = await env.DB.prepare('SELECT parts, started, updated FROM sittings WHERE hub = ? AND person = ? AND item = ? ORDER BY updated DESC LIMIT 1').bind(row.hub, row.person, row.item).first<{parts: string | null; started: number; updated: number}>();
+    if (target && progress >= 1 && !(sat && brief(sat, row.duration))) await deliver(env, row.hub, row.person, row.item, {kind: 'stop', path: '/scrobble/stop', body: {...target, progress}}, row.updated);
     await env.DB.prepare("UPDATE plays SET scrobbled = 'stopped', scrobbled_at = ? WHERE hub = ? AND person = ? AND item = ?").bind(now(), row.hub, row.person, row.item).run();
   }
   await flush(env);

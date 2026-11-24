@@ -660,7 +660,7 @@ function forYouJob(jobs: NonNullable<Hub['jobs']>, now: number, time: (ms: numbe
   const start = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T${String(jobs.forYouHour).padStart(2, '0')}:00:00Z`), picked = jobs.picked ?? 0, everyone = jobs.everyone ?? 0;
   const done = picked >= everyone, waiting = !done && now >= start;
   return {name: 'For you picks', every: `every day at ${time(start)}`, last: `${ran(jobs.pickedAt ?? null)}${everyone ? ` · ${Math.min(picked, everyone)} of ${everyone} picked today` : ''}`,
-    next: waiting ? 'under way' : jobs.syncing ? 'updating apps' : `next ${day(done || now >= start ? start + DAY_MS : start)}`};
+    next: waiting ? 'under way' : jobs.syncing ? 'updating apps' : `next run ${day(done || now >= start ? start + DAY_MS : start)}`};
 }
 function Background({hub}: {hub: Hub}) {
   const jobs = hub.jobs, [now, setNow] = useState(Date.now());
@@ -672,8 +672,8 @@ function Background({hub}: {hub: Hub}) {
   const next = Math.ceil((now + 1) / FIVE) * FIVE, start = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T04:00:00Z`);
   const daily = jobs.checked === new Date(now).toISOString().slice(0, 10) ? start + DAY_MS : Math.max(start, next);
   const rows = [
-    {name: 'Trakt sync', every: 'every 5 min', last: `${ran(jobs.last)}${jobs.waiting ? ` · ${jobs.waiting} waiting to send` : ''}`, next: `next in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
-    {name: 'Trakt and MDBList check', every: `every day at ${time(start)}`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next ${day(daily)}`},
+    {name: 'Trakt sync', every: 'every 5 min', last: `${ran(jobs.last)}${jobs.waiting ? ` · ${jobs.waiting} waiting to send` : ''}`, next: `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
+    {name: 'Trakt and MDBList check', every: `every day at ${time(start)}`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next run ${day(daily)}`},
     ...(hub.front && jobs.forYouHour !== undefined ? [forYouJob(jobs, now, time, day, ran)] : []),
   ];
   return <section>

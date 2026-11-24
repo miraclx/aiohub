@@ -7,7 +7,7 @@ import type {Addon, Hub, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './native';
 import {forgetHub, forgetSeats} from './front';
-import {LINK, disconnect, forgetTrakt, keepLink, links, read} from './trakt';
+import {LINK, brief, disconnect, forgetTrakt, keepLink, links, read} from './trakt';
 import {rows} from './rows';
 import {PAIRS, copy, forgetShown, moving, shown} from './places';
 import {because} from './suggest';
@@ -478,7 +478,7 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
   }
   if (action === 'signout' && request.method === 'POST') {await env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ?').bind(hub, id).run(); return {};}
   // A device's name as the app sent it, or whatever is easier to recognise.
-  if (action === 'devices' && rest && request.method === 'PUT') {const name = text(body.name, 60, 'Name').trim() || bad(400, 'Give it a name'); await env.DB.prepare('UPDATE devices SET name = ? WHERE hub = ? AND person = ? AND ref = ?').bind(name, hub, id, rest).run(); return {};}
+  if (action === 'devices' && rest && request.method === 'PUT') {const name = text(body.name, 60, 'Name').trim() || bad(400, 'Give it a name'); await env.DB.prepare('UPDATE devices SET name = ? WHERE hub = ? AND person = ? AND ref = ?').bind(name, hub, id, rest).run(); forgetSeats(hub, id); return {};} // what it plays is noted under its new name at once
   if (action === 'devices' && rest && request.method === 'DELETE') {await env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ? AND ref = ?').bind(hub, id, rest).run(); return {};}
   return bad(404, 'Not found');
 }
@@ -823,7 +823,9 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     if (first === 'activity' && method === 'GET') {
       // The manager sees everyone; an invited person sees only themselves. Each sitting of the last week (front.ts), with its title.
       const rows = await env.DB.prepare(`SELECT s.person, s.item, s.started, p.title, p.detail, s.position, p.duration, s.device, s.playing, s.paused, s.since, s.updated, p.art, s.place, s.net, s.parts, s.pauses, s.idle FROM sittings s JOIN plays p ON p.hub = s.hub AND p.person = s.person AND p.item = s.item WHERE s.hub = ?1 AND s.updated > ?2 ${who.person ? 'AND s.person = ?3' : ''} ORDER BY s.updated DESC LIMIT 1000`).bind(...(who.person ? [who.hub.id, now() - 7 * 86400, who.person] : [who.hub.id, now() - 7 * 86400])).all();
-      return reply({now: now(), sittings: rows.results});
+      // One with too little played is left out once it is over (see brief); while it may still be playing, it shows.
+      const time = now(), kept = (rows.results as {playing: number; updated: number; parts: string | null; started: number; duration: number}[]).filter(row => (row.playing && time - row.updated < 900) || !brief(row, row.duration));
+      return reply({now: time, sittings: kept});
     }
     if (first === 'state' && method === 'GET') return reply(await state(env, who) ?? bad(401, 'Sign in first'));
     if (first === 'people' && second && third) return reply(await personAction(request, env, who, second, third, fourth, body, url.origin));

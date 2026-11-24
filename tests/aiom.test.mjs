@@ -202,7 +202,7 @@ const owner = client(), at = () => `/h/${hub.code}`;
 let adaSite;
 let hub;
 const app = (token, device = 'phone-1') => ({authorization: `MediaBrowser Client="Test", Device="Phone", DeviceId="${device}"${token ? `, Token="${token}"` : ''}`});
-const raw = async (path, token, init = {}) => {const answer = await fetch(BASE + at() + path, {...init, headers: {'content-type': 'application/json', ...app(token)}, redirect: 'manual'}); return {status: answer.status, text: await answer.text(), location: answer.headers.get('location')};};
+const raw = async (path, token, init = {}) => {const answer = await fetch(BASE + at() + path, {...init, headers: {'content-type': 'application/json', ...app(token), ...init.headers}, redirect: 'manual'}); return {status: answer.status, text: await answer.text(), location: answer.headers.get('location')};};
 const players = () => [...fake.configs.values()][0].config;
 const playerOf = name => [...fake.homes.entries()].find(([, home]) => home.config.jellyfinUserName === name);
 const syncAll = async () => {for (let i = 0; i < 4; i++) {const got = (await owner('POST', '/api/sync', {})).body; if (!got.more) return got;} return null;};
@@ -327,7 +327,8 @@ test('watched titles asked for library by library come from everything watched, 
   assert.ok((await asked(`userId=${jf}&parentId=${VIEW}&recursive=true`)).includes(`parentId=${VIEW}`));
 });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-const say = (path, body) => raw(path, token, {method: 'POST', body: JSON.stringify(body)});
+// `ago`: how many seconds ago the report was made (a test header, front.ts), to play for a while in no time.
+const say = (path, body, ago = 0) => raw(path, token, {method: 'POST', body: JSON.stringify(body), headers: ago ? {'x-test-ago': String(ago)} : {}});
 // Reports are passed on in the background, after the app has its answer: wait for Trakt to have heard, then a moment more.
 const heard = async count => {for (let i = 0; i < 50 && trakt.calls.length < count; i++) await pause(100); await pause(300); return trakt.calls.map(({path, body}) => ({path, body}));};
 // What the page does once Trakt's sign-in has come back to it: the login it got from Trakt is handed to the hub.
@@ -437,10 +438,11 @@ test('with Trakt connected to the hub, her setup reads her Trakt rows from the h
 });
 test('a film played, paused, carried on, skipped ahead and finished reaches Trakt as start, pause, start, start, stop', async () => {
   const film = {movie: {ids: {tmdb: 27205, imdb: 'tt1375666'}}};
-  await say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}); await heard(1);
+  // Its first ten minutes play over ten minutes (reports dated back), so the stop at the end counts (see brief in trakt.ts).
+  await say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}, 700); await heard(1);
   // Plain progress is not passed on; a pause is, at once, and only once however often the app says it is still paused.
-  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 30e7, IsPaused: false});
-  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: true}); await heard(2);
+  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 30e7, IsPaused: false}, 670);
+  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: true}, 100); await heard(2);
   await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: true});
   await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: false}); await heard(3);
   await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 620e7, IsPaused: false});
@@ -460,13 +462,33 @@ test('a film played, paused, carried on, skipped ahead and finished reaches Trak
 test('an episode goes by its show’s ids with its season and number, and a repeated stop (409) counts as done', async () => {
   trakt.calls = []; trakt.stop = 409;
   const episode = {show: {ids: {tmdb: 1399}}, episode: {season: 1, number: 3}};
-  await say('/Sessions/Playing', {ItemId: EP3, PositionTicks: 0}); await heard(1);
+  await say('/Sessions/Playing', {ItemId: EP3, PositionTicks: 0}, 300); await heard(1);
+  await say('/Sessions/Playing/Progress', {ItemId: EP3, PositionTicks: 280e7, IsPaused: false}, 20); await pause(400);
   await say('/Sessions/Playing/Stopped', {ItemId: EP3, PositionTicks: 5700e7});
   assert.deepEqual(await heard(2), [{path: '/scrobble/start', body: {...episode, progress: 0}}, {path: '/scrobble/stop', body: {...episode, progress: 95}}]);
   trakt.stop = 201;
 });
-test('ticking a title as watched adds it to Trakt history', async () => {
+test('an episode opened, run to the end and left (seen it already) is no watch: nothing to Trakt, and not on Activity', async () => {
+  // A sitting of its own (the one above was over an hour ago), and Trakt not yet told this one was watched.
+  const data = HELD[EP3].UserData, ticks = fake.ticks.length, was = sql(`SELECT position, playing, updated, scrobbled, scrobbled_at, parts FROM plays WHERE item = '${EP3}'`)[0], value = v => v == null ? 'NULL' : typeof v === 'number' ? v : `'${v}'`;
+  sql(`UPDATE sittings SET started = started - 7200, updated = updated - 7200 WHERE item = '${EP3}'`); sql(`UPDATE plays SET scrobbled = NULL WHERE item = '${EP3}'`);
   trakt.calls = [];
+  await say('/Sessions/Playing', {ItemId: EP3, PositionTicks: 0}); await heard(1);
+  await say('/Sessions/Playing/Progress', {ItemId: EP3, PositionTicks: 5600e7, IsPaused: false}); await heard(2);
+  // Its stop, the app's tick as it moves on, and the cron after: none of it reaches Trakt.
+  await say('/Sessions/Playing/Stopped', {ItemId: EP3, PositionTicks: 5700e7}); await pause(400);
+  await say(`/Users/${jf}/PlayedItems/${EP3}`, {}); await pause(400);
+  sql(`UPDATE plays SET updated = updated - 3600 WHERE item = '${EP3}'`); await cron(); await pause(400);
+  assert.deepEqual(trakt.calls.map(call => call.path), ['/scrobble/start', '/scrobble/start']);
+  // Activity keeps the earlier sitting, where a few minutes were played, and leaves this one out.
+  const shown = (await owner('GET', '/api/activity')).body.sittings.filter(row => row.item === EP3);
+  assert.deepEqual(shown.map(row => row.parts), ['0-280']);
+  // Put back as it was, for the tests after (the card's comparison, For you).
+  sql(`DELETE FROM sittings WHERE item = '${EP3}' AND parts != '0-280'`); sql(`UPDATE sittings SET started = started + 7200, updated = updated + 7200 WHERE item = '${EP3}'`);
+  sql(`UPDATE plays SET ${Object.entries(was).map(([key, v]) => `${key} = ${value(v)}`).join(', ')} WHERE item = '${EP3}'`); HELD[EP3].UserData = data; fake.ticks.length = ticks;
+});
+test('ticking a title as watched adds it to Trakt history', async () => {
+  trakt.calls = []; sql(`UPDATE sittings SET updated = updated - 120 WHERE item = '${ITEM}'`); // its brief play earlier is over: this tick is from the list
   assert.equal((await say(`/Users/${jf}/PlayedItems/${ITEM}`, {})).status, 200);
   const [call] = await heard(1);
   assert.equal(call.path, '/sync/history'); assert.deepEqual(call.body.movies.map(({ids}) => ids), [{tmdb: 603, imdb: 'tt0133093'}]);
@@ -475,7 +497,9 @@ test('ticking a title as watched adds it to Trakt history', async () => {
 test('a play left running by an app that went quiet is stopped on Trakt by the five-minute cron', async () => {
   // One film left at 85%, one at the very start; then half an hour without a report, as if the app was closed.
   trakt.calls = [];
-  await say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 5100e7}); await say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}); await heard(2);
+  // (The first played for a few minutes up to there.)
+  await say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 4900e7}, 300); await say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}); await heard(2);
+  await say('/Sessions/Playing/Progress', {ItemId: LEFT, PositionTicks: 5100e7, IsPaused: false}, 100); await pause(400);
   sql("UPDATE plays SET updated = updated - 3600 WHERE scrobbled IN ('playing', 'paused')");
   trakt.calls = [];
   await cron();
@@ -494,6 +518,7 @@ test('a call Trakt turns away (429) is kept and goes through a few seconds later
 test('while Trakt keeps refusing, calls wait in order: a stop ends a waiting pause, a tick stays, a start gone stale is let go', async () => {
   trakt.calls = []; trakt.refused = []; trakt.refuse = 1000;
   await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: true}); await pause(400);
+  sql(`UPDATE sittings SET parts = '0-600' WHERE item = '${FILM}'`); // ten minutes played, so its stop counts (see brief in trakt.ts)
   await say('/Sessions/Playing/Stopped', {ItemId: FILM, PositionTicks: 5400e7}); await pause(400);
   await say(`/Users/${jf}/PlayedItems/${EP}`, {}); await pause(400);
   await say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 0});

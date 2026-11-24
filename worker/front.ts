@@ -8,7 +8,7 @@ import {slug} from '../src/data';
 import type {Env} from './util';
 import {blocked, failed, getSecret, guesses, newId, newToken, now, putSecret, same, sha, unseal} from './util';
 import type {Target} from './trakt';
-import {LINK, deliver, history, progressOf, soon} from './trakt';
+import {LINK, brief, deliver, history, progressOf, soon} from './trakt';
 import {syncPlayers} from './native';
 
 const MOUNT = '/jellyfin', SEEN_EVERY = 600, REMEMBER = 20_000, MOST_DEVICES = 30;
@@ -188,7 +188,8 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
       .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), at, length, seat.on, playing, stamp, art, where.place, where.net, pausedNow, stamp, parts, pauses, idle), ...sitting(length, at), ...tidy]);
     firstHere = first;
   }
-  if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused, jumped);
+  // A tick that comes while a sitting is under way (heard in the last minute) is the app's own, as it moves on to the next.
+  if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused, jumped, !!latest && stamp - latest.updated <= 60);
   // Their first play here: Recently Watched now has something in it, so their Home gets it without waiting for the site to be opened.
   // Not for someone with Trakt connected to the hub: theirs was there already.
   if (firstHere && !seat.scrobble) {const found = await env.DB.prepare('SELECT id, data FROM hubs WHERE id = ?').bind(hub).first<{id: string; data: string}>(); if (found) await syncPlayers(env, found, origin).catch(() => null);}
@@ -271,7 +272,7 @@ const asPerson = (seat: Seat) => `MediaBrowser Client="AIOHub", Device="AIOHub",
    passed on as they happen, in the background; the app's own request never waits. Progress in between is not sent. A call
    Trakt does not take waits in the outbox; what Trakt was told here counts it as told, so what follows carries on from it. */
 const told = new Map<string, string>();
-async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', item: string, position: number, paused: boolean, jumped = false) {
+async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', item: string, position: number, paused: boolean, jumped = false, during = false) {
   const key = `${hub}/${seat.person}/${item}`, want = kind === 'start' ? 'playing' : kind === 'progress' ? (paused ? 'paused' : 'playing') : 'stopped';
   if (told.size > 5000) told.clear(); told.set(key, want);
   const row = await env.DB.prepare('SELECT duration, ids, scrobbled, scrobbled_at FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{duration: number; ids: string | null; scrobbled: string | null; scrobbled_at: number | null}>();
@@ -279,6 +280,12 @@ async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'prog
   // A skip while playing is told as a fresh start from the new place.
   const skipped = jumped && want === 'playing' && row?.scrobbled === 'playing';
   if (!row || (kind === 'progress' && !skipped && (row.scrobbled === want || (row.scrobbled !== 'playing' && row.scrobbled !== 'paused')))) return;
+  // A stop, or the app's own tick during a sitting, ending one with too little played (opened, run to the end, left: seen it) is
+  // not a watch. A tick from the episode list a while later is.
+  if (kind === 'stop' || (kind === 'mark' && during)) {
+    const sat = await env.DB.prepare('SELECT parts, started, updated FROM sittings WHERE hub = ? AND person = ? AND item = ? AND device = ? ORDER BY started DESC LIMIT 1').bind(hub, seat.person, item, seat.on).first<{parts: string | null; started: number; updated: number}>();
+    if (sat && brief(sat, row.duration)) {await env.DB.prepare("UPDATE plays SET scrobbled = 'stopped', scrobbled_at = ? WHERE hub = ? AND person = ? AND item = ?").bind(now(), hub, seat.person, item).run(); return;}
+  }
   const ids = row.ids ?? await idsOf(env, hub, seat, item);
   if (!ids) return;
   const target = JSON.parse(ids) as Target, progress = row.duration ? progressOf(position, row.duration) : 0;
