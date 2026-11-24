@@ -38,6 +38,8 @@ export const FALLBACKS: Pick[] = [
   {kind: 'popular', key: 'popular:series', name: 'Popular shows lately', type: 'series', params: {sort_by: 'popularity.desc', 'vote_count.gte': '100', 'air_date.gte': '__tmdb_date__:last_month:from', without_genres: '10767,10763,10766,10764'}},
   {kind: 'popular', key: 'acclaimed:movie', name: 'Well-liked movies of recent years', type: 'movie', params: {sort_by: 'vote_average.desc', 'vote_count.gte': '1500', 'primary_release_date.gte': '__tmdb_date__:last_5_years:from', 'primary_release_date.lte': TODAY}},
 ];
+/* The stand-in names by place, for someone not picked for yet. */
+export const STAND_INS: Record<string, string> = Object.fromEntries(FALLBACKS.map((pick, n) => [`for-you-${n + 1}`, pick.name]));
 /* Whether a pick may fill a place now: not of a kind muted for this person, and under a content limit only a TMDB search, which
    asks TMDB for rated titles. Checked again at every sync, so a pick made before the limit changed is never used under it. */
 export function allowed(pick: Pick, limit: Limit, off: string[] = []): boolean {
@@ -217,7 +219,8 @@ const same = (a: Record<string, Pick>, b: Record<string, Pick>) => JSON.stringif
 export async function forYou(env: Env, time: number): Promise<boolean> {
   const date = new Date(time), day = date.toISOString().slice(0, 10);
   if (env.FRONT !== 'aiometadata') return false;
-  // Picking starts at HOUR (UTC); a hub's setups still waiting to be brought in step are seen to at any hour.
+  // Picking starts at HOUR (UTC); someone never picked for (just added) and a hub's setups still waiting to be brought in step are
+  // seen to at any hour.
   const picking = date.getUTCHours() >= Number(env.FORYOU_HOUR ?? HOUR);
   const [hubs, groups, people, kept, syncs] = await env.DB.batch([env.DB.prepare('SELECT id, data FROM hubs ORDER BY id'), env.DB.prepare('SELECT hub, id, data FROM groups'), env.DB.prepare('SELECT hub, id, grp, data FROM people ORDER BY hub, created, id'),
     env.DB.prepare('SELECT hub, person, day, sig, picks, before FROM foryou'), env.DB.prepare('SELECT hub, tries FROM foryou_sync')]);
@@ -227,7 +230,7 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
     if (!hub || !group) return [];
     const top = JSON.parse(hub.data) as {rows: Row[]; defaults: Settings}, theirs = JSON.parse(group.data) as {rows: Row[] | null; settings: Partial<Settings>}, own = JSON.parse(row.data) as PersonData;
     const settings = {...top.defaults, ...theirs.settings, ...own.settings} as Settings, {places, sig} = placesOf(own, theirs.rows ?? top.rows, settings), before = had.get(`${row.hub}/${row.id}`);
-    return !picking || (before?.day === day && before.sig === sig) ? [] : [{hub: row.hub, person: row.id, places, sig, settings, before}];
+    return (!picking && before) || (before?.day === day && before.sig === sig) ? [] : [{hub: row.hub, person: row.id, places, sig, settings, before}];
   });
   // A hub whose people are all picked for today, and whose picks changed: its setups are brought in step, in a run of its own.
   for (const pending of syncs.results as {hub: string; tries: number}[]) {

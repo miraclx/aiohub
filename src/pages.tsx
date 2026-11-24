@@ -222,8 +222,9 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     const redirect = `${location.origin}/api/trakt/callback`, waiting = () => setPhase('busy');
     // Trakt's sign-in host allows only plain headers from a page; the API host wants its own.
     const token = await patiently(() => fetch(`${TRAKT_AUTH}/oauth/token`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({code, client_id: client, redirect_uri: redirect, grant_type: 'authorization_code', code_verifier: verifier})}), waiting);
-    const got = token?.ok ? await token.json().catch(() => null) as {access_token?: string; refresh_token?: string; expires_in?: number; created_at?: number} | null : null;
-    if (!got?.access_token || !got.refresh_token) {setPhase(''); return toast(token ? 'Trakt didn’t accept that sign-in. Connect again.' : 'Trakt isn’t answering right now. Connect again in a few minutes.');}
+    const said = token ? await token.json().catch(() => null) as {access_token?: string; refresh_token?: string; expires_in?: number; created_at?: number; error?: string} | null : null, got = token?.ok ? said : null;
+    // Trakt's own reason (its status and error name, never anything secret) goes in the message, so a failure can be told apart.
+    if (!got?.access_token || !got.refresh_token) {setPhase(''); return toast(token ? `Trakt didn’t accept that sign-in (${token.status}${said?.error ? ` ${String(said.error).slice(0, 40)}` : ''}). Connect again.` : 'Trakt isn’t answering right now. Connect again in a few minutes.');}
     const me = await patiently(() => fetch(`${TRAKT_API}/users/settings`, {headers: {'content-type': 'application/json', 'trakt-api-version': '2', 'trakt-api-key': client, authorization: `Bearer ${got.access_token}`}}), waiting);
     const username = String((me?.ok ? await me.json().catch(() => null) as {user?: {username?: string}} | null : null)?.user?.username ?? '');
     setPhase('connecting');

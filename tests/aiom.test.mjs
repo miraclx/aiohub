@@ -339,6 +339,9 @@ const cron = (time = Date.UTC(2026, 0, 1, 3)) => fetch(`${BASE}/cdn-cgi/handler/
 // A person's own rows (Trakt's public Trending charts are shared rows, not anyone's own).
 const rowsOf = config => config.catalogs.filter(item => /^(trakt|custom)\./.test(item.id) && !/^trakt\.(trending|popular)\./.test(item.id)).map(item => [item.id, item.type, item.name, item.enabled]);
 test('Trakt connected on AIOMetadata, as before: its own Trakt rows and Token ID in her setup', async () => {
+  // Ada and Ben were picked for long ago (with nothing picked), so a run before five leaves them be until the For you tests;
+  // someone never picked for would be picked at any hour.
+  sql(`INSERT INTO foryou (hub, person, day) SELECT hub, id, '2000-01-01' FROM people`);
   assert.deepEqual((await owner('POST', '/api/people/ada/trakt', {tokenId: 'aiom-trakt-token-id-1'})).body, {username: 'adatrakt'});
   assert.deepEqual(await syncAll(), {state: 'ok'});
   const [, ada] = playerOf('Ada');
@@ -1021,7 +1024,11 @@ test('once a day after five (UTC) each person is picked for, one a run, and then
   sql("DELETE FROM rows_cache WHERE kind LIKE 'mdb_history%'"); sql("DELETE FROM plays WHERE person = 'ada'"); const hubId = sql('SELECT id FROM hubs')[0].id;
   sql(`INSERT INTO plays (hub, person, item, title, detail, updated, ids) VALUES ('${hubId}', 'ada', 'fargo-s1e3', 'Fargo', 'Season 1 · Episode 3', ${Math.floor(Date.now() / 1000) - 30 * DAY}, '{"show":{"ids":{"tmdb":60622}},"episode":{"season":1,"number":3}}')`);
   const versions = () => playerOf('Ada')[1].config.configVersion;
-  await cron(DEC - 40 * MIN); assert.deepEqual(sql('SELECT person FROM foryou'), [], 'nothing before five');
+  // Someone picked for before waits for five; someone never picked for (just added) is picked at any hour.
+  await cron(DEC - 40 * MIN); assert.deepEqual(sql('SELECT person, day FROM foryou ORDER BY person'), [{person: 'ada', day: '2000-01-01'}, {person: 'ben', day: '2000-01-01'}], 'nothing before five');
+  sql("DELETE FROM foryou WHERE person = 'ben'"); await cron(DEC - 35 * MIN);
+  assert.deepEqual(sql('SELECT person, day FROM foryou ORDER BY person'), [{person: 'ada', day: '2000-01-01'}, {person: 'ben', day: '2026-12-01'}], 'someone new is picked before five');
+  sql('DELETE FROM foryou'); sql('DELETE FROM foryou_sync');
   fake.tmdb = []; await cron(DEC);
   assert.deepEqual(sql('SELECT person FROM foryou'), [{person: 'ada'}], 'one person a run');
   assert.ok(fake.tmdb.length > 0 && fake.tmdb.length <= 22, `${fake.tmdb.length} calls`);
