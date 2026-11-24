@@ -182,9 +182,12 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
 interface Noted {art: string; duration: number; position: number; playing: number; paused: number; since: number; updated: number; parts: string; pauses: number; idle: number}
 const MOST_PARTS = 24, WEEK = 7 * 86400;
 function watched(row: Noted | null, kind: string, position: number, pausedNow: number, at: number, before?: {pos: number; at: number; paused: boolean}) {
-  if (!row) return {parts: '', pauses: pausedNow, idle: 0};
+  // A title just started holds an empty part where it began ("2290-2290"), so the site knows parts are kept for it before the
+  // first one is played; anything played replaces it.
+  const begun = `${Math.round(position)}-${Math.round(position)}`;
+  if (!row) return {parts: begun, pauses: pausedNow, idle: 0};
   const length = row.duration;
-  if (kind === 'start' && ((length > 0 && row.position >= length * 0.9 && position < length * 0.1) || at - row.updated > WEEK)) return {parts: '', pauses: 0, idle: 0};
+  if (kind === 'start' && ((length > 0 && row.position >= length * 0.9 && position < length * 0.1) || at - row.updated > WEEK)) return {parts: begun, pauses: 0, idle: 0};
   let parts = row.parts.split(' ').map(part => part.split('-').map(Number)).filter(([a, b]) => b > a) as [number, number][];
   // A pause ends when the player carries on, stops or goes quiet (no word for fifteen minutes after it was last heard).
   const pauses = row.pauses + (!row.paused && pausedNow ? 1 : 0), idle = row.idle + (row.paused && !pausedNow && row.since ? Math.max(0, Math.min(at, row.updated + 900) - row.since) : 0);
@@ -198,7 +201,8 @@ function watched(row: Noted | null, kind: string, position: number, pausedNow: n
     }
   }
   const text = parts.map(([a, b]) => `${a}-${b}`).join(' ');
-  return {parts: text.length <= 400 ? text : row.parts, pauses, idle};
+  // Nothing played yet keeps what was there (the empty part a start left).
+  return {parts: text && text.length <= 400 ? text : row.parts, pauses, idle};
 }
 /* Overlapping parts become one; past MOST_PARTS, the two closest are joined (the gap between them counts as played). */
 function merge(parts: [number, number][]) {
