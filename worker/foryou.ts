@@ -28,8 +28,14 @@ export interface Pick {
    foryou_upnext_<show>-<show>-… (AIOMetadata never hides watched titles from a row whose id says upnext,
    so a show part watched stays in it). */
 export const FOR_YOU_SERVED = /^foryou_(?:because_[ms]\d{1,9}|series_\d{1,9}|upnext_\d{1,9}(?:-\d{1,9}){0,19})$/;
+/* The UTC hour the day's picking starts (FORYOU_HOUR, else HOUR). */
+export const pickHour = (env: Env) => Number(env.FORYOU_HOUR ?? HOUR);
 export const namesOf = (text: string): Record<string, string> => {
   try {return Object.fromEntries(Object.entries(JSON.parse(text) as Record<string, Pick>).map(([place, pick]) => [place, pick.name]));} catch {return {};}
+};
+/* Which kind each place's pick is (FOR_YOU_KINDS, or 'popular' for a stand-in), so the site can say where it came from. */
+export const kindsOf = (text: string): Record<string, string> => {
+  try {return Object.fromEntries(Object.entries(JSON.parse(text) as Record<string, Pick>).map(([place, pick]) => [place, pick.kind]));} catch {return {};}
 };
 /* What every place without a pick of its own holds: something popular, the same whoever looks and whatever the day, so a sync
    started by anyone writes the same thing. By place number; a fourth place onwards waits for its pick. */
@@ -221,7 +227,7 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
   if (env.FRONT !== 'aiometadata') return false;
   // Picking starts at HOUR (UTC); someone never picked for (just added) and a hub's setups still waiting to be brought in step are
   // seen to at any hour.
-  const picking = date.getUTCHours() >= Number(env.FORYOU_HOUR ?? HOUR);
+  const picking = date.getUTCHours() >= pickHour(env);
   const [hubs, groups, people, kept, syncs] = await env.DB.batch([env.DB.prepare('SELECT id, data FROM hubs ORDER BY id'), env.DB.prepare('SELECT hub, id, data FROM groups'), env.DB.prepare('SELECT hub, id, grp, data FROM people ORDER BY hub, created, id'),
     env.DB.prepare('SELECT hub, person, day, sig, picks, before FROM foryou'), env.DB.prepare('SELECT hub, tries FROM foryou_sync')]);
   const hubData = new Map((hubs.results as {id: string; data: string}[]).map(row => [row.id, row])), had = new Map((kept.results as {hub: string; person: string; day: string; sig: string; picks: string; before: string}[]).map(row => [`${row.hub}/${row.person}`, row]));

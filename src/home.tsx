@@ -2,7 +2,7 @@ import {useState} from 'react';
 import type React from 'react';
 import {DragDropProvider} from '@dnd-kit/react';
 import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
-import {TRAKT_IDS, countries, folderFits, isPlace, nextPlace, sourceShown, suggestedFor, suggestionOf, tongues} from './data';
+import {FOR_YOU_KINDS, TRAKT_IDS, countries, folderFits, isPlace, nextPlace, sourceShown, suggestedFor, suggestionOf, tongues} from './data';
 import type {Cover, Level, Limit, Row} from './data';
 import {Art, Chips, Confirm, Covers, NameField, Posters, Segments, Sheet, Switch, hash} from './ui';
 
@@ -17,6 +17,8 @@ const LATER: Record<string, string> = {
 };
 const laterOf = (row: Row) => isPlace(row.id) ? 'For you · Picked daily for each person, from what they watch' : LATER[row.id] ?? `${row.source} · Appears once someone connects Trakt`;
 // On a hub or group Home a For you place is kept for each person too: what fills it is picked for them every day.
+// On a person's own Home, where today's pick in a place came from.
+const pickOf = (kind: string) => kind === 'popular' ? 'Popular, until there’s more to go on' : `${FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'Picked'} · new each day`;
 const placeHeld = (row: Row, level: Level) => level !== 'own' && (TRAKT_IDS.has(row.id) || isPlace(row.id));
 function RowCard({row, index, tag, locked, later, person, limit = 'all', onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; later?: boolean; person?: string; limit?: Limit; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
   // Under a content limit only the folders that suit it are shown, as in the player apps.
@@ -29,7 +31,7 @@ function RowCard({row, index, tag, locked, later, person, limit = 'all', onToggl
     {!locked && <Grip handleRef={sortable.handleRef} label={`Move ${row.title}`}/>}
     <div className="row-main">
       <div className="row-head">
-        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? laterOf(row) : none ? 'Not shown under this content limit' : `${row.kind} · ${sourceShown(row, limit)}`}</p></div>
+        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? laterOf(row) : none ? 'Not shown under this content limit' : row.pick ? `For you · ${pickOf(row.pick)}` : `${row.kind} · ${sourceShown(row, limit)}`}</p></div>
         {!locked && <div className="row-actions">
           {onArrange && <button type="button" className="ghost small" onClick={onArrange}>Edit</button>}
           {onRemove && <button type="button" className="ghost small" onClick={onRemove}>Remove</button>}
@@ -61,13 +63,16 @@ export interface HomeProps {
   limit?: Limit; listsOk?: boolean; because?: Record<string, string>; keyHint?: React.ReactNode;
   /* Each person's apps sign in to their own AIOMetadata setup: For you places can be added. */
   front?: boolean;
+  /* On a person's own Home: stop a kind of For you pick (the For you setting), from the place it filled. */
+  onMute?: (kind: string) => void;
 }
-export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, onBuild, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false}: HomeProps) {
+export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, onBuild, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute}: HomeProps) {
   const [country, setCountry] = useState(''), [tongue, setTongue] = useState(''), [kinds, setKinds] = useState(['Movies']), [adding, setAdding] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
   const on = rows.filter(row => row.on), off = rows.filter(row => !row.on), offShown = off.filter(row => !isPlace(row.id));
   const set = (id: string, next: Partial<Row>, note: string) => onChange(rows.map(row => row.id === id ? {...row, ...next} : row), note);
   // Following the Home above again, or removing a row, throws work away: both ask first.
-  const [following, setFollowing] = useState(false), [dropping, setDropping] = useState<Row | null>(null);
+  const [following, setFollowing] = useState(false), [dropping, setDropping] = useState<Row | null>(null), [placeOpen, setPlaceOpen] = useState<string | null>(null);
+  const place = rows.find(row => row.id === placeOpen), placeKind = FOR_YOU_KINDS.find(item => item.id === place?.pick);
   function add(item: Pick) {
     if (rows.some(row => row.id === item.id)) return;
     onChange([{...item, origin: level, on: true}, ...rows], `Added “${item.title}”`); setAdding(false); setLink('');
@@ -89,7 +94,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
     }}>
       <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={placeHeld(row, level)} person={person} limit={limit}
         onToggle={() => set(row.id, {on: false}, `“${row.title}” is off Home`)}
-        onArrange={isPlace(row.id) ? undefined : () => setArranging(row.id)}
+        onArrange={isPlace(row.id) ? row.pick && onMute ? () => setPlaceOpen(row.id) : undefined : () => setArranging(row.id)}
         // A For you place is one of several alike: removing it only switches it off, out of sight, and Add row brings it back.
         onRemove={isPlace(row.id) ? () => set(row.id, {on: false}, 'Removed a For you place') : row.origin === level && !row.core ? () => setDropping(row) : undefined}/>)}</ol>
     </DragDropProvider>
@@ -147,6 +152,13 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
         const from = folder.covers!.findIndex(cover => cover.image === String(event.operation.source!.id)), to = event.operation.source.index;
         if (from >= 0 && from !== to) set(folder.id, {covers: moved(folder.covers!, from, to)}, 'Order saved');
       }}><ol className="folders">{folder.covers.map((cover, index) => <FolderItem key={cover.image} cover={cover} index={index} onRename={title => set(folder.id, {covers: folder.covers!.map(item => item.image === cover.image ? {...item, title} : item)}, 'Renamed')}/>)}</ol></DragDropProvider></>}
+    </Sheet>}
+    {place && <Sheet title={place.title} onClose={() => setPlaceOpen(null)}>
+      {/* A place is re-picked every day from the kinds left on; stopping a kind here is the same as leaving it out under For you below. */}
+      <h3 className="sheet-sub first">Picked from</h3>
+      <p className="sheet-lead">{placeKind ? placeKind.title : 'Popular titles, while there’s too little watched to pick from.'} Each day this place gets a new pick.</p>
+      {placeKind && onMute && <button type="button" className="ghost" onClick={() => {setPlaceOpen(null); onMute(placeKind.id);}}>Don’t pick {placeKind.title}</button>}
+      <p className="muted small note">All the kinds are under For you, below the rows.</p>
     </Sheet>}
   </section>;
 }

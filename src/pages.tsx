@@ -1,10 +1,10 @@
 import {useEffect, useState} from 'react';
 import {QRCodeSVG} from 'qrcode.react';
-import {SAMPLE, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, resolve, samplePassword, samplePin, slug, traktRows} from './data';
+import {FOR_YOU_KINDS, SAMPLE, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, resolve, samplePassword, samplePin, slug, traktRows} from './data';
 import type {Device, Group, Hub, Miss, Person, Row, Settings} from './data';
 import {Activity} from './activity';
 import {GroupOrder, HomeEditor, moved} from './home';
-import {PlaybackEditor, SourcesEditor} from './settings';
+import {ForYouEditor, PlaybackEditor, SourcesEditor} from './settings';
 import type {EditorProps} from './settings';
 import {addPasskey, beAs, canPasskey, leaveAs, usePasskey} from './live';
 import type {Live} from './live';
@@ -482,7 +482,9 @@ function PersonSections({page, person, tab, mine}: {page: PageProps; person: Per
         const flipped = !target.rows && next.length === rows.length && next.every((row, at) => row.id === rows[at].id) ? next.filter((row, at) => row.on !== rows[at].on) : [];
         if (flipped.length === 1 && pickable(flipped[0].id)) target.picks = {...target.picks, [flipped[0].id]: flipped[0].on}; else target.rows = next;
       }, note)}
+      onMute={kind => props.set('forYouOff', [...(props.resolved.values.forYouOff ?? []), kind], `${FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'That kind'} won’t be picked`)}
       onFollow={person.rows && canArrange ? () => edit(target => {target.rows = null;}, `Following ${group.name} again`) : undefined} followLabel={`Follow ${group.name} again`}/>}
+    {tab === 'home' && <ForYouEditor {...props}/>}
     {tab === 'playback' && <PlaybackEditor {...props} kept={!!person.lists}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
     {tab === 'activity' && <Activity hub={hub} personId={person.id} toast={toast} live={page.live}/>}
@@ -578,6 +580,7 @@ function GroupView(page: PageProps & {id: string; tab: string; group: Group; mem
     <Tabs base={`/group/${id}`} tab={tab} tabs={[['home', 'Home'], ['playback', 'Playback'], ['sources', 'Sources'], ['activity', 'Activity'], ['settings', 'Settings']]}/>
     {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="group" limit={props.resolved.values.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} front={!!hub.front} rows={withForYou(withKids(placed(groupRows(hub, group)), props.resolved.values.limit === 'kids'), !!hub.front)} person={key} tag={row => row.origin === 'group' ? 'This group' : undefined} onChange={(rows, note) => edit(target => {target.rows = rows;}, note)}
       onFollow={group.rows ? () => edit(target => {target.rows = null;}, `Following ${HUB} again`) : undefined} followLabel="Use the default Home again"/>}
+    {tab === 'home' && <ForYouEditor {...props}/>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
     {tab === 'activity' && <Activity hub={hub} groupId={id} toast={toast} live={page.live}/>}
@@ -605,7 +608,7 @@ export function HubPage(page: PageProps & {tab: string}) {
     <a className="back" href="#/">← People</a>
     <div className="page-head"><h1>Hub</h1><p className="muted">What every group starts with, where things play from, and the hub’s own setup. A group or a person can change anything for themselves.</p></div>
     <Tabs base="/hub" tab={tab} tabs={[['home', 'Home'], ['playback', 'Playback'], ['sources', 'Sources'], ['general', 'General']]}/>
-    {tab === 'home' && <><HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="hub" limit={hub.defaults.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} front={!!hub.front} rows={withForYou(placed(hub.rows), !!hub.front)} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{page.live && !hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p></>}
+    {tab === 'home' && <><HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="hub" limit={hub.defaults.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} front={!!hub.front} rows={withForYou(placed(hub.rows), !!hub.front)} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{page.live && !hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p><ForYouEditor {...props}/></>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
     {tab === 'general' && page.live && <><ServerName hub={hub} update={update} toast={toast}/><Servers hub={hub} live={page.live} toast={toast}/><Advanced live={page.live} toast={toast}/><Background hub={hub}/></>}
@@ -651,6 +654,14 @@ function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
    players that went quiet) and the daily Trakt/MDBList check, which starts with the first run after 04:00 UTC. Times are the
    viewer's own. */
 const FIVE = 300_000, DAY_MS = 86_400_000;
+/* For you: one person a five-minute run from its hour (UTC), then the hub's apps are brought in step. Someone just added is
+   picked for at any hour. */
+function forYouJob(jobs: NonNullable<Hub['jobs']>, now: number, time: (ms: number) => string, day: (ms: number) => string, ran: (s: number | null) => string) {
+  const start = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T${String(jobs.forYouHour).padStart(2, '0')}:00:00Z`), picked = jobs.picked ?? 0, everyone = jobs.everyone ?? 0;
+  const done = picked >= everyone, waiting = !done && now >= start;
+  return {name: 'For you picks', every: `every day at ${time(start)}`, last: `${ran(jobs.pickedAt ?? null)}${everyone ? ` · ${Math.min(picked, everyone)} of ${everyone} picked today` : ''}`,
+    next: waiting ? 'under way' : jobs.syncing ? 'updating apps' : `next ${day(done || now >= start ? start + DAY_MS : start)}`};
+}
 function Background({hub}: {hub: Hub}) {
   const jobs = hub.jobs, [now, setNow] = useState(Date.now());
   useEffect(() => {const timer = window.setInterval(() => setNow(Date.now()), 30_000); return () => window.clearInterval(timer);}, []);
@@ -663,6 +674,7 @@ function Background({hub}: {hub: Hub}) {
   const rows = [
     {name: 'Trakt sync', every: 'every 5 min', last: `${ran(jobs.last)}${jobs.waiting ? ` · ${jobs.waiting} waiting to send` : ''}`, next: `next in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
     {name: 'Trakt and MDBList check', every: `every day at ${time(start)}`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next ${day(daily)}`},
+    ...(hub.front && jobs.forYouHour !== undefined ? [forYouJob(jobs, now, time, day, ran)] : []),
   ];
   return <section>
     <div className="section-head"><div><h2>Background work</h2></div></div>

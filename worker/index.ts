@@ -22,7 +22,8 @@ export default {
   // A run that step left alone takes a step of the day's For you picks (foryou.ts): each makes a few dozen calls, and a run may make
   // only about fifty.
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
-    // Each run is counted, for the Hub page.
+    // Each run is counted, for the Hub page. Every job below has its own row under Hub, General, Background work (Background in
+    // src/pages.tsx): a job added here gets one there too.
     const counted = env.DB.prepare("INSERT INTO runs (job, at, count, since) VALUES ('cron', ?1, 1, ?1) ON CONFLICT (job) DO UPDATE SET at = excluded.at, count = CASE WHEN runs.since IS NULL THEN 1 ELSE runs.count + 1 END, since = coalesce(runs.since, excluded.at)").bind(now()).run().catch(() => null);
     ctx.waitUntil(counted.then(() => sweep(env)).catch(error => console.error('sweep', (error as Error).message)).then(() => drift(env, event.scheduledTime)).catch(error => {console.error('drift', (error as Error).message); return true;})
       .then(busy => busy ? null : forYou(env, event.scheduledTime)).catch(error => console.error('foryou', (error as Error).message)));

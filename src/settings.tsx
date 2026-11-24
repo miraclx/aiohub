@@ -50,9 +50,6 @@ export function PlaybackEditor({hub, resolved: {values, from}, scope, set, reset
       <Setting title="Hide unreleased titles" hint="Nothing that cannot be watched yet." {...line('unreleased')}><Switch label="Hide unreleased titles" checked={values.unreleased} onChange={value => set('unreleased', value)}/></Setting>
       {<Setting title="Posters" hint={values.posters === 'better' ? 'Better Posters: clean art with the rating on it.' : 'Standard art, nothing added.'} {...line('posters')}>
         <Segments label="Posters" value={values.posters} onChange={value => set('posters', value)} options={[{value: 'better', label: 'Better Posters'}, {value: 'plain', label: 'Plain'}]}/></Setting>}
-      {/* Only where For you places exist: each person's apps on their own AIOMetadata setup. */}
-      {hub.front && <Setting column title="For you" hint={`What the daily For you rows can pick from. Leave one out and it isn’t picked.${values.limit !== 'all' ? ' Under a content limit only director, genre and seasonal picks are made.' : ''}`} {...line('forYouOff')}>
-        <Chips all={FOR_YOU_KINDS.map(kind => kind.title)} value={FOR_YOU_KINDS.filter(kind => !(values.forYouOff ?? []).includes(kind.id)).map(kind => kind.title)} onChange={value => set('forYouOff', FOR_YOU_KINDS.filter(kind => !value.includes(kind.title)).map(kind => kind.id))}/></Setting>}
       {values.posters === 'better' && <Setting title="Age rating on posters" hint="Adds the age rating, such as PG-13 or TV-MA, to a corner of each poster." {...line('ageBadge')}><Switch label="Age rating on posters" checked={!!values.ageBadge} onChange={value => set('ageBadge', value)}/></Setting>}
     </div>
   </section>;
@@ -140,6 +137,20 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
     <h3 className="sub">How a stream is listed</h3>
     <div className="card settings">
       <Setting column title="Stream label" hint="What each choice looks like in the player’s list of streams." {...line('formatter')}><Formatter value={values.formatter} onSave={value => set('formatter', value, 'Label saved')}/></Setting>
+    </div>
+  </section>;
+}
+
+/* What the daily For you rows can pick from, on the Home tab (where those rows are): only where For you places exist, each
+   person's apps on their own AIOMetadata setup. Set for the hub or a group, or changed for one person, like any setting. */
+export function ForYouEditor({hub, resolved: {values, from}, scope, set, reset}: EditorProps) {
+  if (!hub.front) return null;
+  const line = (key: keyof Settings) => ({from: from[key], scope, onReset: () => reset(key)});
+  return <section>
+    <h3 className="sub">For you</h3>
+    <div className="card settings">
+      <Setting column title="Kinds of pick" hint={`What the daily For you rows can pick from. Leave one out and it isn’t picked.${values.limit !== 'all' ? ' Under a content limit only director, genre and seasonal picks are made.' : ''}`} {...line('forYouOff')}>
+        <Chips all={FOR_YOU_KINDS.map(kind => kind.title)} value={FOR_YOU_KINDS.filter(kind => !(values.forYouOff ?? []).includes(kind.id)).map(kind => kind.title)} onChange={value => set('forYouOff', FOR_YOU_KINDS.filter(kind => !value.includes(kind.title)).map(kind => kind.id))}/></Setting>
     </div>
   </section>;
 }

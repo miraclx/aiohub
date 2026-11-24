@@ -11,7 +11,7 @@ import {LINK, disconnect, forgetTrakt, keepLink, links, read} from './trakt';
 import {rows} from './rows';
 import {PAIRS, copy, forgetShown, moving, shown} from './places';
 import {because} from './suggest';
-import {STAND_INS, namesOf} from './foryou';
+import {STAND_INS, kindsOf, namesOf, pickHour} from './foryou';
 import type {Env} from './util';
 import {blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp, unseal} from './util';
 
@@ -40,7 +40,7 @@ function cleanRows(value: unknown): Row[] | null {
   return (value as Record<string, unknown>[]).map(item => {
     const id = text(item?.id, 120, 'Row'); if (seen.has(id)) bad(400, 'A row is listed twice'); seen.add(id);
     // A For you place is named by what is picked for it each day, never by a name saved with it.
-    const row: Row = {id, title: isPlace(id) ? 'For you' : text(item.title, 160, 'Row title'), kind: text(item.kind, 80, 'Row'), source: text(item.source, 400, 'Row'), origin: oneOf(item.origin, ['hub', 'group', 'own'] as const, 'Row'), on: flag(item.on)};
+    const row: Row = {id, title: isPlace(id) ? 'For you' : text(item.title, 160, 'Row title'), kind: text(item.kind, 80, 'Row'), source: isPlace(id) ? 'Picked daily' : text(item.source, 400, 'Row'), origin: oneOf(item.origin, ['hub', 'group', 'own'] as const, 'Row'), on: flag(item.on)};
     if (item.core === true) row.core = true;
     if (item.watched !== undefined) row.watched = oneOf(item.watched, ['hide', 'show'] as const, 'Row');
     if (item.covers !== undefined) row.covers = Array.isArray(item.covers) && item.covers.length <= 80 ? (item.covers as Record<string, unknown>[]).map(cover => ({title: text(cover?.title, 120, 'Folder name'), image: text(cover.image, 400, 'Folder')})) : bad(400, 'Folders are not valid');
@@ -160,13 +160,14 @@ async function state(env: Env, who: Who) {
     // The background work, for the manager: when it last ran, how often it has, what waits for Trakt, the last daily check.
     env.DB.prepare(`SELECT (SELECT at FROM runs WHERE job = 'cron') AS last, (SELECT count FROM runs WHERE job = 'cron') AS runs, (SELECT since FROM runs WHERE job = 'cron') AS since,
       (SELECT max(at) FROM drift WHERE hub = ?1 AND work IS NULL AND result IS NOT NULL) AS ran, (SELECT count(*) FROM trakt_outbox WHERE hub = ?1) AS waiting,
-      (SELECT max(day) FROM drift WHERE hub = ?1 AND work IS NULL) AS checked, (SELECT count(*) FROM drift WHERE hub = ?1 AND day = (SELECT max(day) FROM drift WHERE hub = ?1) AND work IS NULL) AS people, (SELECT count(*) FROM drift WHERE hub = ?1 AND work IS NOT NULL) AS checking`).bind(hub.id),
+      (SELECT max(day) FROM drift WHERE hub = ?1 AND work IS NULL) AS checked, (SELECT count(*) FROM drift WHERE hub = ?1 AND day = (SELECT max(day) FROM drift WHERE hub = ?1) AND work IS NULL) AS people, (SELECT count(*) FROM drift WHERE hub = ?1 AND work IS NOT NULL) AS checking,
+      (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing`).bind(hub.id, new Date().toISOString().slice(0, 10)),
     // Who has played something here: their Recently Watched has something in it even without Trakt or MDBList.
     env.DB.prepare('SELECT DISTINCT person FROM plays WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
     // What each For you place holds today, by name only (the manager sees them on that person's Home tab).
     env.DB.prepare('SELECT person, picks FROM foryou WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
   ]);
-  const forYou = new Map((picked.results as {person: string; picks: string}[]).map(row => [row.person, namesOf(row.picks)]));
+  const forYou = new Map((picked.results as {person: string; picks: string}[]).map(row => [row.person, {names: namesOf(row.picks), kinds: kindsOf(row.picks)}]));
   // Which MDBList account each person's progress goes to (the name only; the key never leaves the vault).
   const listsName: Record<string, string> = {};
   const moves: Record<string, string> = {}, keyed = new Set<string>();
@@ -183,8 +184,8 @@ async function state(env: Env, who: Who) {
     role: mine ? 'person' : 'owner', personId: mine ?? null,
     hub: {
       name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID, traktClient: env.TRAKT_CLIENT_ID ?? '', front: env.FRONT === 'aiometadata',
-      ...(mine ? {manager: !!who.manager} : {jobs: jobs.results[0] as Hub['jobs']}),
-      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? looked(drifts.results[0] as {result: string | null; skipped: string | null; at: number} | undefined) : null, moves[row.id] ?? null, keyed.has(row.id), playedHere.has(row.id))).map(person => forYou.get(person.id) ? {...person, forYou: {...STAND_INS, ...forYou.get(person.id)}} : person),
+      ...(mine ? {manager: !!who.manager} : {jobs: {...jobs.results[0] as object, forYouHour: pickHour(env)} as Hub['jobs']}),
+      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? looked(drifts.results[0] as {result: string | null; skipped: string | null; at: number} | undefined) : null, moves[row.id] ?? null, keyed.has(row.id), playedHere.has(row.id))).map(person => {const picked = forYou.get(person.id); return picked ? {...person, forYou: {...STAND_INS, ...picked.names}, forYouKinds: picked.kinds} : person;}),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
   };

@@ -6,7 +6,9 @@ import shipped from './collections.json';
 export const SAMPLE = new URLSearchParams((globalThis as {location?: {search: string}}).location?.search ?? '').has('sample');
 export type Level = 'hub' | 'group' | 'own';
 export interface Cover {title: string; image: string}
-export interface Row {id: string; title: string; kind: string; source: string; origin: Level; on: boolean; core?: boolean; watched?: 'hide' | 'show'; covers?: Cover[]}
+export interface Row {id: string; title: string; kind: string; source: string; origin: Level; on: boolean; core?: boolean; watched?: 'hide' | 'show'; covers?: Cover[];
+  /* Site only, never saved: on a person's Home, the kind of today's For you pick in this place (FOR_YOU_KINDS id, or 'popular'). */
+  pick?: string}
 export interface Template {name: string; description: string}
 export interface Settings {
   quality: 'saver' | 'balanced' | 'best'; maxSizeGb: number; languages: string[]; cachedFirst: boolean; search: 'fast' | 'balanced' | 'thorough';
@@ -21,13 +23,16 @@ export interface Device {id: string; app: string; name: string; seen: string; pl
 // Plays one of Trakt and MDBList has and the other lacks, from the daily look (drift.ts on the Worker).
 export interface Miss {kind: 'movie' | 'show'; tmdb: number; name: string; season?: number; episode?: number; at: number; key: string}
 export interface Drift {checked: number; since: number; toMdblist: Miss[]; toTrakt: Miss[]}
-export interface Person {forYou?: Record<string, string>; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
+export interface Person {forYou?: Record<string, string>; forYouKinds?: Record<string, string>; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
 export interface Hub {
   // The five-minute background work (manager only): last run (unix seconds), runs counted, calls waiting for Trakt, the last day the
   // Trakt/MDBList check finished, for how many people, and how many are part way through.
-  jobs?: {last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number};
+  jobs?: {last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number;
+    /* For you (each person's apps on their own AIOMetadata only): people picked for today of everyone, the last pick, whether the
+       hub's apps are waiting to be brought in step, and the UTC hour picking starts. */
+    picked?: number; pickedAt?: number | null; everyone?: number; syncing?: number; forYouHour?: number};
   // In a person's view: their manager's own sign-in is set aside in this browser, to go back to.
   manager?: boolean;
   // front: each person's apps sign in to their own AIOMetadata setup; only then are there For you places.
@@ -274,7 +279,7 @@ export const hasLists = (person: Person) => person.lists || !!person.listsKept;
    older Trakt link through AIOMetadata does not count: the hub cannot read it. */
 export const sourceOf = (person: Person) => (person.history ? !person.history.again : SAMPLE && person.trakt) ? 'Trakt' : hasLists(person) ? 'MDBList' : 'Played here';
 export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), {trakt: hasTrakt(person), lists: hasLists(person), watched: SAMPLE || hasLists(person) || !!person.history && !person.history.again || !!person.played, kids: resolve(hub, hub.groups.find(item => item.id === person.groupId), person).values.limit === 'kids', front: !!hub.front}, person.picks)
-  .map(row => row.id === 'recently-watched' ? {...row, source: sourceOf(person)} : isPlace(row.id) && person.forYou?.[row.id] ? {...row, title: person.forYou[row.id]} : row);
+  .map(row => row.id === 'recently-watched' ? {...row, source: sourceOf(person)} : isPlace(row.id) && person.forYou?.[row.id] ? {...row, title: person.forYou[row.id], pick: person.forYouKinds?.[row.id] ?? 'popular'} : row);
 
 const words = ['maple', 'river', 'copper', 'lantern', 'meadow', 'harbor', 'ember', 'willow', 'pebble', 'comet'];
 function seed(text: string) {let h = 11; for (const c of text) h = (h * 33 + c.charCodeAt(0)) >>> 0; return h;}

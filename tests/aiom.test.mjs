@@ -1057,6 +1057,10 @@ test('a pick the hub fills comes from its own id, less what was watched, never u
   await setPerson('ada', me => ({settings: {...me.settings, forYouOff: only('because')}}));
   await cron(DEC + 60 * MIN); await settle(DEC + 65 * MIN);
   assert.deepEqual(Object.values(picksOf('ada')).map(pick => [pick.name, pick.serve]), [['Because you watched Inception', 'foryou_because_m27205'], ['Because you watched The Dark Knight', 'foryou_because_m155'], ['Because you watched Breaking Bad', 'foryou_because_s1396']]);
+  // The site is told each pick's kind, to say where it came from; the hub's background work counts who is picked for today.
+  const state = (await owner('GET', '/api/state')).body.hub;
+  assert.deepEqual(state.people.find(person => person.id === 'ada').forYouKinds, {'for-you-1': 'because', 'for-you-2': 'because', 'for-you-3': 'because'});
+  assert.equal(state.jobs.forYouHour, 5); assert.ok(state.jobs.everyone >= 2 && state.jobs.pickedAt > 0);
   const rows = fyOf('Ada'), inception = rows.find(item => item.id === 'custom.aiohub_rows.movie.foryou_because_m27205');
   assert.equal(inception.name, 'Because you watched Inception'); assert.match(inception.sourceUrl, /\/api\/rows\/r[\w-]{20,}\/catalog\/movie\/foryou_because_m27205\.json$/);
   // Its titles: TMDB's recommendations for Inception, less Fight Club and The Dark Knight, which she watched.
