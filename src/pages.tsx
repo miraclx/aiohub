@@ -233,10 +233,10 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     setPhase('');
   };
   // What Trakt does once connected (front.ts scrobbling, rows.ts, places.ts): said plainly, in the order people notice it.
-  const about = `Free. ${hub.front ? `The For you rows pick from everything on ${their} Trakt, so they know ${mine ? 'your' : `${person.name}’s`} taste from the start. ` : ''}${mine ? 'Your' : 'Their'} Trakt watchlist, recommendations and recently watched show up on Home, and what ${mine ? 'you watch' : `${person.name} watches`} here is added to ${their} Trakt as it plays.`;
+  const about = `${hub.front ? `The For you rows pick from everything on ${their} Trakt, so they know ${mine ? 'your' : `${person.name}’s`} taste from the start. ` : ''}${mine ? 'Your' : 'Their'} Trakt watchlist, recommendations and recently watched show up on Home, and what ${mine ? 'you watch' : `${person.name} watches`} here is added to ${their} Trakt as it plays.`;
   if (!live) {
     const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
-    return <li><div><h3>Trakt</h3><p>{person.trakt ? `Connected. ${about}` : about}</p></div>
+    return <li><div><h3>Trakt</h3><p>{person.trakt ? `Connected. ${about}` : `Free. ${about}`}</p></div>
       {person.trakt ? <button type="button" className="ghost small" onClick={() => edit(target => {target.trakt = false; target.rows = target.rows?.filter(row => !isTrakt(row)) ?? null;}, 'Trakt disconnected')}>Disconnect</button>
         : mine ? <button type="button" className="primary" onClick={() => edit(target => {target.trakt = true; if (target.rows) target.rows = [...traktRows(), ...target.rows];}, 'Trakt connected')}>Connect</button>
         : <span className="pill" title={`Send ${person.name} their link from the Settings tab`}>Waiting for {person.name}</span>}</li>;
@@ -254,7 +254,7 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     location.assign(`${TRAKT_AUTH}/oauth/authorize?${ask}`);
   };
   return <li className="stacked"><div className="account-row"><div><h3>Trakt</h3>{on && <Who name={link!.username}/>}
-    <p>{on ? about : link?.again ? `Trakt asked to be connected again. ${about}` : about}</p></div>
+    <p>{on ? about : link?.again ? `Trakt asked to be connected again. ${about}` : `Free. ${about}`}</p></div>
     {!hub.scrobble || !client ? <span className="pill">Not on this site</span>
       : on ? <button type="button" className="ghost small" disabled={busy} onClick={() => setDropping(true)}>Disconnect</button>
       : <button type="button" className="primary small" disabled={busy} onClick={() => void connect()}>Connect</button>}</div>
