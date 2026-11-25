@@ -485,7 +485,7 @@ function PersonSections({page, person, tab, mine}: {page: PageProps; person: Per
         if (flipped.length === 1 && pickable(flipped[0].id)) target.picks = {...target.picks, [flipped[0].id]: flipped[0].on}; else target.rows = next;
       }, note)}
       onMute={kind => props.set('forYouOff', [...(props.resolved.values.forYouOff ?? []), kind], `${FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'That kind'} won’t be picked`)}
-      times={page.live && hub.forYouHour !== undefined ? {hour: hub.forYouHour, pickedAt: person.pickedAt, redone: person.forYouRedone, shelfAt: person.shelfAt} : undefined}
+      times={page.live && hub.forYouHour !== undefined ? {hour: hub.forYouHour, pickedAt: person.pickedAt, redone: person.forYouRedone, shelfAt: person.shelfAt, tiles: person.shelfTiles} : undefined}
       onRedo={page.live ? place => ask(`foryou/${place}`, mine ? 'Picking something else. Your apps have it in a few minutes.' : 'Picking something else. Their apps have it in a few minutes.') : undefined}
       onCheckLists={page.live ? () => ask('shelf', mine ? 'Checking your lists. Your apps have them in a few minutes.' : 'Checking their lists. Their apps have them in a few minutes.') : undefined}
       onFollow={person.rows && canArrange ? () => edit(target => {target.rows = null;}, `Following ${group.name} again`) : undefined} followLabel={`Follow ${group.name} again`}/>}

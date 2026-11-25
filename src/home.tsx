@@ -20,7 +20,7 @@ const laterOf = (row: Row) => isPlace(row.id) ? 'For you · Picked daily for eac
 /* On a real person's Home, when their rows that change on their own last did and next will: the UTC hour the day's For you
    picking starts, when they were last picked for, the places asked to pick something else today, and when their My Trakt lists
    row was last worked out (0 while it waits to be again). Unix seconds. */
-export interface Times {hour: number; pickedAt?: number; redone?: string[]; shelfAt?: number}
+export interface Times {hour: number; pickedAt?: number; redone?: string[]; shelfAt?: number; tiles?: {title: string; image: string}[]}
 const DAY_MS = 86_400_000, SHELF_ROW = 'trakt-lists';
 // A day in the viewer's own words, and a time with its day when that is not today ("yesterday at 6:04 AM").
 const dayOf = (ms: number) => {const days = Math.round((new Date(ms).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / DAY_MS); return days === 0 ? 'today' : days === 1 ? 'tomorrow' : days === -1 ? 'yesterday' : new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'});};
@@ -45,7 +45,9 @@ function RowCard({row, index, tag, locked, later, person, limit = 'all', times, 
   const covers = row.covers?.filter(cover => folderFits(row.id, cover.image, limit)), none = !!row.covers?.length && !covers?.length;
   // A suggested collection of tabs has no one catalog to show posters from: its folders' own art instead, as the apps show them.
   // Small copies kept on this site (public/covers/kids), by the art's file name: the apps' own are full size.
-  const tiles = !row.covers ? suggestionOf(row.id)?.parts.flatMap(({title, cover}) => cover ? [{title, image: `/covers/kids/${decodeURIComponent(cover.split('/').pop()!).replace(/\.jpg$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.jpg`}] : []) : undefined;
+  // My Trakt lists shows its lists' own pictures (shelf.ts), wide as in the apps.
+  const shelf = row.id === SHELF_ROW && times?.tiles?.length ? times.tiles : undefined;
+  const tiles = shelf ?? (!row.covers ? suggestionOf(row.id)?.parts.flatMap(({title, cover}) => cover ? [{title, image: `/covers/kids/${decodeURIComponent(cover.split('/').pop()!).replace(/\.jpg$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.jpg`}] : []) : undefined);
   const sortable = useSortable({id: row.id, index, disabled: locked});
   // Rows that are always current (the watchlist, lists, Recently Watched) say nothing of times.
   const line = row.pick ? `For you · ${pickOf(row.pick, times)}` : times && isPlace(row.id) && !times.pickedAt ? 'For you · Picked soon' : times && row.id === SHELF_ROW ? listsOf(times.shelfAt) : `${kindOf(row)} · ${sourceShown(row, limit)}`;
@@ -60,7 +62,7 @@ function RowCard({row, index, tag, locked, later, person, limit = 'all', times, 
           {!isPlace(row.id) && <Switch checked={row.on} onChange={onToggle} label={`Show ${row.title} on Home`}/>}
         </div>}
       </div>
-      {!later && !none && (tiles?.length ? <Covers items={tiles} tall/> : <Art row={covers ? {...row, covers} : row} person={person}/>)}
+      {!later && !none && (tiles?.length ? <Covers items={tiles} tall={!shelf}/> : <Art row={covers ? {...row, covers} : row} person={person}/>)}
     </div>
   </li>;
 }
@@ -92,7 +94,9 @@ export interface HomeProps {
 }
 export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute, times, onRedo, onCheckLists}: HomeProps) {
   const [adding, setAdding] = useState(false), [allLists, setAllLists] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
-  const on = rows.filter(row => row.on), off = rows.filter(row => !row.on);
+  // A For you row switched off is listed under Not on Home only for someone without Add row, who could not bring one back otherwise;
+  // with Add row, "Another For you row" does that, and the For you rows already on Home say there are some.
+  const on = rows.filter(row => row.on), off = rows.filter(row => !row.on && !(isPlace(row.id) && canAdd));
   const set = (id: string, next: Partial<Row>, note: string) => onChange(rows.map(row => row.id === id ? {...row, ...next} : row), note);
   // Following the Home above again, or removing a row, throws work away: both ask first.
   const [following, setFollowing] = useState(false), [dropping, setDropping] = useState<Row | null>(null), [placeOpen, setPlaceOpen] = useState<string | null>(null);
