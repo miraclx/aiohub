@@ -24,14 +24,14 @@ const TMDB = {
   'movie/155/recommendations': {results: [{id: 272, title: 'Batman Begins', vote_average: 7.7}, {id: 27205, title: 'Inception', vote_average: 8.4}, ...films(7100, 8)]},
   'movie/550/recommendations': {results: films(7200, 10)},
   'tv/1396/recommendations': {results: films(7300, 10).map(({title, ...item}) => ({...item, name: title}))},
-  'movie/27205': {belongs_to_collection: null, genres: [{id: 878}, {id: 28}]},
-  'movie/155': {belongs_to_collection: {id: 263, name: 'The Dark Knight Collection'}, genres: [{id: 28}, {id: 80}, {id: 18}]},
-  'movie/550': {belongs_to_collection: null, genres: [{id: 18}]},
+  // Older titles she watched months ago (the For you tests on older watching).
+  'movie/680/recommendations': {results: films(7400, 10)}, 'movie/13/recommendations': {results: films(7500, 10)}, 'movie/949/recommendations': {results: films(7600, 10)},
+  // A film's details, with its credits (asked for with them).
+  'movie/27205': {belongs_to_collection: null, genres: [{id: 878}, {id: 28}], credits: {crew: [{id: 525, name: 'Christopher Nolan', job: 'Director'}, {id: 1, name: 'Someone', job: 'Writer'}]}},
+  'movie/155': {belongs_to_collection: {id: 263, name: 'The Dark Knight Collection'}, genres: [{id: 28}, {id: 80}, {id: 18}], credits: {crew: [{id: 525, name: 'Christopher Nolan', job: 'Director'}]}},
+  'movie/550': {belongs_to_collection: null, genres: [{id: 18}], credits: {crew: [{id: 7467, name: 'David Fincher', job: 'Director'}]}},
   'collection/263': {name: 'The Dark Knight Collection', parts: [{id: 49026, title: 'The Dark Knight Rises', release_date: '2012-07-16', vote_average: 7.8}, {id: 272, title: 'Batman Begins', release_date: '2005-06-10', vote_average: 7.7},
     {id: 155, title: 'The Dark Knight', release_date: '2008-07-14', vote_average: 8.5}, {id: 999001, title: 'Not Out Yet', release_date: '2099-01-01', vote_average: 0}]},
-  'movie/27205/credits': {crew: [{id: 525, name: 'Christopher Nolan', job: 'Director'}, {id: 1, name: 'Someone', job: 'Writer'}]},
-  'movie/155/credits': {crew: [{id: 525, name: 'Christopher Nolan', job: 'Director'}]},
-  'movie/550/credits': {crew: [{id: 7467, name: 'David Fincher', job: 'Director'}]},
   'tv/60622': {name: 'Fargo', genres: [{id: 80}, {id: 18}], last_episode_to_air: {season_number: 5, episode_number: 10}},
   'tv/1396': {name: 'Breaking Bad', genres: [{id: 18}], last_episode_to_air: {season_number: 5, episode_number: 16}, backdrop_path: '/bb-backdrop.jpg'},
 };
@@ -61,7 +61,7 @@ const WATCHLIST = [{type: 'movie', movie: {title: 'Meta Movie', ids: {imdb: 'tt0
 // Her Trakt history, newest first (set by the tests below), and her MDBList: plays per title, and what it lists as watched lately.
 const DAY = 86400, ago = days => new Date((Math.floor(Date.now() / 1000) - Math.round(days * DAY)) * 1000).toISOString();
 const MOVIE = {inception: {title: 'Inception', ids: {imdb: 'tt1375666', tmdb: 27205}}, fight: {title: 'Fight Club', ids: {imdb: 'tt0137523', tmdb: 550}}, pulp: {title: 'Pulp Fiction', ids: {imdb: 'tt0110912', tmdb: 680}},
-  gump: {title: 'Forrest Gump', ids: {imdb: 'tt0109830', tmdb: 13}}, knight: {title: 'The Dark Knight', ids: {imdb: 'tt0468569', tmdb: 155}}};
+  gump: {title: 'Forrest Gump', ids: {imdb: 'tt0109830', tmdb: 13}}, knight: {title: 'The Dark Knight', ids: {imdb: 'tt0468569', tmdb: 155}}, heat: {title: 'Heat', ids: {imdb: 'tt0113277', tmdb: 949}}};
 const BB = {title: 'Breaking Bad', ids: {imdb: 'tt0903747', tmdb: 1396}};
 const lists = {plays: {}, recent: {movies: [], shows: [], episodes: []}, refuse: false, playback: null, watchlist: [], reads: []};
 const READS = {
@@ -344,9 +344,9 @@ const cron = (time = Date.UTC(2026, 0, 1, 3)) => fetch(`${BASE}/cdn-cgi/handler/
 // A person's own rows (Trakt's public Trending charts are shared rows, not anyone's own).
 const rowsOf = config => config.catalogs.filter(item => /^(trakt|custom)\./.test(item.id) && !/^trakt\.(trending|popular)\./.test(item.id)).map(item => [item.id, item.type, item.name, item.enabled]);
 test('Trakt connected on AIOMetadata, as before: its own Trakt rows and Token ID in her setup', async () => {
-  // Ada and Ben were picked for long ago (with nothing picked), so a run before five leaves them be until the For you tests;
-  // someone never picked for would be picked at any hour.
-  sql(`INSERT INTO foryou (hub, person, day) SELECT hub, id, '2000-01-01' FROM people`);
+  // Ada and Ben were picked for long ago (with nothing picked) for the places and limit they have, so a run before five leaves them
+  // be until the For you tests; someone never picked for, or whose places, kinds of pick or limit changed, would be picked at any hour.
+  sql(`INSERT INTO foryou (hub, person, day, sig) SELECT hub, id, '2000-01-01', json_array(CASE id WHEN 'ben' THEN 'kids' ELSE 'all' END, json_array(), json_array('for-you-1', 'for-you-2', 'for-you-3')) FROM people`);
   assert.deepEqual((await owner('POST', '/api/people/ada/trakt', {tokenId: 'aiom-trakt-token-id-1'})).body, {username: 'adatrakt'});
   assert.deepEqual(await syncAll(), {state: 'ok'});
   const [, ada] = playerOf('Ada');
@@ -1040,7 +1040,7 @@ const picksOf = person => JSON.parse(sql(`SELECT picks FROM foryou WHERE person 
 const settle = async time => {for (let n = 0; n < 6 && (sql('SELECT hub FROM foryou_sync').length || n === 0); n++) await cron(time + n * 5 * MIN); assert.deepEqual(sql('SELECT hub FROM foryou_sync'), []);};
 const setPerson = async (id, change) => {const me = (await owner('GET', '/api/state')).body.hub.people.find(item => item.id === id);
   const got = await owner('PUT', `/api/people/${id}`, {name: me.name, groupId: me.groupId, rows: me.rows, picks: me.picks, settings: me.settings, can: me.can, paused: me.paused, trakt: me.trakt, lists: me.lists, v: me.v, ...change(me)}); assert.equal(got.status, 200, JSON.stringify(got.body));};
-const KINDS = ['because', 'series', 'pickup', 'crew', 'genres', 'seasonal', 'top10'], only = (...kinds) => KINDS.filter(kind => !kinds.includes(kind));
+const KINDS = ['because', 'series', 'pickup', 'crew', 'genres', 'different', 'seasonal', 'top10'], only = (...kinds) => KINDS.filter(kind => !kinds.includes(kind));
 test('For you: three places through each person’s Home, on their own setups only, each switched off like a Trakt row', async () => {
   assert.equal((await owner('GET', '/api/state')).body.hub.front, true);
   // Before anything is picked each place holds something popular, the same for anyone, so any sync writes the same.
@@ -1078,7 +1078,8 @@ test('once a day after five (UTC) each person is picked for, one a run, and then
   sql('DELETE FROM foryou'); sql('DELETE FROM foryou_sync');
   fake.tmdb = []; await cron(DEC);
   assert.deepEqual(sql('SELECT person FROM foryou'), [{person: 'ada'}], 'one person a run');
-  assert.ok(fake.tmdb.length > 0 && fake.tmdb.length <= 22, `${fake.tmdb.length} calls`);
+  // Asked from nothing kept, everything she could be picked fits in the run's calls: Top 10, worked out last, was reached too.
+  assert.ok(fake.tmdb.length > 0 && fake.tmdb.length + fake.flix.length <= 22 && fake.flix.length === 1, `${fake.tmdb.length} calls`);
   const v = versions(); await cron(DEC + 5 * MIN);
   assert.deepEqual(sql('SELECT person FROM foryou ORDER BY person'), [{person: 'ada'}, {person: 'ben'}]); assert.equal(versions(), v, 'nobody’s setup is written while people are still being picked');
   await settle(DEC + 10 * MIN);
@@ -1155,7 +1156,7 @@ test('Top 10 comes from FlixPatrol through AIOMetadata, and a chart the hub put 
   // The next day what filled a place yesterday counts for less, so the places move on.
   const today = Object.values(picksOf('ada')).map(pick => pick.key);
   await cron(DEC + 86400e3); await cron(DEC + 86400e3 + 5 * MIN); await settle(DEC + 86400e3 + 10 * MIN);
-  assert.deepEqual(JSON.parse(sql("SELECT before FROM foryou WHERE person = 'ada'")[0].before), today);
+  assert.deepEqual(JSON.parse(sql("SELECT before FROM foryou WHERE person = 'ada'")[0].before).slice(0, 3), today);
   assert.notDeepEqual(Object.values(picksOf('ada')).map(pick => pick.key), today);
   // Back to following the hub's choice (her own empty list would keep every kind on whatever the hub mutes).
   await setPerson('ada', me => {const {forYouOff: _, ...settings} = me.settings; return {settings};}); sql("DELETE FROM plays WHERE item = 'fargo-s1e3'");
@@ -1173,6 +1174,90 @@ test('a fourth place holds nothing until it has a pick; a kind muted for the who
   assert.ok(!Object.values(picksOf('ben')).some(pick => pick.kind === 'seasonal') && !Object.values(picksOf('ada')).some(pick => pick.kind === 'seasonal'), JSON.stringify(sql('SELECT person, day, sig FROM foryou')) + JSON.stringify([picksOf('ada'), picksOf('ben')]));
   const back = (await owner('GET', '/api/state')).body.hub;
   assert.equal((await owner('PUT', '/api/hub', {...back, rows: hubNow.rows, defaults: hubNow.defaults})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+});
+// Runs the cron from `time` (each person's day's picking) until everyone is picked for that day, then until their setups are in step.
+const pickDay = async time => {
+  const day = new Date(time).toISOString().slice(0, 10);
+  for (let n = 0; n < 12 && sql(`SELECT 1 FROM foryou WHERE day != '${day}'`).length; n++) await cron(time + n * 5 * MIN);
+  assert.deepEqual(sql(`SELECT person FROM foryou WHERE day != '${day}'`), []); await settle(time + 60 * MIN);
+};
+const keysOn = person => Object.values(picksOf(person)).map(pick => pick.key);
+test('a change to someone’s places or kinds of pick is picked for on the next run at any hour; the day’s own picking still starts at five', async () => {
+  const day4 = DEC + 3 * 86400e3, early = day4 - 3 * 60 * MIN;
+  // The hub's Home went back to three places after the last picking: before five, both are picked for again on the next runs, as of that day.
+  await cron(early); await cron(early + 5 * MIN); await settle(early + 10 * MIN);
+  assert.deepEqual(sql('SELECT person, day FROM foryou ORDER BY person'), [{person: 'ada', day: '2026-12-03'}, {person: 'ben', day: '2026-12-03'}]);
+  assert.deepEqual(Object.keys(picksOf('ada')), ['for-you-1', 'for-you-2', 'for-you-3']); assert.equal(fyOf('Ada').length, 3);
+  // Nothing else changed: nobody is picked for again before five.
+  const kept = sql('SELECT person, at FROM foryou ORDER BY person'); await cron(early + 40 * MIN); assert.deepEqual(sql('SELECT person, at FROM foryou ORDER BY person'), kept);
+  // She keeps only because-you-watched: the next run picks for her alone, and the run after brings her setup in step.
+  await setPerson('ada', me => ({settings: {...me.settings, forYouOff: only('because')}}));
+  await cron(early + 45 * MIN);
+  assert.ok(Object.values(picksOf('ada')).every(pick => pick.kind === 'because'), JSON.stringify(picksOf('ada')));
+  assert.deepEqual(sql("SELECT person, at FROM foryou WHERE person = 'ben'"), kept.filter(row => row.person === 'ben'), 'one person a run, and only who changed');
+  await settle(early + 50 * MIN); assert.ok(fyOf('Ada').length === 3 && fyOf('Ada').every(item => /foryou_because_/.test(item.id)), JSON.stringify(fyOf('Ada').map(item => item.id)));
+  assert.deepEqual(sql('SELECT person, day FROM foryou ORDER BY person'), [{person: 'ada', day: '2026-12-03'}, {person: 'ben', day: '2026-12-03'}], 'still as of that day');
+  // At five the day's own picking comes as before.
+  await cron(day4); await cron(day4 + 5 * MIN); await settle(day4 + 10 * MIN);
+  assert.deepEqual(sql('SELECT person, day FROM foryou ORDER BY person'), [{person: 'ada', day: '2026-12-04'}, {person: 'ben', day: '2026-12-04'}]);
+});
+test('older watching has its turn in because-you-watched: two titles from months ago, a different two each day, read from deeper in her Trakt history', async () => {
+  const day5 = DEC + 4 * 86400e3, day6 = DEC + 5 * 86400e3, OLD = {680: 'Pulp Fiction', 13: 'Forrest Gump', 949: 'Heat'};
+  // Her Trakt: four titles this week, thirty more in the weeks before (each a few times), and three films months ago, past the
+  // first hundred plays Trakt gives at once.
+  trakt.expiresIn = 7 * 86400; await connect();
+  const play = (days, movie) => ({watched_at: ago(days), type: 'movie', movie});
+  trakt.history = [play(1, MOVIE.inception), play(2, MOVIE.knight), {watched_at: ago(4), type: 'episode', episode: {season: 1, number: 2}, show: BB}, play(6, MOVIE.fight),
+    ...Array.from({length: 120}, (_, n) => play(8 + Math.floor(n / 4) * 0.5, film(200 + Math.floor(n / 4)))), play(90, MOVIE.pulp), play(100, MOVIE.gump), play(120, MOVIE.heat)];
+  const olderAsked = () => fake.tmdb.map(where => /^movie\/(\d+)\/recommendations$/.exec(where)?.[1]).filter(id => OLD[id]);
+  const historyReads = () => trakt.reads.filter(read => read.where === '/sync/history' && !/start_at/.test(read.query ?? '')).length;
+  // From nothing kept: neither her history nor TMDB's answers.
+  sql("DELETE FROM rows_cache WHERE (person = 'ada' AND kind LIKE 'history%') OR person = '#tmdb'"); fake.tmdb = []; trakt.reads = [];
+  await pickDay(day5);
+  // Her four newest titles and two of the older ones seed rows: still six asks. Trakt was read two pages deep for them, not more.
+  const first = olderAsked();
+  assert.equal(new Set(first).size, 2, JSON.stringify(fake.tmdb)); assert.equal(fake.tmdb.filter(where => /recommendations$/.test(where)).length, 6, JSON.stringify(fake.tmdb));
+  assert.equal(historyReads(), 2);
+  const names = Object.values(picksOf('ada')).map(pick => pick.name);
+  // The next day another two: the one left out yesterday is among them.
+  fake.tmdb = []; await pickDay(day6);
+  const second = olderAsked();
+  assert.deepEqual(second, Object.keys(OLD).filter(id => !first.includes(id)), JSON.stringify(fake.tmdb));
+  // An older title's row can take a place (its own recency counts as a fixed share, not nothing); the row's name is as ever.
+  names.push(...Object.values(picksOf('ada')).map(pick => pick.name));
+  assert.ok(names.some(name => Object.values(OLD).some(title => name === `Because you watched ${title}`)), names.join(' / '));
+  assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200); trakt.history = [];
+  sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind LIKE 'history%'");
+});
+test('something different: a well-liked movie genre she has not been watching, a new one each day, rated under a limit, and left out when switched off', async () => {
+  const day6 = DEC + 5 * 86400e3, day7 = DEC + 6 * 86400e3, watched = ['878', '28', '80', '18'];
+  await setPerson('ada', me => ({settings: {...me.settings, forYouOff: only('different')}}));
+  await cron(day6 + 70 * MIN); await settle(day6 + 75 * MIN);
+  const [pick] = Object.values(picksOf('ada')), row = fyOf('Ada')[0];
+  assert.equal(pick.kind, 'different'); assert.match(pick.name, /^Something different: [A-Z][\w -]+ movies$/);
+  assert.equal(row.name, pick.name); assert.ok(!watched.includes(row.metadata.discover.params.with_genres), row.metadata.discover.params.with_genres);
+  assert.deepEqual({...row.metadata.discover.params, with_genres: '*'}, {with_genres: '*', sort_by: 'vote_average.desc', 'vote_count.gte': '1000', 'primary_release_date.lte': '__tmdb_date__:today:to'});
+  // Under the Kids limit it is still picked, as TMDB is asked for rated titles, and from a genre that suits children.
+  await setPerson('ada', me => ({settings: {...me.settings, limit: 'kids'}}));
+  await cron(day6 + 80 * MIN); await settle(day6 + 85 * MIN); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.equal(Object.values(picksOf('ada'))[0].kind, 'different'); assert.equal(fyOf('Ada')[0].metadata.discover.params.certification, 'G|PG');
+  assert.ok(['16', '12', '35', '10751', '14', '10402'].includes(fyOf('Ada')[0].metadata.discover.params.with_genres), fyOf('Ada')[0].metadata.discover.params.with_genres);
+  // The next day another genre.
+  await pickDay(day7);
+  assert.equal(Object.values(picksOf('ada'))[0].kind, 'different'); assert.notEqual(Object.values(picksOf('ada'))[0].key, pick.key);
+  // Switched off, it is picked no more.
+  await setPerson('ada', me => ({settings: {...me.settings, limit: 'all', forYouOff: ['different']}}));
+  await cron(day7 + 70 * MIN); await settle(day7 + 75 * MIN);
+  assert.ok(!Object.values(picksOf('ada')).some(item => item.kind === 'different') && !fyOf('Ada').some(item => /fy-different/.test(item.id)), JSON.stringify(picksOf('ada')));
+});
+test('with nothing new watched the places move on through what there is, not back and forth between two sets', async () => {
+  // Nothing changes from day to day (the kind that changes each day is off): the last few days' picks count for less, the latest most.
+  const days = [];
+  for (let n = 7; n < 11; n++) {await pickDay(DEC + n * 86400e3); days.push(keysOn('ada').sort().join());}
+  for (let n = 2; n < days.length; n++) assert.notEqual(days[n], days[n - 2], days.join(' / '));
+  const before = JSON.parse(sql("SELECT before FROM foryou WHERE person = 'ada'")[0].before);
+  assert.ok(before.length > 3 && before.length <= 12, JSON.stringify(before));
+  await setPerson('ada', me => {const {forYouOff: _, ...settings} = me.settings; return {settings};});
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);

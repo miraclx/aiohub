@@ -151,7 +151,7 @@ export function ForYouEditor({hub, resolved: {values, from}, scope, set, reset}:
   return <section>
     <h3 className="sub">For you</h3>
     <div className="card settings">
-      <Setting column title="Kinds of pick" hint={`What the daily For you rows can pick from. Leave one out and it isn’t picked.${values.limit !== 'all' ? ' Under a content limit only director, genre and seasonal picks are made.' : ''}`} {...line('forYouOff')}>
+      <Setting column title="Kinds of pick" hint={`What the daily For you rows can pick from. Leave one out and it isn’t picked.${values.limit !== 'all' ? ' Under a content limit only director, genre, something different and seasonal picks are made.' : ''}`} {...line('forYouOff')}>
         <Chips all={FOR_YOU_KINDS.map(kind => kind.title)} value={FOR_YOU_KINDS.filter(kind => !(values.forYouOff ?? []).includes(kind.id)).map(kind => kind.title)} onChange={value => set('forYouOff', FOR_YOU_KINDS.filter(kind => !value.includes(kind.title)).map(kind => kind.id))}/></Setting>
     </div>
   </section>;

@@ -180,10 +180,11 @@ export async function played(env: Env, hub: string, person: string): Promise<Ite
   }));
 }
 /* What a person watched, newest first, from what was read of their accounts and their plays here. `fresh`: Recently Watched is
-   read again first when what was kept of it is older than its time (one call at most); otherwise only what is kept is used. */
-export async function watchedOf(env: Env, hub: string, person: string, fresh: boolean): Promise<Item[]> {
+   read again first, as far as its first `want` titles, where what was kept of it is older than its time (READS calls at most);
+   otherwise only what is kept is used. */
+export async function watchedOf(env: Env, hub: string, person: string, fresh: boolean, want = PAGE): Promise<Item[]> {
   const kept = await env.DB.prepare("SELECT items FROM rows_cache WHERE hub = ? AND person = ? AND (kind = 'history' OR kind LIKE 'history.%' OR kind = 'mdb_history' OR kind LIKE 'mdb_history.%') ORDER BY kind").bind(hub, person).all<{items: string}>();
-  const lists = [...(fresh ? [await fill(env, hub, person, SERVED['recently-watched'], PAGE)] : []), ...kept.results.map(row => JSON.parse(row.items) as Item[]), await played(env, hub, person)];
+  const lists = [...(fresh ? [await fill(env, hub, person, SERVED['recently-watched'], want)] : []), ...kept.results.map(row => JSON.parse(row.items) as Item[]), await played(env, hub, person)];
   return once(lists.flat()).sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
 }
 

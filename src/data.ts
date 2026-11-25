@@ -169,7 +169,8 @@ export function withForYou(rows: Row[], front: boolean): Row[] {
 export const FOR_YOU_KINDS: {id: string; title: string; discover: boolean}[] = [
   {id: 'because', title: 'Because you watched', discover: false}, {id: 'series', title: 'Next in a movie series', discover: false},
   {id: 'pickup', title: 'Pick back up', discover: false}, {id: 'crew', title: 'More from a director', discover: true},
-  {id: 'genres', title: 'Your genres', discover: true}, {id: 'seasonal', title: 'Seasonal', discover: true}, {id: 'top10', title: 'Top 10', discover: false},
+  {id: 'genres', title: 'Your genres', discover: true}, {id: 'different', title: 'Something different', discover: true}, {id: 'seasonal', title: 'Seasonal', discover: true},
+  {id: 'top10', title: 'Top 10', discover: false},
 ];
 /* Rows someone following the Home above can switch on or off for themselves. */
 export const PICKABLE = new Set([...TRAKT_IDS, ...KIDS_IDS]);

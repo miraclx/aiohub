@@ -669,8 +669,8 @@ function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
    players that went quiet) and the daily Trakt/MDBList check, which starts with the first run after 04:00 UTC. Times are the
    viewer's own. */
 const FIVE = 300_000, DAY_MS = 86_400_000;
-/* For you: one person a five-minute run from its hour (UTC), then the hub's apps are brought in step. Someone just added is
-   picked for at any hour. */
+/* For you: one person a five-minute run from its hour (UTC), then the hub's apps are brought in step. Someone just added, or
+   whose places, kinds of pick or limit changed, is picked for at any hour. */
 function forYouJob(jobs: NonNullable<Hub['jobs']>, now: number, time: (ms: number) => string, day: (ms: number) => string, ran: (s: number | null) => string) {
   const start = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T${String(jobs.forYouHour).padStart(2, '0')}:00:00Z`), picked = jobs.picked ?? 0, everyone = jobs.everyone ?? 0;
   const done = picked >= everyone, waiting = !done && now >= start;
