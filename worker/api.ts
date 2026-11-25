@@ -443,7 +443,7 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     // The Trakt and MDBList card: two places side by side (places.ts). Someone's own watching: only they see or move it.
     if (who.person !== id) bad(403, 'Only they can do this, from their own page');
     const pair = oneOf(rest, PAIRS, 'Pair');
-    if (request.method === 'GET') {const got = await shown(env, hub, id, pair, await skippedOf(env, hub, id), new URL(request.url).searchParams.get('fresh') === '1'); return 'error' in got ? bad(409, got.error) : got;}
+    if (request.method === 'GET') {const got = await shown(env, hub, id, pair, await skippedOf(env, hub, id), new URL(request.url).searchParams.get('fresh') === '1'); return 'error' in got ? bad(got.status ?? 409, got.error) : got;}
     if (request.method !== 'POST') bad(404, 'Not found');
     const leave = Array.isArray(body.leave) ? body.leave.slice(0, 500).map(key => text(key, 200, 'Play')) : [];
     await skip(env, hub, id, leave);
@@ -454,7 +454,7 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     const got = await copy(env, hub, id, pair, await skippedOf(env, hub, id));
     // Read again next time: what was just sent is on the other side now.
     await env.DB.batch([forgetShown(env, hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'playback'").bind(hub, id)]);
-    if ('error' in got) return bad(409, got.error);
+    if ('error' in got) return bad(got.status ?? 409, got.error);
     if (!switching || got.more) return {...got, switched: false};
     // Everything is across: the switch itself. Then the page syncs, which turns MDBList's reporting on (or leaves it off).
     const data = await personData(env, hub, id);

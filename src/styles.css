@@ -481,3 +481,6 @@ label.sheet-sub { display: block; }
 .note-above { margin-bottom: 10px; }
 .sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .kinds .segments { background: var(--surface); }
+/* A look that failed: an empty ring, since nothing is under way (wait) and nothing is known to be in step (ok). */
+.trackers .dot.off { background: transparent; border: 1.5px solid var(--muted); }
+.trackers .note { display: block; margin-top: 2px; }

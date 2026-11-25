@@ -210,6 +210,11 @@ const play = (key, title, detail, days, cells, extra = {}) => ({key, title, deta
 const holds = (pair, lines) => {keep[pair] = {at: Math.floor(Date.now() / 1000), look: {lines, more: false, unmatched: 0, already: 0}}; sqlLocal(`INSERT INTO drift (hub, person, day, here, here_at) SELECT id, 'ada', '', '${JSON.stringify(keep)}', 0 FROM hubs WHERE true ON CONFLICT (hub, person) DO UPDATE SET here = excluded.here`);};
 const card = guest.locator('.accounts li.trackers'), both = async (page, name) => {await card.scrollIntoViewIfNeeded(); await shot(page, `${name}-phone`); await page.setViewportSize({width: 1280, height: 900}); await card.scrollIntoViewIfNeeded(); await shot(page, `${name}-wide`); await page.setViewportSize({width: 390, height: 844});};
 const columns = async () => (await card.locator('.trackers-cols span').allTextContents()).join(' | ');
+// The hub's answer to a look at a pair, made to fail the first `times` asks as a busy service does, then passed on as it is.
+const refuse = async (pair, times, message) => {
+  let asked = 0; const at = new RegExp(`/api/people/ada/compare/${pair}(\\?|$)`), answer = route => ++asked <= times ? route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({message})}) : route.continue();
+  await guest.route(at, answer); return {asked: () => asked, done: () => guest.unroute(at, answer)};
+};
 // Progress Here, Trakt connected (also what someone with Trakt only sees): out to Trakt what never reached it, in from Trakt what
 // was watched elsewhere, a spot Trakt holds.
 holds('here-trakt', [play('w:show/60574:5:2', 'Peaky Blinders', 'Season 5 · Episode 2', 0.5, {here: 'has', trakt: 'add'}), play('i:show/83867:2:4', 'Andor', 'Season 2 · Episode 4', 5, {here: 'add', trakt: 'has'}, {elsewhere: true}),
@@ -218,7 +223,23 @@ await guest.reload(); await card.getByRole('heading', {name: 'Here and Trakt'}).
 assert.equal(await columns(), 'Here | Trakt'); await card.getByText('· watched elsewhere').first().waitFor(); await card.getByText('partway').waitFor();
 const andor = card.getByRole('button', {name: 'Add Andor S2E4'}); await andor.click(); assert.equal(await andor.getAttribute('aria-pressed'), 'false'); await card.getByRole('button', {name: 'Add 2 plays'}).waitFor();
 await both(guest, '13a-card-here-trakt'); await andor.click();
+// A look that fails is asked once more by itself first: a busy moment passes unseen.
+let refused = await refuse('here-trakt', 1, 'Trakt is busy right now.');
+await guest.reload(); await card.getByText('3 plays missing').waitFor(); assert.equal(refused.asked(), 2); assert.equal(await card.getByText('Couldn’t').count(), 0); await refused.done();
+// Failing twice, what was shown stays, saying it couldn't be checked again and why, and that plays are still being saved.
+refused = await refuse('here-trakt', 2, 'Trakt is busy right now.'); await card.getByRole('button', {name: 'Check again'}).click();
+await card.getByText('Couldn’t check again just now. Trakt is busy right now. Your watching is still being saved.').waitFor(); assert.equal(refused.asked(), 2);
+await card.getByRole('button', {name: 'Add 3 plays'}).waitFor(); assert.equal(await card.getByRole('button', {name: 'Check again'}).count(), 0);
+await both(guest, '13j-card-not-checked-again');
+holds('here-trakt', keep['here-trakt'].look.lines); await card.getByRole('button', {name: 'Try again'}).click();
+await card.getByText('Couldn’t check again').waitFor({state: 'detached'}); assert.equal(refused.asked(), 3); await refused.done();
 holds('here-trakt', []); await guest.reload(); await guest.getByText('Here and Trakt · all in step', {exact: false}).waitFor(); await both(guest, '13h-card-here-trakt-in-step');
+// Nothing kept and no player setup made for her (none is, in this test): the card says so, never "all in step", and not that
+// nothing was watched. Asking again won't change that by itself, so it is asked once.
+sqlLocal('UPDATE drift SET here = NULL'); refused = await refuse('here-trakt', 0, '');
+await guest.reload(); await card.getByText('Here and Trakt · couldn’t compare just now. Your player setup isn’t made yet.').waitFor();
+assert.equal(refused.asked(), 1); assert.equal(await card.getByText(/all in step|still being saved/).count(), 0); await card.getByRole('button', {name: 'Try again'}).waitFor();
+await both(guest, '13l-card-no-setup'); await refused.done();
 // Connecting MDBList only saves the key: progress stays Here, and the choice appears.
 await mdb.getByRole('button', {name: 'Connect'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key');
 await guest.getByRole('button', {name: 'Save'}).click(); await toast(guest).filter({hasText: 'MDBList connected'}).waitFor();
@@ -283,6 +304,18 @@ await pulpLine.press('Enter'); assert.equal(await pulpLine.getAttribute('aria-pr
 // Nothing missing: the card folds to one line.
 holds('mdblist-trakt', []); sqlLocal(`UPDATE drift SET result = '${JSON.stringify({since: 0, trakt: 3, mdblist: 3, toMdblist: [], toTrakt: []})}'`);
 await guest.reload(); await guest.getByText('Trakt and MDBList · all in step · checked today at', {exact: false}).waitFor(); await both(guest, '13d-card-in-step');
+// With both connected, a failed look at what is left from Here no longer goes unsaid.
+refused = await refuse('here-mdblist', 2, 'MDBList didn’t answer. If this lasts a day, paste a new key.');
+await guest.reload(); await card.getByText('Couldn’t check everything just now. MDBList didn’t answer. If this lasts a day, paste a new key. Your watching is still being saved.').waitFor();
+await both(guest, '13m-card-both-part-failed'); await refused.done();
+// With MDBList only (her Trakt link set aside a moment), the same failure once read "MDBList · all in step". Now it says why, and
+// Try again asks again.
+sqlLocal("UPDATE secrets SET kind = 'aside' WHERE owner = 'ada' AND kind = 'trakt-scrobble'");
+refused = await refuse('here-mdblist', 2, 'MDBList didn’t answer. If this lasts a day, paste a new key.');
+await guest.reload(); await card.getByText('MDBList · couldn’t compare just now. MDBList didn’t answer. If this lasts a day, paste a new key. Your watching is still being saved.').waitFor();
+assert.equal(refused.asked(), 2); assert.equal(await card.getByText('all in step').count(), 0); await both(guest, '13k-card-mdblist-failed');
+holds('here-mdblist', []); await card.getByRole('button', {name: 'Try again'}).click(); await card.getByText('MDBList · all in step', {exact: false}).waitFor(); assert.equal(refused.asked(), 3); await refused.done();
+sqlLocal("UPDATE secrets SET kind = 'trakt-scrobble' WHERE owner = 'ada' AND kind = 'aside'"); await guest.reload(); await card.getByText('Trakt and MDBList · all in step', {exact: false}).waitFor();
 // Pressing Here on her own page opens the move back, MDBList's plays coming Here; staying on MDBList changes nothing.
 holds('mdblist-here', [play('i:show/83867:2:4', 'Andor', 'Season 2 · Episode 4', 5, {here: 'add', lists: 'has'}), play('i:show/95396:2:10', 'Severance', 'Season 2 · Episode 10', 11, {here: 'add', lists: 'has'})]);
 await guest.getByRole('radio', {name: 'Here'}).click(); assert.equal(await guest.getByRole('button', {name: 'Keep it here'}).count(), 0);

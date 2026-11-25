@@ -16,8 +16,8 @@ import {getSecret, now, putSecret} from './util';
 import {LINK} from './trakt';
 import type {Link} from './trakt';
 import {traktPlays} from './drift';
-import {carry, mdblist, pauseOf, plan, pointKey, traktPoints} from './carry';
-import type {TraktPoint} from './carry';
+import {NO_ANSWER, NO_SETUP, carry, mdblist, pauseOf, plan, pointKey, traktPoints} from './carry';
+import type {Failed, TraktPoint} from './carry';
 import {deliver} from './trakt';
 import type {Cell} from './carry';
 import {packed, server} from './here';
@@ -27,7 +27,6 @@ export type Pair = 'here-trakt' | 'here-mdblist' | 'mdblist-here' | 'mdblist-tra
 export const PAIRS: Pair[] = ['here-trakt', 'here-mdblist', 'mdblist-here', 'mdblist-trakt'];
 export interface Line {key: string; title: string; detail: string; at: string; pct?: number; here: Cell; trakt: Cell; lists: Cell; elsewhere?: boolean}
 export interface Look {lines: Line[]; more: boolean; unmatched: number; already: number; checked?: number}
-type Failed = {error: string};
 /* A play another place has that Here lacks, with the id Here knows it by. */
 interface Incoming {key: string; kind: 'movie' | 'show'; ids: Ids; title: string; season?: number; episode?: number; at: string; pct?: number; id: string; runtime?: number}
 
@@ -98,8 +97,8 @@ async function pointsBoth(env: Env, hub: string, person: string): Promise<{lines
   const lists = await getSecret<{key: string}>(env, hub, person, 'mdblist');
   if (!lists?.key) return {error: 'Connect MDBList first.'};
   const theirs = await mdblist(env, lists.key)('/sync/playback'), trakt = await traktPoints(env, hub, person);
-  if (theirs.status !== 200 || !Array.isArray(theirs.body)) return {error: 'MDBList isn’t answering just now. Try again in a moment.'};
-  if (!Array.isArray(trakt)) return {error: 'Trakt isn’t answering just now. Try again in a few minutes.'};
+  if (theirs.status !== 200 || !Array.isArray(theirs.body)) return NO_ANSWER.mdblist;
+  if (!Array.isArray(trakt)) return NO_ANSWER.trakt;
   const onLists = new Map((theirs.body as TraktPoint[]).map(point => [pointKey(point), point])), onTrakt = new Map(trakt.map(point => [pointKey(point), point]));
   const points: (Omit<Incoming, 'id'> & {to: 'trakt' | 'lists'})[] = [];
   let same = 0;
@@ -124,28 +123,28 @@ export async function look(env: Env, hub: string, person: string, pair: Pair, sk
   }
   if (pair === 'here-trakt' || pair === 'mdblist-here') {
     const via = await getSecret<Via>(env, hub, person, 'upstream-aiom');
-    if (!via) return {error: 'Nothing has been watched here yet.'};
+    if (!via) return NO_SETUP;
     let plays: Omit<Incoming, 'id'>[];
     if (pair === 'here-trakt') {
       const got = await fromTrakt(env, hub, person);
-      if (!got) return {error: 'Trakt isn’t answering just now. Try again in a few minutes.'};
+      if (!got) return NO_ANSWER.trakt;
       plays = got.plays; more ||= got.more;
     } else {
       const lists = await getSecret<{key: string}>(env, hub, person, 'mdblist');
       if (!lists?.key) return {error: 'Connect MDBList first.'};
       const got = await fromMdblist(env, lists.key);
-      if (!got) return {error: 'MDBList isn’t answering just now. Try again in a moment.'};
+      if (!got) return NO_ANSWER.mdblist;
       plays = got;
     }
     plays = plays.filter(play => !skip.has(play.key));
     if (plays.length > CHECK) {more = true; plays = plays.slice(0, CHECK);}
     const own = await server(via);
-    if (!own) return {error: 'Your server did not answer. Try again in a moment.'};
+    if (!own) return NO_ANSWER.server;
     try {
       const got = await lacking(own, plays);
       incoming = got.out; already += got.has; unmatched += got.unknown;
       lines.push(...incoming.map(play => incomingLine(play, pair === 'here-trakt' ? 'trakt' : 'lists')));
-    } catch {return {error: 'Your server did not answer. Try again in a moment.'};}
+    } catch {return NO_ANSWER.server;}
     finally {await own.done();}
   }
   return {lines: lines.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)), more, unmatched, already, incoming};
@@ -205,7 +204,7 @@ export async function copy(env: Env, hub: string, person: string, pair: Pair, sk
   if ('error' in found) return found;
   if (!found.incoming.length) return {added, unmatched, more: more || found.more};
   const via = (await getSecret<Via>(env, hub, person, 'upstream-aiom'))!, own = await server(via);
-  if (!own) return {error: 'Your server did not answer. Try again in a moment.'};
+  if (!own) return NO_ANSWER.server;
   try {
     const got = await tickHere(own, found.incoming);
     return {added: added + got.added, unmatched: unmatched + got.unmatched, more: more || found.more || got.left > 0};

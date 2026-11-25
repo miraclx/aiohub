@@ -353,27 +353,38 @@ interface Look {lines: Line[]; more: boolean; unmatched: number; already: number
 type Pair = 'here-trakt' | 'here-mdblist' | 'mdblist-here' | 'mdblist-trakt';
 const NAMES: Record<Place, string> = {here: 'Here', trakt: 'Trakt', lists: 'MDBList'};
 const short = (detail: string) => detail.replace(/^Season (\d+) · Episode (\d+)$/, 'S$1E$2');
-const SHOWN = 8;
+const SHOWN = 8, AGAIN_IN = 2000;
 /* One card that always compares two places: where progress is kept (Here or MDBList) and Trakt, or, while moving where progress is
    kept, the old place and the new one (worker/places.ts). Each line is a play one side lacks, with an arrow toward it; every line
    starts included, and tapping one leaves it out (and out of later looks). Nothing is ever removed. Moving switches only once the
    plays are across. With nothing missing it folds to one line; with nothing connected there is no card. */
 function Trackers({page, person, back, onBack}: {page: PageProps; person: Person; back: boolean; onBack: (back: boolean) => void}) {
   const {toast, live, hub} = page, trakt = !!person.history && !person.history.again, lists = person.lists, moving = person.moving ?? null;
-  const [looks, setLooks] = useState<Record<string, Look | 'failed'>>({}), [out, setOut] = useState<Set<string>>(new Set()), [busy, setBusy] = useState(''), [all, setAll] = useState(false);
+  const [looks, setLooks] = useState<Record<string, Look>>({}), [out, setOut] = useState<Set<string>>(new Set()), [busy, setBusy] = useState(''), [all, setAll] = useState(false);
   // What each pair holds, kept with whose it is: a look at someone else never shows here.
   const whose = `${hub.code}/${person.id}`, lookOf = (pair: Pair) => looks[`${whose}/${pair}/${person.v}`];
   const want: Pair[] = moving === 'mdblist' ? ['here-mdblist'] : lists && (back || moving === 'here') ? ['mdblist-here'] : lists ? (trakt ? ['here-mdblist', 'mdblist-trakt'] : ['here-mdblist']) : trakt ? ['here-trakt'] : [];
   const [checking, setChecking] = useState(false);
-  const lookAt = (pair: Pair, fresh = false) => {const at = `${whose}/${pair}/${person.v}`; return live!.call<Look>('GET', `/api/people/${person.id}/compare/${pair}${fresh ? '?fresh=1' : ''}`).then(got => setLooks(was => ({...was, [at]: got})), () => setLooks(was => ({...was, [at]: 'failed'})));};
+  // Why the last look at a pair failed, kept apart from the last good look so that one stays on show. `wait`: the other side did not
+  // answer (or the hub could not be reached), so asking again may work; otherwise something has to change first.
+  const [failed, setFailed] = useState<Record<string, {why: string; wait: boolean}>>({}), failOf = (pair: Pair) => failed[`${whose}/${pair}/${person.v}`];
+  const lookAt = async (pair: Pair, fresh = false) => {
+    const at = `${whose}/${pair}/${person.v}`, ask = () => live!.call<Look>('GET', `/api/people/${person.id}/compare/${pair}${fresh ? '?fresh=1' : ''}`);
+    const waits = (error: unknown) => {const status = (error as {status?: number}).status ?? 0; return !status || status === 429 || status >= 500;};
+    try {
+      // Trakt often turns a busy caller away for a moment: one quiet try more before saying so.
+      const got = await ask().catch(async error => {if (!waits(error)) throw error; await new Promise(done => setTimeout(done, AGAIN_IN)); return ask();});
+      setLooks(was => ({...was, [at]: got})); setFailed(({[at]: _, ...was}) => was);
+    } catch (error) {setFailed(was => ({...was, [at]: {why: (error as Error).message, wait: waits(error)}}));}
+  };
   useEffect(() => {
     if (!live) return;
     for (const pair of want) if (!looks[`${whose}/${pair}/${person.v}`]) void lookAt(pair);
   }, [whose, want.join(), person.v]);
   // Looks again now instead of using the last look (kept up to six hours); the hub waits two minutes between looks.
-  const again = checking ? null : <button type="button" className="link small" onClick={() => {setChecking(true); void Promise.all(want.map(pair => lookAt(pair, true))).finally(() => setChecking(false));}}>Check again</button>;
+  const recheck = (label: string) => checking ? null : <button type="button" className="link small" onClick={() => {setChecking(true); void Promise.all(want.map(pair => lookAt(pair, true))).finally(() => setChecking(false));}}>{label}</button>, again = recheck('Check again');
   if (!live || (!trakt && !lists && !moving)) return null;
-  const leftover = lookOf('here-mdblist'), leftovers = lists && !moving && !back && leftover && leftover !== 'failed' && leftover.lines.length > 0;
+  const leftover = lookOf('here-mdblist'), leftovers = lists && !moving && !back && leftover && leftover.lines.length > 0;
   // Which state the card is in: the pair, its two columns, and its words.
   const state = moving === 'mdblist' ? {kind: 'to-lists', pair: 'here-mdblist' as Pair, cols: ['here', 'lists'] as Place[], title: 'Moving to MDBList', count: 'to move'}
     : lists && (back || moving === 'here') ? {kind: 'to-here', pair: 'mdblist-here' as Pair, cols: ['here', 'lists'] as Place[], title: 'Moving back to Here', count: 'to move'}
@@ -382,21 +393,21 @@ function Trackers({page, person, back, onBack}: {page: PageProps; person: Person
     : trakt ? {kind: 'here-trakt', pair: 'here-trakt' as Pair, cols: ['here', 'trakt'] as Place[], title: 'Here and Trakt', count: 'missing'}
     : {kind: 'lists', pair: null, cols: ['here', 'lists'] as Place[], title: 'MDBList', count: 'missing'};
   const found = person.drift, moves = state.kind === 'to-lists' || state.kind === 'to-here';
-  if (lists && !moving && !back && leftover === undefined) return <li className="trackers quiet"><span className="dot wait" aria-hidden="true"/><p><strong>{trakt ? 'MDBList and Trakt' : 'MDBList'}</strong> <span className="muted">· looking…</span></p></li>;
+  if (lists && !moving && !back && leftover === undefined && !failOf('here-mdblist')) return <li className="trackers quiet"><span className="dot wait" aria-hidden="true"/><p><strong>{trakt ? 'MDBList and Trakt' : 'MDBList'}</strong> <span className="muted">· looking…</span></p></li>;
   const looked = state.pair ? lookOf(state.pair) : undefined;
-  if (state.pair && !looked) return <li className="trackers quiet"><span className="dot wait" aria-hidden="true"/><p><strong>{state.title}</strong> <span className="muted">· looking…</span></p></li>;
+  if (state.pair && !looked && !failOf(state.pair)) return <li className="trackers quiet"><span className="dot wait" aria-hidden="true"/><p><strong>{state.title}</strong> <span className="muted">· looking…</span></p></li>;
   const when = (ms: number) => {const date = new Date(ms), today = new Date().toDateString() === date.toDateString(); return `${today ? 'today' : date.toLocaleDateString(undefined, {day: 'numeric', month: 'short'})} at ${date.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;};
   const stamp = (ms: number) => `${new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'})}, ${new Date(ms).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;
   const lines: Line[] = state.kind === 'both' ? [
     ...(found?.toMdblist ?? []).map(miss => ({key: miss.key, title: miss.name || 'Untitled', detail: miss.season != null ? `S${miss.season}E${miss.episode}` : 'Movie', at: stamp(miss.at * 1000), trakt: 'has' as Cell, lists: 'add' as Cell})),
     ...(found?.toTrakt ?? []).map(miss => ({key: miss.key, title: miss.name || 'Untitled', detail: miss.season != null ? `S${miss.season}E${miss.episode}` : 'Movie', at: stamp(miss.at * 1000), trakt: 'add' as Cell, lists: 'has' as Cell})),
     // Paused points one of them has and the other lacks (looked at when the card opens).
-    ...(looked && looked !== 'failed' ? looked.lines.map(line => ({...line, detail: short(line.detail), at: undefined})) : []),
-  ] : looked && looked !== 'failed' ? looked.lines.map(line => ({...line, detail: short(line.detail), at: line.pct == null && line.at ? stamp(Date.parse(line.at)) : undefined})) : [];
-  const checkedAt = state.kind === 'both' ? (found ? found.checked * 1000 : 0) : looked && looked !== 'failed' && looked.checked ? looked.checked * 1000 : 0;
+    ...(looked ? looked.lines.map(line => ({...line, detail: short(line.detail), at: undefined})) : []),
+  ] : looked ? looked.lines.map(line => ({...line, detail: short(line.detail), at: line.pct == null && line.at ? stamp(Date.parse(line.at)) : undefined})) : [];
+  const checkedAt = state.kind === 'both' ? (found ? found.checked * 1000 : 0) : looked?.checked ? looked.checked * 1000 : 0;
   const [left, right] = state.cols, kept = lines.filter(line => !out.has(line.key));
   const flip = (key: string) => setOut(was => {const next = new Set(was); if (!next.delete(key)) next.add(key); return next;});
-  const after = async (note: string) => {setOut(new Set()); setLooks({}); await live.sync(); await live.reload(); toast(note);};
+  const after = async (note: string) => {setOut(new Set()); setLooks({}); setFailed({}); await live.sync(); await live.reload(); toast(note);};
   const plays = (n: number) => `${n} ${n === 1 ? 'play' : 'plays'}`;
   // One press: as many passes as it takes (each fits in what the hub may do per request), showing how far it has got.
   const run = async () => {
@@ -417,7 +428,7 @@ function Trackers({page, person, back, onBack}: {page: PageProps; person: Person
       const missed = unmatched ? ` ${plays(unmatched)} couldn’t be matched and ${unmatched === 1 ? 'was' : 'were'} left out.` : '';
       onBack(false);
       await after(state.kind === 'to-lists' && switched ? `Moved ${plays(added)}. Progress is kept in MDBList now.${missed}` : state.kind === 'to-here' && switched ? `Moved ${plays(added)}. Progress is kept here now.${missed}` : added ? `Added ${plays(added)}.${missed}` : `Nothing needed adding.${missed}`);
-    } catch (error) {toast((error as Error).message); setLooks({}); await live.reload();} finally {setBusy('');}
+    } catch (error) {toast((error as Error).message); setLooks({}); setFailed({}); await live.reload();} finally {setBusy('');}
   };
   const stay = async () => {
     setBusy('…');
@@ -427,15 +438,23 @@ function Trackers({page, person, back, onBack}: {page: PageProps; person: Person
       onBack(false); await after('Staying on MDBList');
     } catch (error) {toast((error as Error).message);} finally {setBusy('');}
   };
-  if (looked === 'failed') return <li className="trackers quiet"><span className="dot wait" aria-hidden="true"/><p><strong>{state.title}</strong> <span className="muted">· couldn’t look just now</span></p></li>;
-  if (!lines.length && !moves) return state.kind === 'lists' && !leftover ? null : <li className="trackers quiet"><span className="dot ok" aria-hidden="true"/><p><strong>{state.kind === 'both' ? 'Trakt and MDBList' : state.kind === 'here-trakt' ? 'Here and Trakt' : 'MDBList'}</strong> <span className="muted">· all in step{checkedAt ? ` · checked ${when(checkedAt)}` : ''}</span> {checking ? <span className="muted small">Checking…</span> : again}</p></li>;
+  // Any look this card needs that failed: the hub's reason and Try again, and when the other side was busy, that plays still reach
+  // where progress is kept and Trakt meanwhile (nothing there waits on a look). Never folded into "all in step".
+  const trouble = want.map(failOf).find(Boolean), retry = checking ? <span className="muted small">Checking…</span> : recheck('Try again');
+  const why = trouble && <>{trouble.why}{trouble.wait ? ' Your watching is still being saved.' : ''} {retry}</>;
+  const nothing = state.pair ? !looked && !(state.kind === 'both' && found) : !leftover;
+  if (trouble && nothing) return <li className="trackers quiet"><span className="dot off" aria-hidden="true"/><p><strong>{state.title}</strong> <span className="muted">· couldn’t compare just now.</span> <span className="muted">{why}</span></p></li>;
+  // What was shown before is kept, saying it could not be checked again.
+  const stale = trouble && <span className="muted small note">{failOf(state.pair ?? 'here-mdblist') ? 'Couldn’t check again just now.' : 'Couldn’t check everything just now.'} {why}</span>;
+  if (!lines.length && !moves) return state.kind === 'lists' && !leftover ? null : <li className="trackers quiet"><span className={`dot ${trouble ? 'off' : 'ok'}`} aria-hidden="true"/><p><strong>{state.kind === 'both' ? 'Trakt and MDBList' : state.kind === 'here-trakt' ? 'Here and Trakt' : 'MDBList'}</strong> <span className="muted">· all in step{checkedAt ? ` · checked ${when(checkedAt)}` : ''}</span> {!trouble && (checking ? <span className="muted small">Checking…</span> : again)}{stale}</p></li>;
   const cell = (state_: Cell | undefined, off: boolean) => !state_ || state_ === 'none' ? <span className="cell none" aria-hidden="true">–</span> : <span className={`cell ${state_}${off ? ' off' : ''}`} aria-hidden="true">{state_ === 'has' ? '✓' : '+'}</span>;
   const arrow = (line: Line) => line[right] === 'add' && line[left] === 'add' ? '← →' : line[right] === 'add' ? '→' : '←';
   const visible = all ? lines : lines.slice(0, SHOWN);
   const label = busy ? `${moves || state.kind === 'finish' ? 'Moving' : 'Adding'}…${busy.trim() === '…' ? '' : busy}` : moves ? (kept.length ? `Move ${plays(kept.length)} and switch` : state.kind === 'to-lists' ? 'Switch to MDBList' : 'Switch back to Here') : state.kind === 'finish' ? `Move ${plays(kept.length)}` : `Add ${plays(kept.length)}`;
   return <li className="stacked trackers">
-    <div className="trackers-head"><h3>{state.title}</h3><span className="muted small">{checkedAt ? `Checked ${when(checkedAt)} · ` : ''}{checking ? 'Checking…' : again}</span></div>
-    <p className="muted small">{lines.length ? `${plays(lines.length)} ${state.count}` : 'Nothing to move'}{(looked as Look | undefined)?.more ? ', and more after these' : ''}</p>
+    <div className="trackers-head"><h3>{state.title}</h3><span className="muted small">{checkedAt ? `Checked ${when(checkedAt)}` : ''}{trouble ? '' : <>{checkedAt ? ' · ' : ''}{checking ? 'Checking…' : again}</>}</span></div>
+    <p className="muted small">{lines.length ? `${plays(lines.length)} ${state.count}` : 'Nothing to move'}{looked?.more ? ', and more after these' : ''}</p>
+    {stale && <p className="small">{stale}</p>}
     {!!lines.length && <div className="trackers-cols muted small" aria-hidden="true"><span>{NAMES[left]}</span><span>{NAMES[right]}</span></div>}
     {!!lines.length && <ul className="plays">{visible.map(line => {const off = out.has(line.key); return <li key={line.key}>
       <button type="button" className={`play${off ? ' left' : ''}`} aria-pressed={!off} aria-label={`Add ${line.title} ${line.detail}`} onClick={() => flip(line.key)}>

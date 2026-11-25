@@ -20,7 +20,15 @@ import type {Ids, Via} from './here';
 export type Cell = 'has' | 'add' | 'none';
 export interface Entry {key: string; title: string; detail: string; at: string; pct?: number; kind: 'movie' | 'show'; ids: Ids; season?: number; episode?: number; trakt: Cell; lists: Cell}
 export interface Plan {watched: Entry[]; partway: Entry[]; already: number; unknown: number; more: boolean; trakt: boolean; lists: boolean}
-type Failed = {error: string};
+/* Why a look or a copy could not be done, in words the page shows as they are: never a key or what the other side sent back.
+   `status` 503: that side did not answer, so asking again later may work; otherwise (409) something here has to change first. */
+export type Failed = {error: string; status?: number};
+export const NO_SETUP: Failed = {error: 'Your player setup isn’t made yet.'};
+export const NO_ANSWER = {
+  trakt: {error: 'Trakt is busy right now.', status: 503},
+  mdblist: {error: 'MDBList didn’t answer. If this lasts a day, paste a new key.', status: 503},
+  server: {error: 'Your server didn’t answer.', status: 503},
+} satisfies Record<string, Failed>;
 
 // A Worker may make about 50 calls per request, so each pass checks this many titles with MDBList, reads this many pages of Trakt
 // history, and sends this many paused points.
@@ -58,7 +66,7 @@ export async function plan(env: Env, hub: string, person: string, skip: Set<stri
   const lists = want.lists ? await getSecret<{key: string}>(env, hub, person, 'mdblist') : null, held = env.TRAKT_CLIENT_ID && want.trakt ? await getSecret<Link>(env, hub, person, LINK) : null, link = held && !held.again ? held : null;
   if (!lists?.key && !link) return {error: 'Connect Trakt or MDBList first.'};
   const via = await getSecret<Via>(env, hub, person, 'upstream-aiom');
-  if (!via) return {error: 'Nothing has been watched here yet.'};
+  if (!via) return NO_SETUP;
   // Copied before: a tracker may still answer from a few minutes ago, so these are never sent twice. MDBList's by the play's key,
   // Trakt's as t:<key>.
   const carried = new Set(await getSecret<string[]>(env, hub, person, 'carried') ?? []);
@@ -66,7 +74,7 @@ export async function plan(env: Env, hub: string, person: string, skip: Set<stri
   const none: Plan = {watched: [], partway: [], already: 0, unknown: 0, more: false, trakt: !!link, lists: !!lists?.key};
   if (!rows.length) return none;
   const own = await server(via);
-  if (!own) return {error: 'Your server did not answer. Try again in a moment.'};
+  if (!own) return NO_ANSWER.server;
   try {
     const found = await own.items(rows.map(row => row.item)), play = new Map(rows.map(row => [row.item, row]));
     const shows = new Map((await own.items([...new Set(found.filter(item => item.Type === 'Episode' && item.SeriesId).map(item => item.SeriesId!))])).map(item => [item.Id, item]));
@@ -95,12 +103,12 @@ export async function plan(env: Env, hub: string, person: string, skip: Set<stri
       const asking = all.filter(entry => entry.lists === 'add'), titles = [...new Set(asking.map(entry => `${entry.kind}/${entry.ids.tmdb}`))], checked = new Set(titles.slice(0, TITLES)), has = new Set<string>(), ask = mdblist(env, lists.key);
       for (const title of checked) {
         const answer = await ask(`/sync/history/${title.replace('/', '/tmdb/')}`);
-        if (answer.status !== 200) return {error: 'MDBList did not answer. Try again in a moment.'};
+        if (answer.status !== 200) return NO_ANSWER.mdblist;
         for (const play of ((answer.body as {plays?: {season_num?: number; episode_num?: number}[]})?.plays ?? [])) has.add(title.startsWith('show') ? `${title}:${play.season_num}:${play.episode_num}` : title);
       }
       if (asking.some(entry => entry.pct != null && checked.has(`${entry.kind}/${entry.ids.tmdb}`))) {
         const answer = await ask('/sync/playback');
-        if (answer.status !== 200) return {error: 'MDBList did not answer. Try again in a moment.'};
+        if (answer.status !== 200) return NO_ANSWER.mdblist;
         for (const point of (Array.isArray(answer.body) ? answer.body : []) as {type?: string; movie?: {ids?: {tmdb?: number}}; show?: {ids?: {tmdb?: number}}; episode?: {season?: number; number?: number}}[]) {
           if (point.type === 'movie' && point.movie?.ids?.tmdb) has.add(`movie/${point.movie.ids.tmdb}`);
           if (point.type === 'episode' && point.show?.ids?.tmdb) has.add(`show/${point.show.ids.tmdb}:${point.episode?.season}:${point.episode?.number}`);
@@ -124,7 +132,7 @@ export async function plan(env: Env, hub: string, person: string, skip: Set<stri
       let oldest = from, page = 1;
       for (; page <= TRAKT_PAGES; page++) {
         const got = await traktPlays(env, hub, person, from, to, page, titles);
-        if (!got) return {error: 'Trakt isn’t answering just now. Try again in a few minutes.'};
+        if (!got) return NO_ANSWER.trakt;
         have.push(...got.plays);
         if (!got.more) {oldest = from; break;}
         oldest = Math.min(...got.plays.map(item => item.at), to);
@@ -139,7 +147,7 @@ export async function plan(env: Env, hub: string, person: string, skip: Set<stri
     const kept = all.filter(entry => decided.has(entry) && (entry.lists === 'add' || entry.trakt === 'add'));
     return {...none, watched: kept.filter(entry => entry.pct == null), partway: kept.filter(entry => entry.pct != null), already: decided.size - kept.length, unknown, more};
   } catch {
-    return {error: 'Your server did not answer. Try again in a moment.'};
+    return NO_ANSWER.server;
   } finally {
     await own.done();
   }

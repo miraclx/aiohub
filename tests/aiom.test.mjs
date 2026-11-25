@@ -861,6 +861,17 @@ test('the card compares two places and copies across: paused points both ways, a
   // Only Ada, from her own page.
   assert.equal((await owner('GET', '/api/people/ada/compare/here-trakt')).status, 403);
   assert.equal((await compare('GET', 'sideways')).status, 400);
+  // A look that fails says why, in words the page shows as they are, with a status that tells a service that did not answer (503,
+  // worth asking again) from something to change first (409). A failed look is never kept.
+  const failing = async pair => {forget(); const got = await compare('GET', pair); return [got.status, got.body.message];};
+  sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'playback'"); trakt.refuseReads = true;
+  assert.deepEqual(await failing('mdblist-trakt'), [503, 'Trakt is busy right now.']); trakt.refuseReads = false;
+  lists.refuse = true; assert.deepEqual(await failing('mdblist-here'), [503, 'MDBList didn’t answer. If this lasts a day, paste a new key.']); lists.refuse = false;
+  // No player setup made for her yet: said as it is, not as if she had watched nothing.
+  sql("UPDATE secrets SET kind = 'aside' WHERE owner = 'ada' AND kind = 'upstream-aiom'");
+  assert.deepEqual(await failing('here-trakt'), [409, 'Your player setup isn’t made yet.']);
+  sql("UPDATE secrets SET kind = 'upstream-aiom' WHERE owner = 'ada' AND kind = 'aside'");
+  assert.deepEqual(sql("SELECT here FROM drift WHERE person = 'ada' AND here IS NOT NULL"), []);
 
   // On MDBList with Trakt: a paused point MDBList has goes to Trakt, and one Trakt has goes to MDBList (under 80%, dated now).
   lists.playback = [{type: 'movie', progress: 50, paused_at: T, movie: MOVIE.inception}]; trakt.playback = [{type: 'movie', progress: 30.5, paused_at: T, movie: MOVIE.gump}];
