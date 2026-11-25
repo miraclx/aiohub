@@ -257,7 +257,8 @@ async function savePerson(env: Env, who: Who, id: string, body: Body) {
   }
   const can = body.can as Record<string, unknown> | undefined, grp = text(body.groupId, 40, 'Group');
   const was = current ? JSON.parse(current.data) as PersonData : null;
-  const data: PersonData = {rows, ...(body.picks !== undefined ? {picks: cleanPicks(body.picks)} : was?.picks ? {picks: was.picks} : {}), settings, can: {arrange: flag(can?.arrange), add: flag(can?.add), playback: flag(can?.playback), limit: flag(can?.playback) && flag(can?.limit)},
+  // Adding a row changes Home, so it goes with arranging, as the content limit goes with playback.
+  const data: PersonData = {rows, ...(body.picks !== undefined ? {picks: cleanPicks(body.picks)} : was?.picks ? {picks: was.picks} : {}), settings, can: {arrange: flag(can?.arrange), add: flag(can?.arrange) && flag(can?.add), playback: flag(can?.playback), limit: flag(can?.playback) && flag(can?.limit)},
     // Connections are made and undone on their own, after a check; a page save never changes them.
     trakt: was?.trakt ?? false, lists: was?.lists ?? false};
   if (!await env.DB.prepare('SELECT 1 FROM groups WHERE hub = ? AND id = ?').bind(hub, grp).first()) bad(400, 'That group is gone');

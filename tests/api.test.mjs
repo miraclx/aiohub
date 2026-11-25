@@ -178,6 +178,9 @@ test('an invited person is held to what the manager allowed', async () => {
   assert.equal(await own({quality: 'best'}), 200); assert.equal(await own({limit: 'all'}), 403);
   await open({limit: true}); assert.equal(await own({limit: 'teen'}), 200);
   await open({playback: false, limit: true}, settled); assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').can, {arrange: true, add: false, playback: false, limit: false}, 'the limit goes with playback');
+  // Adding a row changes Home, so it goes with arranging: the hub never keeps Add on with Arrange off.
+  await open({arrange: false, add: true}); assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').can, {arrange: false, add: false, playback: false, limit: false}, 'adding goes with arranging');
+  await open({arrange: true});
   for (const [method, path] of [['PUT', '/api/hub'], ['PUT', '/api/groups/family'], ['DELETE', '/api/people/ben'], ['PUT', '/api/services/TorBox'], ['PUT', '/api/keys/tmdb'], ['PUT', '/api/account']]) assert.equal((await guest(method, path, method === 'DELETE' ? undefined : {})).status, 403, path);
 });
 let player;

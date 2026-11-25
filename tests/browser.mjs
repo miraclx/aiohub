@@ -17,8 +17,10 @@ http.createServer(async (request, answer) => {
   const send = (status, body) => {answer.writeHead(status, {'content-type': 'application/json'}); answer.end(JSON.stringify(body));};
   let raw = ''; for await (const chunk of request) raw += chunk;
   if (request.url === '/trakt/oauth/revoke') return send(200, {});
-  // Ada's own Trakt lists (one private) and one she liked, read through the hub's Trakt link once she connects it.
-  if (request.url.startsWith('/trakt/users/me/lists')) return send(200, [{name: 'Heist nights', privacy: 'private', item_count: 12, ids: {trakt: 501}}]);
+  // Ada's own Trakt lists (one private) and one she liked, read through the hub's Trakt link once she connects it: more than Add
+  // row shows at first.
+  if (request.url.startsWith('/trakt/users/me/lists')) return send(200, [{name: 'Heist nights', privacy: 'private', item_count: 12, ids: {trakt: 501}},
+    ...['Rainy days', 'Space operas', 'Courtroom', 'Road trips', 'Slow cinema'].map((name, n) => ({name, privacy: 'public', item_count: 20 + n, ids: {trakt: 502 + n}}))]);
   if (request.url.startsWith('/trakt/users/likes/lists')) return send(200, [{type: 'list', list: {name: 'Sunday westerns', item_count: 8, ids: {trakt: 777}}}]);
   if (request.url.startsWith('/mdblist/user')) return send(request.url.includes('apikey=ada-mdblist-key') ? 200 : 403, {username: 'adalists'});
   request.socket.destroy(); // as if nothing were there
@@ -163,25 +165,32 @@ assert.deepEqual((await onHome.allTextContents()).slice(0, 4), ['Watchlist', 'Re
 await guest.getByRole('switch', {name: 'Show Recently Watched on Home'}).click(); await toast(guest).filter({hasText: '“Recently Watched” is off Home'}).waitFor();
 const followed = await guest.evaluate(async () => {for (let i = 0; i < 40; i++) {const me = (await (await fetch('/api/state')).json()).hub.people[0]; if (me.picks) return me; await new Promise(done => setTimeout(done, 250));} return null;});
 assert.equal(followed.rows, null, 'still following the group Home'); assert.deepEqual(followed.picks, {'recently-watched': false}); await shot(guest, '13d-recently-watched-off');
-// Add row on her own Home: her own Trakt lists first, then the picks. Picking one makes it a row of her own.
+// Add row on her own Home: her own Trakt lists first (five, then the rest on asking), then the ready-made rows in labelled sections.
+// Picking one makes it a row of her own.
 const adding = async (page, name, phone = true) => {
-  await page.getByRole('button', {name: '+ Add row'}).click(); const sheet = page.getByRole('dialog', {name: 'Add a row'}); await sheet.getByText('Or pick one').waitFor();
+  await page.getByRole('button', {name: '+ Add row'}).click(); const sheet = page.getByRole('dialog', {name: 'Add a row'}); await sheet.getByRole('heading', {name: 'Ready-made rows'}).waitFor();
   if (shots) {await page.waitForTimeout(300); await page.screenshot({path: `${shots}/real-${name}-phone.png`}); await page.setViewportSize({width: 1280, height: 900}); await page.waitForTimeout(300); await page.screenshot({path: `${shots}/real-${name}-wide.png`}); await page.setViewportSize({width: 390, height: 844});}
   return sheet;
 };
 let sheet = await adding(guest, '6a-add-row-own');
-await sheet.getByRole('heading', {name: 'Your lists'}).waitFor(); await sheet.getByText('Heist nights').waitFor(); await sheet.getByText('Sunday westerns').waitFor();
-await sheet.getByText('Trakt · 12 titles').waitFor();
-// Without an MDBList key only the TMDB picks are offered, and the rest are said to be waiting for one.
-const picks = await sheet.locator('.suggested li strong').allTextContents();
-// The rows for children (TMDB only) come last without a content limit.
-assert.deepEqual(picks, ['Marvel Cinematic Universe', 'Wizarding World', 'Middle-earth', 'James Bond', 'Pixar', 'Studio Ghibli', 'Kids’ Channels', 'Animation Studios']);
-await sheet.getByText(/more picks read MDBList lists/).waitFor();
+await sheet.getByRole('heading', {name: 'Your lists'}).waitFor(); await sheet.getByText('Heist nights').waitFor(); await sheet.getByText('Trakt · 12 titles').waitFor();
+assert.equal(await sheet.getByText('Sunday westerns').count(), 0, 'past the first five');
+await sheet.getByRole('button', {name: 'Show all 7'}).click(); await sheet.getByText('Sunday westerns').waitFor(); assert.equal(await sheet.getByRole('button', {name: /^Show all/}).count(), 0);
+// Without an MDBList key only the TMDB picks are offered, and the rest are said to be waiting for one. Sections with nothing in them
+// are left out: the lists for children are all MDBList.
+assert.deepEqual(await sheet.locator('.pick-section h4, .pick-section summary').allTextContents(), ['Worlds and series', 'Studios and channels']);
+assert.deepEqual(await sheet.locator('.pick-section').nth(0).locator('li strong').allTextContents(), ['Marvel Cinematic Universe', 'Wizarding World', 'Middle-earth', 'James Bond']);
+assert.deepEqual(await sheet.locator('.pick-section').nth(1).locator('li strong').allTextContents(), ['Pixar', 'Studio Ghibli', 'Kids’ Channels', 'Animation Studios']);
+await sheet.getByText(/more ready-made rows read MDBList lists/).waitFor();
 await sheet.getByRole('button', {name: /^Heist nights/}).click(); await toast(guest).filter({hasText: 'Added “Heist nights”'}).waitFor();
 assert.equal((await onHome.allTextContents())[0], 'Heist nightsYours');
 const mine = await guest.evaluate(async () => {for (let i = 0; i < 40; i++) {const me = (await (await fetch('/api/state')).json()).hub.people[0]; if (me.rows) return me.rows[0]; await new Promise(done => setTimeout(done, 250));} return null;});
 assert.deepEqual([mine.id, mine.origin], ['trakt-mine.501', 'own']);
-await guest.getByRole('button', {name: '+ Add row'}).click(); sheet = guest.getByRole('dialog', {name: 'Add a row'}); await sheet.getByRole('button', {name: /^Heist nights/}).and(guest.locator(':disabled')).waitFor();
+// Already on Home, it stays in its place, dimmed and saying so; so does a ready-made row once added.
+await guest.getByRole('button', {name: '+ Add row'}).click(); sheet = guest.getByRole('dialog', {name: 'Add a row'}); await sheet.getByRole('button', {name: /^Heist nights\s*On Home$/}).and(guest.locator(':disabled')).waitFor();
+await sheet.getByRole('button', {name: /^Pixar/}).click(); await toast(guest).filter({hasText: 'Added “Pixar”'}).waitFor();
+await guest.getByRole('button', {name: '+ Add row'}).click(); await sheet.getByRole('button', {name: /^Pixar\s*On Home$/}).and(guest.locator(':disabled')).waitFor();
+assert.deepEqual(await sheet.locator('.pick-section').nth(1).locator('li strong').allTextContents(), ['Pixar', 'Studio Ghibli', 'Kids’ Channels', 'Animation Studios'], 'nothing shifts');
 await sheet.getByRole('button', {name: 'Close'}).click();
 // Hers alone: the hub's Home, her group's and the manager's view of her own Home never list her lists.
 for (const where of ['/#/hub', '/#/group/family', '/#/person/ada/home']) {
@@ -190,7 +199,7 @@ for (const where of ['/#/hub', '/#/group/family', '/#/person/ada/home']) {
   assert.equal(await theirs.getByText('Heist nights').count(), 0, where); assert.equal(await theirs.getByText('Sunday westerns').count(), 0, where);
   // The manager's view of her Home says why her lists are not there: only she can add them.
   if (where === '/#/person/ada/home') await theirs.getByText('Their own Trakt and MDBList lists stay private', {exact: false}).waitFor(); else assert.equal(await theirs.getByRole('heading', {name: /lists$/}).count(), 0, where);
-  if (where === '/#/hub') await theirs.getByText(/more picks? reads? MDBList lists/).waitFor();
+  if (where === '/#/hub') await theirs.getByText(/more ready-made rows? reads? MDBList lists/).waitFor();
   await theirs.getByRole('button', {name: 'Close'}).click();
 } await guest.goto(BASE + '/#/me/accounts'); await trakt.getByText('Connected as adatrakt').waitFor();
 // The Trakt and MDBList card: always two places side by side. What each pair holds is put in the hub's six-hour keep here (no
@@ -247,6 +256,15 @@ await both(guest, '13i-kept-key');
 await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload(); await owner.getByText('Their watchlist and lists show up on Home.', {exact: false}).waitFor();
 await owner.getByRole('radio', {name: 'MDBList'}).click(); assert.equal(await owner.getByLabel('MDBList API key').count(), 0);
 await toast(owner).filter({hasText: 'Back on MDBList as adalists'}).waitFor();
+// With an MDBList key the lists for children are offered too: folded, at the end of the ready-made rows, without a content limit.
+// The manager's view of her Home says why her own lists are not there.
+await owner.goto(BASE + '/#/person/ada/home'); await owner.reload();
+const keyed = await adding(owner, '6e-add-row-with-key'), young = keyed.locator('details.pick-section');
+assert.equal(await young.locator('summary').textContent(), 'For children 4'); assert.equal(await young.evaluate(fold => fold.open), false);
+assert.equal(await keyed.locator('.pick-section').last().locator('summary').count(), 1, 'for children comes last');
+await keyed.getByRole('button', {name: /^Star Wars/}).waitFor(); await keyed.getByText('Their own Trakt and MDBList lists stay private', {exact: false}).waitFor();
+await young.locator('summary').click(); assert.deepEqual(await young.locator('li strong').allTextContents(), ['Kids’ Movies, around 7', 'Kids’ Shows, around 7', 'Movies for 9 to 12', 'Kids’ Shows, up to 12']);
+await keyed.getByRole('button', {name: 'Close'}).click();
 holds('here-mdblist', [play('w:show/66276:6:6', 'Slow Horses', 'Season 6 · Episode 6', 15, {here: 'has', lists: 'add'}), play('w:movie/603', 'The Matrix', 'Movie', 20, {here: 'has', lists: 'add'})]);
 await guest.reload(); await card.getByRole('heading', {name: 'Finish moving from Here'}).waitFor(); await card.getByRole('button', {name: 'Move 2 plays'}).waitFor(); assert.equal(await columns(), 'Here | MDBList');
 await guest.getByText('Hiding what’s been watched needs MDBList').waitFor({state: 'detached'});
@@ -343,24 +361,51 @@ assert.equal(await owner.getByRole('switch', {name: 'Change playback'}).getAttri
 // Saving says so as soon as the hub has it. The apps catch up beside the page (held here until let go): a second change made
 // meanwhile is saved at once and is still there when they are done, and a problem bringing them in step is said plainly.
 const can = async () => owner.evaluate(async () => (await (await fetch('/api/state')).json()).hub.people.find(person => person.id === 'ada').can);
+// Whether her saved rows hold three For you places, all on.
+const placesSaved = async () => owner.evaluate(async () => (await (await fetch('/api/state')).json()).hub.people.find(person => person.id === 'ada').rows?.filter(row => /^for-you-/.test(row.id) && row.on).length === 3);
 const was = await can(), apps = owner.locator('.toast .apps'), toggle = name => owner.getByRole('switch', {name}).click();
 let letGo, answer = {state: 'ok'}, syncs = 0;
 await owner.route('**/api/sync', async route => {syncs++; await new Promise(done => {letGo = done;}); await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(answer)});});
-await toggle('Arrange their Home'); await toast(owner).filter({hasText: 'Saved'}).waitFor(); await apps.filter({hasText: 'Apps catching up…'}).waitFor();
-await toggle('Add their own rows');
-for (let i = 0; i < 40 && (await can()).add === was.add; i++) await owner.waitForTimeout(150);
-assert.deepEqual(await can(), {...was, arrange: !was.arrange, add: !was.add}, 'both changes saved while the apps were still catching up');
+// Adding a row changes Home, so Add goes with Arrange: turning Arrange off holds Add off too.
+assert.ok(was.arrange && was.add);
+await toggle('Add their own rows'); await toast(owner).filter({hasText: 'Saved'}).waitFor(); await apps.filter({hasText: 'Apps catching up…'}).waitFor();
+await toggle('Arrange their Home');
+for (let i = 0; i < 40 && (await can()).arrange === was.arrange; i++) await owner.waitForTimeout(150);
+assert.deepEqual(await can(), {...was, arrange: false, add: false}, 'both changes saved while the apps were still catching up');
 assert.equal(syncs, 1, 'one run at a time'); letGo();
 // The second change asked for one more run after the first.
 for (let i = 0; i < 40 && syncs < 2; i++) await owner.waitForTimeout(100);
 assert.equal(syncs, 2); letGo(); await apps.filter({hasText: 'Apps up to date'}).waitFor(); await shot(owner, '17-apps-up-to-date');
-assert.equal(await owner.getByRole('switch', {name: 'Add their own rows'}).getAttribute('aria-checked'), String(!was.add), 'the page kept the second change');
+assert.equal(await owner.getByRole('switch', {name: 'Arrange their Home'}).getAttribute('aria-checked'), 'false', 'the page kept the second change');
+assert.ok(await owner.getByRole('switch', {name: 'Add their own rows'}).isDisabled()); await owner.getByText('Turn on Arrange their Home first.').waitFor();
+// Someone saved with Add on and Arrange off before the two went together (made here in the local database) gets no Add row: the
+// hub would refuse what it adds.
+sqlLocal(`UPDATE people SET data = json_set(data, '$.can.add', json('true')) WHERE id = 'ada'`);
+await guest.goto(BASE + '/#/me/home'); await guest.reload(); await guest.locator('.rows li').first().waitFor();
+assert.equal(await guest.getByRole('button', {name: '+ Add row'}).count(), 0, 'no Add row without Arrange');
 answer = {state: 'error', message: 'AIOStreams did not answer. Your changes are saved here and will be sent on the next try.'};
-await toggle('Add their own rows'); await toast(owner).filter({hasText: 'Saved'}).waitFor();
+await toggle('Arrange their Home'); await toast(owner).filter({hasText: 'Saved'}).waitFor();
 for (let i = 0; i < 40 && syncs < 3; i++) await owner.waitForTimeout(100);
 letGo(); await apps.filter({hasText: 'AIOStreams did not answer'}).waitFor(); await shot(owner, '17b-apps-note');
 await owner.unroute('**/api/sync'); await apps.click(); assert.equal(await apps.count(), 0, 'a note goes when tapped');
-await toggle('Arrange their Home'); for (let i = 0; i < 40 && (await can()).arrange !== was.arrange; i++) await owner.waitForTimeout(150);
+await toggle('Add their own rows'); for (let i = 0; i < 40 && (await can()).add !== was.add; i++) await owner.waitForTimeout(150);
+assert.deepEqual(await can(), was);
+// For you rows come only where each person's apps use their own AIOMetadata setup, so here the page is told the hub has that. Add
+// row offers another, saying how many are on Home. Someone who arranges but cannot add can remove one and bring it back from Not on
+// Home.
+await guest.route('**/api/state', async route => {const response = await route.fetch(), body = await response.json(); body.hub.front = true; await route.fulfill({response, json: body});});
+await guest.reload(); const places = guest.locator('.rows .row', {has: guest.locator('h3', {hasText: /^For you$/})}); await places.first().waitFor(); assert.equal(await places.count(), 3);
+const offered = await adding(guest, '6f-add-row-for-you');
+await offered.getByRole('button', {name: /^Another For you row\s*Picked for you every day, from what you watch · 3 on Home$/}).waitFor(); await offered.getByRole('button', {name: 'Close'}).click();
+await toggle('Add their own rows'); for (let i = 0; i < 40 && (await can()).add; i++) await owner.waitForTimeout(150);
+await guest.reload(); await places.first().waitFor(); assert.equal(await guest.getByRole('button', {name: '+ Add row'}).count(), 0);
+await places.first().getByRole('button', {name: 'Remove'}).click(); await toast(guest).filter({hasText: 'Removed a For you row'}).waitFor(); assert.equal(await places.count(), 2);
+await guest.locator('.off').evaluate(list => {list.open = true;});
+await guest.locator('.off li', {has: guest.locator('h3', {hasText: /^For you$/})}).getByRole('button', {name: 'Show'}).click(); await toast(guest).filter({hasText: '“For you” is on Home'}).waitFor();
+assert.equal(await places.count(), 3); await guest.unroute('**/api/state');
+// Saved with all three on. Her saves moved her version on, so the manager's page reads it again before the next change.
+for (let i = 0; i < 40 && !(await placesSaved()); i++) await owner.waitForTimeout(150);
+assert.ok(await placesSaved(), 'the place shown again is saved'); await owner.reload(); await owner.getByRole('switch', {name: 'Add their own rows'}).waitFor(); await toggle('Add their own rows'); for (let i = 0; i < 40 && !(await can()).add; i++) await owner.waitForTimeout(150);
 assert.deepEqual(await can(), was);
 await owner.goto(BASE + '/#/account'); await owner.getByRole('button', {name: 'New codes'}).click(); await owner.locator('.codes li').nth(9).waitFor(); await shot(owner, '9-codes');
 const state = await owner.evaluate(() => fetch('/api/state').then(answer => answer.text()));

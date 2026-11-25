@@ -470,13 +470,13 @@ function PersonSections({page, person, tab, mine}: {page: PageProps; person: Per
   const {hub, update, toast} = page, group = hub.groups.find(item => item.id === person.groupId)!, own = useOwnPicks(page, person, mine);
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
   const props = editor(page, group, person, mine), rows = personRows(hub, person);
-  const canArrange = !mine || person.can.arrange, canAdd = !mine || person.can.add;
+  // Adding a row changes Home, which the hub allows only with arranging on too (someone saved before that was enforced may have add alone).
+  const canArrange = !mine || person.can.arrange, canAdd = !mine || person.can.arrange && person.can.add;
   return <>
     {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} mine={mine} person={person.id} level="own" rows={rows} front={!!hub.front} canAdd={canAdd} canArrange={canArrange}
       tag={row => row.origin === 'own' && !row.core ? (mine ? 'Yours' : 'Personal') : undefined}
-      lists={page.live ? own.lists : ownLists(person)} listsHint={page.live ? undefined : mine ? 'Connect Trakt or MDBList under Accounts to pick from your own lists.' : `Shows up once ${person.name} connects Trakt or MDBList.`}
+      lists={page.live ? own.lists : ownLists(person)} listsHint={page.live ? undefined : 'Connect Trakt or MDBList under Accounts to pick from your own lists.'}
       because={own.because} limit={props.resolved.values.limit} listsOk={!!hub.mdblist || person.lists} keyHint={mine ? 'Your own MDBList key, under Accounts, works too.' : <>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>}
-      onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined}
       onChange={(next: Row[], note) => edit(target => {
         // Only a Trakt row (or a row for children) switched on or off while following the Home above: kept as their choice, so they still follow it.
         const flipped = !target.rows && next.length === rows.length && next.every((row, at) => row.id === rows[at].id) ? next.filter((row, at) => row.on !== rows[at].on) : [];
@@ -526,8 +526,9 @@ export function PersonPage(page: PageProps & {id: string; tab: string}) {
       <Invite page={page} person={person}/>
       <h3 className="sub">{person.name} can</h3>
       <div className="card settings">
-        <Setting title="Arrange their Home" hint="Reorder rows and turn them on or off."><Switch label="Arrange their Home" checked={person.can.arrange} onChange={value => edit(target => {target.can.arrange = value;}, 'Saved')}/></Setting>
-        <Setting title="Add their own rows" hint="Paste list links and pick collections."><Switch label="Add their own rows" checked={person.can.add} onChange={value => edit(target => {target.can.add = value;}, 'Saved')}/></Setting>
+        <Setting title="Arrange their Home" hint="Reorder rows and turn them on or off."><Switch label="Arrange their Home" checked={person.can.arrange} onChange={value => edit(target => {target.can.arrange = value; if (!value) target.can.add = false;}, 'Saved')}/></Setting>
+        {/* Adding a row changes Home, so it goes with arranging, as the hub holds it. */}
+        <Setting title="Add their own rows" hint={person.can.arrange ? 'Paste list links and pick ready-made rows.' : 'Turn on Arrange their Home first.'}><Switch label="Add their own rows" checked={person.can.arrange && person.can.add} disabled={!person.can.arrange} onChange={value => edit(target => {target.can.add = value;}, 'Saved')}/></Setting>
         <Setting title="Change playback" hint="Quality, languages, subtitles and the rest."><Switch label="Change playback" checked={person.can.playback} onChange={value => edit(target => {target.can.playback = value; if (!value) target.can.limit = false;}, 'Saved')}/></Setting>
         {person.can.playback && <Setting title="Change their content limit" hint={person.can.limit ? 'They can raise or lower it themselves.' : 'Stays where you set it, while they change the rest.'}><Switch label="Change their content limit" checked={!!person.can.limit} onChange={value => edit(target => {target.can.limit = value;}, 'Saved')}/></Setting>}
       </div>
@@ -579,7 +580,7 @@ function GroupView(page: PageProps & {id: string; tab: string; group: Group; mem
     <a className="back" href="#/">← People</a>
     <div className="page-head"><h1>{group.name}</h1><p className="muted">Everyone in this group starts here. {members.length} {members.length === 1 ? 'person' : 'people'}{custom ? `, ${custom} with their own changes` : ''}.</p></div>
     <Tabs base={`/group/${id}`} tab={tab} tabs={[['home', 'Home'], ['playback', 'Playback'], ['sources', 'Sources'], ['activity', 'Activity'], ['settings', 'Settings']]}/>
-    {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="group" limit={props.resolved.values.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} front={!!hub.front} rows={withForYou(withKids(placed(groupRows(hub, group)), props.resolved.values.limit === 'kids'), !!hub.front)} person={key} tag={row => row.origin === 'group' ? 'This group' : undefined} onChange={(rows, note) => edit(target => {target.rows = rows;}, note)}
+    {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} level="group" limit={props.resolved.values.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} front={!!hub.front} rows={withForYou(withKids(placed(groupRows(hub, group)), props.resolved.values.limit === 'kids'), !!hub.front)} person={key} tag={row => row.origin === 'group' ? 'This group' : undefined} onChange={(rows, note) => edit(target => {target.rows = rows;}, note)}
       onFollow={group.rows ? () => edit(target => {target.rows = null;}, `Following ${HUB} again`) : undefined} followLabel="Use the default Home again"/>}
     {tab === 'home' && <ForYouEditor {...props}/>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
@@ -609,7 +610,7 @@ export function HubPage(page: PageProps & {tab: string}) {
     <a className="back" href="#/">← People</a>
     <div className="page-head"><h1>Hub</h1><p className="muted">What every group starts with, where things play from, and the hub’s own setup. A group or a person can change anything for themselves.</p></div>
     <Tabs base="/hub" tab={tab} tabs={[['home', 'Home'], ['playback', 'Playback'], ['sources', 'Sources'], ['general', 'General']]}/>
-    {tab === 'home' && <><HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} onBuild={SAMPLE ? soon(toast, 'the AIOMetadata builder') : undefined} level="hub" limit={hub.defaults.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} front={!!hub.front} rows={withForYou(placed(hub.rows), !!hub.front)} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{page.live && !hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p><ForYouEditor {...props}/></>}
+    {tab === 'home' && <><HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} level="hub" limit={hub.defaults.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} front={!!hub.front} rows={withForYou(placed(hub.rows), !!hub.front)} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{page.live && !hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p><ForYouEditor {...props}/></>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
     {tab === 'general' && page.live && <><ServerName hub={hub} update={update} toast={toast}/><Servers hub={hub} live={page.live} toast={toast}/><Advanced live={page.live} toast={toast}/><Background hub={hub}/></>}
@@ -636,7 +637,7 @@ function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
   // One line a setup: what it is and a way in, its keys folded away until asked for.
   const [keys, setKeys] = useState<string | null>(null);
   const door = (key: string, title: string, found: Door | null, note: string) => <Fragment key={key}>
-    <Setting title={title} hint={found ? note : 'Not made yet. It appears once the hub has its keys.'}>
+    <Setting title={title} hint={found ? note || undefined : 'Not made yet. It appears once the hub has its keys.'}>
       {found && <div className="door-actions"><button type="button" className="ghost small" aria-expanded={keys === key} onClick={() => setKeys(keys === key ? null : key)}>{keys === key ? 'Hide keys' : 'Keys'}</button>
         <a className="ghost small button" href={found.open} target="_blank" rel="noreferrer" aria-label={`Open ${title}`}>Open</a></div>}</Setting>
     {found && keys === key && <dl className="creds inner door-keys"><div><dt>ID</dt><dd><code>{found.id}</code><button type="button" className="ghost small" onClick={copy(found.id)}>Copy</button></dd></div>
@@ -655,10 +656,11 @@ function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
         {door('aiostreams', 'AIOStreams', doors.aiostreams, doors.front ? 'Finds the streams for everyone: sources, filters, sorting and the stream label.' : 'Sources, filters, sorting and the stream label.')}
         {door('aiometadata', 'AIOMetadata', doors.aiometadata, doors.front ? 'The hub’s own setup: the Home everyone starts from, and its posters.' : 'Catalogs, collections and posters for the shared Home.')}
       </div>
-      {!!groupsOwn.length && <><h3 className="sub">Groups</h3><div className="card settings">
-        {groupsOwn.map(found => door(`g:${found.name}`, found.name, found, 'On AIOMetadata while this group’s Home or looks differ from the hub’s; removed once they don’t.'))}</div></>}
-      {!!peopleOwn.length && <><h3 className="sub">People</h3><div className="card settings">
-        {peopleOwn.map(found => door(`p:${found.name}`, found.name, found, found.player ? 'Their Home, looks, accounts and what they’ve watched, on AIOMetadata. Their apps reach it through the hub.' : 'On AIOMetadata while their Home or looks differ from their group’s; removed once they don’t.'))}</div></>}
+      {/* What a group's or a person's setup is, said once above them rather than on every line. */}
+      {!!groupsOwn.length && <><h3 className="sub">Groups</h3><p className="muted small door-about">Made on AIOMetadata while a group’s Home or looks differ from the hub’s, and removed once they don’t.</p><div className="card settings">
+        {groupsOwn.map(found => door(`g:${found.name}`, found.name, found, ''))}</div></>}
+      {!!peopleOwn.length && <><h3 className="sub">People</h3><p className="muted small door-about">{peopleOwn.every(found => found.player) ? 'Each person’s own setup on AIOMetadata: their Home, looks, accounts and what they’ve watched. Their apps reach it through the hub.' : 'Made on AIOMetadata while someone’s Home or looks differ from their group’s, and removed once they don’t.'}</p><div className="card settings">
+        {peopleOwn.map(found => door(`p:${found.name}`, found.name, found, ''))}</div></>}
       <div className="card settings door-note"><Setting column title="What the hub keeps putting back" hint={`The hub rewrites the things it manages each time you change something here: debrid account, the sources it lists, quality and size, languages, the stream label, people, Home rows and collections. Anything else you add there is left alone. ${doors.front ? 'Each person’s Home lives on their own AIOMetadata setup, listed above.' : 'A group’s or a person’s own Home lives in its own AIOMetadata setup, listed above when there is one.'}`}><button type="button" className="ghost small" onClick={() => setDoors(null)}>Hide</button></Setting></div>
     </>}
   </section>;

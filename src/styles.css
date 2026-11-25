@@ -218,14 +218,15 @@ input:not([type=range]):focus { outline: 2px solid var(--accent); outline-offset
 .sheet::backdrop { background: #000a; backdrop-filter: blur(3px); }
 .sheet-body { background: var(--bg); border: 1px solid var(--line); border-radius: 22px 22px 0 0; padding: 20px 20px calc(24px + env(safe-area-inset-bottom, 0px)); max-height: 88dvh; overflow-y: auto; }
 @media (min-width: 640px) { .sheet-body { border-radius: 22px; } }
-.sheet header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+/* The header stays in view, with Close, while a long sheet scrolls under it. */
+.sheet header { display: flex; justify-content: space-between; align-items: center; position: sticky; top: -20px; z-index: 1; background: var(--bg); margin: -20px 0 8px; padding: 20px 0 10px; }
 .sheet header .ghost { width: var(--tap); padding: 0; }
 .sheet-sub { margin: 24px 0 10px; color: var(--muted); font-size: 14px; }
 .picks { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.picks button { display: grid; gap: 10px; width: 100%; text-align: left; background: var(--surface); border-radius: 14px; padding: 12px 14px; }
+.picks button { display: grid; width: 100%; text-align: left; background: var(--surface); border-radius: 14px; padding: 10px 14px; }
 .picks button:hover { background: var(--raised); }
-.picks .posters span { flex-basis: 48px; border-radius: 6px; }
-.picks span:last-child { display: flex; justify-content: space-between; align-items: baseline; }
+/* Picks in Add row: the name over what it is, so neither is cut short on a phone or in two columns. */
+.picks span { display: grid; gap: 1px; }
 .picks small { color: var(--muted); }
 
 /* activity */
@@ -304,8 +305,7 @@ button.from.own:hover { text-decoration: underline; }
 .row.locked { padding-left: 16px; }
 .row-head h3 { display: flex; align-items: center; flex-wrap: wrap; }
 .sheet-lead { margin-bottom: 16px; }
-.picks.compact button { padding: 12px 14px; }
-.picks button:disabled { opacity: .55; }
+.picks button:disabled { opacity: .55; cursor: default; background: var(--surface); }
 .folders { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .folders li { display: flex; align-items: center; gap: 10px; background: var(--surface); border-radius: 12px; padding: 8px 12px 8px 2px; min-height: 56px; }
 .folders li.dragging { opacity: .6; }
@@ -378,18 +378,11 @@ button.from.own:hover { text-decoration: underline; }
   .setting input:not([type=range]), .setting select { max-width: 100%; }
   .connect { flex-wrap: wrap; }
 }
-.field-row.region { margin-top: 0; }
-.field-row.region select { flex: 1; min-width: 0; }
 .folders input { min-height: 40px !important; border-color: transparent !important; background: transparent !important; font-weight: 600; padding: 0 8px !important; }
 .folders input:focus { background: var(--bg) !important; }
 .addons small .link { font-size: 14px; }
 @media (max-width: 420px) { .top nav a { padding: 7px 10px; } .brand { font-size: 16px; } }
 .sheet-sub.first { margin-top: 0; }
-.region { display: grid; gap: 10px; }
-.region-picks { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.region-picks label { display: grid; gap: 6px; color: var(--muted); }
-.region-picks select { width: 100%; color: var(--text); }
-.region-go { display: flex; gap: 10px; justify-content: space-between; align-items: center; flex-wrap: wrap; }
 .note { margin-top: 8px; }
 /* Sign-in details must be readable in full on a phone: label above, value wrapping instead of being cut off. */
 @media (max-width: 560px) {
@@ -446,9 +439,14 @@ a.primary.button { display: inline-flex; align-items: center; min-height: 34px; 
 .trackers .link.stay { color: var(--muted); text-decoration: underline; font-weight: 400; }
 .trackers .more-plays { display: block; margin: 0 auto 12px; }
 .trackers .dot.wait { background: var(--muted); }
-/* Picks in Add row: the name and its kind never run together on a narrow screen. */
-.picks.compact span:last-child { gap: 12px; }
-.picks.compact small { text-align: right; }
+/* Add row: small labelled sections of picks, two columns where the sheet is wide enough to keep each name whole. */
+label.sheet-sub { display: block; }
+.pick-section { margin-top: 14px; }
+.pick-section h4, .pick-section summary { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
+.pick-section summary { cursor: pointer; display: flex; align-items: center; gap: 8px; min-height: 32px; }
+.picks + .link.more { display: block; margin-top: 10px; }
+.foot p + p { margin-top: 6px; }
+@media (min-width: 640px) { .picks { grid-template-columns: 1fr 1fr; } }
 /* A key kept while progress is Here: the way to remove it stays quiet. */
 .kept-key .link { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
 /* Where progress is kept: its own card under the accounts. */
@@ -461,3 +459,4 @@ a.primary.button { display: inline-flex; align-items: center; min-height: 34px; 
 .door-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .settings .door-keys { border-top: 1px solid var(--line); }
 .door-note { margin-top: 16px; }
+.door-about { margin: -4px 0 10px; }

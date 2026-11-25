@@ -145,7 +145,8 @@ export const withKids = (rows: Row[], kids: boolean) => {
 const kidsRows = (): Row[] => [...KIDS_IDS].map(id => suggestionOf(id)!).map(item => ({id: item.id, title: item.title, kind: item.kind, source: item.source, origin: 'hub', on: true}));
 /* "For you" places: rows the hub fills for each person every day with something picked for them (foryou.ts on the Worker),
    only where each person's apps sign in to their own AIOMetadata setup. A Home without any gets three, spread through it; a place
-   has no Remove and no name of its own (the pick names it), and is switched off like a Trakt row. More can be added from Add row. */
+   has no name of its own (the pick names it), and Remove only switches it off, to Not on Home, like a Trakt row. More can be added
+   from Add row. */
 export const PLACE = /^for-you-(\d{1,2})$/;
 export const isPlace = (id: string) => PLACE.test(id);
 export const placeRow = (n: number, on = true): Row => ({id: `for-you-${n}`, title: 'For you', kind: 'For you', source: 'Picked daily', origin: 'hub', on, core: true});
@@ -176,74 +177,76 @@ export const pickable = (id: string) => PICKABLE.has(id) || isPlace(id);
 /* Where a row's titles come from, as shown: Trending is Trakt's chart, or under a content limit a TMDB search (native.ts). */
 export const sourceShown = (row: Row, limit: Limit = 'all') => (row.id === 'trending-movies' || row.id === 'trending-series') && limit === 'all' ? 'Trakt' : row.source;
 export const isTrakt = (item: Row) => item.source === 'Trakt' || item.source.startsWith('Trakt ·');
-/* ---------- suggested rows ("Or pick one" in Add row) ----------
-   Each is a real row: its id is the Home row it makes, so one already on a Home is not offered again. A part is one source:
+/* ---------- suggested rows ("Ready-made rows" in Add row) ----------
+   Each is a real row: its id is the Home row it makes, so one already on a Home shows as on it. A part is one source:
    a public MDBList list (read with the hub's MDBList key, or the person's own), a TMDB collection or a TMDB search (the TMDB key
-   only). A row with tabs is a collection, one tab per part. Ids and lists were checked on 2026-11-20. */
+   only). A row with folders is a collection, one folder per part. Ids and lists were checked on 2026-11-20. */
 export type Part = {mdblist: number; type: 'movie' | 'series'} | {collection: number} | {discover: string; type: 'movie' | 'series'; params: Record<string, string>};
 export type Limit = Settings['limit'];
 export interface Suggestion {
   id: string; title: string; kind: string; source: string; parts: {title: string; part: Part; cover?: string}[];
-  // hide: limits under which most of it would be filtered out; kids: a row for children, first under a limit; season: [from, to] as MM-DD.
-  hide?: Limit[]; kids?: boolean; season?: [string, string];
+  // section: where Add row lists it (SECTIONS); hide: limits under which most of it would be filtered out; season: [from, to] as MM-DD.
+  section: Section; hide?: Limit[]; season?: [string, string];
 }
+/* Add row lists the suggestions in small labelled sections, in this order; under a content limit "For children" comes first. */
+export const SECTIONS = [{id: 'season', title: 'In season'}, {id: 'worlds', title: 'Worlds and series'}, {id: 'studios', title: 'Studios and channels'},
+  {id: 'acclaimed', title: 'Acclaimed and new'}, {id: 'children', title: 'For children'}] as const;
+export type Section = typeof SECTIONS[number]['id'];
 // AIOMetadata works this out each day (tmdbDiscoverDateTokens.ts): only what is out already.
 const TODAY = '__tmdb_date__:today:to';
 const tmdbOnly = (parts: Suggestion['parts']) => parts.every(item => !('mdblist' in item.part));
-const one = (id: string, title: string, kind: string, part: Part, extra: Partial<Suggestion> = {}): Suggestion => ({id, title, kind, source: 'mdblist' in part ? 'MDBList' : 'TMDB', parts: [{title, part}], ...extra});
+const one = (id: string, title: string, kind: string, part: Part, extra: Partial<Suggestion> & {section: Section}): Suggestion => ({id, title, kind, source: 'mdblist' in part ? 'MDBList' : 'TMDB', parts: [{title, part}], ...extra});
 // Folder art for suggested collections, shown as each folder's tile in the apps: Kometa's default images (pinned), and ours where it
 // has none (public/covers in this repository; the 2023 CBBC logo is public domain).
 const KOMETA = 'https://raw.githubusercontent.com/Kometa-Team/Default-Images/ab842c454921a738121e7744209e38def7e2a27d/';
 const OWN_ART = 'https://raw.githubusercontent.com/miraclx/aiohub/main/public/covers/';
-const tabs = (id: string, title: string, parts: Suggestion['parts'], extra: Partial<Suggestion> = {}): Suggestion => ({id, title, kind: `Collection · ${parts.length} tabs`, source: tmdbOnly(parts) ? 'TMDB' : 'mdblist' in parts[0].part && parts.every(item => 'mdblist' in item.part) ? 'MDBList' : 'TMDB and MDBList', parts, ...extra});
-const list = (id: number, type: 'movie' | 'series', title: string, extra: Partial<Suggestion> = {}) => one(`mdblist.${id}.${type}`, title, type === 'movie' ? 'Movies' : 'Series', {mdblist: id, type}, extra);
+const tabs = (id: string, title: string, parts: Suggestion['parts'], extra: Partial<Suggestion> & {section: Section}): Suggestion => ({id, title, kind: `Collection · ${parts.length} folders`, source: tmdbOnly(parts) ? 'TMDB' : 'mdblist' in parts[0].part && parts.every(item => 'mdblist' in item.part) ? 'MDBList' : 'TMDB and MDBList', parts, ...extra});
+const list = (id: number, type: 'movie' | 'series', title: string, extra: Partial<Suggestion> & {section: Section}) => one(`mdblist.${id}.${type}`, title, type === 'movie' ? 'Movies' : 'Series', {mdblist: id, type}, extra);
 // The order is the fixed popularity order: what most households reach for first.
 export const SUGGESTED: Suggestion[] = [
-  list(8113, 'movie', 'Christmas Movies', {season: ['11-15', '12-31']}),
-  list(41422, 'movie', 'Halloween Movies', {season: ['10-01', '11-01'], hide: ['kids', 'teen']}),
-  tabs('sg.star-wars', 'Star Wars', [{title: 'Movies', part: {mdblist: 198749, type: 'movie'}}, {title: 'Shows', part: {mdblist: 202585, type: 'series'}}], {hide: ['kids']}),
-  tabs('sg.mcu', 'Marvel Cinematic Universe', [{title: 'Movies', part: {discover: 'mcu', type: 'movie', params: {with_keywords: '180547', sort_by: 'primary_release_date.asc', 'primary_release_date.lte': TODAY}}}, {title: 'Shows', part: {mdblist: 32047, type: 'series'}}], {hide: ['kids']}),
-  tabs('sg.wizarding-world', 'Wizarding World', [{title: 'Harry Potter', part: {collection: 1241}}, {title: 'Fantastic Beasts', part: {collection: 435259}}], {hide: ['kids']}),
-  tabs('sg.middle-earth', 'Middle-earth', [{title: 'The Lord of the Rings', part: {collection: 119}}, {title: 'The Hobbit', part: {collection: 121938}}], {hide: ['kids']}),
-  one('sg.bond', 'James Bond', 'Movies, in order', {collection: 645}, {hide: ['kids']}),
-  one('sg.pixar', 'Pixar', 'Movies', {discover: 'pixar', type: 'movie', params: {with_companies: '3', sort_by: 'popularity.desc', 'with_runtime.gte': '40', 'primary_release_date.lte': TODAY}}),
-  one('sg.ghibli', 'Studio Ghibli', 'Movies', {discover: 'ghibli', type: 'movie', params: {with_companies: '10342', sort_by: 'popularity.desc', 'primary_release_date.lte': TODAY}}),
-  list(33459, 'movie', 'Best Picture Winners', {hide: ['kids', 'teen']}),
-  list(101881, 'movie', 'IMDb Top 250 Movies', {hide: ['kids', 'teen']}),
-  list(101882, 'series', 'IMDb Top 250 Shows', {hide: ['kids', 'teen']}),
-  list(86934, 'movie', 'New on Digital', {hide: ['kids']}),
+  list(8113, 'movie', 'Christmas Movies', {section: 'season', season: ['11-15', '12-31']}),
+  list(41422, 'movie', 'Halloween Movies', {section: 'season', season: ['10-01', '11-01'], hide: ['kids', 'teen']}),
+  tabs('sg.star-wars', 'Star Wars', [{title: 'Movies', part: {mdblist: 198749, type: 'movie'}}, {title: 'Shows', part: {mdblist: 202585, type: 'series'}}], {section: 'worlds', hide: ['kids']}),
+  tabs('sg.mcu', 'Marvel Cinematic Universe', [{title: 'Movies', part: {discover: 'mcu', type: 'movie', params: {with_keywords: '180547', sort_by: 'primary_release_date.asc', 'primary_release_date.lte': TODAY}}}, {title: 'Shows', part: {mdblist: 32047, type: 'series'}}], {section: 'worlds', hide: ['kids']}),
+  tabs('sg.wizarding-world', 'Wizarding World', [{title: 'Harry Potter', part: {collection: 1241}}, {title: 'Fantastic Beasts', part: {collection: 435259}}], {section: 'worlds', hide: ['kids']}),
+  tabs('sg.middle-earth', 'Middle-earth', [{title: 'The Lord of the Rings', part: {collection: 119}}, {title: 'The Hobbit', part: {collection: 121938}}], {section: 'worlds', hide: ['kids']}),
+  one('sg.bond', 'James Bond', 'Movies, in order', {collection: 645}, {section: 'worlds', hide: ['kids']}),
+  one('sg.pixar', 'Pixar', 'Movies', {discover: 'pixar', type: 'movie', params: {with_companies: '3', sort_by: 'popularity.desc', 'with_runtime.gte': '40', 'primary_release_date.lte': TODAY}}, {section: 'studios'}),
+  one('sg.ghibli', 'Studio Ghibli', 'Movies', {discover: 'ghibli', type: 'movie', params: {with_companies: '10342', sort_by: 'popularity.desc', 'primary_release_date.lte': TODAY}}, {section: 'studios'}),
+  list(33459, 'movie', 'Best Picture Winners', {section: 'acclaimed', hide: ['kids', 'teen']}),
+  list(101881, 'movie', 'IMDb Top 250 Movies', {section: 'acclaimed', hide: ['kids', 'teen']}),
+  list(101882, 'series', 'IMDb Top 250 Shows', {section: 'acclaimed', hide: ['kids', 'teen']}),
+  list(86934, 'movie', 'New on Digital', {section: 'acclaimed', hide: ['kids']}),
   // Kids' TV channels and animation studios, from TMDB (network and company ids checked on 2026-11-21): under a limit each folder
   // asks TMDB for rated titles only, so they come full.
   tabs('sg.kids-channels', 'Kids’ Channels', ([['Disney Channel', 54], ['Disney Junior', 281], ['Disney XD', 44], ['Cartoon Network', 56], ['Nickelodeon', 13], ['Nick Jr.', 35, 'Nick Jr'], ['PBS Kids', 122], ['CBeebies', 166, 'Cbeebies'], ['CBBC', 15, null]] as [string, number, (string | null)?][])
-    .map(([title, id, art]) => ({title, cover: art === null ? `${OWN_ART}cbbc.jpg` : `${KOMETA}network/color/${encodeURIComponent(art ?? title)}.jpg`, part: {discover: `network-${id}`, type: 'series' as const, params: {with_networks: String(id), sort_by: 'popularity.desc', 'vote_count.gte': '5'}}})), {kids: true}),
+    .map(([title, id, art]) => ({title, cover: art === null ? `${OWN_ART}cbbc.jpg` : `${KOMETA}network/color/${encodeURIComponent(art ?? title)}.jpg`, part: {discover: `network-${id}`, type: 'series' as const, params: {with_networks: String(id), sort_by: 'popularity.desc', 'vote_count.gte': '5'}}})), {section: 'studios'}),
   tabs('sg.animation-studios', 'Animation Studios', ([['Pixar', 3], ['Disney Animation', 6125, 'Walt Disney Animation Studios'], ['DreamWorks', 521, 'DreamWorks Pictures'], ['Illumination', 6704, 'Illumination Entertainment'], ['Sony Animation', 2251, 'Sony Pictures Animation'], ['Studio Ghibli', 10342], ['Aardman', 297], ['LAIKA', 11537, 'Laika Entertainment']] as [string, number, string?][])
-    .map(([title, id, art]) => ({title, cover: `${KOMETA}studio/${encodeURIComponent(art ?? title)}.jpg`, part: {discover: `studio-${id}`, type: 'movie' as const, params: {with_companies: String(id), sort_by: 'popularity.desc', 'with_runtime.gte': '40', 'primary_release_date.lte': TODAY}}})), {kids: true}),
+    .map(([title, id, art]) => ({title, cover: `${KOMETA}studio/${encodeURIComponent(art ?? title)}.jpg`, part: {discover: `studio-${id}`, type: 'movie' as const, params: {with_companies: String(id), sort_by: 'popularity.desc', 'with_runtime.gte': '40', 'primary_release_date.lte': TODAY}}})), {section: 'studios'}),
   // For children. Suggested only, never on by default. (The hub's "Popular Animated Shows" list is not for children.)
-  list(13621, 'movie', 'Kids’ Movies, around 7', {kids: true}),
-  list(154863, 'series', 'Kids’ Shows, around 7', {kids: true}),
-  list(185001, 'movie', 'Movies for 9 to 12', {kids: true}),
-  list(65386, 'series', 'Kids’ Shows, up to 12', {kids: true}),
+  list(13621, 'movie', 'Kids’ Movies, around 7', {section: 'children'}),
+  list(154863, 'series', 'Kids’ Shows, around 7', {section: 'children'}),
+  list(185001, 'movie', 'Movies for 9 to 12', {section: 'children'}),
+  list(65386, 'series', 'Kids’ Shows, up to 12', {section: 'children'}),
 ];
 export const suggestionOf = (id: string) => SUGGESTED.find(item => item.id === id);
-/* Whether a suggestion reads an MDBList list: all of it ('all'), some tabs ('some'), or none. */
+/* Whether a suggestion reads an MDBList list: all of it ('all'), some folders ('some'), or none. */
 export const needsLists = (item: Suggestion) => item.parts.every(part => 'mdblist' in part.part) ? 'all' : item.parts.some(part => 'mdblist' in part.part) ? 'some' : 'none';
-/* The suggestions for one Home, in order: what is not on it yet, in season, and suited to its content limit. Under a limit the rows
-   for children come first. `because`: suggestion id -> a title the person watched (their own Home only); those lead. */
+/* The suggestions for one Home, in order: in season and suited to its content limit, those on it already included (Add row shows
+   them as on Home). `because`: suggestion id -> a title the person watched (their own Home only); those lead their section. */
 export function suggestedFor(has: (id: string) => boolean, limit: Limit, lists: boolean, today = new Date(), because: Record<string, string> = {}) {
   const day = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  const shown = SUGGESTED.filter(item => !has(item.id) && !item.hide?.includes(limit) && (!item.season || (day >= item.season[0] && day <= item.season[1])) && (lists || needsLists(item) !== 'all'));
-  const rank = (item: Suggestion) => because[item.id] ? 0 : item.kids ? (limit !== 'all' ? 1 : 3) : 2;
-  return {picks: shown.map((item, at) => ({item, at})).sort((a, b) => rank(a.item) - rank(b.item) || a.at - b.at).map(({item}) => item),
+  const fits = (item: Suggestion) => !item.hide?.includes(limit) && (!item.season || (day >= item.season[0] && day <= item.season[1]));
+  const shown = SUGGESTED.filter(item => fits(item) && (lists || has(item.id) || needsLists(item) !== 'all'));
+  return {picks: shown.map((item, at) => ({item, at})).sort((a, b) => Number(!because[a.item.id]) - Number(!because[b.item.id]) || a.at - b.at).map(({item}) => item),
     // How many are held back only for want of an MDBList key.
-    locked: lists ? 0 : SUGGESTED.filter(item => !has(item.id) && !item.hide?.includes(limit) && (!item.season || (day >= item.season[0] && day <= item.season[1])) && needsLists(item) === 'all').length};
+    locked: lists ? 0 : SUGGESTED.filter(item => fits(item) && !has(item.id) && needsLists(item) === 'all').length};
 }
 // What a connected account would list. Invented names.
 export const ownLists = (person: {trakt: boolean; lists: boolean}) => [
   ...(person.trakt ? [{id: 'tl-rewatch', title: 'Weekend rewatches', kind: 'List · 24 titles', source: 'Trakt · your list'}, {id: 'tl-heist', title: 'Heist nights', kind: 'List · 12 titles', source: 'Trakt · your list'}] : []),
   ...(person.lists ? [{id: 'ml-oscars', title: 'Award winners', kind: 'List · 60 titles', source: 'MDBList · your list'}, {id: 'ml-short', title: 'Under 90 minutes', kind: 'List · 41 titles', source: 'MDBList · your list'}] : []),
 ];
-export const countries = ['Nigeria', 'Ghana', 'South Africa', 'South Korea', 'Japan', 'India', 'France', 'Spain', 'Mexico', 'Turkey', 'United Kingdom'];
-export const tongues = ['Yoruba', 'Igbo', 'Hausa', 'Korean', 'Japanese', 'Hindi', 'French', 'Spanish', 'Turkish'];
 // Where to get an account. The first two are the site owner's referral links.
 export const signUp: Record<string, string> = {'TorBox': 'https://torbox.app/subscription?referral=79f669d0-a38c-4d10-96d7-52864fea5f1e', 'Real-Debrid': 'http://real-debrid.com/?id=14676327', 'AllDebrid': 'https://alldebrid.com/', 'Premiumize': 'https://www.premiumize.me/', 'Debrid-Link': 'https://debrid-link.com/', 'EasyDebrid': 'https://easydebrid.com/'};
 export const allServices = ['TorBox', 'Real-Debrid', 'AllDebrid', 'Premiumize', 'Debrid-Link', 'EasyDebrid'];

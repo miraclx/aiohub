@@ -2,9 +2,9 @@ import {useState} from 'react';
 import type React from 'react';
 import {DragDropProvider} from '@dnd-kit/react';
 import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
-import {FOR_YOU_KINDS, TRAKT_IDS, countries, folderFits, isPlace, nextPlace, sourceShown, suggestedFor, suggestionOf, tongues} from './data';
+import {FOR_YOU_KINDS, SECTIONS, TRAKT_IDS, folderFits, isPlace, nextPlace, sourceShown, suggestedFor, suggestionOf} from './data';
 import type {Cover, Level, Limit, Row} from './data';
-import {Art, Chips, Confirm, Covers, NameField, Posters, Segments, Sheet, Switch, hash} from './ui';
+import {Art, Confirm, Covers, NameField, Segments, Sheet, Switch, hash} from './ui';
 
 type Pick = {id: string; title: string; kind: string; source: string};
 export function Grip({handleRef, label}: {handleRef: (element: Element | null) => void; label: string}) {
@@ -19,6 +19,8 @@ const laterOf = (row: Row) => isPlace(row.id) ? 'For you · Picked daily for eac
 // On a hub or group Home a For you place is kept for each person too: what fills it is picked for them every day.
 // On a person's own Home, where today's pick in a place came from.
 const pickOf = (kind: string) => kind === 'popular' ? 'Popular, until there’s more to go on' : `${FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'Picked'} · new each day`;
+// A suggestion's kind as it reads now: rows saved earlier said "tabs" where it says "folders".
+const kindOf = (row: Row) => suggestionOf(row.id)?.kind ?? row.kind;
 const placeHeld = (row: Row, level: Level) => level !== 'own' && (TRAKT_IDS.has(row.id) || isPlace(row.id));
 function RowCard({row, index, tag, locked, later, person, limit = 'all', onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; later?: boolean; person?: string; limit?: Limit; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
   // Under a content limit only the folders that suit it are shown, as in the player apps.
@@ -31,7 +33,7 @@ function RowCard({row, index, tag, locked, later, person, limit = 'all', onToggl
     {!locked && <Grip handleRef={sortable.handleRef} label={`Move ${row.title}`}/>}
     <div className="row-main">
       <div className="row-head">
-        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? laterOf(row) : none ? 'Not shown under this content limit' : row.pick ? `For you · ${pickOf(row.pick)}` : `${row.kind} · ${sourceShown(row, limit)}`}</p></div>
+        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? laterOf(row) : none ? 'Not shown under this content limit' : row.pick ? `For you · ${pickOf(row.pick)}` : `${kindOf(row)} · ${sourceShown(row, limit)}`}</p></div>
         {!locked && <div className="row-actions">
           {onArrange && <button type="button" className="ghost small" onClick={onArrange}>Edit</button>}
           {onRemove && <button type="button" className="ghost small" onClick={onRemove}>Remove</button>}
@@ -53,7 +55,7 @@ export function moved<T>(list: T[], from: number, to: number) {const next = [...
 export interface HomeProps {
   rows: Row[]; level: Level; onChange: (rows: Row[], note: string) => void;
   tag: (row: Row) => string | undefined; lists?: Pick[]; listsHint?: string;
-  followLabel?: string; onFollow?: () => void; onBuild?: () => void; canAdd?: boolean; canArrange?: boolean; mine?: boolean;
+  followLabel?: string; onFollow?: () => void; canAdd?: boolean; canArrange?: boolean; mine?: boolean;
   /* Whose Home this is, when it is a person's: their own rows' posters show only here. */
   person?: string;
   /* On a real hub: looks a pasted link up, and only what really reaches the player apps is offered. */
@@ -66,9 +68,9 @@ export interface HomeProps {
   /* On a person's own Home: stop a kind of For you pick (the For you setting), from the place it filled. */
   onMute?: (kind: string) => void;
 }
-export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, onBuild, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute}: HomeProps) {
-  const [country, setCountry] = useState(''), [tongue, setTongue] = useState(''), [kinds, setKinds] = useState(['Movies']), [adding, setAdding] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
-  const on = rows.filter(row => row.on), off = rows.filter(row => !row.on), offShown = off.filter(row => !isPlace(row.id));
+export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute}: HomeProps) {
+  const [adding, setAdding] = useState(false), [allLists, setAllLists] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
+  const on = rows.filter(row => row.on), off = rows.filter(row => !row.on);
   const set = (id: string, next: Partial<Row>, note: string) => onChange(rows.map(row => row.id === id ? {...row, ...next} : row), note);
   // Following the Home above again, or removing a row, throws work away: both ask first.
   const [following, setFollowing] = useState(false), [dropping, setDropping] = useState<Row | null>(null), [placeOpen, setPlaceOpen] = useState<string | null>(null);
@@ -77,12 +79,19 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
     if (rows.some(row => row.id === item.id)) return;
     onChange([{...item, origin: level, on: true}, ...rows], `Added “${item.title}”`); setAdding(false); setLink('');
   }
-  const has = (item: Pick) => rows.some(row => row.id === item.id);
-  // A person's own lists belong on their own Home only: a hub or group Home never lists anyone's.
-  const theirs = level === 'own' ? lists : [], picked = suggestedFor(id => rows.some(row => row.id === id), limit, !find || listsOk, new Date(), level === 'own' ? because : {});
-  const folder = rows.find(row => row.id === arranging);
+  // A person's own lists are offered to them alone, on their own Home: never on a hub or group Home, nor to their manager.
+  const theirs = mine ? lists : [], picked = suggestedFor(id => rows.some(row => row.id === id), limit, !find || listsOk, new Date(), level === 'own' ? because : {});
+  const folder = rows.find(row => row.id === arranging), placesOn = rows.filter(row => isPlace(row.id) && row.on).length;
+  // Under a content limit the rows for children come first, open; without one they wait folded at the end.
+  const sections = [...SECTIONS].sort((a, b) => limit === 'all' ? 0 : Number(b.id === 'children') - Number(a.id === 'children'))
+    .map(section => ({...section, items: picked.picks.filter(item => item.section === section.id)})).filter(section => section.items.length);
+  // Anything already on this Home stays where it is in Add row, dimmed, saying where it is: groups never shift.
+  const choice = (item: Pick, note: string) => {
+    const row = rows.find(each => each.id === item.id), at = row && (row.on ? 'On Home' : 'Not on Home');
+    return <li key={item.id}><button type="button" disabled={!!at} onClick={() => add({id: item.id, title: item.title, kind: item.kind, source: item.source})}><span><strong>{item.title}</strong><small>{at || note}</small></span></button></li>;
+  };
   return <section>
-    <div className="section-head"><div><h2>Home</h2><p className="muted">{mine ? 'What you see first when you open the player.' : level === 'own' ? 'What they see first when they open the player.' : 'The Home everyone here starts with.'}{canArrange ? ' Drag to reorder.' : ''}</p></div>{canAdd && <button type="button" className="primary" onClick={() => setAdding(true)}>+ Add row</button>}</div>
+    <div className="section-head"><div><h2>Home</h2><p className="muted">{mine ? 'What you see first when you open the player.' : level === 'own' ? 'What they see first when they open the player.' : 'The Home everyone here starts with.'}{canArrange ? ' Drag to reorder.' : ''}</p></div>{canAdd && <button type="button" className="primary" onClick={() => {setAllLists(false); setAdding(true);}}>+ Add row</button>}</div>
     {onFollow && <div className="notice"><span>This Home has its own changes.</span><button type="button" className="link" onClick={() => setFollowing(true)}>{followLabel}</button></div>}
     {following && onFollow && <Confirm title={`${followLabel}?`} body="This Home’s own changes are dropped: the order, which rows are on, rows added here and any new names. It shows the Home above it again, and follows its changes from then on." action={followLabel ?? 'Follow again'} onYes={() => {setFollowing(false); onFollow();}} onClose={() => setFollowing(false)}/>}
     {dropping && <Confirm title={`Remove “${dropping.title}”?`} body={dropping.covers ? 'It leaves this Home, with its folder order and names. It can be added again from Add row, as it first came.' : 'It leaves this Home. It can be added again from Add row.'} action="Remove" onYes={() => {const row = dropping; setDropping(null); onChange(rows.filter(item => item.id !== row.id), `Removed “${row.title}”`);}} onClose={() => setDropping(null)}/>}
@@ -95,13 +104,14 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
       <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={placeHeld(row, level)} person={person} limit={limit}
         onToggle={() => set(row.id, {on: false}, `“${row.title}” is off Home`)}
         onArrange={isPlace(row.id) ? row.pick && onMute ? () => setPlaceOpen(row.id) : undefined : () => setArranging(row.id)}
-        // A For you place is one of several alike: removing it only switches it off, out of sight, and Add row brings it back.
-        onRemove={isPlace(row.id) ? () => set(row.id, {on: false}, 'Removed a For you place') : row.origin === level && !row.core ? () => setDropping(row) : undefined}/>)}</ol>
+        // A For you place is one of several alike: removing it only switches it off, to Not on Home, where Show brings it back
+        // (that is arranging, so it needs no Add row).
+        onRemove={isPlace(row.id) ? () => set(row.id, {on: false}, 'Removed a For you row') : row.origin === level && !row.core ? () => setDropping(row) : undefined}/>)}</ol>
     </DragDropProvider>
     {!on.length && <p className="empty">Nothing on Home yet. Add a row or turn one on below.</p>}
-    {!!offShown.length && <details className="off" open={offShown.length <= 4}><summary>Not on Home <span className="count">{offShown.length}</span></summary>
-      <ul>{offShown.map(row => {const place = placeHeld(row, level);
-        return <li key={row.id} className={place ? 'later' : undefined}><div><h3>{row.title}</h3><p>{place ? laterOf(row) : `${row.kind} · ${sourceShown(row, limit)}`}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>;})}</ul>
+    {!!off.length && <details className="off" open={off.length <= 4}><summary>Not on Home <span className="count">{off.length}</span></summary>
+      <ul>{off.map(row => {const place = placeHeld(row, level);
+        return <li key={row.id} className={place ? 'later' : undefined}><div><h3>{row.title}</h3><p>{place ? laterOf(row) : `${kindOf(row)} · ${sourceShown(row, limit)}`}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>;})}</ul>
     </details>}
     {adding && <Sheet title="Add a row" onClose={() => setAdding(false)}>
       <form className="link-form" onSubmit={event => {
@@ -110,36 +120,29 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
         const name = text.replace(/^https?:\/\/(www\.)?/, '').split(/[/?#]/).filter(Boolean);
         add({id: `link-${hash(text)}`, title: name.slice(-1)[0]?.replace(/[-_]/g, ' ') || 'My list', kind: 'List', source: name[0]?.split('.')[0] ?? 'Link'});
       }}>
-        <label htmlFor="add-link">Paste a list link</label>
+        <label htmlFor="add-link" className="sheet-sub first">From a link</label>
         <div className="field-row"><input id="add-link" value={link} onChange={event => setLink(event.target.value)} placeholder="Trakt, Letterboxd, MDBList, TMDB…" autoComplete="off"/><button className="primary" disabled={!link.trim()}>Add</button></div>
-        {find && <p className="muted small">Any public list from Trakt, Letterboxd, MDBList or TMDB.</p>}
       </form>
-      {(!!theirs.length || (!find && listsHint && level === 'own')) && <><h3 className="sheet-sub">{mine ? 'Your lists' : 'Their lists'}</h3>
-        {theirs.length ? <ul className="picks compact mine">{theirs.map(item => <li key={item.id}><button type="button" disabled={has(item)} onClick={() => add(item)}><span><strong>{item.title}</strong><small>{has(item) ? 'Added' : `${item.source.split(' · ')[0]} · ${item.kind.replace(/^List · /, '')}`}</small></span></button></li>)}</ul>
+      {(!!theirs.length || (!find && listsHint && mine)) && <><h3 className="sheet-sub">Your lists</h3>
+        {/* The first five, the rest a tap away: someone with many lists still sees the ready-made rows without a long scroll. */}
+        {theirs.length ? <><ul className="picks compact">{(allLists ? theirs : theirs.slice(0, 5)).map(item => choice(item, `${item.source.split(' · ')[0]} · ${item.kind.replace(/^List · /, '')}`))}</ul>
+          {theirs.length > 5 && !allLists && <button type="button" className="link more" onClick={() => setAllLists(true)}>Show all {theirs.length}</button>}</>
           : <p className="muted small">{listsHint}</p>}</>}
-      {find && level === 'own' && !mine && <><h3 className="sheet-sub">Their lists</h3><p className="muted small">Their own Trakt and MDBList lists stay private, so only they can add those, from their own page.</p></>}
-      {front ? <><h3 className="sheet-sub">For you</h3>
-        <ul className="picks compact"><li><button type="button" onClick={() => {const asleep = rows.find(row => isPlace(row.id) && !row.on); if (asleep) set(asleep.id, {on: true}, `“${asleep.title}” is on Home`); else {const place = nextPlace(rows); onChange([{...place, origin: level}, ...rows], 'Added a For you place');} setAdding(false);}}><span><strong>For you place</strong><small>{mine ? 'A row picked for you every day, from what you watch' : 'A row picked for each person every day, from what they watch'}</small></span></button></li></ul></> : null}
-      {find && <><h3 className="sheet-sub">Or pick one</h3>
-        {picked.picks.length ? <ul className="picks compact suggested">{picked.picks.map(item => <li key={item.id}><button type="button" onClick={() => add({id: item.id, title: item.title, kind: item.kind, source: item.source})}><span><strong>{item.title}</strong><small>{because[item.id] && level === 'own' ? `Because you watched ${because[item.id]}` : item.kind}</small></span></button></li>)}</ul>
-          : <p className="muted small">Every pick is already on this Home.</p>}
-        {!!picked.locked && <p className="muted small note">{picked.locked} more {picked.locked === 1 ? 'pick reads' : 'picks read'} MDBList lists, so {picked.locked === 1 ? 'it shows' : 'they show'} once there’s an MDBList key. {keyHint}</p>}
-      </>}
-      {!find && <><h3 className="sheet-sub">From a country or language</h3>
-      <form className="region" onSubmit={event => {
-        event.preventDefault(); if ((!country && !tongue) || !kinds.length) return;
-        const kind = kinds.length > 1 ? 'Both' : kinds[0];
-        const what = kind === 'Both' ? 'movies & shows' : kind.toLowerCase(), named = tongue ? `${tongue} ${what}` : what[0].toUpperCase() + what.slice(1);
-        add({id: `where-${country}-${tongue}-${kind}`.toLowerCase().replace(/\s+/g, '-'), title: country ? `${named} from ${country}` : named, kind: kind === 'Both' ? 'Movies & shows' : kind === 'Movies' ? 'Movies' : 'Series', source: 'TMDB · popular first'});
-      }}>
-        <div className="region-picks"><label>Country<select value={country} onChange={event => setCountry(event.target.value)}><option value="">Any</option>{countries.map(item => <option key={item}>{item}</option>)}</select></label>
-          <label>Language<select value={tongue} onChange={event => setTongue(event.target.value)}><option value="">Any</option>{tongues.map(item => <option key={item}>{item}</option>)}</select></label></div>
-        <div className="region-go"><Chips all={['Movies', 'Shows']} value={kinds} onChange={setKinds}/><button className="primary" disabled={(!country && !tongue) || !kinds.length}>Add</button></div>
-      </form>
-      <h3 className="sheet-sub">Or pick one</h3>
-      <ul className="picks">{picked.picks.map(item => <li key={item.id}><button type="button" onClick={() => add({id: item.id, title: item.title, kind: item.kind, source: item.source})}><Posters seed={item.id}/><span><strong>{item.title}</strong><small>{item.kind}</small></span></button></li>)}</ul>
-      </>}
-      {!mine && onBuild && <p className="muted small foot">Want one that isn’t here? <button type="button" className="link" onClick={onBuild}>Build it in AIOMetadata</button> and it shows up in this list.</p>}
+      {!!sections.length && <h3 className="sheet-sub">Ready-made rows</h3>}
+      {sections.map(section => {
+        const items = <ul className="picks compact">{section.items.map(item => choice(item, because[item.id] && level === 'own' ? `Because you watched ${because[item.id]}` : item.kind === 'Series' ? 'Shows' : item.kind.replace(/^Collection · /, '')))}</ul>;
+        return section.id === 'children' ? <details key={section.id} className="pick-section" open={limit !== 'all'}><summary>{section.title} <span className="count">{section.items.length}</span></summary>{items}</details>
+          : <div key={section.id} className="pick-section"><h4>{section.title}</h4>{items}</div>;
+      })}
+      {front && <><h3 className="sheet-sub">For you</h3>
+        {/* Never "On Home" like the rest: each tap adds one more, or brings back one that was removed. */}
+        <ul className="picks compact"><li><button type="button" onClick={() => {const asleep = rows.find(row => isPlace(row.id) && !row.on); if (asleep) set(asleep.id, {on: true}, `“${asleep.title}” is on Home`); else {const place = nextPlace(rows); onChange([{...place, origin: level}, ...rows], 'Added a For you row');} setAdding(false);}}>
+          <span><strong>{placesOn ? 'Another For you row' : 'A For you row'}</strong><small>{mine ? 'Picked for you every day, from what you watch' : 'Picked for each person every day, from what they watch'}{placesOn ? ` · ${placesOn} on Home` : ''}</small></span></button></li></ul></>}
+      <div className="muted small foot">
+        {!!picked.locked && <p>{picked.locked} more ready-made {picked.locked === 1 ? 'row reads' : 'rows read'} MDBList lists, so {picked.locked === 1 ? 'it shows' : 'they show'} once there’s an MDBList key. {keyHint}</p>}
+        {limit !== 'all' && <p>Rows that do not suit this content limit are left out.</p>}
+        {level === 'own' && !mine && <p>Their own Trakt and MDBList lists stay private, so only they can add those, from their own page.</p>}
+      </div>
     </Sheet>}
     {folder && <Sheet title={folder.title} onClose={() => setArranging(null)}>
       {/* The name shown on Home and in the apps; what fills the row stays the same. */}
