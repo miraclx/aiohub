@@ -182,7 +182,8 @@ for (const where of ['/#/hub', '/#/group/family', '/#/person/ada/home']) {
   await owner.goto(BASE + where); await owner.reload();
   const theirs = await adding(owner, where === '/#/hub' ? '6b-add-row-hub' : where === '/#/group/family' ? '6c-add-row-group' : '6d-add-row-manager-view');
   assert.equal(await theirs.getByText('Heist nights').count(), 0, where); assert.equal(await theirs.getByText('Sunday westerns').count(), 0, where);
-  assert.equal(await theirs.getByRole('heading', {name: /lists$/}).count(), 0, where);
+  // The manager's view of her Home says why her lists are not there: only she can add them.
+  if (where === '/#/person/ada/home') await theirs.getByText('Their own Trakt and MDBList lists stay private', {exact: false}).waitFor(); else assert.equal(await theirs.getByRole('heading', {name: /lists$/}).count(), 0, where);
   if (where === '/#/hub') await theirs.getByText(/more picks? reads? MDBList lists/).waitFor();
   await theirs.getByRole('button', {name: 'Close'}).click();
 } await guest.goto(BASE + '/#/me/accounts'); await trakt.getByText('Connected as adatrakt').waitFor();

@@ -117,6 +117,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
       {(!!theirs.length || (!find && listsHint && level === 'own')) && <><h3 className="sheet-sub">{mine ? 'Your lists' : 'Their lists'}</h3>
         {theirs.length ? <ul className="picks compact mine">{theirs.map(item => <li key={item.id}><button type="button" disabled={has(item)} onClick={() => add(item)}><span><strong>{item.title}</strong><small>{has(item) ? 'Added' : `${item.source.split(' · ')[0]} · ${item.kind.replace(/^List · /, '')}`}</small></span></button></li>)}</ul>
           : <p className="muted small">{listsHint}</p>}</>}
+      {find && level === 'own' && !mine && <><h3 className="sheet-sub">Their lists</h3><p className="muted small">Their own Trakt and MDBList lists stay private, so only they can add those, from their own page.</p></>}
       {front ? <><h3 className="sheet-sub">For you</h3>
         <ul className="picks compact"><li><button type="button" onClick={() => {const asleep = rows.find(row => isPlace(row.id) && !row.on); if (asleep) set(asleep.id, {on: true}, `“${asleep.title}” is on Home`); else {const place = nextPlace(rows); onChange([{...place, origin: level}, ...rows], 'Added a For you place');} setAdding(false);}}><span><strong>For you place</strong><small>{mine ? 'A row picked for you every day, from what you watch' : 'A row picked for each person every day, from what they watch'}</small></span></button></li></ul></> : null}
       {find && <><h3 className="sheet-sub">Or pick one</h3>

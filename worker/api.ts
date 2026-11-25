@@ -397,7 +397,9 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
   if (action === 'lists' && request.method === 'GET') {
     // Their own lists, to add as Home rows: on their own page only, never shown to anyone else.
     if (who.person !== id) bad(403, 'Only they can see these, from their own page');
-    return {lists: await ownLists(env, hub, id)};
+    const lists = await ownLists(env, hub, id), trakts = lists.filter(item => item.id.startsWith('trakt-')).length;
+    // All their Trakt lists as one row, a tile each (shelf.ts): a collection, which only AIOMetadata in front can show.
+    return {lists: trakts && env.FRONT === 'aiometadata' ? [{id: SHELF_ROW, title: 'My Trakt lists', kind: `Collection · ${trakts} ${trakts === 1 ? 'list' : 'lists'}`, source: 'Trakt · all your lists'}, ...lists] : lists};
   }
   if (action === 'compare') {
     // The Trakt and MDBList card: two places side by side (places.ts). Someone's own watching: only they see or move it.
@@ -505,9 +507,6 @@ async function ownLists(env: Env, hub: string, id: string): Promise<OwnList[]> {
     for (const list of Array.isArray(mine) ? mine : []) if (Number.isInteger(list.ids?.trakt)) out.push({id: `trakt-mine.${list.ids!.trakt}`, title: name(list.name), kind: count(list.item_count), source: 'Trakt · your list'});
     for (const like of Array.isArray(liked) ? liked : []) if (Number.isInteger(like.list?.ids?.trakt) && !out.some(item => item.id.endsWith(`.${like.list!.ids!.trakt}`))) out.push({id: `trakt-liked.${like.list!.ids!.trakt}`, title: name(like.list!.name), kind: count(like.list!.item_count), source: 'Trakt · liked'});
   }
-  // All their Trakt lists as one row, a tile each (shelf.ts): a collection, which only AIOMetadata in front can show.
-  const trakts = out.filter(item => item.id.startsWith('trakt-')).length;
-  if (trakts && env.FRONT === 'aiometadata') out.unshift({id: SHELF_ROW, title: 'My Trakt lists', kind: `Collection · ${trakts} ${trakts === 1 ? 'list' : 'lists'}`, source: 'Trakt · all your lists'});
   const lists = await getSecret<{key: string}>(env, hub, id, 'mdblist');
   if (lists?.key) {
     const got = await mdblist(env, lists.key)('/lists/user');

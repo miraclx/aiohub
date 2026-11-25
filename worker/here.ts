@@ -25,7 +25,8 @@ export function packed(kind: keyof typeof KIND, ids: Ids, season?: number, episo
 
 /* The other way: the film or show an id on their own server stands for (an episode, its show), as a row lists it. null for any other id. */
 export function unpacked(id: string): {id: string; type: 'movie' | 'series'} | null {
-  const hex = /^([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})$/.exec(id.toLowerCase());
+  // With dashes or without: Strand sends ids without them.
+  const hex = /^([0-9a-f]{8})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{12})$/.exec(id.toLowerCase());
   if (!hex) return null;
   const bytes = hex.slice(1).join('').match(/../g)!.map(pair => parseInt(pair, 16)), kind = bytes[1] >> 4, from = bytes[1] & 15;
   if (bytes[0] !== 0xa1 || (kind !== 1 && kind !== 2 && kind !== 4) || (from !== 1 && from !== 2)) return null;
