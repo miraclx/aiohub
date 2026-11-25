@@ -9,8 +9,8 @@
    when a row is read, so a setup that failed to save never shows a new name over an old list.
    TMDB is asked with the hub's own key, and its answers are kept a day per hub (rows_cache, person '#tmdb'): they are not personal.
    Workers Free allows about fifty outside calls and database queries per run, so a person's picking makes at most CALLS of them. */
-import {FOR_YOU_KINDS, isPlace, rowsOf} from '../src/data';
-import type {Limit, Row, Settings} from '../src/data';
+import {FOR_YOU_KINDS, FOR_YOU_ORDER, isPlace, orderOf, rowsOf} from '../src/data';
+import type {ForYouDetail, Limit, Row, Settings, Shown, Why} from '../src/data';
 import type {Env} from './util';
 import {getSecret, now} from './util';
 import {upNextOf, watchedOf} from './rows';
@@ -25,10 +25,14 @@ export interface Pick {
   kind: string; key: string; name: string; type: 'movie' | 'series';
   // What fills it: a TMDB search (AIOMetadata), a FlixPatrol chart (AIOMetadata), or a catalog id the hub serves (rows.ts).
   params?: Record<string, string>; chart?: {service: string; cc: string; slug: string}; serve?: string; score?: number;
-  // "Pick something else", asked for this place from a Home: the picking day it was asked on (once a place a day), and, until the
-  // next run has picked again for that place alone, again.
-  redo?: string; again?: boolean;
+  // What it came from, for the site to word (data.ts), and the title it was worked out from ('m27205', 's1396'), which the person
+  // can leave out for good. `keep`: asked from a Home to stay in its place at the daily pick, until let go.
+  why?: Why; seed?: string; keep?: boolean;
 }
+/* The day's other options, best first (the places' own picks are not among them), and the kinds with nothing today and why:
+   'off', 'limit' (not filled under a content limit), 'watching' (nothing watched to go on yet), 'none' (nothing left today). */
+interface Pool {options?: Pick[]; none?: Record<string, string>}
+const read = <T>(text: string | null | undefined, or: T): T => {try {return (JSON.parse(text ?? '') as T) ?? or;} catch {return or;}};
 /* The catalogs the hub serves for For you: foryou_because_m<TMDB film> or _s<show>, foryou_series_<TMDB collection>, and
    foryou_upnext_<show>-<show>-… (AIOMetadata never hides watched titles from a row whose id says upnext,
    so a show part watched stays in it). */
@@ -38,10 +42,12 @@ export const pickHour = (env: Env) => Number(env.FORYOU_HOUR ?? HOUR);
 export const namesOf = (text: string): Record<string, string> => {
   try {return Object.fromEntries(Object.entries(JSON.parse(text) as Record<string, Pick>).map(([place, pick]) => [place, pick.name]));} catch {return {};}
 };
-/* The places whose pick was asked to be picked again on this picking day: each may be asked once a day. */
-export const redoneOf = (text: string, day: string): string[] => {
-  try {return Object.entries(JSON.parse(text) as Record<string, Pick>).filter(([, pick]) => pick.redo === day).map(([place]) => place);} catch {return [];}
-};
+/* What the site is told of a person's For you today (data.ts, ForYouDetail): never the searches or ids that fill a row. */
+const shown = (pick: Pick): Shown => ({key: pick.key, kind: pick.kind, name: pick.name, ...(pick.why ? {why: pick.why} : {}), ...(pick.seed ? {seed: pick.seed} : {}), ...(pick.keep ? {keep: true} : {})});
+export function detailOf(picks: string, pool: string, never: string): ForYouDetail {
+  const placed = read<Record<string, Pick>>(picks, {}), {options = [], none = {}} = read<Pool>(pool, {}), on = new Set(Object.values(placed).map(pick => pick.key));
+  return {places: Object.fromEntries(Object.entries(placed).map(([place, pick]) => [place, shown(pick)])), options: options.filter(pick => !on.has(pick.key)).map(shown), none, never: read(never, [])};
+}
 /* Which kind each place's pick is (FOR_YOU_KINDS, or 'popular' for a stand-in), so the site can say where it came from. */
 export const kindsOf = (text: string): Record<string, string> => {
   try {return Object.fromEntries(Object.entries(JSON.parse(text) as Record<string, Pick>).map(([place, pick]) => [place, pick.kind]));} catch {return {};}
@@ -150,36 +156,46 @@ const GENRES_FOR: Partial<Record<Limit, number[]>> = {kids: [16, 12, 35, 10751, 
 // The country a person's Top 10 is for: where they last played something here. FlixPatrol names its files by country.
 const COUNTRIES: Record<string, [string, string]> = {NG: ['nigeria', 'Nigeria'], GB: ['united-kingdom', 'the UK'], US: ['united-states', 'the US'], GH: ['ghana', 'Ghana'], ZA: ['south-africa', 'South Africa'], KE: ['kenya', 'Kenya'],
   CA: ['canada', 'Canada'], IE: ['ireland', 'Ireland'], AU: ['australia', 'Australia'], IN: ['india', 'India'], FR: ['france', 'France'], DE: ['germany', 'Germany'], ES: ['spain', 'Spain'], NL: ['netherlands', 'the Netherlands']};
-// How much each kind counts for before anything else: following a series and the person's own seeds first.
+// How much each kind counts for before anything else: following a series and the person's own seeds first. FOR_YOU_ORDER (data.ts)
+// lists the kinds in this order.
 const BASE: Record<string, number> = {series: 1.2, pickup: 1.1, because: 1, crew: 0.8, genres: 0.7, seasonal: 0.6, top10: 0.6, different: 0.5, popular: 0};
+// A person's order of the kinds (Kinds of pick) scales each kind's whole score: about x1.5 at the top down to x0.6 at the bottom,
+// against where the kind is in the order it starts in. So an order nobody changed picks as before, and moving a kind one step
+// changes only it and the kind it swapped with.
+const LADDER = (at: number) => 1.5 - 0.9 * at / (FOR_YOU_ORDER.length - 1);
+const weightsOf = (order: string[]): Record<string, number> => Object.fromEntries(FOR_YOU_ORDER.map((kind, at) => [kind, LADDER(order.indexOf(kind)) / LADDER(at)]));
 // A row needs at least this many titles not yet watched to be picked (a series or shows to pick back up need just one).
 const ENOUGH = 4, ROTATE = 1, REPEAT: Record<string, number> = {because: 0.35}, REPEAT_ANY = 0.7, LEFT = 21 * DAY;
 // Watching older than this is "older" for because-you-watched, and counts this much for how recent it is (fresh watching counts up to 1).
 const OLD = 60 * DAY, OLD_CREDIT = 0.5;
-// How many of the latest days' picks count for less (by key, newest first): enough for three days of most Homes.
-const REMEMBER = 12;
+// How many of the latest days' picks count for less (by key, newest first): enough for three days of most Homes. How many other
+// options a day's pick keeps, and how many titles someone can leave out for good (the oldest goes first).
+const REMEMBER = 12, POOL = 10, NEVER = 20;
 interface Candidate {pick: Pick; seed?: number; old?: boolean; titles: number; quality: number; season?: boolean}
 const mean = (titles: Title[]) => titles.length ? titles.slice(0, 10).reduce((sum, title) => sum + title.v, 0) / Math.min(10, titles.length) / 10 : 0;
 const scoreOf = (item: Candidate, at: number) => (BASE[item.pick.kind] ?? 0) + (item.old ? OLD_CREDIT : item.seed ? Math.exp(-Math.max(0, at - item.seed) / DAY / 14) : 0) + Math.min(1, item.titles / 20) + item.quality + (item.season ? 1 : 0);
+const tagOf = (item: Item) => `${item.type === 'movie' ? 'm' : 's'}${item.tmdb}`;
 /* Everything that could fill this person's places today, in the order they are worked out (the most personal first, so a run
-   short of calls still has those). */
-async function candidates(ask: Ask, watched: Item[], plays: {item: string; detail: string; at: number}[], next: Set<number>, country: string, limit: Limit, off: string[], time: number): Promise<Candidate[]> {
+   short of calls still has those), and why each kind with nothing has nothing (Pool). `never`: titles they left out for good,
+   which seed nothing. `any`: because-you-watched from any time, two newest titles and four older instead of four and two. */
+async function candidates(ask: Ask, watched: Item[], plays: {item: string; detail: string; at: number}[], next: Set<number>, country: string, limit: Limit, off: string[], time: number, never: string[] = [], any = false): Promise<{found: Candidate[]; none: Record<string, string>}> {
   const out: Candidate[] = [], seen = seenSet(watched), day = new Date(time).toISOString().slice(0, 10), mmdd = day.slice(5), at = Math.floor(time / 1000), nth = Math.floor(at / DAY);
   const open = (kind: string) => !off.includes(kind) && (limit === 'all' || !!FOR_YOU_KINDS.find(item => item.id === kind)?.discover);
-  const seeds = watched.filter(item => item.tmdb && item.at), films = seeds.filter(item => item.type === 'movie');
+  const seeds = watched.filter(item => item.tmdb && item.at && !never.includes(tagOf(item))), films = seeds.filter(item => item.type === 'movie');
   const rated = (params: Record<string, string>) => limit === 'all' ? params : {...params, certification_country: 'US', certification: limit === 'kids' ? 'G|PG' : 'G|PG|PG-13'};
-  const search = async (kind: string, key: string, name: string, type: 'movie' | 'series', params: Record<string, string>, extra: Partial<Candidate> = {}) => {
+  const search = async (kind: string, key: string, name: string, type: 'movie' | 'series', params: Record<string, string>, extra: Partial<Candidate> = {}, about: Partial<Pick> = {}) => {
     // Asked as AIOMetadata will ask it (rated, under a limit): a search that leaves too little to show is not a pick.
     const left = unseen(await discover(ask, type, rated(params), day) ?? [], type, seen);
-    if (left.length >= ENOUGH) out.push({pick: {kind, key, name, type, params}, titles: left.length, quality: mean(left), ...extra});
+    if (left.length >= ENOUGH) out.push({pick: {kind, key, name, type, params, ...about}, titles: left.length, quality: mean(left), ...extra});
   };
   // The four newest titles and two older ones (watched over OLD ago), a different two each day, so older watching has its turn
-  // too; the next newest stand in when there are not two older.
-  const older = seeds.slice(4).filter(item => at - item.at! > OLD), turn = older.length ? [...new Set([older[2 * nth % older.length], older[(2 * nth + 1) % older.length]])] : [];
-  const because = [...seeds.slice(0, 4), ...turn, ...seeds.slice(4).filter(item => !turn.includes(item))].slice(0, 6);
+  // too; the next newest stand in when there are not two older. From any time: the two newest and four older.
+  const [newest, oldest] = any ? [2, 4] : [4, 2];
+  const older = seeds.slice(newest).filter(item => at - item.at! > OLD), turn = older.length ? [...new Set(Array.from({length: oldest}, (_, n) => older[(oldest * nth + n) % older.length]))] : [];
+  const because = [...seeds.slice(0, newest), ...turn, ...seeds.slice(newest).filter(item => !turn.includes(item))].slice(0, 6);
   if (open('because')) for (const item of because) {
-    const titles = await recommended(ask, item.type, item.tmdb!), left = unseen(titles ?? [], item.type, seen), tag = `${item.type === 'movie' ? 'm' : 's'}${item.tmdb}`;
-    if (left.length >= ENOUGH) out.push({pick: {kind: 'because', key: `because:${tag}`, name: `Because you watched ${item.name}`, type: item.type, serve: `foryou_because_${tag}`}, seed: item.at, old: turn.includes(item), titles: left.length, quality: mean(left)});
+    const titles = await recommended(ask, item.type, item.tmdb!), left = unseen(titles ?? [], item.type, seen), tag = tagOf(item);
+    if (left.length >= ENOUGH) out.push({pick: {kind: 'because', key: `because:${tag}`, name: `Because you watched ${item.name}`, type: item.type, serve: `foryou_because_${tag}`, why: {title: item.name, seen: item.at}, seed: tag}, seed: item.at, old: turn.includes(item), titles: left.length, quality: mean(left)});
   }
   const genres = new Map<number, number>(), collections = new Set<number>();
   for (const item of films.slice(0, 4)) {
@@ -189,30 +205,30 @@ async function candidates(ask: Ask, watched: Item[], plays: {item: string; detai
     if (!open('series') || !about?.c || collections.has(about.c[0]) || collections.size >= 2) continue;
     collections.add(about.c[0]);
     const parts = (await series(ask, about.c[0]))?.parts.filter(part => part.d && part.d <= day) ?? [], left = unseen(parts, 'movie', seen);
-    if (left.length && left.length < parts.length) out.push({pick: {kind: 'series', key: `series:${about.c[0]}`, name: `Next in ${about.c[1].replace(/ Collection$/, '')}`, type: 'movie', serve: `foryou_series_${about.c[0]}`}, seed: item.at, titles: left.length, quality: mean(left)});
+    if (left.length && left.length < parts.length) out.push({pick: {kind: 'series', key: `series:${about.c[0]}`, name: `Next in ${about.c[1].replace(/ Collection$/, '')}`, type: 'movie', serve: `foryou_series_${about.c[0]}`, why: {title: item.name, seen: item.at, more: left.length}, seed: tagOf(item)}, seed: item.at, titles: left.length, quality: mean(left)});
   }
   if (open('pickup')) {
     // Shows last watched more than three weeks ago (within the year) with an episode still to watch: Trakt says so (Up Next), or the
     // last episode played here comes before the newest one aired.
-    const left: number[] = [];
+    const left: Item[] = [];
     for (const item of seeds.filter(item => item.type === 'series' && at - item.at! > LEFT && at - item.at! < 365 * DAY).slice(0, 4)) {
       const about = await show(ask, item.tmdb!), last = plays.find(play => play.item === `tmdb:${item.tmdb}` || play.item === item.id), had = /Season (\d+) · Episode (\d+)/.exec(last?.detail ?? '');
       for (const genre of about?.g ?? []) genres.set(genre, (genres.get(genre) ?? 0) + 0.5);
       const behind = had && about?.last ? Number(had[1]) * 10000 + Number(had[2]) < about.last[0] * 10000 + about.last[1] : false;
-      if (next.has(item.tmdb!) || behind) left.push(item.tmdb!);
+      if (next.has(item.tmdb!) || behind) left.push(item);
     }
-    if (left.length) out.push({pick: {kind: 'pickup', key: 'pickup', name: 'Pick back up', type: 'series', serve: `foryou_upnext_${left.slice(0, 20).join('-')}`}, titles: left.length * 4, quality: 0.6});
+    if (left.length) out.push({pick: {kind: 'pickup', key: 'pickup', name: 'Pick back up', type: 'series', serve: `foryou_upnext_${left.slice(0, 20).map(item => item.tmdb).join('-')}`, why: {title: left[0].name, more: left.length - 1}}, titles: left.length * 4, quality: 0.6});
   }
   if (open('crew')) for (const item of films.slice(0, 2)) {
     const [who] = (await film(ask, item.tmdb!))?.d ?? [];
-    if (who) await search('crew', `crew:${who[0]}`, `More from ${who[1]}`, 'movie', {with_crew: String(who[0]), sort_by: 'popularity.desc', 'vote_count.gte': '50', 'primary_release_date.lte': TODAY}, {seed: item.at});
+    if (who) await search('crew', `crew:${who[0]}`, `More from ${who[1]}`, 'movie', {with_crew: String(who[0]), sort_by: 'popularity.desc', 'vote_count.gte': '50', 'primary_release_date.lte': TODAY}, {seed: item.at}, {why: {title: item.name, seen: item.at, who: who[1]}, seed: tagOf(item)});
   }
   const [favourite] = [...genres].sort((a, b) => b[1] - a[1]);
-  if (open('genres') && favourite && GENRES[favourite[0]] && favourite[1] >= 2) await search('genres', `genres:${favourite[0]}`, `${GENRES[favourite[0]]} movies for you`, 'movie', {with_genres: String(favourite[0]), sort_by: 'vote_average.desc', 'vote_count.gte': '500', 'primary_release_date.lte': TODAY});
+  if (open('genres') && favourite && GENRES[favourite[0]] && favourite[1] >= 2) await search('genres', `genres:${favourite[0]}`, `${GENRES[favourite[0]]} movies for you`, 'movie', {with_genres: String(favourite[0]), sort_by: 'vote_average.desc', 'vote_count.gte': '500', 'primary_release_date.lte': TODAY}, {}, {why: {title: GENRES[favourite[0]]}});
   // Something different: a well-liked movie genre none of their latest watching is in, a different one each day. Only once there is
   // watching to tell it from; worked out before the season and Top 10, so a run short of calls still has it.
   const other = (GENRES_FOR[limit] ?? FILM_GENRES).filter(genre => !genres.has(genre)), fresh = other[nth % Math.max(1, other.length)];
-  if (open('different') && genres.size && fresh) await search('different', `different:${fresh}`, `Something different: ${GENRES[fresh]} movies`, 'movie', {with_genres: String(fresh), sort_by: 'vote_average.desc', 'vote_count.gte': '1000', 'primary_release_date.lte': TODAY});
+  if (open('different') && genres.size && fresh) await search('different', `different:${fresh}`, `Something different: ${GENRES[fresh]} movies`, 'movie', {with_genres: String(fresh), sort_by: 'vote_average.desc', 'vote_count.gte': '1000', 'primary_release_date.lte': TODAY}, {}, {why: {title: GENRES[fresh]}});
   const season = SEASONS.find(item => mmdd >= item.from && mmdd <= item.to);
   if (open('seasonal') && season) await search('seasonal', `seasonal:${season.id}`, season.name, 'movie', {with_keywords: season.keyword, sort_by: 'popularity.desc', 'vote_count.gte': '50', 'primary_release_date.lte': TODAY}, {season: true});
   if (open('top10')) {
@@ -224,39 +240,45 @@ async function candidates(ask: Ask, watched: Item[], plays: {item: string; detai
     });
     for (const type of ['movie', 'series'] as const) {
       const left = unseen(charts?.[type] ?? [], type, seen);
-      if (left.length >= ENOUGH) out.push({pick: {kind: 'top10', key: `top10:${type}`, name: `Top 10 ${type === 'movie' ? 'movies' : 'shows'} on Netflix in ${place}`, type, chart: {service: 'netflix', cc, slug}}, titles: left.length * 2, quality: 0.5});
+      if (left.length >= ENOUGH) out.push({pick: {kind: 'top10', key: `top10:${type}`, name: `Top 10 ${type === 'movie' ? 'movies' : 'shows'} on Netflix in ${place}`, type, chart: {service: 'netflix', cc, slug}, why: {title: place}}, titles: left.length * 2, quality: 0.5});
     }
   }
-  return out;
+  // Each kind with nothing today, and why: switched off, not filled under the limit, nothing watched to go on, or nothing left today.
+  const none = Object.fromEntries(FOR_YOU_KINDS.filter(kind => !out.some(item => item.pick.kind === kind.id)).map(kind =>
+    [kind.id, off.includes(kind.id) ? 'off' : !open(kind.id) ? 'limit' : !seeds.length && kind.id !== 'seasonal' && kind.id !== 'top10' ? 'watching' : 'none']));
+  return {found: out, none};
 }
 /* The best for each place, in place order: each kind counts for less once it has a place already (because-you-watched less so,
    with another title behind it), and what filled a place in the last few days counts for less today, the more so the more lately
    (by its place in `before`, newest first), so the places move on through what there is rather than swap back and forth. The
-   fallbacks fill what is left. `kept`: picks staying where they are (picking one place again), never picked twice and counted
-   as kinds already placed. */
-export function choose(found: Candidate[], places: string[], before: string[], time: number, kept: Pick[] = []): Record<string, Pick> {
-  const at = Math.floor(time / 1000), out: Record<string, Pick> = {}, used = new Map<string, number>(), taken = new Set(kept.map(pick => pick.key));
+   fallbacks fill what is left. `kept`: picks staying where they are (kept from a Home), never picked twice and counted as kinds
+   already placed. `pool`: the next best after the places, picked on the same way, as the day's other options. */
+export function choose(found: Candidate[], places: string[], before: string[], time: number, kept: Pick[] = [], order = FOR_YOU_ORDER): {picks: Record<string, Pick>; pool: Pick[]} {
+  const at = Math.floor(time / 1000), picks: Record<string, Pick> = {}, pool: Pick[] = [], used = new Map<string, number>(), taken = new Set(kept.map(pick => pick.key)), weights = weightsOf(orderOf(order));
   for (const pick of kept) used.set(pick.kind, (used.get(pick.kind) ?? 0) + 1);
-  const pool = [...found, ...FALLBACKS.map(pick => ({pick, titles: 0, quality: 0}))].map(item => ({...item, base: scoreOf(item, at) - (before.includes(item.pick.key) ? ROTATE * (1 - before.indexOf(item.pick.key) / REMEMBER) : 0)}));
-  for (const place of places) {
-    const ranked = pool.filter(item => !taken.has(item.pick.key)).map(item => ({item, score: item.base - (used.get(item.pick.kind) ?? 0) * (REPEAT[item.pick.kind] ?? REPEAT_ANY)})).sort((a, b) => b.score - a.score);
-    const best = ranked[0];
-    if (!best) break;
-    taken.add(best.item.pick.key); used.set(best.item.pick.kind, (used.get(best.item.pick.kind) ?? 0) + 1);
-    out[place] = {...best.item.pick, score: Math.round(best.score * 100) / 100};
-  }
-  return out;
+  const all = [...found, ...FALLBACKS.map(pick => ({pick, titles: 0, quality: 0}))].map(item => ({...item, base: scoreOf(item, at) * (weights[item.pick.kind] ?? 1) - (before.includes(item.pick.key) ? ROTATE * (1 - before.indexOf(item.pick.key) / REMEMBER) : 0)}));
+  const best = () => {
+    const [top] = all.filter(item => !taken.has(item.pick.key)).map(item => ({item, score: item.base - (used.get(item.pick.kind) ?? 0) * (REPEAT[item.pick.kind] ?? REPEAT_ANY)})).sort((a, b) => b.score - a.score);
+    if (!top) return null;
+    taken.add(top.item.pick.key); used.set(top.item.pick.kind, (used.get(top.item.pick.kind) ?? 0) + 1);
+    return {...top.item.pick, score: Math.round(top.score * 100) / 100};
+  };
+  for (const place of places) {const pick = best(); if (!pick) break; picks[place] = pick;}
+  for (let n = 0; n < POOL; n++) {const pick = best(); if (!pick) break; pool.push(pick);}
+  return {picks, pool};
 }
 
 /* ---------- the daily step ---------- */
 interface PersonData {rows: Row[] | null; picks?: Record<string, boolean>; settings: Partial<Settings>}
-/* A person's For you places that are on, in Home order, and what their picks depend on. */
+/* A person's For you places that are on, in Home order, and what their picks depend on. The order of the kinds and where
+   because-you-watched looks count only once changed, so a sig kept from before they could be still matches. */
 export function placesOf(own: PersonData, shared: Row[], settings: Settings) {
   const places = rowsOf(own.rows, shared, {trakt: false, lists: false, watched: false, kids: settings.limit === 'kids', front: true}, own.picks).filter(row => row.on && isPlace(row.id)).map(row => row.id);
-  return {places, sig: JSON.stringify([settings.limit, [...(settings.forYouOff ?? [])].sort(), places])};
+  const order = orderOf(settings.forYouOrder), changed = order.join() !== FOR_YOU_ORDER.join() || settings.forYouBecause === 'any';
+  return {places, sig: JSON.stringify([settings.limit, [...(settings.forYouOff ?? [])].sort(), places, ...(changed ? [order, settings.forYouBecause ?? 'lately'] : [])])};
 }
-// Only what fills the places counts: a score, or a place marked as picked again, changes nothing in the apps.
-const bare = (picks: Record<string, Pick>) => JSON.stringify(Object.entries(picks).map(([place, {score: _, redo: _r, again: _a, ...pick}]) => [place, pick]));
+// Only what fills the places counts: a score, a reason or a place kept changes nothing in the apps.
+const bare = (picks: Record<string, Pick>) => JSON.stringify(Object.entries(picks).map(([place, {score: _, why: _w, seed: _s, keep: _k, ...pick}]) => [place, pick]));
 const same = (a: Record<string, Pick>, b: Record<string, Pick>) => bare(a) === bare(b);
 /* One step, from the cron. `time` is when the run was due. True when it did something (it then had the run to itself). */
 export async function forYou(env: Env, time: number): Promise<boolean> {
@@ -267,17 +289,15 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
   // was last picked, so the day's own picking still comes at HOUR.
   const picking = date.getUTCHours() >= pickHour(env);
   const [hubs, groups, people, kept, syncs] = await env.DB.batch([env.DB.prepare('SELECT id, data FROM hubs ORDER BY id'), env.DB.prepare('SELECT hub, id, data FROM groups'), env.DB.prepare('SELECT hub, id, grp, data FROM people ORDER BY hub, created, id'),
-    env.DB.prepare('SELECT hub, person, day, sig, picks, before FROM foryou'), env.DB.prepare('SELECT hub, tries FROM foryou_sync')]);
-  const hubData = new Map((hubs.results as {id: string; data: string}[]).map(row => [row.id, row])), had = new Map((kept.results as {hub: string; person: string; day: string; sig: string; picks: string; before: string}[]).map(row => [`${row.hub}/${row.person}`, row]));
+    env.DB.prepare('SELECT hub, person, day, sig, picks, before, never FROM foryou'), env.DB.prepare('SELECT hub, tries FROM foryou_sync')]);
+  const hubData = new Map((hubs.results as {id: string; data: string}[]).map(row => [row.id, row])), had = new Map((kept.results as {hub: string; person: string; day: string; sig: string; picks: string; before: string; never: string}[]).map(row => [`${row.hub}/${row.person}`, row]));
   const due = (people.results as {hub: string; id: string; grp: string; data: string}[]).flatMap(row => {
     const hub = hubData.get(row.hub), group = (groups.results as {hub: string; id: string; data: string}[]).find(item => item.hub === row.hub && item.id === row.grp);
     if (!hub || !group) return [];
     const top = JSON.parse(hub.data) as {rows: Row[]; defaults: Settings}, theirs = JSON.parse(group.data) as {rows: Row[] | null; settings: Partial<Settings>}, own = JSON.parse(row.data) as PersonData;
     const settings = {...top.defaults, ...theirs.settings, ...own.settings} as Settings, {places, sig} = placesOf(own, theirs.rows ?? top.rows, settings), before = had.get(`${row.hub}/${row.id}`);
-    const on = picking || !before ? day : before.day, done = before?.day === on && before.sig === sig;
-    // Places someone asked to have something else in, from their Home: only those are picked again, as of the same day.
-    const again = done ? Object.entries(JSON.parse(before!.picks || '{}') as Record<string, Pick>).filter(([place, pick]) => pick.again && places.includes(place)).map(([place]) => place) : [];
-    return done && !again.length ? [] : [{hub: row.hub, person: row.id, places, sig, settings, before, day: on, again}];
+    const on = picking || !before ? day : before.day;
+    return before?.day === on && before.sig === sig ? [] : [{hub: row.hub, person: row.id, places, sig, settings, before, day: on}];
   });
   // A hub whose people are all picked for today, and whose picks changed: its setups are brought in step, in a run of its own.
   for (const pending of syncs.results as {hub: string; tries: number}[]) {
@@ -294,9 +314,9 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
   if (await refreshShelf(env, people.results as {hub: string; id: string; data: string}[], hub => flag(env, hub))) return true;
   // Whoever has no place on is done at once; then one person a run is picked for.
   const idle = due.filter(item => !item.places.length), next = due.find(item => item.places.length);
-  // `gone`: picks just replaced, remembered as lately picked so they count for less in the next days too.
-  const keep = (item: typeof due[number], picks: Record<string, Pick>, gone: string[] = []) => env.DB.prepare(`INSERT INTO foryou (hub, person, day, sig, picks, before, at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person) DO UPDATE SET
-    day = excluded.day, sig = excluded.sig, picks = excluded.picks, before = excluded.before, at = excluded.at`).bind(item.hub, item.person, item.day, item.sig, JSON.stringify(picks), JSON.stringify([...new Set([...gone, ...lately(item.before, item.day)])].slice(0, REMEMBER)), now());
+  // The titles they left out for good are theirs to change, from their Home: never written here.
+  const keep = (item: typeof due[number], picks: Record<string, Pick>, pool: Pool = {}) => env.DB.prepare(`INSERT INTO foryou (hub, person, day, sig, picks, before, pool, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person) DO UPDATE SET
+    day = excluded.day, sig = excluded.sig, picks = excluded.picks, before = excluded.before, pool = excluded.pool, at = excluded.at`).bind(item.hub, item.person, item.day, item.sig, JSON.stringify(picks), JSON.stringify(lately(item.before, item.day)), JSON.stringify(pool), now());
   const changed = (item: typeof due[number], picks: Record<string, Pick>) => !same(JSON.parse(item.before?.picks ?? '{}'), picks);
   const writes = idle.flatMap(item => [keep(item, {}), ...(changed(item, {}) ? [flag(env, item.hub)] : [])]);
   if (!next) {if (writes.length) await env.DB.batch(writes); return writes.length > 0;}
@@ -309,28 +329,70 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
     return {item: ids?.show?.ids?.tmdb ? `tmdb:${ids.show.ids.tmdb}` : play.item, detail: play.detail, at: play.updated, place: play.place ?? ''};
   });
   const country = /, ([A-Z]{2})$/.exec(played.find(play => play.place)?.place ?? '')?.[1] ?? '';
-  const following = new Set((next.settings.limit === 'all' && !(next.settings.forYouOff ?? []).includes('pickup') ? await upNextOf(env, next.hub, next.person).catch(() => [] as Item[]) : []).map(item => item.tmdb ?? 0));
+  const {limit, forYouOff: off = [], forYouOrder: order, forYouBecause} = next.settings, never = read<{seed: string}[]>(next.before?.never, []).map(item => item.seed);
+  const following = new Set((limit === 'all' && !off.includes('pickup') ? await upNextOf(env, next.hub, next.person).catch(() => [] as Item[]) : []).map(item => item.tmdb ?? 0));
   // Read as far back as DEEP titles, so older watching can seed a row too (a few pages of Trakt history; MDBList comes whole).
   const watched = await watchedOf(env, next.hub, next.person, true, DEEP).catch(() => [] as Item[]);
-  const found = await candidates(ask, watched, played, following, country, next.settings.limit, next.settings.forYouOff ?? [], time).catch(error => {console.error('foryou', (error as Error).message); return [] as Candidate[];});
-  // Picking again for the places asked for alone: the rest stay as they are, and nothing already on Home is picked for them.
-  const today: Record<string, Pick> = next.before && next.before.day === next.day ? JSON.parse(next.before.picks || '{}') : {}, stay = next.again.length ? today : {};
-  const picks: Record<string, Pick> = {...stay, ...choose(found, next.again.length ? next.again : next.places, lately(next.before, next.day), time, Object.values(stay))};
-  // A place picked again keeps the mark for the rest of the day, through any picking again that day, so it is asked once a day.
-  for (const [place, pick] of Object.entries(picks)) {const {again: _, ...rest} = pick; picks[place] = today[place]?.redo === next.day ? {...rest, redo: next.day} : rest;}
-  const gone = next.again.flatMap(place => today[place] && today[place].key !== picks[place]?.key ? [today[place].key] : []);
-  await env.DB.batch([...writes, ...ask.writes, keep(next, picks, gone), ...(changed(next, picks) ? [flag(env, next.hub)] : []),
+  const {found, none} = await candidates(ask, watched, played, following, country, limit, off, time, never, forYouBecause === 'any').catch(error => {console.error('foryou', (error as Error).message); return {found: [] as Candidate[], none: {}};});
+  // Places kept from a Home stay as they are, whatever the day, while their pick may still be used there (a kind switched off, a
+  // content limit or a title left out lets it go, and the place is picked for as any other).
+  const held = read<Record<string, Pick>>(next.before?.picks, {});
+  const stay = Object.fromEntries(next.places.flatMap(place => {const pick = held[place]; return pick?.keep && allowed(pick, limit, off) && !(pick.seed && never.includes(pick.seed)) ? [[place, pick]] : [];}));
+  const chosen = choose(found, next.places.filter(place => !stay[place]), lately(next.before, next.day), time, Object.values(stay), order);
+  const picks: Record<string, Pick> = Object.fromEntries(next.places.flatMap(place => {const pick = stay[place] ?? chosen.picks[place]; return pick ? [[place, pick]] : [];}));
+  await env.DB.batch([...writes, ...ask.writes, keep(next, picks, {options: chosen.pool, none}), ...(changed(next, picks) ? [flag(env, next.hub)] : []),
     // Answers nobody has asked for in three days are let go.
     env.DB.prepare('DELETE FROM rows_cache WHERE hub = ? AND person = ? AND at < ?').bind(next.hub, TMDB_OWNER, now() - 3 * DAY)]);
   return true;
 }
-const keysOf = (picks: string) => {try {return Object.values(JSON.parse(picks) as Record<string, Pick>).map(pick => pick.key);} catch {return [];}};
+const keysOf = (picks: string) => Object.values(read<Record<string, Pick>>(picks, {})).map(pick => pick.key);
 /* The keys of the latest days' picks, newest first, for rotation (choose): a new day puts the last day's in front of what was kept;
    picking again on the same day keeps what was kept. */
 function lately(before: {day: string; picks: string; before: string} | undefined, day: string): string[] {
   if (!before) return [];
-  let kept: string[] = [];
-  try {kept = JSON.parse(before.before || '[]') as string[];} catch {kept = [];}
+  const kept = read<string[]>(before.before || '[]', []);
   return before.day === day ? kept : [...new Set([...keysOf(before.picks), ...kept])].slice(0, REMEMBER);
 }
 const flag = (env: Env, hub: string) => env.DB.prepare('INSERT INTO foryou_sync (hub, at, tries) VALUES (?, ?, 0) ON CONFLICT (hub) DO UPDATE SET at = excluded.at, tries = 0').bind(hub, now());
+
+/* ---------- from a Home ---------- */
+/* Asked from a For you row's Edit sheet (api.ts), by the person or their manager. `use`: one of the day's other options goes in this
+   place at once (nothing is asked of TMDB; what it held goes back among the options and counts as lately picked). `keep`: the place
+   keeps its pick at the daily pick, or lets it change again. `never`: the title this pick came from is never picked from again,
+   and the place takes the best option not from it. A change to what fills a place brings the hub's setups in step, as a day's
+   picking does. Only over the picks and options it read, so a run that picked meanwhile is not undone. An error to show, or ''. */
+export async function placeAsked(env: Env, hub: string, person: string, place: string, asked: {use?: string; keep?: boolean; never?: boolean}): Promise<string> {
+  const row = await env.DB.prepare('SELECT picks, before, pool, never FROM foryou WHERE hub = ? AND person = ?').bind(hub, person).first<{picks: string; before: string; pool: string; never: string}>();
+  const picks = read<Record<string, Pick>>(row?.picks, {}), pick = picks[place], pool = read<Pool>(row?.pool, {}), options = pool.options ?? [];
+  if (!row || !pick) return 'Nothing is picked here yet.';
+  const elsewhere = (key: string) => Object.entries(picks).some(([other, item]) => other !== place && item.key === key);
+  let never = read<{seed: string; title: string}[]>(row.never, []), next: Pick | undefined = pick, rest = options;
+  if (asked.keep !== undefined) {const {keep: _, ...bare} = pick; next = asked.keep ? {...bare, keep: true} : bare;}
+  else if (asked.use !== undefined) {
+    const option = options.find(item => item.key === asked.use);
+    if (!option) return 'That option is gone. The page has been refreshed.';
+    if (elsewhere(option.key)) return 'That one is on another For you row already.';
+    // A place kept stays kept with what it holds now.
+    next = {...option, ...(pick.keep ? {keep: true} : {})}; rest = options.filter(item => item.key !== option.key);
+  } else if (asked.never) {
+    if (!pick.seed) return 'This row isn’t worked out from a title.';
+    never = [{seed: pick.seed, title: pick.why?.title ?? pick.name}, ...never.filter(item => item.seed !== pick.seed)].slice(0, NEVER);
+    rest = options.filter(item => item.seed !== pick.seed);
+    // The best option left; with none, the place holds its stand-in (placePick) until the next pick.
+    next = rest.find(item => !elsewhere(item.key)); rest = rest.filter(item => item !== next);
+  }
+  // What a place held goes back among the options, best first, unless it is not to be picked from again.
+  const back = next?.key !== pick.key && !(asked.never && pick.seed) ? [(({keep: _, ...item}) => item)(pick)] : [];
+  const out = {...picks}; if (next) out[place] = next; else delete out[place];
+  const recent = next?.key !== pick.key ? [pick.key, ...read<string[]>(row.before, []).filter(key => key !== pick.key)].slice(0, REMEMBER) : read<string[]>(row.before, []);
+  const done = await env.DB.prepare('UPDATE foryou SET picks = ?, pool = ?, never = ?, before = ? WHERE hub = ? AND person = ? AND picks = ? AND pool = ?')
+    .bind(JSON.stringify(out), JSON.stringify({...pool, options: [...rest, ...back].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))}), JSON.stringify(never), JSON.stringify(recent), hub, person, row.picks, row.pool).run();
+  if (!done.meta.changes) return 'This changed meanwhile. Try again.';
+  if (!same(picks, out)) await flag(env, hub).run();
+  return '';
+}
+/* A title left out for good counts again, from the next daily pick. */
+export async function pickFromAgain(env: Env, hub: string, person: string, seed: string) {
+  const row = await env.DB.prepare('SELECT never FROM foryou WHERE hub = ? AND person = ?').bind(hub, person).first<{never: string}>();
+  if (row) await env.DB.prepare('UPDATE foryou SET never = ? WHERE hub = ? AND person = ? AND never = ?').bind(JSON.stringify(read<{seed: string}[]>(row.never, []).filter(item => item.seed !== seed)), hub, person, row.never).run();
+}

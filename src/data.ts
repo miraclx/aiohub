@@ -17,15 +17,27 @@ export interface Settings {
   debrid: string; sources: string[]; formatter: Template;
   // Kinds of For you pick left out (FOR_YOU_KINDS). Missing or empty: every kind may be picked.
   forYouOff?: string[];
+  // The kinds of pick in the order they count for (orderOf). Missing or empty: FOR_YOU_ORDER.
+  forYouOrder?: string[];
+  // Because you watched: from what was watched lately (the four newest titles and two older), or from any time (two and four).
+  forYouBecause?: 'lately' | 'any';
 }
 export type Overrides = Partial<Settings>;
 export interface Device {id: string; app: string; name: string; seen: string; place?: string; net?: string}
 // Plays one of Trakt and MDBList has and the other lacks, from the daily look (drift.ts on the Worker).
 export interface Miss {kind: 'movie' | 'show'; tmdb: number; name: string; season?: number; episode?: number; at: number; key: string}
 export interface Drift {checked: number; since: number; toMdblist: Miss[]; toTrakt: Miss[]}
-/* pickedAt: when their For you places were last picked (unix seconds); forYouRedone: places asked to pick something else on this
-   picking day (once a day each); shelfAt: when their My Trakt lists row was last worked out, 0 while it waits to be again. */
-export interface Person {forYou?: Record<string, string>; forYouKinds?: Record<string, string>; pickedAt?: number; forYouRedone?: string[]; shelfAt?: number; shelfTiles?: {title: string; image: string}[]; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; pin: string | null; password: string; devices: Device[]}
+/* What a For you pick says of itself on the site: its key, kind and name, and what it came from (`why`, worded on the site, so a
+   time reads in the viewer's own days). `seed`: the title it was worked out from, which can be left out for good; `keep`: the place
+   keeps it at the daily pick. */
+export interface Why {title?: string; seen?: number; who?: string; more?: number}
+export interface Shown {key: string; kind: string; name: string; why?: Why; seed?: string; keep?: boolean}
+/* A person's For you today (foryou.ts): each place's pick, the other options from the day's pick, the kinds with nothing today and
+   why ('off', 'limit', 'watching', 'none'), and the titles they never want picked from again. */
+export interface ForYouDetail {places: Record<string, Shown>; options: Shown[]; none: Record<string, string>; never: {seed: string; title: string}[]}
+/* pickedAt: when their For you places were last picked (unix seconds); shelfAt: when their My Trakt lists row was last worked out,
+   0 while it waits to be again. */
+export interface Person {forYou?: Record<string, string>; forYouKinds?: Record<string, string>; pickedAt?: number; forYouDetail?: ForYouDetail; shelfAt?: number; shelfTiles?: {title: string; image: string}[]; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
 export interface Hub {
@@ -175,6 +187,15 @@ export const FOR_YOU_KINDS: {id: string; title: string; discover: boolean}[] = [
   {id: 'genres', title: 'Your genres', discover: true}, {id: 'different', title: 'Something different', discover: true}, {id: 'seasonal', title: 'Seasonal', discover: true},
   {id: 'top10', title: 'Top 10', discover: false},
 ];
+/* The order the kinds count for when nobody has changed it: the order of their weights before the order could be changed
+   (BASE in foryou.ts), so an untouched Home is picked for as it was. */
+export const FOR_YOU_ORDER = ['series', 'pickup', 'because', 'crew', 'genres', 'seasonal', 'top10', 'different'];
+/* A saved order made whole: unknown kinds dropped, each kind once, any kind it lacks in its default place among the rest. */
+export function orderOf(saved: string[] = []): string[] {
+  const out = [...new Set(saved.filter(id => FOR_YOU_ORDER.includes(id)))];
+  for (const [at, id] of FOR_YOU_ORDER.entries()) if (!out.includes(id)) out.splice(Math.min(at, out.length), 0, id);
+  return out;
+}
 /* Rows someone following the Home above can switch on or off for themselves. */
 export const PICKABLE = new Set([...TRAKT_IDS, ...KIDS_IDS]);
 export const pickable = (id: string) => PICKABLE.has(id) || isPlace(id);
@@ -268,7 +289,7 @@ export const defaultSettings = (): Settings => ({
   quality: 'balanced', maxSizeGb: 25, languages: ['English'], cachedFirst: true, search: 'balanced',
   subtitles: ['English'], skip: true,
   limit: 'all', hideWatched: false, spoilers: false, unreleased: true, posters: 'better', ageBadge: false,
-  debrid: 'TorBox', sources: ['library', 'torrentio', 'comet', 'meteor'], formatter: formatter as Template, forYouOff: [],
+  debrid: 'TorBox', sources: ['library', 'torrentio', 'comet', 'meteor'], formatter: formatter as Template, forYouOff: [], forYouOrder: [], forYouBecause: 'lately',
 });
 export interface Resolved {values: Settings; from: Record<keyof Settings, Level>}
 export function resolve(hub: Hub, group?: Group, person?: Person): Resolved {

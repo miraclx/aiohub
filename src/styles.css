@@ -219,7 +219,7 @@ input:not([type=range]):focus { outline: 2px solid var(--accent); outline-offset
 .sheet-body { background: var(--bg); border: 1px solid var(--line); border-radius: 22px 22px 0 0; padding: 20px 20px calc(24px + env(safe-area-inset-bottom, 0px)); max-height: 88dvh; overflow-y: auto; }
 @media (min-width: 640px) { .sheet-body { border-radius: 22px; } }
 /* The header stays in view, with Close, while a long sheet scrolls under it. */
-.sheet header { display: flex; justify-content: space-between; align-items: center; position: sticky; top: -20px; z-index: 1; background: var(--bg); margin: -20px 0 8px; padding: 20px 0 10px; }
+.sheet header { display: flex; justify-content: space-between; align-items: center; gap: 12px; position: sticky; top: -20px; z-index: 1; background: var(--bg); margin: -20px 0 8px; padding: 20px 0 10px; }
 .sheet header .ghost { width: var(--tap); padding: 0; }
 .sheet-sub { margin: 24px 0 10px; color: var(--muted); font-size: 14px; }
 .picks { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
@@ -463,3 +463,21 @@ label.sheet-sub { display: block; }
 .settings .door-keys { border-top: 1px solid var(--line); }
 .door-note { margin-top: 16px; }
 .door-about { margin: -4px 0 10px; }
+/* For you: the kinds of pick in their order (Home tab), and a For you row's sheet. */
+.kinds { list-style: none; padding: 0; margin: 4px 0 0; display: grid; gap: 6px; }
+.kinds li { display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 2px; border-radius: 12px; background: var(--raised); }
+.kinds li.dragging { opacity: .6; }
+.kinds li > div { flex: 1; min-width: 0; display: grid; gap: 8px; justify-items: start; }
+.kinds li small { color: var(--muted); font-size: 13px; }
+.kinds li.dim strong { color: var(--muted); }
+.never { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.never li { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.why small { display: block; color: var(--muted); font-size: 13px; margin-top: 4px; }
+.none summary { cursor: pointer; color: var(--muted); font-weight: 600; margin-top: 16px; min-height: var(--tap); display: flex; align-items: center; gap: 8px; }
+.none ul { list-style: none; margin: 0; padding: 0; background: var(--surface); border-radius: 14px; }
+.none li { display: grid; gap: 1px; padding: 10px 14px; }
+.none li + li { border-top: 1px solid var(--line); }
+.none small { color: var(--muted); }
+.note-above { margin-bottom: 10px; }
+.sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.kinds .segments { background: var(--surface); }

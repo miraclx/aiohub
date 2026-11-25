@@ -11,8 +11,7 @@ import {LINK, brief, disconnect, forgetTrakt, keepLink, links, read} from './tra
 import {rows} from './rows';
 import {PAIRS, copy, forgetShown, moving, shown} from './places';
 import {because} from './suggest';
-import {STAND_INS, kindsOf, namesOf, pickHour, redoneOf} from './foryou';
-import type {Pick} from './foryou';
+import {STAND_INS, detailOf, kindsOf, namesOf, pickFromAgain, pickHour, placeAsked} from './foryou';
 import {MOST as SHELF_MOST, SHELF, SHELF_ROW, shelfFrom, wantsShelf} from './shelf';
 import type {Env} from './util';
 import {blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp, unseal} from './util';
@@ -61,9 +60,11 @@ const CHECK: {[K in keyof Settings]-?: (value: unknown) => Settings[K]} = {
   ageBadge: flag,
   debrid: value => text(value, 40, 'Account'), sources: value => list(value, 60, 80, 'Sources'),
   forYouOff: value => list(value, 20, 20, 'For you').filter(id => FOR_YOU_KINDS.some(kind => kind.id === id)),
+  forYouOrder: value => [...new Set(list(value, 20, 20, 'For you').filter(id => FOR_YOU_KINDS.some(kind => kind.id === id)))],
+  forYouBecause: value => oneOf(value, ['lately', 'any'] as const, 'For you'),
   formatter: value => ({name: text((value as Record<string, unknown>)?.name, 20_000, 'Stream label'), description: text((value as Record<string, unknown>).description, 20_000, 'Stream label')}),
 };
-const LATER = new Set<keyof Settings>(['ageBadge', 'forYouOff']);
+const LATER = new Set<keyof Settings>(['ageBadge', 'forYouOff', 'forYouOrder', 'forYouBecause']);
 function cleanSettings(value: unknown, whole: boolean): Overrides {
   if (!value || typeof value !== 'object' || Array.isArray(value)) bad(400, 'Settings are not valid');
   const out: Record<string, unknown> = {};
@@ -167,13 +168,14 @@ async function state(env: Env, who: Who) {
       (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing, (SELECT max(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelved, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelves, (SELECT min(c.at) FROM rows_cache c JOIN people p ON p.hub = c.hub AND p.id = c.person WHERE c.hub = ?1 AND c.kind = 'shelf' AND EXISTS (SELECT 1 FROM json_each(p.data, '$.rows') r WHERE json_extract(r.value, '$.id') = 'trakt-lists' AND json_extract(r.value, '$.on') = 1)) AS shelfDue`).bind(hub.id, new Date().toISOString().slice(0, 10)),
     // Who has played something here: their Recently Watched has something in it even without Trakt or MDBList.
     env.DB.prepare('SELECT DISTINCT person FROM plays WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
-    // What each For you place holds today, by name only (the manager sees them on that person's Home tab), and when it was picked.
-    env.DB.prepare('SELECT person, day, picks, at FROM foryou WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
+    // What each For you place holds today, by name and what it came from (the manager sees them on that person's Home tab), the
+    // day's other options, and when it was picked.
+    env.DB.prepare('SELECT person, picks, pool, never, at FROM foryou WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
     // When each My Trakt lists row was last worked out (0: asked for again, shelf.ts), for the row's line on their Home.
     // Its tiles too (name and picture of each list), so the row shows them on the site as the apps do.
     env.DB.prepare('SELECT person, at, items FROM rows_cache WHERE hub = ? AND kind = ? AND person = coalesce(?, person)').bind(hub.id, SHELF, mine ?? null),
   ]);
-  const forYou = new Map((picked.results as {person: string; day: string; picks: string; at: number}[]).map(row => [row.person, {names: namesOf(row.picks), kinds: kindsOf(row.picks), at: row.at, redone: redoneOf(row.picks, row.day)}]));
+  const forYou = new Map((picked.results as {person: string; picks: string; pool: string; never: string; at: number}[]).map(row => [row.person, {names: namesOf(row.picks), kinds: kindsOf(row.picks), at: row.at, detail: detailOf(row.picks, row.pool, row.never)}]));
   const shelfAt = new Map((shelves.results as {person: string; at: number}[]).map(row => [row.person, row.at]));
   const shelfTiles = new Map((shelves.results as {person: string; items: string}[]).map(row => [row.person, shelfFrom(row.items).filter(list => list.cover).map(list => ({title: list.title, image: list.cover}))]));
   // Which MDBList account each person's progress goes to (the name only; the key never leaves the vault).
@@ -196,7 +198,7 @@ async function state(env: Env, who: Who) {
       // The UTC hour the day's For you picking starts, so a Home can say when the next picks come.
       forYouHour: pickHour(env),
       groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? looked(drifts.results[0] as {result: string | null; skipped: string | null; at: number} | undefined) : null, moves[row.id] ?? null, keyed.has(row.id), playedHere.has(row.id))).map(person => {const picked = forYou.get(person.id), shelved = shelfAt.get(person.id);
-        return {...person, ...(picked ? {forYou: {...STAND_INS, ...picked.names}, forYouKinds: picked.kinds, pickedAt: picked.at, forYouRedone: picked.redone} : {}), ...(shelved !== undefined ? {shelfAt: shelved, shelfTiles: shelfTiles.get(person.id) ?? []} : {})};}),
+        return {...person, ...(picked ? {forYou: {...STAND_INS, ...picked.names}, forYouKinds: picked.kinds, pickedAt: picked.at, forYouDetail: picked.detail} : {}), ...(shelved !== undefined ? {shelfAt: shelved, shelfTiles: shelfTiles.get(person.id) ?? []} : {})};}),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
   };
@@ -429,14 +431,12 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     return {};
   }
   if (action === 'foryou' && request.method === 'POST') {
-    // "Pick something else", from a For you row: that place alone is picked again on the next run (foryou.ts), once a place a day.
+    // From a For you row's Edit sheet (foryou.ts): one of the day's other options in its place, kept or let change again, or the
+    // title it came from never picked from again. Or a title left out that way counts again.
+    if (rest === 'never') {await pickFromAgain(env, hub, id, text(body.seed, 20, 'Title')); return {};}
     const place = isPlace(rest ?? '') ? rest! : bad(400, 'That row is not valid');
-    const kept = await env.DB.prepare('SELECT day, picks FROM foryou WHERE hub = ? AND person = ?').bind(hub, id).first<{day: string; picks: string}>();
-    const picks = JSON.parse(kept?.picks ?? '{}') as Record<string, Pick>, pick = picks[place] ?? bad(409, 'Nothing is picked here yet.');
-    if (pick.redo === kept!.day) bad(409, 'Something else was picked here today already.');
-    // Only over the picks it read: a run that picked meanwhile is not undone.
-    const done = await env.DB.prepare('UPDATE foryou SET picks = ? WHERE hub = ? AND person = ? AND picks = ?').bind(JSON.stringify({...picks, [place]: {...pick, redo: kept!.day, again: true}}), hub, id, kept!.picks).run();
-    if (!done.meta.changes) bad(409, 'This changed meanwhile. Try again.');
+    const error = await placeAsked(env, hub, id, place, body.use !== undefined ? {use: text(body.use, 200, 'Option')} : body.keep !== undefined ? {keep: flag(body.keep)} : body.never === true ? {never: true} : bad(400, 'Nothing was asked'));
+    if (error) bad(409, error);
     return {};
   }
   if (action === 'compare') {

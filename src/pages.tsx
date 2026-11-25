@@ -1,6 +1,6 @@
 import {Fragment, useEffect, useState} from 'react';
 import {QRCodeSVG} from 'qrcode.react';
-import {FOR_YOU_KINDS, SAMPLE, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, resolve, samplePassword, samplePin, slug, traktRows} from './data';
+import {FOR_YOU_KINDS, SAMPLE, orderOf, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, resolve, samplePassword, samplePin, slug, traktRows} from './data';
 import type {Device, Group, Hub, Miss, Person, Row, Settings} from './data';
 import {Activity} from './activity';
 import {GroupOrder, HomeEditor, moved} from './home';
@@ -469,7 +469,7 @@ function useOwnPicks(page: PageProps, person: Person, mine: boolean) {
 function PersonSections({page, person, tab, mine}: {page: PageProps; person: Person; tab: string; mine: boolean}) {
   const {hub, update, toast} = page, group = hub.groups.find(item => item.id === person.groupId)!, own = useOwnPicks(page, person, mine);
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
-  const props = editor(page, group, person, mine), rows = personRows(hub, person);
+  const props = editor(page, group, person, mine), rows = personRows(hub, person), order = orderOf(props.resolved.values.forYouOrder);
   // Adding a row changes Home, which the hub allows only with arranging on too (someone saved before that was enforced may have add alone).
   const canArrange = !mine || person.can.arrange, canAdd = !mine || person.can.arrange && person.can.add;
   // Work their Home asks the hub for on the next run; the page reads again either way, so the row says where it stands.
@@ -485,11 +485,15 @@ function PersonSections({page, person, tab, mine}: {page: PageProps; person: Per
         if (flipped.length === 1 && pickable(flipped[0].id)) target.picks = {...target.picks, [flipped[0].id]: flipped[0].on}; else target.rows = next;
       }, note)}
       onMute={kind => props.set('forYouOff', [...(props.resolved.values.forYouOff ?? []), kind], `${FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'That kind'} won’t be picked`)}
-      times={page.live && hub.forYouHour !== undefined ? {hour: hub.forYouHour, pickedAt: person.pickedAt, redone: person.forYouRedone, shelfAt: person.shelfAt, tiles: person.shelfTiles} : undefined}
-      onRedo={page.live ? place => ask(`foryou/${place}`, mine ? 'Picking something else. Your apps have it in a few minutes.' : 'Picking something else. Their apps have it in a few minutes.') : undefined}
+      // "Less" from a For you row: that kind one step down their own order of kinds, so it is picked a little less from the next pick.
+      order={order} onLess={kind => {const at = order.indexOf(kind); props.set('forYouOrder', moved(order, at, at + 1), `${FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'That kind'} moves down. Picks change in a few minutes.`);}}
+      times={page.live && hub.forYouHour !== undefined ? {hour: hub.forYouHour, pickedAt: person.pickedAt, shelfAt: person.shelfAt, tiles: person.shelfTiles} : undefined}
+      forYou={page.live ? person.forYouDetail : undefined}
+      onPlace={page.live ? (place, asked, note) => void page.live!.call('POST', `/api/people/${person.id}/foryou/${place}`, asked).then(() => toast(note), fail(toast)).then(() => page.live!.reload()) : undefined}
       onCheckLists={page.live ? () => ask('shelf', mine ? 'Checking your lists. Your apps have them in a few minutes.' : 'Checking their lists. Their apps have them in a few minutes.') : undefined}
       onFollow={person.rows && canArrange ? () => edit(target => {target.rows = null;}, `Following ${group.name} again`) : undefined} followLabel={`Follow ${group.name} again`}/>}
-    {tab === 'home' && <ForYouEditor {...props}/>}
+    {tab === 'home' && <ForYouEditor {...props} never={person.forYouDetail?.never}
+      onForget={page.live ? item => void page.live!.call('POST', `/api/people/${person.id}/foryou/never`, {seed: item.seed}).then(() => toast(`“${item.title}” counts again from the next pick`), fail(toast)).then(() => page.live!.reload()) : undefined}/>}
     {tab === 'playback' && <PlaybackEditor {...props} kept={!!person.lists} limitSet={mine && !person.can.limit}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
     {tab === 'activity' && <Activity hub={hub} personId={person.id} toast={toast} live={page.live}/>}

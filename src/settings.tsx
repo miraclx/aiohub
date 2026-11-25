@@ -1,10 +1,14 @@
 import {useEffect, useMemo, useState} from 'react';
+import type {ReactNode} from 'react';
+import {DragDropProvider} from '@dnd-kit/react';
+import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
 import type {Live} from './live';
 import {FIXTURES, FormatterPreviewClient} from 'formatter-preview';
-import {FOR_YOU_KINDS, allServices, defaultAddons, signUp} from './data';
-import type {Hub, Resolved, Settings, Template} from './data';
+import {FOR_YOU_KINDS, allServices, defaultAddons, orderOf, signUp} from './data';
+import type {Hub, Level, Resolved, Settings, Template} from './data';
 import {Chips, Confirm, Segments, Setting, Switch, hash} from './ui';
 import type {Scope} from './ui';
+import {Grip, moved} from './home';
 
 export interface EditorProps {
   hub: Hub; resolved: Resolved; scope: Scope; mine?: boolean;
@@ -143,16 +147,42 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
   </section>;
 }
 
+/* One kind of pick in Kinds of pick: dragged into place, switched on or off. Because you watched says how far back it looks. */
+function KindLine({id, title, index, on, limited, children, onSwitch}: {id: string; title: string; index: number; on: boolean; limited: boolean; children?: ReactNode; onSwitch: (on: boolean) => void}) {
+  const sortable = useSortable({id, index});
+  return <li ref={sortable.ref} className={`${sortable.isDragging ? 'dragging' : ''}${!on || limited ? ' dim' : ''}`}>
+    <Grip handleRef={sortable.handleRef} label={`Move ${title}`}/>
+    <div><strong>{title}</strong>{limited && <small>Not under this content limit</small>}{on && !limited && children}</div>
+    <Switch label={title} checked={on} onChange={onSwitch}/>
+  </li>;
+}
 /* What the daily For you rows can pick from, on the Home tab (where those rows are): only where For you places exist, each
-   person's apps on their own AIOMetadata setup. Set for the hub or a group, or changed for one person, like any setting. */
-export function ForYouEditor({hub, resolved: {values, from}, scope, set, reset}: EditorProps) {
+   person's apps on their own AIOMetadata setup. Set for the hub or a group, or changed for one person, like any setting. The kinds
+   come in order (dragged): a kind nearer the top is picked more often (foryou.ts). On a person's page also the titles they left out
+   for good, from a For you row, each of which can count again. */
+export function ForYouEditor({hub, resolved: {values, from}, scope, set, reset, never = [], onForget}: EditorProps & {never?: {seed: string; title: string}[]; onForget?: (item: {seed: string; title: string}) => void}) {
   if (!hub.front) return null;
-  const line = (key: keyof Settings) => ({from: from[key], scope, onReset: () => reset(key)});
+  const order = orderOf(values.forYouOrder), off = values.forYouOff ?? [];
+  // Three settings shown as one: it says the nearest level any of them was changed at, and Reset puts all three back.
+  const keys = ['forYouOrder', 'forYouOff', 'forYouBecause'] as const, rank: Record<Level, number> = {hub: 0, group: 1, own: 2};
+  const at = keys.map(key => from[key]).reduce((a, b) => rank[b ?? 'hub'] > rank[a ?? 'hub'] ? b : a, 'hub' as Level);
+  const kind = (id: string) => FOR_YOU_KINDS.find(item => item.id === id)!;
   return <section>
     <h3 className="sub">For you</h3>
     <div className="card settings">
-      <Setting column title="Kinds of pick" hint={`What the daily For you rows can pick from. Leave one out and it isn’t picked.${values.limit !== 'all' ? ' Under a content limit only director, genre, something different and seasonal picks are made.' : ''}`} {...line('forYouOff')}>
-        <Chips all={FOR_YOU_KINDS.map(kind => kind.title)} value={FOR_YOU_KINDS.filter(kind => !(values.forYouOff ?? []).includes(kind.id)).map(kind => kind.title)} onChange={value => set('forYouOff', FOR_YOU_KINDS.filter(kind => !value.includes(kind.title)).map(kind => kind.id))}/></Setting>
+      <Setting column title="Kinds of pick" hint={`What the daily For you rows pick from. Drag to choose what comes first: the higher a kind, the more often it is picked. Switch one off and it isn’t picked.${values.limit !== 'all' ? ' Under a content limit only director, genre, something different and seasonal picks are made.' : ''}`} from={at} scope={scope} onReset={() => keys.forEach(key => reset(key))}>
+        <DragDropProvider onDragEnd={event => {
+          if (event.canceled || !isSortableOperation(event.operation) || !event.operation.source) return;
+          const was = order.indexOf(String(event.operation.source.id)), to = event.operation.source.index;
+          if (was >= 0 && was !== to) set('forYouOrder', moved(order, was, to), 'Order saved');
+        }}><ol className="kinds">{order.map((id, index) => <KindLine key={id} id={id} title={kind(id).title} index={index} on={!off.includes(id)} limited={values.limit !== 'all' && !kind(id).discover}
+          onSwitch={on => set('forYouOff', on ? off.filter(item => item !== id) : [...off, id], on ? `${kind(id).title} can be picked` : `${kind(id).title} won’t be picked`)}>
+          {id === 'because' && <Segments label="Because you watched, from" value={values.forYouBecause ?? 'lately'} onChange={value => set('forYouBecause', value)} options={[{value: 'lately', label: 'From lately'}, {value: 'any', label: 'From any time'}]}/>}
+        </KindLine>)}</ol></DragDropProvider>
+      </Setting>
+      {scope.level === 'own' && !!never.length && <Setting column title="Not picked from" hint="Titles left out from a For you row. Nothing is picked from them until they count again.">
+        <ul className="never">{never.map(item => <li key={item.seed}><span>{item.title}</span>{onForget && <button type="button" className="ghost small" onClick={() => onForget(item)}>Count again</button>}</li>)}</ul>
+      </Setting>}
     </div>
   </section>;
 }

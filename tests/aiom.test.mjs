@@ -1254,6 +1254,11 @@ test('older watching has its turn in because-you-watched: two titles from months
   // An older title's row can take a place (its own recency counts as a fixed share, not nothing); the row's name is as ever.
   names.push(...Object.values(picksOf('ada')).map(pick => pick.name));
   assert.ok(names.some(name => Object.values(OLD).some(title => name === `Because you watched ${title}`)), names.join(' / '));
+  // From any time: the two newest titles and four older, so all three older ones seed a row today, picked or among the options.
+  await setPerson('ada', me => ({settings: {...me.settings, forYouBecause: 'any'}})); await cron(day6 + 62 * MIN);
+  const seeded = [...Object.values(picksOf('ada')), ...JSON.parse(sql("SELECT pool FROM foryou WHERE person = 'ada'")[0].pool).options].map(pick => pick.key);
+  assert.ok(Object.keys(OLD).every(id => seeded.includes(`because:m${id}`)), seeded.join());
+  await setPerson('ada', me => {const {forYouBecause: _, ...settings} = me.settings; return {settings};});
   assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200); trakt.history = [];
   sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind LIKE 'history%'");
 });
@@ -1287,31 +1292,115 @@ test('with nothing new watched the places move on through what there is, not bac
   assert.ok(before.length > 3 && before.length <= 12, JSON.stringify(before));
   await setPerson('ada', me => {const {forYouOff: _, ...settings} = me.settings; return {settings};});
 });
-test('“Pick something else” picks again for that place alone, on the next run, once a place a day; hers or her manager’s to ask', async () => {
+const poolOf = person => JSON.parse(sql(`SELECT pool FROM foryou WHERE person = '${person}'`)[0]?.pool ?? '{}');
+const detailOf = async (who = owner) => (await who('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').forYouDetail;
+const place_ = (place, body, who = adaSite, person = 'ada') => who('POST', `/api/people/${person}/foryou/${place}`, body);
+test('each pick keeps what it came from, and the day’s pick keeps its other options and why the other kinds have nothing', async () => {
   const day = DEC + 11 * 86400e3; await pickDay(day);
-  const before = picksOf('ada'), bens = picksOf('ben');
+  const picks = picksOf('ada'), pool = poolOf('ada'), on = Object.values(picks).map(pick => pick.key);
   // Her Home says when her places were picked and the hour the day's picking starts.
   const mine = (await adaSite('GET', '/api/state')).body.hub;
-  assert.equal(mine.forYouHour, 5); assert.equal(mine.people[0].pickedAt, sql("SELECT at FROM foryou WHERE person = 'ada'")[0].at); assert.deepEqual(mine.people[0].forYouRedone, []);
-  assert.equal((await adaSite('POST', '/api/people/ben/foryou/for-you-2', {})).status, 403);
-  assert.equal((await adaSite('POST', '/api/people/ada/foryou/trending-movies', {})).status, 400);
-  assert.equal((await adaSite('POST', '/api/people/ada/foryou/for-you-2', {})).status, 200);
-  assert.equal((await owner('POST', '/api/people/ada/foryou/for-you-2', {})).status, 409, 'once a place a day');
-  assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').forYouRedone, ['for-you-2']);
-  // The next run picks for that place alone: something on none of her places, and the rest stay as they were. Nobody else is picked for.
-  for (let n = 0; n < 6 && picksOf('ada')['for-you-2'].again; n++) await cron(day + (70 + 5 * n) * MIN);
+  assert.equal(mine.forYouHour, 5); assert.equal(mine.people[0].pickedAt, sql("SELECT at FROM foryou WHERE person = 'ada'")[0].at);
+  // A pick worked out from a title says which, and when she watched it; the kind's facts otherwise. The site words them.
+  for (const pick of [...Object.values(picks), ...pool.options]) {
+    if (pick.kind === 'because') {assert.equal(`Because you watched ${pick.why.title}`, pick.name); assert.ok(pick.why.seen > 0 && /^[ms]\d+$/.test(pick.seed), JSON.stringify(pick));}
+    else if (pick.kind === 'crew') assert.ok(pick.why.who && pick.why.title && pick.seed, JSON.stringify(pick));
+    else if (['genres', 'different', 'top10'].includes(pick.kind)) assert.ok(pick.why.title, JSON.stringify(pick));
+  }
+  // About ten other options, best first, none of them on a place; and each kind with nothing, with why.
+  assert.ok(pool.options.length >= 5 && pool.options.length <= 10, JSON.stringify(pool.options.map(pick => pick.key)));
+  assert.ok(!pool.options.some(pick => on.includes(pick.key)));
+  assert.deepEqual(pool.options.map(pick => pick.score), [...pool.options.map(pick => pick.score)].sort((a, b) => b - a));
+  assert.equal(pool.none.pickup, 'none', JSON.stringify(pool.none));
+  // The site is told the names, kinds and reasons, never what fills a row.
+  const detail = await detailOf(adaSite);
+  assert.deepEqual(Object.keys(detail.places), Object.keys(picks)); assert.deepEqual(detail.options.map(pick => pick.key), pool.options.map(pick => pick.key)); assert.deepEqual(detail.never, []);
+  assert.ok(![...Object.values(detail.places), ...detail.options].some(pick => pick.params || pick.serve || pick.chart || pick.score !== undefined));
+  // Ben, under the Kids limit, with nothing watched: what the hub fills is not for him, and the rest has too little to go on.
+  const ben = poolOf('ben').none;
+  assert.equal(ben.because, 'limit'); assert.equal(ben.top10, 'limit'); assert.equal(ben.genres, 'watching');
+});
+test('an option goes in at once and as often as wanted, without asking TMDB, and the apps follow; never one on another row; hers or her manager’s', async () => {
+  const day = DEC + 11 * 86400e3, before = picksOf('ada'), {options} = await detailOf(), option = options.at(-1);
+  assert.equal((await place_('for-you-2', {use: option.key}, adaSite, 'ben')).status, 403);
+  assert.equal((await place_('trending-movies', {use: option.key})).status, 400); assert.equal((await place_('for-you-2', {})).status, 400);
+  fake.tmdb = []; assert.equal((await place_('for-you-2', {use: option.key})).status, 200);
   const after = picksOf('ada');
-  assert.deepEqual([after['for-you-1'], after['for-you-3']], [before['for-you-1'], before['for-you-3']]);
-  assert.ok(!Object.values(before).some(pick => pick.key === after['for-you-2'].key), JSON.stringify([before, after]));
-  assert.equal(after['for-you-2'].redo, '2026-12-12'); assert.equal(after['for-you-2'].again, undefined);
-  assert.deepEqual(picksOf('ben'), bens);
-  // What it held counts as lately picked, so it is not back tomorrow first thing; her apps get the new pick in the same way as any.
+  assert.equal(after['for-you-2'].key, option.key); assert.deepEqual([after['for-you-1'], after['for-you-3']], [before['for-you-1'], before['for-you-3']]); assert.deepEqual(fake.tmdb, []);
+  // What it held is among the options again, and counts as lately picked; the option it took is on a row now, so no other row can have it.
+  assert.ok(poolOf('ada').options.some(pick => pick.key === before['for-you-2'].key) && !poolOf('ada').options.some(pick => pick.key === option.key));
   assert.equal(JSON.parse(sql("SELECT before FROM foryou WHERE person = 'ada'")[0].before)[0], before['for-you-2'].key);
-  await settle(day + 100 * MIN); assert.deepEqual(fyOf('Ada').map(item => item.name), Object.values(after).map(pick => pick.name));
-  assert.equal((await adaSite('POST', '/api/people/ada/foryou/for-you-2', {})).status, 409);
-  // The next day's picking, and she can ask again.
+  assert.equal((await place_('for-you-3', {use: option.key}, owner)).status, 409);
+  assert.ok(!(await detailOf()).options.some(pick => Object.values(picksOf('ada')).some(on => on.key === pick.key)));
+  // Her apps get it as they get any pick: the hub's setups are brought in step.
+  assert.equal(sql('SELECT hub FROM foryou_sync').length, 1); await settle(day + 100 * MIN);
+  assert.deepEqual(fyOf('Ada').map(item => item.name), Object.values(picksOf('ada')).map(pick => pick.name));
+  // As often as wanted, by her or her manager.
+  assert.equal((await place_('for-you-2', {use: before['for-you-2'].key}, owner)).status, 200); assert.equal(picksOf('ada')['for-you-2'].key, before['for-you-2'].key);
+  await settle(day + 110 * MIN);
+});
+test('a row kept stays through the daily pick until let go; a kept pick that may no longer be used there is let go', async () => {
+  const day = DEC + 12 * 86400e3; await pickDay(day);
+  const low = (await detailOf()).options.at(-1);
+  assert.equal((await place_('for-you-3', {use: low.key})).status, 200); await settle(day + 70 * MIN);
+  // Keeping changes nothing in the apps.
+  assert.equal((await place_('for-you-3', {keep: true})).status, 200); assert.equal(picksOf('ada')['for-you-3'].keep, true);
+  assert.equal((await detailOf(adaSite)).places['for-you-3'].keep, true); assert.deepEqual(sql('SELECT hub FROM foryou_sync'), []);
   await pickDay(day + 86400e3);
-  assert.deepEqual((await adaSite('GET', '/api/state')).body.hub.people[0].forYouRedone, []); assert.ok(!Object.values(picksOf('ada')).some(pick => pick.redo));
+  assert.equal(picksOf('ada')['for-you-3'].key, low.key); assert.equal(picksOf('ada')['for-you-3'].keep, true);
+  assert.ok(!Object.entries(picksOf('ada')).some(([place, pick]) => place !== 'for-you-3' && pick.key === low.key));
+  // Choosing another option for a kept row keeps the row kept, with the new one.
+  const other = (await detailOf()).options[0];
+  assert.equal((await place_('for-you-3', {use: other.key})).status, 200); assert.deepEqual([picksOf('ada')['for-you-3'].key, picksOf('ada')['for-you-3'].keep], [other.key, true]);
+  assert.equal((await place_('for-you-3', {use: low.key})).status, 200); await settle(day + 86400e3 + 70 * MIN);
+  // Let go, it changes at the next daily pick.
+  assert.equal((await place_('for-you-3', {keep: false})).status, 200); assert.equal(picksOf('ada')['for-you-3'].keep, undefined);
+  await pickDay(day + 2 * 86400e3); assert.notEqual(picksOf('ada')['for-you-3'].key, low.key);
+  // Kept, then its kind switched off: it goes, as any pick of a kind switched off.
+  const kept = picksOf('ada')['for-you-1'];
+  assert.equal((await place_('for-you-1', {keep: true})).status, 200);
+  await setPerson('ada', me => ({settings: {...me.settings, forYouOff: [kept.kind]}})); await cron(day + 2 * 86400e3 + 70 * MIN);
+  assert.ok(!Object.values(picksOf('ada')).some(pick => pick.kind === kept.kind || pick.keep), JSON.stringify(picksOf('ada')));
+  assert.equal(poolOf('ada').none[kept.kind], 'off');
+  await setPerson('ada', me => {const {forYouOff: _, ...settings} = me.settings; return {settings};}); await settle(day + 2 * 86400e3 + 75 * MIN);
+});
+test('“Not from this title again”: the row changes at once, and nothing is picked from that title until it counts again', async () => {
+  const day = DEC + 15 * 86400e3; await pickDay(day);
+  const [place, pick] = Object.entries(picksOf('ada')).find(([, item]) => item.seed);
+  // A row not worked out from a title has no title to leave out.
+  const plain = Object.keys(picksOf('ada')).find(other => !picksOf('ada')[other].seed);
+  if (plain) assert.equal((await place_(plain, {never: true})).status, 409);
+  assert.equal((await place_(place, {never: true})).status, 200);
+  const now = picksOf('ada');
+  assert.notEqual(now[place]?.key, pick.key); assert.notEqual(now[place]?.seed, pick.seed);
+  assert.ok(!poolOf('ada').options.some(item => item.seed === pick.seed)); assert.equal(sql('SELECT hub FROM foryou_sync').length, 1);
+  assert.deepEqual((await detailOf(adaSite)).never, [{seed: pick.seed, title: pick.why.title}]);
+  await settle(day + 70 * MIN);
+  // The next day it seeds nothing: no row, no option.
+  await pickDay(day + 86400e3);
+  assert.ok(![...Object.values(picksOf('ada')), ...poolOf('ada').options].some(item => item.seed === pick.seed), JSON.stringify([picksOf('ada'), poolOf('ada').options]));
+  // It counts again, from the next pick.
+  assert.equal((await adaSite('POST', '/api/people/ada/foryou/never', {seed: pick.seed})).status, 200);
+  assert.deepEqual((await detailOf()).never, []);
+});
+test('the order of the kinds sets how much each counts: one moved to the top fills the first row; the setting is checked', async () => {
+  const day = DEC + 17 * 86400e3; await pickDay(day);
+  assert.notEqual(picksOf('ada')['for-you-1'].kind, 'different');
+  await setPerson('ada', me => ({settings: {...me.settings, forYouOrder: ['different', 'series', 'pickup', 'because', 'crew', 'genres', 'seasonal', 'top10']}}));
+  await cron(day + 70 * MIN);
+  assert.equal(picksOf('ada')['for-you-1'].kind, 'different', JSON.stringify(picksOf('ada')));
+  // Checked as it is saved: known kinds only, each once; the rest of the order is made up from the default.
+  await setPerson('ada', me => ({settings: {...me.settings, forYouOrder: ['top10', 'bogus', 'top10']}}));
+  assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').settings.forYouOrder, ['top10']);
+  const me = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
+  assert.equal((await owner('PUT', '/api/people/ada', {name: me.name, groupId: me.groupId, rows: me.rows, picks: me.picks, settings: {...me.settings, forYouBecause: 'sometimes'}, can: me.can, paused: me.paused, trakt: me.trakt, lists: me.lists, v: me.v})).status, 400);
+  assert.equal((await owner('PUT', '/api/people/ada', {name: me.name, groupId: me.groupId, rows: me.rows, picks: me.picks, settings: {...me.settings, forYouOrder: 'top10'}, can: me.can, paused: me.paused, trakt: me.trakt, lists: me.lists, v: me.v})).status, 400);
+  // Less of a kind (from a row's sheet) saves her order with it one step down, and she is picked for again under it.
+  const less = ['series', 'pickup', 'crew', 'because', 'genres', 'seasonal', 'top10', 'different'], at = sql("SELECT at FROM foryou WHERE person = 'ada'")[0].at;
+  await setPerson('ada', me => ({settings: {...me.settings, forYouOrder: less}}));
+  assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').settings.forYouOrder, less);
+  await cron(day + 75 * MIN); assert.notEqual(sql("SELECT at FROM foryou WHERE person = 'ada'")[0].at, at);
+  await setPerson('ada', me => {const {forYouOrder: _, ...settings} = me.settings; return {settings};}); await cron(day + 80 * MIN); await settle(day + 85 * MIN);
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);
