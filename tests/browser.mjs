@@ -407,6 +407,34 @@ assert.equal(await places.count(), 3); await guest.unroute('**/api/state');
 for (let i = 0; i < 40 && !(await placesSaved()); i++) await owner.waitForTimeout(150);
 assert.ok(await placesSaved(), 'the place shown again is saved'); await owner.reload(); await owner.getByRole('switch', {name: 'Add their own rows'}).waitFor(); await toggle('Add their own rows'); for (let i = 0; i < 40 && !(await can()).add; i++) await owner.waitForTimeout(150);
 assert.deepEqual(await can(), was);
+// On her own Home the rows that change on their own say when (times made here, an hour ago, as this hub picks nothing): For you
+// places when they were picked and when the next picks come, My Trakt lists when it was checked; rows always current say nothing.
+// Each one's Edit sheet asks the hub for one now, answered here too. Nothing is saved while these made-up rows are shown.
+const hourAgo = Math.floor(Date.now() / 1000) - 3600, shelfRow = {id: 'trakt-lists', title: 'My Trakt lists', kind: 'Collection · 2 lists', source: 'Trakt · all your lists', origin: 'own', on: true};
+await guest.route('**/api/state', async route => {const response = await route.fetch(), body = await response.json(), me = body.hub.people[0]; body.hub.front = true; body.hub.forYouHour = 5;
+  Object.assign(me, {rows: [shelfRow, ...me.rows], pickedAt: hourAgo, shelfAt: hourAgo, forYouRedone: ['for-you-2'], forYou: {'for-you-1': 'Because you watched Inception', 'for-you-2': 'Next in The Dark Knight', 'for-you-3': 'Popular movies lately'}, forYouKinds: {'for-you-1': 'because', 'for-you-2': 'series', 'for-you-3': 'popular'}});
+  await route.fulfill({response, json: body});});
+const askedNow = [];
+for (const path of ['**/api/people/ada/foryou/*', '**/api/people/ada/shelf']) await guest.route(path, route => {askedNow.push(new URL(route.request().url()).pathname); return route.fulfill({status: 200, contentType: 'application/json', body: '{}'});});
+await guest.reload(); const rowOf = title => guest.locator('.rows .row', {has: guest.locator('h3', {hasText: new RegExp(`^${title}`)})});
+await rowOf('My Trakt lists').getByText(/^Trakt · Lists checked (yesterday )?at .+ · next check (today|tomorrow)$/).waitFor();
+await rowOf('Because you watched Inception').getByText(/^For you · Because you watched · picked (yesterday )?at .+ · new picks (soon|(tomorrow )?at .+)$/).waitFor();
+await rowOf('Popular movies lately').getByText('For you · Popular, until there’s more to go on').waitFor();
+assert.ok(!/picked|checked/.test(await rowOf('Trending Movies').locator('p').first().textContent()), 'a row always current says nothing of times');
+await rowOf('My Trakt lists').scrollIntoViewIfNeeded(); await shot(guest, '18-home-times');
+await rowOf('Next in The Dark Knight').getByRole('button', {name: 'Edit'}).click();
+assert.ok(await guest.getByRole('button', {name: 'Picked something else today'}).isDisabled(), 'once a place a day'); await guest.getByRole('button', {name: 'Close'}).click();
+await rowOf('Because you watched Inception').getByRole('button', {name: 'Edit'}).click(); await guest.getByRole('button', {name: 'Pick something else'}).waitFor(); await shot(guest, '18b-pick-something-else');
+await guest.getByRole('button', {name: 'Pick something else'}).click(); await toast(guest).filter({hasText: 'Picking something else. Your apps have it in a few minutes.'}).waitFor();
+await rowOf('My Trakt lists').getByRole('button', {name: 'Edit'}).click(); await guest.getByRole('button', {name: 'Check my lists now'}).waitFor(); await shot(guest, '18c-check-lists');
+await guest.getByRole('button', {name: 'Check my lists now'}).click(); await toast(guest).filter({hasText: 'Checking your lists. Your apps have them in a few minutes.'}).waitFor();
+assert.deepEqual(askedNow, ['/api/people/ada/foryou/for-you-1', '/api/people/ada/shelf']);
+await guest.unrouteAll(); await guest.reload(); await guest.locator('.rows li').first().waitFor(); assert.equal(await rowOf('My Trakt lists').count(), 0);
+// The manager's Background work: a My Trakt lists row asked for again (0) is under way, never "next run 1 Jan 1970".
+await owner.route('**/api/state', async route => {const response = await route.fetch(), body = await response.json(); body.hub.front = true; Object.assign(body.hub.jobs, {shelfDue: 0, shelves: 1, shelved: hourAgo}); await route.fulfill({response, json: body});});
+await owner.goto(BASE + '/#/hub/general'); await owner.reload(); const listsJob = owner.locator('.jobs li', {hasText: 'My Trakt lists rows'});
+await listsJob.getByText('under way').waitFor(); await listsJob.getByText('every day, and when someone asks').waitFor(); await listsJob.scrollIntoViewIfNeeded(); await shot(owner, '16d-background-under-way');
+await owner.unroute('**/api/state');
 await owner.goto(BASE + '/#/account'); await owner.getByRole('button', {name: 'New codes'}).click(); await owner.locator('.codes li').nth(9).waitFor(); await shot(owner, '9-codes');
 const state = await owner.evaluate(() => fetch('/api/state').then(answer => answer.text()));
 assert.ok(!state.includes(password) && !state.includes('tb-key') && !state.includes('tmdb-key') && !state.includes(link.split('/join/')[1]) && JSON.parse(state).hub.defaults.quality === 'best', 'state leaks or did not save');

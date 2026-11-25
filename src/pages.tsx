@@ -472,6 +472,8 @@ function PersonSections({page, person, tab, mine}: {page: PageProps; person: Per
   const props = editor(page, group, person, mine), rows = personRows(hub, person);
   // Adding a row changes Home, which the hub allows only with arranging on too (someone saved before that was enforced may have add alone).
   const canArrange = !mine || person.can.arrange, canAdd = !mine || person.can.arrange && person.can.add;
+  // Work their Home asks the hub for on the next run; the page reads again either way, so the row says where it stands.
+  const ask = (action: string, note: string) => void page.live!.call('POST', `/api/people/${person.id}/${action}`, {}).then(() => toast(note), fail(toast)).then(() => page.live!.reload());
   return <>
     {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} mine={mine} person={person.id} level="own" rows={rows} front={!!hub.front} canAdd={canAdd} canArrange={canArrange}
       tag={row => row.origin === 'own' && !row.core ? (mine ? 'Yours' : 'Personal') : undefined}
@@ -483,6 +485,9 @@ function PersonSections({page, person, tab, mine}: {page: PageProps; person: Per
         if (flipped.length === 1 && pickable(flipped[0].id)) target.picks = {...target.picks, [flipped[0].id]: flipped[0].on}; else target.rows = next;
       }, note)}
       onMute={kind => props.set('forYouOff', [...(props.resolved.values.forYouOff ?? []), kind], `${FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'That kind'} won’t be picked`)}
+      times={page.live && hub.forYouHour !== undefined ? {hour: hub.forYouHour, pickedAt: person.pickedAt, redone: person.forYouRedone, shelfAt: person.shelfAt} : undefined}
+      onRedo={page.live ? place => ask(`foryou/${place}`, mine ? 'Picking something else. Your apps have it in a few minutes.' : 'Picking something else. Their apps have it in a few minutes.') : undefined}
+      onCheckLists={page.live ? () => ask('shelf', mine ? 'Checking your lists. Your apps have them in a few minutes.' : 'Checking their lists. Their apps have them in a few minutes.') : undefined}
       onFollow={person.rows && canArrange ? () => edit(target => {target.rows = null;}, `Following ${group.name} again`) : undefined} followLabel={`Follow ${group.name} again`}/>}
     {tab === 'home' && <ForYouEditor {...props}/>}
     {tab === 'playback' && <PlaybackEditor {...props} kept={!!person.lists} limitSet={mine && !person.can.limit}/>}
@@ -690,9 +695,10 @@ function Background({hub}: {hub: Hub}) {
     {name: 'Trakt sync', every: 'every 5 min', last: `${ran(jobs.last)}${jobs.waiting ? ` · ${jobs.waiting} waiting to send` : ''}`, next: `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
     {name: 'Trakt and MDBList check', every: `every day at ${time(start)}`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next run ${day(daily)}`},
     ...(hub.front && jobs.forYouHour !== undefined ? [forYouJob(jobs, now, time, day, ran)] : []),
-    // Each My Trakt lists row: its lists and pictures looked at again a day after the last time (shelf.ts), one person a run.
-    ...(hub.front ? [{name: 'My Trakt lists rows', every: 'every day', last: `${ran(jobs.shelved ?? null)}${jobs.shelves ? ` · ${jobs.shelves} ${jobs.shelves === 1 ? 'person' : 'people'}` : ''}`,
-      next: jobs.shelfDue ? `next run ${day((jobs.shelfDue + 86_400) * 1000)}` : 'once someone adds one'}] : []),
+    // Each My Trakt lists row: its lists and pictures looked at again a day after the last time (shelf.ts), one person a run, and
+    // sooner when someone asks or their lists changed. One due now (asked for, at 0) is under way, not due in 1970.
+    ...(hub.front ? [{name: 'My Trakt lists rows', every: 'every day, and when someone asks', last: `${ran(jobs.shelved ?? null)}${jobs.shelves ? ` · ${jobs.shelves} ${jobs.shelves === 1 ? 'person' : 'people'}` : ''}`,
+      next: typeof jobs.shelfDue === 'number' ? (jobs.shelfDue + 86_400) * 1000 > now ? `next run ${day((jobs.shelfDue + 86_400) * 1000)}` : 'under way' : 'once someone adds one'}] : []),
   ];
   return <section>
     <div className="section-head"><div><h2>Background work</h2></div></div>

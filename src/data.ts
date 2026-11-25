@@ -23,7 +23,9 @@ export interface Device {id: string; app: string; name: string; seen: string; pl
 // Plays one of Trakt and MDBList has and the other lacks, from the daily look (drift.ts on the Worker).
 export interface Miss {kind: 'movie' | 'show'; tmdb: number; name: string; season?: number; episode?: number; at: number; key: string}
 export interface Drift {checked: number; since: number; toMdblist: Miss[]; toTrakt: Miss[]}
-export interface Person {forYou?: Record<string, string>; forYouKinds?: Record<string, string>; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; pin: string | null; password: string; devices: Device[]}
+/* pickedAt: when their For you places were last picked (unix seconds); forYouRedone: places asked to pick something else on this
+   picking day (once a day each); shelfAt: when their My Trakt lists row was last worked out, 0 while it waits to be again. */
+export interface Person {forYou?: Record<string, string>; forYouKinds?: Record<string, string>; pickedAt?: number; forYouRedone?: string[]; shelfAt?: number; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
 export interface Hub {
@@ -35,8 +37,9 @@ export interface Hub {
     picked?: number; pickedAt?: number | null; everyone?: number; syncing?: number; forYouHour?: number};
   // In a person's view: their manager's own sign-in is set aside in this browser, to go back to.
   manager?: boolean;
-  // front: each person's apps sign in to their own AIOMetadata setup; only then are there For you places.
-  front?: boolean; v?: number; serverName?: string; tmdb?: boolean; mdblist?: boolean; scrobble?: boolean; traktClient?: string; metaUrl?: string; missing?: string[]; traktLink?: string; name: string; code: string; host: string; hostUrl: string; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; groups: Group[]; people: Person[];
+  // front: each person's apps sign in to their own AIOMetadata setup; only then are there For you places. forYouHour: the UTC hour
+  // the day's For you picking starts.
+  front?: boolean; forYouHour?: number; v?: number; serverName?: string; tmdb?: boolean; mdblist?: boolean; scrobble?: boolean; traktClient?: string; metaUrl?: string; missing?: string[]; traktLink?: string; name: string; code: string; host: string; hostUrl: string; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; groups: Group[]; people: Person[];
   me: {name: string; theme: 'dark' | 'light' | 'auto'; passkeys: {id: string; name: string; added: string}[]};
 }
 

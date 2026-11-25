@@ -11,7 +11,8 @@ import {read} from './trakt';
 export const SHELF_ROW = 'trakt-lists', SHELF = 'shelf';
 // At most this many lists, so one run's calls (two for the lists, one for each list's titles, one for each new picture)
 // stay well inside what a Worker may make.
-const MOST = 16, DAY = 86400, RETRY = 3600, HUB = '#hub';
+export const MOST = 16;
+const DAY = 86400, RETRY = 3600, HUB = '#hub';
 export interface Shelf {id: string; title: string; first: string; cover: string}
 type TraktList = {name?: string; ids?: {trakt?: number}};
 type Media = {ids?: {tmdb?: number | null}; votes?: number};

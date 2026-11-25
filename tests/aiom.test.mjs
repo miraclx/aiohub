@@ -812,8 +812,36 @@ test('her own lists and what her watching suggests are hers alone, from her own 
   assert.equal(collectionsOf('Ben').some(item => item.id === 'aiohub-trakt-lists'), false);
   // Asked again within the day, nothing is worked out again.
   const asked = fake.tmdb.length; await cron(); assert.equal(fake.tmdb.length, asked);
+  // Her Home says when the row was last worked out. Her lists as Add row reads them are the same, so a visit leaves it be.
+  const shelfAt = () => sql("SELECT at FROM rows_cache WHERE person = 'ada' AND kind = 'shelf'")[0].at, checked = shelfAt();
+  assert.ok(checked > 0); assert.equal((await adaSite('GET', '/api/state')).body.hub.people[0].shelfAt, checked);
+  await adaSite('GET', '/api/people/ada/lists'); assert.equal(shelfAt(), checked);
+  // Trakt not answering is no change.
+  sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'lists'"); trakt.refuseReads = true;
+  await adaSite('GET', '/api/people/ada/lists'); trakt.refuseReads = false; assert.equal(shelfAt(), checked);
+  // A list renamed on Trakt since: her next visit, with no call of its own to Trakt, has the row worked out again on the next run.
+  const mineLists = READS['/users/me/lists']; READS['/users/me/lists'] = [{...mineLists[0], name: 'Heist nights, extended'}];
+  sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'lists'"); trakt.reads = [];
+  await adaSite('GET', '/api/people/ada/lists');
+  assert.deepEqual(trakt.reads.map(read => read.where), ['/users/me/lists', '/users/likes/lists']); assert.equal(shelfAt(), 0);
+  assert.equal((await adaSite('GET', '/api/state')).body.hub.people[0].shelfAt, 0);
+  for (let i = 0; i < 8 && !shelfAt(); i++) await cron();
+  assert.deepEqual(JSON.parse(sql("SELECT items FROM rows_cache WHERE person = 'ada' AND kind = 'shelf'")[0].items).map(list => list.title), ['Heist nights, extended', 'Liked one']);
+  READS['/users/me/lists'] = mineLists;
+  // "Check my lists now": hers or her manager's to ask, for a Home with the row on, once a minute at most.
+  assert.equal((await adaSite('POST', '/api/people/ben/shelf', {})).status, 403); assert.equal((await owner('POST', '/api/people/ben/shelf', {})).status, 409);
+  assert.equal((await adaSite('POST', '/api/people/ada/shelf', {})).status, 429, 'just checked');
+  sql("UPDATE rows_cache SET at = at - 120 WHERE person = 'ada' AND kind = 'shelf'");
+  assert.equal((await adaSite('POST', '/api/people/ada/shelf', {})).status, 200); assert.equal(shelfAt(), 0);
+  // The manager's Background work has it due now (under way).
+  assert.equal((await owner('GET', '/api/state')).body.hub.jobs.shelfDue, 0);
+  assert.equal((await owner('POST', '/api/people/ada/shelf', {})).status, 200); assert.equal(shelfAt(), 0);
+  for (let i = 0; i < 8 && !shelfAt(); i++) await cron();
+  assert.ok(shelfAt() > 0); assert.deepEqual(sql("SELECT person FROM rows_cache WHERE kind = 'shelf'"), [{person: 'ada'}]);
   assert.equal((await owner('PUT', '/api/people/ada', {...ada, rows: null, v: (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').v})).status, 200);
   await syncAll(); assert.equal(collectionsOf('Ada').some(item => item.id === 'aiohub-trakt-lists'), false);
+  // Taken off her Home it is never worked out again, so it is not due either.
+  assert.equal((await owner('GET', '/api/state')).body.hub.jobs.shelfDue, null);
   // Trakt disconnected: her lists, like everything read from her Trakt, are forgotten.
   assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200); assert.deepEqual(sql("SELECT kind FROM rows_cache WHERE person = 'ada' AND kind NOT LIKE 'history%'"), []);
 });
@@ -1258,6 +1286,32 @@ test('with nothing new watched the places move on through what there is, not bac
   const before = JSON.parse(sql("SELECT before FROM foryou WHERE person = 'ada'")[0].before);
   assert.ok(before.length > 3 && before.length <= 12, JSON.stringify(before));
   await setPerson('ada', me => {const {forYouOff: _, ...settings} = me.settings; return {settings};});
+});
+test('“Pick something else” picks again for that place alone, on the next run, once a place a day; hers or her manager’s to ask', async () => {
+  const day = DEC + 11 * 86400e3; await pickDay(day);
+  const before = picksOf('ada'), bens = picksOf('ben');
+  // Her Home says when her places were picked and the hour the day's picking starts.
+  const mine = (await adaSite('GET', '/api/state')).body.hub;
+  assert.equal(mine.forYouHour, 5); assert.equal(mine.people[0].pickedAt, sql("SELECT at FROM foryou WHERE person = 'ada'")[0].at); assert.deepEqual(mine.people[0].forYouRedone, []);
+  assert.equal((await adaSite('POST', '/api/people/ben/foryou/for-you-2', {})).status, 403);
+  assert.equal((await adaSite('POST', '/api/people/ada/foryou/trending-movies', {})).status, 400);
+  assert.equal((await adaSite('POST', '/api/people/ada/foryou/for-you-2', {})).status, 200);
+  assert.equal((await owner('POST', '/api/people/ada/foryou/for-you-2', {})).status, 409, 'once a place a day');
+  assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').forYouRedone, ['for-you-2']);
+  // The next run picks for that place alone: something on none of her places, and the rest stay as they were. Nobody else is picked for.
+  for (let n = 0; n < 6 && picksOf('ada')['for-you-2'].again; n++) await cron(day + (70 + 5 * n) * MIN);
+  const after = picksOf('ada');
+  assert.deepEqual([after['for-you-1'], after['for-you-3']], [before['for-you-1'], before['for-you-3']]);
+  assert.ok(!Object.values(before).some(pick => pick.key === after['for-you-2'].key), JSON.stringify([before, after]));
+  assert.equal(after['for-you-2'].redo, '2026-12-12'); assert.equal(after['for-you-2'].again, undefined);
+  assert.deepEqual(picksOf('ben'), bens);
+  // What it held counts as lately picked, so it is not back tomorrow first thing; her apps get the new pick in the same way as any.
+  assert.equal(JSON.parse(sql("SELECT before FROM foryou WHERE person = 'ada'")[0].before)[0], before['for-you-2'].key);
+  await settle(day + 100 * MIN); assert.deepEqual(fyOf('Ada').map(item => item.name), Object.values(after).map(pick => pick.name));
+  assert.equal((await adaSite('POST', '/api/people/ada/foryou/for-you-2', {})).status, 409);
+  // The next day's picking, and she can ask again.
+  await pickDay(day + 86400e3);
+  assert.deepEqual((await adaSite('GET', '/api/state')).body.hub.people[0].forYouRedone, []); assert.ok(!Object.values(picksOf('ada')).some(pick => pick.redo));
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);

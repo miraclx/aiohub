@@ -25,6 +25,9 @@ export interface Pick {
   kind: string; key: string; name: string; type: 'movie' | 'series';
   // What fills it: a TMDB search (AIOMetadata), a FlixPatrol chart (AIOMetadata), or a catalog id the hub serves (rows.ts).
   params?: Record<string, string>; chart?: {service: string; cc: string; slug: string}; serve?: string; score?: number;
+  // "Pick something else", asked for this place from a Home: the picking day it was asked on (once a place a day), and, until the
+  // next run has picked again for that place alone, again.
+  redo?: string; again?: boolean;
 }
 /* The catalogs the hub serves for For you: foryou_because_m<TMDB film> or _s<show>, foryou_series_<TMDB collection>, and
    foryou_upnext_<show>-<show>-… (AIOMetadata never hides watched titles from a row whose id says upnext,
@@ -34,6 +37,10 @@ export const FOR_YOU_SERVED = /^foryou_(?:because_[ms]\d{1,9}|series_\d{1,9}|upn
 export const pickHour = (env: Env) => Number(env.FORYOU_HOUR ?? HOUR);
 export const namesOf = (text: string): Record<string, string> => {
   try {return Object.fromEntries(Object.entries(JSON.parse(text) as Record<string, Pick>).map(([place, pick]) => [place, pick.name]));} catch {return {};}
+};
+/* The places whose pick was asked to be picked again on this picking day: each may be asked once a day. */
+export const redoneOf = (text: string, day: string): string[] => {
+  try {return Object.entries(JSON.parse(text) as Record<string, Pick>).filter(([, pick]) => pick.redo === day).map(([place]) => place);} catch {return [];}
 };
 /* Which kind each place's pick is (FOR_YOU_KINDS, or 'popular' for a stand-in), so the site can say where it came from. */
 export const kindsOf = (text: string): Record<string, string> => {
@@ -225,9 +232,11 @@ async function candidates(ask: Ask, watched: Item[], plays: {item: string; detai
 /* The best for each place, in place order: each kind counts for less once it has a place already (because-you-watched less so,
    with another title behind it), and what filled a place in the last few days counts for less today, the more so the more lately
    (by its place in `before`, newest first), so the places move on through what there is rather than swap back and forth. The
-   fallbacks fill what is left. */
-export function choose(found: Candidate[], places: string[], before: string[], time: number): Record<string, Pick> {
-  const at = Math.floor(time / 1000), out: Record<string, Pick> = {}, used = new Map<string, number>(), taken = new Set<string>();
+   fallbacks fill what is left. `kept`: picks staying where they are (picking one place again), never picked twice and counted
+   as kinds already placed. */
+export function choose(found: Candidate[], places: string[], before: string[], time: number, kept: Pick[] = []): Record<string, Pick> {
+  const at = Math.floor(time / 1000), out: Record<string, Pick> = {}, used = new Map<string, number>(), taken = new Set(kept.map(pick => pick.key));
+  for (const pick of kept) used.set(pick.kind, (used.get(pick.kind) ?? 0) + 1);
   const pool = [...found, ...FALLBACKS.map(pick => ({pick, titles: 0, quality: 0}))].map(item => ({...item, base: scoreOf(item, at) - (before.includes(item.pick.key) ? ROTATE * (1 - before.indexOf(item.pick.key) / REMEMBER) : 0)}));
   for (const place of places) {
     const ranked = pool.filter(item => !taken.has(item.pick.key)).map(item => ({item, score: item.base - (used.get(item.pick.kind) ?? 0) * (REPEAT[item.pick.kind] ?? REPEAT_ANY)})).sort((a, b) => b.score - a.score);
@@ -246,7 +255,9 @@ export function placesOf(own: PersonData, shared: Row[], settings: Settings) {
   const places = rowsOf(own.rows, shared, {trakt: false, lists: false, watched: false, kids: settings.limit === 'kids', front: true}, own.picks).filter(row => row.on && isPlace(row.id)).map(row => row.id);
   return {places, sig: JSON.stringify([settings.limit, [...(settings.forYouOff ?? [])].sort(), places])};
 }
-const same = (a: Record<string, Pick>, b: Record<string, Pick>) => JSON.stringify(Object.entries(a).map(([place, {score: _, ...pick}]) => [place, pick])) === JSON.stringify(Object.entries(b).map(([place, {score: _, ...pick}]) => [place, pick]));
+// Only what fills the places counts: a score, or a place marked as picked again, changes nothing in the apps.
+const bare = (picks: Record<string, Pick>) => JSON.stringify(Object.entries(picks).map(([place, {score: _, redo: _r, again: _a, ...pick}]) => [place, pick]));
+const same = (a: Record<string, Pick>, b: Record<string, Pick>) => bare(a) === bare(b);
 /* One step, from the cron. `time` is when the run was due. True when it did something (it then had the run to itself). */
 export async function forYou(env: Env, time: number): Promise<boolean> {
   const date = new Date(time), day = date.toISOString().slice(0, 10);
@@ -263,8 +274,10 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
     if (!hub || !group) return [];
     const top = JSON.parse(hub.data) as {rows: Row[]; defaults: Settings}, theirs = JSON.parse(group.data) as {rows: Row[] | null; settings: Partial<Settings>}, own = JSON.parse(row.data) as PersonData;
     const settings = {...top.defaults, ...theirs.settings, ...own.settings} as Settings, {places, sig} = placesOf(own, theirs.rows ?? top.rows, settings), before = had.get(`${row.hub}/${row.id}`);
-    const on = picking || !before ? day : before.day;
-    return before?.day === on && before.sig === sig ? [] : [{hub: row.hub, person: row.id, places, sig, settings, before, day: on}];
+    const on = picking || !before ? day : before.day, done = before?.day === on && before.sig === sig;
+    // Places someone asked to have something else in, from their Home: only those are picked again, as of the same day.
+    const again = done ? Object.entries(JSON.parse(before!.picks || '{}') as Record<string, Pick>).filter(([place, pick]) => pick.again && places.includes(place)).map(([place]) => place) : [];
+    return done && !again.length ? [] : [{hub: row.hub, person: row.id, places, sig, settings, before, day: on, again}];
   });
   // A hub whose people are all picked for today, and whose picks changed: its setups are brought in step, in a run of its own.
   for (const pending of syncs.results as {hub: string; tries: number}[]) {
@@ -281,8 +294,9 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
   if (await refreshShelf(env, people.results as {hub: string; id: string; data: string}[], hub => flag(env, hub))) return true;
   // Whoever has no place on is done at once; then one person a run is picked for.
   const idle = due.filter(item => !item.places.length), next = due.find(item => item.places.length);
-  const keep = (item: typeof due[number], picks: Record<string, Pick>) => env.DB.prepare(`INSERT INTO foryou (hub, person, day, sig, picks, before, at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person) DO UPDATE SET
-    day = excluded.day, sig = excluded.sig, picks = excluded.picks, before = excluded.before, at = excluded.at`).bind(item.hub, item.person, item.day, item.sig, JSON.stringify(picks), JSON.stringify(lately(item.before, item.day)), now());
+  // `gone`: picks just replaced, remembered as lately picked so they count for less in the next days too.
+  const keep = (item: typeof due[number], picks: Record<string, Pick>, gone: string[] = []) => env.DB.prepare(`INSERT INTO foryou (hub, person, day, sig, picks, before, at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person) DO UPDATE SET
+    day = excluded.day, sig = excluded.sig, picks = excluded.picks, before = excluded.before, at = excluded.at`).bind(item.hub, item.person, item.day, item.sig, JSON.stringify(picks), JSON.stringify([...new Set([...gone, ...lately(item.before, item.day)])].slice(0, REMEMBER)), now());
   const changed = (item: typeof due[number], picks: Record<string, Pick>) => !same(JSON.parse(item.before?.picks ?? '{}'), picks);
   const writes = idle.flatMap(item => [keep(item, {}), ...(changed(item, {}) ? [flag(env, item.hub)] : [])]);
   if (!next) {if (writes.length) await env.DB.batch(writes); return writes.length > 0;}
@@ -299,8 +313,13 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
   // Read as far back as DEEP titles, so older watching can seed a row too (a few pages of Trakt history; MDBList comes whole).
   const watched = await watchedOf(env, next.hub, next.person, true, DEEP).catch(() => [] as Item[]);
   const found = await candidates(ask, watched, played, following, country, next.settings.limit, next.settings.forYouOff ?? [], time).catch(error => {console.error('foryou', (error as Error).message); return [] as Candidate[];});
-  const picks = choose(found, next.places, lately(next.before, next.day), time);
-  await env.DB.batch([...writes, ...ask.writes, keep(next, picks), ...(changed(next, picks) ? [flag(env, next.hub)] : []),
+  // Picking again for the places asked for alone: the rest stay as they are, and nothing already on Home is picked for them.
+  const today: Record<string, Pick> = next.before && next.before.day === next.day ? JSON.parse(next.before.picks || '{}') : {}, stay = next.again.length ? today : {};
+  const picks: Record<string, Pick> = {...stay, ...choose(found, next.again.length ? next.again : next.places, lately(next.before, next.day), time, Object.values(stay))};
+  // A place picked again keeps the mark for the rest of the day, through any picking again that day, so it is asked once a day.
+  for (const [place, pick] of Object.entries(picks)) {const {again: _, ...rest} = pick; picks[place] = today[place]?.redo === next.day ? {...rest, redo: next.day} : rest;}
+  const gone = next.again.flatMap(place => today[place] && today[place].key !== picks[place]?.key ? [today[place].key] : []);
+  await env.DB.batch([...writes, ...ask.writes, keep(next, picks, gone), ...(changed(next, picks) ? [flag(env, next.hub)] : []),
     // Answers nobody has asked for in three days are let go.
     env.DB.prepare('DELETE FROM rows_cache WHERE hub = ? AND person = ? AND at < ?').bind(next.hub, TMDB_OWNER, now() - 3 * DAY)]);
   return true;

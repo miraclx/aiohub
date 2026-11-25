@@ -17,23 +17,43 @@ const LATER: Record<string, string> = {
 };
 const laterOf = (row: Row) => isPlace(row.id) ? 'For you · Picked daily for each person, from what they watch' : LATER[row.id] ?? `${row.source} · Appears once someone connects Trakt`;
 // On a hub or group Home a For you place is kept for each person too: what fills it is picked for them every day.
-// On a person's own Home, where today's pick in a place came from.
-const pickOf = (kind: string) => kind === 'popular' ? 'Popular, until there’s more to go on' : `${FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'Picked'} · new each day`;
+/* On a real person's Home, when their rows that change on their own last did and next will: the UTC hour the day's For you
+   picking starts, when they were last picked for, the places asked to pick something else today, and when their My Trakt lists
+   row was last worked out (0 while it waits to be again). Unix seconds. */
+export interface Times {hour: number; pickedAt?: number; redone?: string[]; shelfAt?: number}
+const DAY_MS = 86_400_000, SHELF_ROW = 'trakt-lists';
+// A day in the viewer's own words, and a time with its day when that is not today ("yesterday at 6:04 AM").
+const dayOf = (ms: number) => {const days = Math.round((new Date(ms).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / DAY_MS); return days === 0 ? 'today' : days === 1 ? 'tomorrow' : days === -1 ? 'yesterday' : new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'});};
+const atOf = (ms: number) => `${dayOf(ms) === 'today' ? '' : `${dayOf(ms)} `}at ${new Date(ms).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;
+/* On a person's own Home, where today's pick in a place came from, when it was picked and when the next picks come. The day's
+   picking starts at the hour; someone not picked for since then is on one of the next runs. The preview has no times. */
+function pickOf(kind: string, times?: Times) {
+  if (kind === 'popular') return 'Popular, until there’s more to go on';
+  const title = FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'Picked';
+  if (!times?.pickedAt) return `${title} · new each day`;
+  const now = Date.now(), start = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T${String(times.hour).padStart(2, '0')}:00:00Z`);
+  const next = now < start ? start : times.pickedAt * 1000 >= start ? start + DAY_MS : 0;
+  return `${title} · picked ${atOf(times.pickedAt * 1000)} · ${next ? `new picks ${atOf(next)}` : 'new picks soon'}`;
+}
+/* My Trakt lists: worked out once a day, and again soon after it is asked for (at 0) or when a day has gone by. */
+const listsOf = (at = 0) => !at || Date.now() - at * 1000 >= DAY_MS ? 'Trakt · Updating now' : `Trakt · Lists checked ${atOf(at * 1000)} · next check ${dayOf(at * 1000 + DAY_MS)}`;
 // A suggestion's kind as it reads now: rows saved earlier said "tabs" where it says "folders".
 const kindOf = (row: Row) => suggestionOf(row.id)?.kind ?? row.kind;
 const placeHeld = (row: Row, level: Level) => level !== 'own' && (TRAKT_IDS.has(row.id) || isPlace(row.id));
-function RowCard({row, index, tag, locked, later, person, limit = 'all', onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; later?: boolean; person?: string; limit?: Limit; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
+function RowCard({row, index, tag, locked, later, person, limit = 'all', times, onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; later?: boolean; person?: string; limit?: Limit; times?: Times; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
   // Under a content limit only the folders that suit it are shown, as in the player apps.
   const covers = row.covers?.filter(cover => folderFits(row.id, cover.image, limit)), none = !!row.covers?.length && !covers?.length;
   // A suggested collection of tabs has no one catalog to show posters from: its folders' own art instead, as the apps show them.
   // Small copies kept on this site (public/covers/kids), by the art's file name: the apps' own are full size.
   const tiles = !row.covers ? suggestionOf(row.id)?.parts.flatMap(({title, cover}) => cover ? [{title, image: `/covers/kids/${decodeURIComponent(cover.split('/').pop()!).replace(/\.jpg$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.jpg`}] : []) : undefined;
   const sortable = useSortable({id: row.id, index, disabled: locked});
+  // Rows that are always current (the watchlist, lists, Recently Watched) say nothing of times.
+  const line = row.pick ? `For you · ${pickOf(row.pick, times)}` : times && isPlace(row.id) && !times.pickedAt ? 'For you · Picked soon' : times && row.id === SHELF_ROW ? listsOf(times.shelfAt) : `${kindOf(row)} · ${sourceShown(row, limit)}`;
   return <li ref={sortable.ref} className={`row${sortable.isDragging ? ' dragging' : ''}${locked ? ' locked' : ''}${later ? ' later' : ''}`}>
     {!locked && <Grip handleRef={sortable.handleRef} label={`Move ${row.title}`}/>}
     <div className="row-main">
       <div className="row-head">
-        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? laterOf(row) : none ? 'Not shown under this content limit' : row.pick ? `For you · ${pickOf(row.pick)}` : `${kindOf(row)} · ${sourceShown(row, limit)}`}</p></div>
+        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? laterOf(row) : none ? 'Not shown under this content limit' : line}</p></div>
         {!locked && <div className="row-actions">
           {onArrange && <button type="button" className="ghost small" onClick={onArrange}>Edit</button>}
           {onRemove && <button type="button" className="ghost small" onClick={onRemove}>Remove</button>}
@@ -65,16 +85,18 @@ export interface HomeProps {
   limit?: Limit; listsOk?: boolean; because?: Record<string, string>; keyHint?: React.ReactNode;
   /* Each person's apps sign in to their own AIOMetadata setup: For you places can be added. */
   front?: boolean;
-  /* On a person's own Home: stop a kind of For you pick (the For you setting), from the place it filled. */
+  /* On a person's own Home: stop a kind of For you pick (the For you setting), from the place it filled. On a real hub also: when
+     their rows that change on their own last did, have one place picked again, and have their My Trakt lists checked now. */
   onMute?: (kind: string) => void;
+  times?: Times; onRedo?: (place: string) => void; onCheckLists?: () => void;
 }
-export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute}: HomeProps) {
+export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute, times, onRedo, onCheckLists}: HomeProps) {
   const [adding, setAdding] = useState(false), [allLists, setAllLists] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
   const on = rows.filter(row => row.on), off = rows.filter(row => !row.on);
   const set = (id: string, next: Partial<Row>, note: string) => onChange(rows.map(row => row.id === id ? {...row, ...next} : row), note);
   // Following the Home above again, or removing a row, throws work away: both ask first.
   const [following, setFollowing] = useState(false), [dropping, setDropping] = useState<Row | null>(null), [placeOpen, setPlaceOpen] = useState<string | null>(null);
-  const place = rows.find(row => row.id === placeOpen), placeKind = FOR_YOU_KINDS.find(item => item.id === place?.pick);
+  const place = rows.find(row => row.id === placeOpen), placeKind = FOR_YOU_KINDS.find(item => item.id === place?.pick), redone = !!place && !!times?.redone?.includes(place.id);
   function add(item: Pick) {
     if (rows.some(row => row.id === item.id)) return;
     onChange([{...item, origin: level, on: true}, ...rows], `Added “${item.title}”`); setAdding(false); setLink('');
@@ -101,9 +123,9 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
       const from = on.findIndex(row => row.id === String(event.operation.source!.id)), to = event.operation.source.index;
       if (from >= 0 && from !== to) onChange([...moved(on, from, to), ...off], 'Order saved');
     }}>
-      <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={placeHeld(row, level)} person={person} limit={limit}
+      <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={placeHeld(row, level)} person={person} limit={limit} times={times}
         onToggle={() => set(row.id, {on: false}, `“${row.title}” is off Home`)}
-        onArrange={isPlace(row.id) ? row.pick && onMute ? () => setPlaceOpen(row.id) : undefined : () => setArranging(row.id)}
+        onArrange={isPlace(row.id) ? row.pick && (onMute || onRedo) ? () => setPlaceOpen(row.id) : undefined : () => setArranging(row.id)}
         // A For you place is one of several alike: removing it only switches it off, to Not on Home, where Show brings it back
         // (that is arranging, so it needs no Add row).
         onRemove={isPlace(row.id) ? () => set(row.id, {on: false}, 'Removed a For you row') : row.origin === level && !row.core ? () => setDropping(row) : undefined}/>)}</ol>
@@ -147,6 +169,9 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
     {folder && <Sheet title={folder.title} onClose={() => setArranging(null)}>
       {/* The name shown on Home and in the apps; what fills the row stays the same. */}
       <h3 className="sheet-sub first">Name</h3><NameField label="Name of this row" value={folder.title} onSave={title => set(folder.id, {title}, `Renamed to “${title}”`)}/>
+      {/* Checked once a day; a list added or renamed since can be brought in at once. */}
+      {folder.id === SHELF_ROW && onCheckLists && <><h3 className="sheet-sub">Lists</h3><p className="sheet-lead">Checked once a day for lists added, removed or renamed on Trakt.</p>
+        <button type="button" className="ghost" onClick={() => {setArranging(null); onCheckLists();}}>{mine ? 'Check my lists now' : 'Check their lists now'}</button></>}
       {!find && <><h3 className="sheet-sub">Titles already watched</h3>
       <Segments label="Titles already watched" value={folder.watched ?? 'follow'} onChange={value => set(folder.id, {watched: value === 'follow' ? undefined : value}, 'Saved')} options={[{value: 'follow', label: 'Default'}, {value: 'hide', label: 'Hide here'}, {value: 'show', label: 'Show here'}]}/>
       <p className="muted small note">Default uses the “Hide what’s been watched” switch on the Playback tab.</p></>}
@@ -160,7 +185,9 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
     {place && <Sheet title={place.title} onClose={() => setPlaceOpen(null)}>
       {/* A place is re-picked every day from the kinds left on; stopping a kind here is the same as leaving it out under For you below. */}
       <h3 className="sheet-sub first">Picked from</h3>
-      <p className="sheet-lead">{placeKind ? placeKind.title : 'Popular titles, while there’s too little watched to pick from.'} Each day this place gets a new pick.</p>
+      <p className="sheet-lead">{placeKind ? `${placeKind.title}.` : 'Popular titles, while there’s too little watched to pick from.'} Each day this place gets a new pick{onRedo ? ', and something else can be asked for once a day' : ''}.</p>
+      {/* Once a place a day: this place alone gets another pick on the next run, the others stay as they are. */}
+      {onRedo && <button type="button" className="ghost" disabled={redone} onClick={() => {setPlaceOpen(null); onRedo(place.id);}}>{redone ? 'Picked something else today' : 'Pick something else'}</button>}
       {placeKind && onMute && <button type="button" className="ghost" onClick={() => {setPlaceOpen(null); onMute(placeKind.id);}}>Don’t pick {placeKind.title}</button>}
       <p className="muted small note">All the kinds are under For you, below the rows.</p>
     </Sheet>}

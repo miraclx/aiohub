@@ -11,8 +11,9 @@ import {LINK, brief, disconnect, forgetTrakt, keepLink, links, read} from './tra
 import {rows} from './rows';
 import {PAIRS, copy, forgetShown, moving, shown} from './places';
 import {because} from './suggest';
-import {STAND_INS, kindsOf, namesOf, pickHour} from './foryou';
-import {SHELF_ROW} from './shelf';
+import {STAND_INS, kindsOf, namesOf, pickHour, redoneOf} from './foryou';
+import type {Pick} from './foryou';
+import {MOST as SHELF_MOST, SHELF, SHELF_ROW, shelfFrom, wantsShelf} from './shelf';
 import type {Env} from './util';
 import {blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp, unseal} from './util';
 
@@ -145,7 +146,7 @@ async function newSession(env: Env, subject: {account: string} | {hub: string; p
 /* ---------- what a page loads ---------- */
 async function state(env: Env, who: Who) {
   const hub = who.hub, data = JSON.parse(hub.data) as HubData, mine = who.person;
-  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, drifts, jobs, plays, picked] = await env.DB.batch([
+  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, drifts, jobs, plays, picked, shelves] = await env.DB.batch([
     env.DB.prepare('SELECT id, name, data, version FROM groups WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? AND id = ?').bind(hub.id, mine) : env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? AND person = ? ORDER BY seen DESC').bind(hub.id, mine) : env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? ORDER BY seen DESC').bind(hub.id),
@@ -158,17 +159,21 @@ async function state(env: Env, who: Who) {
     env.DB.prepare("SELECT owner, value FROM secrets WHERE hub = ? AND kind = 'mdblist' AND owner = coalesce(?, owner)").bind(hub.id, mine ?? null),
     // Where Trakt and MDBList disagree is someone's own watching: only they see it, on their own page.
     env.DB.prepare('SELECT result, skipped, at FROM drift WHERE hub = ? AND person = ?').bind(hub.id, mine ?? ''),
-    // The background work, for the manager: when it last ran, how often it has, what waits for Trakt, the last daily check.
+    // The background work, for the manager: when it last ran, how often it has, what waits for Trakt, the last daily check. The
+    // next My Trakt lists row due counts only rows still on a Home: one taken off is never worked out again.
     env.DB.prepare(`SELECT (SELECT at FROM runs WHERE job = 'cron') AS last, (SELECT count FROM runs WHERE job = 'cron') AS runs, (SELECT since FROM runs WHERE job = 'cron') AS since,
       (SELECT max(at) FROM drift WHERE hub = ?1 AND work IS NULL AND result IS NOT NULL) AS ran, (SELECT count(*) FROM trakt_outbox WHERE hub = ?1) AS waiting,
       (SELECT max(day) FROM drift WHERE hub = ?1 AND work IS NULL) AS checked, (SELECT count(*) FROM drift WHERE hub = ?1 AND day = (SELECT max(day) FROM drift WHERE hub = ?1) AND work IS NULL) AS people, (SELECT count(*) FROM drift WHERE hub = ?1 AND work IS NOT NULL) AS checking,
-      (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing, (SELECT max(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelved, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelves, (SELECT min(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelfDue`).bind(hub.id, new Date().toISOString().slice(0, 10)),
+      (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing, (SELECT max(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelved, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelves, (SELECT min(c.at) FROM rows_cache c JOIN people p ON p.hub = c.hub AND p.id = c.person WHERE c.hub = ?1 AND c.kind = 'shelf' AND EXISTS (SELECT 1 FROM json_each(p.data, '$.rows') r WHERE json_extract(r.value, '$.id') = 'trakt-lists' AND json_extract(r.value, '$.on') = 1)) AS shelfDue`).bind(hub.id, new Date().toISOString().slice(0, 10)),
     // Who has played something here: their Recently Watched has something in it even without Trakt or MDBList.
     env.DB.prepare('SELECT DISTINCT person FROM plays WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
-    // What each For you place holds today, by name only (the manager sees them on that person's Home tab).
-    env.DB.prepare('SELECT person, picks FROM foryou WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
+    // What each For you place holds today, by name only (the manager sees them on that person's Home tab), and when it was picked.
+    env.DB.prepare('SELECT person, day, picks, at FROM foryou WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
+    // When each My Trakt lists row was last worked out (0: asked for again, shelf.ts), for the row's line on their Home.
+    env.DB.prepare('SELECT person, at FROM rows_cache WHERE hub = ? AND kind = ? AND person = coalesce(?, person)').bind(hub.id, SHELF, mine ?? null),
   ]);
-  const forYou = new Map((picked.results as {person: string; picks: string}[]).map(row => [row.person, {names: namesOf(row.picks), kinds: kindsOf(row.picks)}]));
+  const forYou = new Map((picked.results as {person: string; day: string; picks: string; at: number}[]).map(row => [row.person, {names: namesOf(row.picks), kinds: kindsOf(row.picks), at: row.at, redone: redoneOf(row.picks, row.day)}]));
+  const shelfAt = new Map((shelves.results as {person: string; at: number}[]).map(row => [row.person, row.at]));
   // Which MDBList account each person's progress goes to (the name only; the key never leaves the vault).
   const listsName: Record<string, string> = {};
   const moves: Record<string, string> = {}, keyed = new Set<string>();
@@ -186,7 +191,10 @@ async function state(env: Env, who: Who) {
     hub: {
       name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID, traktClient: env.TRAKT_CLIENT_ID ?? '', front: env.FRONT === 'aiometadata',
       ...(mine ? {manager: !!who.manager} : {jobs: {...jobs.results[0] as object, forYouHour: pickHour(env)} as Hub['jobs']}),
-      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? looked(drifts.results[0] as {result: string | null; skipped: string | null; at: number} | undefined) : null, moves[row.id] ?? null, keyed.has(row.id), playedHere.has(row.id))).map(person => {const picked = forYou.get(person.id); return picked ? {...person, forYou: {...STAND_INS, ...picked.names}, forYouKinds: picked.kinds} : person;}),
+      // The UTC hour the day's For you picking starts, so a Home can say when the next picks come.
+      forYouHour: pickHour(env),
+      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? looked(drifts.results[0] as {result: string | null; skipped: string | null; at: number} | undefined) : null, moves[row.id] ?? null, keyed.has(row.id), playedHere.has(row.id))).map(person => {const picked = forYou.get(person.id), shelved = shelfAt.get(person.id);
+        return {...person, ...(picked ? {forYou: {...STAND_INS, ...picked.names}, forYouKinds: picked.kinds, pickedAt: picked.at, forYouRedone: picked.redone} : {}), ...(shelved !== undefined ? {shelfAt: shelved} : {})};}),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
   };
@@ -398,9 +406,36 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
   if (action === 'lists' && request.method === 'GET') {
     // Their own lists, to add as Home rows: on their own page only, never shown to anyone else.
     if (who.person !== id) bad(403, 'Only they can see these, from their own page');
-    const lists = await ownLists(env, hub, id), trakts = lists.filter(item => item.id.startsWith('trakt-')).length;
+    const {lists, whole} = await ownLists(env, hub, id), trakts = lists.filter(item => item.id.startsWith('trakt-')).length;
+    // Their My Trakt lists row is worked out once a day (shelf.ts). A list added, removed or renamed since, seen here at no extra
+    // cost, has it worked out again on the next run; only from a whole answer with Trakt connected, so Trakt not answering (or
+    // wanting connecting again) never looks like a change.
+    if (whole && env.FRONT === 'aiometadata' && wantsShelf((JSON.parse(row.data) as PersonData).rows) && await tracked(env, hub, id)) {
+      const kept = await env.DB.prepare('SELECT at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, id, SHELF).first<{at: number; items: string}>();
+      const listed = JSON.stringify(lists.filter(item => item.id.startsWith('trakt-')).slice(0, SHELF_MOST).map(item => [item.id, item.title]));
+      if (!kept || (kept.at && JSON.stringify(shelfFrom(kept.items).map(item => [item.id, item.title])) !== listed)) await shelfAgain(env, hub, id);
+    }
     // All their Trakt lists as one row, a tile each (shelf.ts): a collection, which only AIOMetadata in front can show.
     return {lists: trakts && env.FRONT === 'aiometadata' ? [{id: SHELF_ROW, title: 'My Trakt lists', kind: `Collection · ${trakts} ${trakts === 1 ? 'list' : 'lists'}`, source: 'Trakt · all your lists'}, ...lists] : lists};
+  }
+  if (action === 'shelf' && request.method === 'POST') {
+    // "Check my lists now", from the My Trakt lists row: worked out again on the next run. Once a minute at most, by hub and person.
+    if (!wantsShelf((JSON.parse(row.data) as PersonData).rows)) bad(409, 'My Trakt lists isn’t on this Home.');
+    const kept = await env.DB.prepare('SELECT at FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, id, SHELF).first<{at: number}>();
+    if (kept?.at && now() - kept.at < 60) bad(429, 'The lists were just checked. Try again in a minute.');
+    await shelfAgain(env, hub, id);
+    return {};
+  }
+  if (action === 'foryou' && request.method === 'POST') {
+    // "Pick something else", from a For you row: that place alone is picked again on the next run (foryou.ts), once a place a day.
+    const place = isPlace(rest ?? '') ? rest! : bad(400, 'That row is not valid');
+    const kept = await env.DB.prepare('SELECT day, picks FROM foryou WHERE hub = ? AND person = ?').bind(hub, id).first<{day: string; picks: string}>();
+    const picks = JSON.parse(kept?.picks ?? '{}') as Record<string, Pick>, pick = picks[place] ?? bad(409, 'Nothing is picked here yet.');
+    if (pick.redo === kept!.day) bad(409, 'Something else was picked here today already.');
+    // Only over the picks it read: a run that picked meanwhile is not undone.
+    const done = await env.DB.prepare('UPDATE foryou SET picks = ? WHERE hub = ? AND person = ? AND picks = ?').bind(JSON.stringify({...picks, [place]: {...pick, redo: kept!.day, again: true}}), hub, id, kept!.picks).run();
+    if (!done.meta.changes) bad(409, 'This changed meanwhile. Try again.');
+    return {};
   }
   if (action === 'compare') {
     // The Trakt and MDBList card: two places side by side (places.ts). Someone's own watching: only they see or move it.
@@ -496,9 +531,9 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
    their own key. Kept for a quarter of an hour, by hub and person, so opening Add row again asks neither. */
 const LISTS_KEPT = 900;
 interface OwnList {id: string; title: string; kind: string; source: string}
-async function ownLists(env: Env, hub: string, id: string): Promise<OwnList[]> {
+async function ownLists(env: Env, hub: string, id: string): Promise<{lists: OwnList[]; whole: boolean}> {
   const kept = await env.DB.prepare("SELECT at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id).first<{at: number; items: string}>();
-  if (kept && now() - kept.at < LISTS_KEPT) return JSON.parse(kept.items) as OwnList[];
+  if (kept && now() - kept.at < LISTS_KEPT) return {lists: JSON.parse(kept.items) as OwnList[], whole: true};
   const out: OwnList[] = [], count = (n: unknown) => `List · ${Number(n) || 0} ${Number(n) === 1 ? 'title' : 'titles'}`, name = (text: unknown) => String(text ?? 'A list').slice(0, 80);
   let whole = true;
   if (await tracked(env, hub, id)) {
@@ -520,8 +555,11 @@ async function ownLists(env: Env, hub: string, id: string): Promise<OwnList[]> {
   }
   // Only a complete answer is kept; one where Trakt or MDBList did not answer is asked again next time.
   if (whole) await env.DB.prepare("INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, 'lists', ?, ?) ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at, items = excluded.items").bind(hub, id, now(), JSON.stringify(out.slice(0, 100))).run();
-  return out.slice(0, 100);
+  return {lists: out.slice(0, 100), whole};
 }
+/* A My Trakt lists row to be worked out again on the next run (refreshShelf takes anything a day old): its time goes to 0, or one
+   with nothing yet is made so. What it holds stays until then. */
+const shelfAgain = (env: Env, hub: string, id: string) => env.DB.prepare("INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, 0, '[]') ON CONFLICT (hub, person, kind) DO UPDATE SET at = 0").bind(hub, id, SHELF).run();
 
 /* ---------- signing in ---------- */
 const NOBODY = 'pbkdf2.50000.AAAAAAAAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
