@@ -145,9 +145,9 @@ export function Activity({hub, personId, groupId, pick, toast, live}: {hub: Hub;
       <Bar play={play}/></div></li>)}</ul></>}
     {days.map(day => {
       const items = plays.filter(play => play.day === day && play.when !== 'Now');
-      return items.length ? <div key={day}><h2 className="sub">{day}</h2><ul className="feed">{items.map(play => <li key={play.id}>
+      return items.length ? <div key={day}><h2 className="sub">{day}</h2><ul className="feed plays">{items.map(play => <li key={play.id}>
         {/* The title's picture everywhere; whose it is is in the line (text, above). */}<span className="thumb">{play.art ? <Picture url={play.art}/> : <Posters seed={play.title}/>}</span>
-        <div><button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small>{play.line && <small>{play.line}</small>}<small className="on-device">{play.on}<Where where={play.where}/></small>{play.parts && <Bar play={play}/>}</div><time>{play.when}</time></li>)}</ul></div> : null;
+        <div><button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small>{play.line && <small>{play.line}</small>}<small className="on-device">{play.on}<Where where={play.where}/></small></div><time>{play.when}</time>{play.parts && <Bar play={play}/>}</li>)}</ul></div> : null;
     })}
     <p className="muted small foot">Each time a title is watched, it gets its own entry, with the parts played. Carrying on after half an hour away counts as another time.</p>
     {title && <Sheet title={title} onClose={() => setTitle(null)}>
