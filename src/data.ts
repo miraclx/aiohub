@@ -23,7 +23,7 @@ export interface Device {id: string; app: string; name: string; seen: string; pl
 // Plays one of Trakt and MDBList has and the other lacks, from the daily look (drift.ts on the Worker).
 export interface Miss {kind: 'movie' | 'show'; tmdb: number; name: string; season?: number; episode?: number; at: number; key: string}
 export interface Drift {checked: number; since: number; toMdblist: Miss[]; toTrakt: Miss[]}
-export interface Person {forYou?: Record<string, string>; forYouKinds?: Record<string, string>; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; pin: string | null; password: string; devices: Device[]}
+export interface Person {forYou?: Record<string, string>; forYouKinds?: Record<string, string>; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
 export interface Hub {
@@ -289,7 +289,8 @@ export const samplePin = (text: string) => String(100000 + seed(text + Math.rand
 export const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30).replace(/-$/, '') || 'person';
 export function newPerson(hub: Hub, name: string, groupId: string): Person {
   let id = slug(name); while (hub.people.some(item => item.id === id)) id += '-2';
-  return {id, name, groupId, joined: false, trakt: false, lists: false, rows: null, settings: {}, can: {arrange: true, add: true, playback: false}, pin: samplePin(id), password: samplePassword(id), devices: []};
+  // Playback is theirs to change from the start, all but the content limit, which their manager opens up separately.
+  return {id, name, groupId, joined: false, trakt: false, lists: false, rows: null, settings: {}, can: {arrange: true, add: true, playback: true, limit: false}, pin: samplePin(id), password: samplePassword(id), devices: []};
 }
 const person = (id: string, name: string, groupId: string, extra: Partial<Person>): Person => ({id, name, groupId, joined: true, trakt: false, lists: false, rows: null, settings: {}, can: {arrange: true, add: true, playback: false}, pin: samplePin(id), password: samplePassword(id), devices: [], ...extra});
 export const sampleHub = (): Hub => ({

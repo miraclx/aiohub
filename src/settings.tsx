@@ -14,11 +14,13 @@ export interface EditorProps {
   live?: Live;
   /* On a person's own page: whether their progress is kept in MDBList, which hiding what's been watched needs. */
   kept?: boolean;
+  /* On a person's own page: the content limit is set for them, so it is shown but not changed here. */
+  limitSet?: boolean;
 }
 // Names AIOStreams knows. (Yoruba is not one of them, so it cannot be offered for audio.)
 const languages = ['English', 'French', 'Spanish', 'German', 'Portuguese', 'Arabic', 'Hindi', 'Japanese', 'Korean', 'Chinese'];
 
-export function PlaybackEditor({hub, resolved: {values, from}, scope, set, reset, mine, live, kept}: EditorProps) {
+export function PlaybackEditor({hub, resolved: {values, from}, scope, set, reset, mine, live, kept, limitSet}: EditorProps) {
   const unkept = scope.level === 'own' && !kept;
   const line = (key: keyof Settings) => ({from: from[key], scope, onReset: () => reset(key)});
   const who = scope.level === 'hub' ? 'Everyone starts with these.' : scope.level === 'group' ? `Everyone in ${scope.names.group} starts with these.` : mine ? 'Yours. Anything you have not changed follows the group.' : 'Anything not changed here follows the group.';
@@ -43,8 +45,8 @@ export function PlaybackEditor({hub, resolved: {values, from}, scope, set, reset
     </div>
     <h3 className="sub">What shows up</h3>
     <div className="card settings">
-      <Setting title="Content limit" hint={values.limit === 'kids' ? 'Only titles rated PG or lower, in rows and in search. Anything without a rating is left out as well, so some rows come up shorter.' : values.limit === 'teen' ? 'Nothing rated above PG-13, in rows or in search.' : 'No limit on ratings.'} {...line('limit')}>
-        <Segments label="Content limit" value={values.limit} onChange={value => set('limit', value)} options={[{value: 'kids', label: 'Kids'}, {value: 'teen', label: 'Teens'}, {value: 'all', label: 'Everything'}]}/></Setting>
+      {limitSet ? <Setting title="Content limit" hint="Set for you by whoever runs the hub."><span className="muted">{values.limit === 'kids' ? 'Kids' : values.limit === 'teen' ? 'Teens' : 'Everything'}</span></Setting> : <Setting title="Content limit" hint={values.limit === 'kids' ? 'Only titles rated PG or lower, in rows and in search. Anything without a rating is left out as well, so some rows come up shorter.' : values.limit === 'teen' ? 'Nothing rated above PG-13, in rows or in search.' : 'No limit on ratings.'} {...line('limit')}>
+        <Segments label="Content limit" value={values.limit} onChange={value => set('limit', value)} options={[{value: 'kids', label: 'Kids'}, {value: 'teen', label: 'Teens'}, {value: 'all', label: 'Everything'}]}/></Setting>}
  {<Setting title="Hide what’s been watched" hint={unkept ? 'Works once progress is kept in MDBList, under Accounts. Then rows leave out what’s been watched; watchlists and search still show everything.' : scope.level === 'own' ? 'Rows leave out what’s been watched. Watchlists and search still show everything.' : 'Rows leave out what’s been watched, for anyone whose progress is kept in MDBList. Watchlists and search still show everything.'} {...line('hideWatched')}><Switch label="Hide watched" checked={values.hideWatched && !unkept} disabled={unkept} onChange={value => set('hideWatched', value)}/></Setting>}
       <Setting title="Hide episode spoilers" hint="Blurs the pictures of episodes not watched yet." {...line('spoilers')}><Switch label="Hide episode spoilers" checked={values.spoilers} onChange={value => set('spoilers', value)}/></Setting>
       <Setting title="Hide unreleased titles" hint="Nothing that cannot be watched yet." {...line('unreleased')}><Switch label="Hide unreleased titles" checked={values.unreleased} onChange={value => set('unreleased', value)}/></Setting>

@@ -68,7 +68,8 @@ const code = owner.locator('.share-text code'); await assert.doesNotReject(code.
 const link = await code.textContent(); await shot(owner, '3-person-settings');
 // A refresh shows the same thing: it was saved, not just drawn.
 await owner.reload(); await owner.getByRole('heading', {name: 'Ada', exact: true}).waitFor(); assert.equal(await owner.locator('.share-text code').filter({hasText: '/#/join/i'}).textContent(), link);
-await owner.getByRole('switch', {name: 'Change playback'}).click(); await toast(owner).filter({hasText: 'Saved'}).waitFor();
+// Playback is theirs to change from the start; the content limit stays the manager's until that is opened up too.
+assert.equal(await owner.getByRole('switch', {name: 'Change playback'}).getAttribute('aria-checked'), 'true'); assert.equal(await owner.getByRole('switch', {name: 'Change their content limit'}).getAttribute('aria-checked'), 'false');
 await owner.goto(BASE + '/#/person/ada/devices'); await owner.getByRole('button', {name: 'Show'}).click();
 await owner.getByLabel('Password', {exact: true}).filter({hasText: /^[a-z]+-[a-z]+-[a-z]+-\d\d$/}).waitFor(); const password = await owner.getByLabel('Password', {exact: true}).textContent(); await shot(owner, '4-devices');
 await owner.goto(BASE + '/#/hub/playback'); await owner.getByRole('radio', {name: 'Best'}).click().catch(() => owner.getByText('Best', {exact: true}).first().click()); await owner.waitForTimeout(900);
@@ -117,6 +118,7 @@ await guest.goto(link); await guest.getByRole('heading', {name: 'Hi Ada'}).waitF
 await guest.getByLabel('Password').fill('my own password'); await guest.getByRole('button', {name: 'Continue'}).click();
 await guest.getByRole('tab', {name: 'Playback'}).or(guest.getByRole('link', {name: 'Playback'})).first().waitFor(); await shot(guest, '8-own-page');
 assert.equal(await guest.getByRole('link', {name: 'People'}).count(), 0);
+await guest.goto(BASE + '/#/me/playback'); await guest.getByText('Set for you by whoever runs the hub.').waitFor();
 await guest.goto(BASE + '/#/me/devices'); await guest.locator('.creds code').filter({hasText: /^Ada$/}).waitFor(); await guest.getByRole('button', {name: 'Show'}).click();
 await guest.getByLabel('Password', {exact: true}).filter({hasText: password}).waitFor(); // the player password, not the one just chosen
 await guest.goto(BASE + '/#/me/you'); await guest.getByRole('button', {name: 'Sign out'}).click(); await guest.getByRole('heading', {name: 'Sign in'}).waitFor();

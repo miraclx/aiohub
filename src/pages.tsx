@@ -485,7 +485,7 @@ function PersonSections({page, person, tab, mine}: {page: PageProps; person: Per
       onMute={kind => props.set('forYouOff', [...(props.resolved.values.forYouOff ?? []), kind], `${FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'That kind'} won’t be picked`)}
       onFollow={person.rows && canArrange ? () => edit(target => {target.rows = null;}, `Following ${group.name} again`) : undefined} followLabel={`Follow ${group.name} again`}/>}
     {tab === 'home' && <ForYouEditor {...props}/>}
-    {tab === 'playback' && <PlaybackEditor {...props} kept={!!person.lists}/>}
+    {tab === 'playback' && <PlaybackEditor {...props} kept={!!person.lists} limitSet={mine && !person.can.limit}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
     {tab === 'activity' && <Activity hub={hub} personId={person.id} toast={toast} live={page.live}/>}
     {tab === 'devices' && <Devices page={page} person={person} mine={mine}/>}
@@ -528,7 +528,8 @@ export function PersonPage(page: PageProps & {id: string; tab: string}) {
       <div className="card settings">
         <Setting title="Arrange their Home" hint="Reorder rows and turn them on or off."><Switch label="Arrange their Home" checked={person.can.arrange} onChange={value => edit(target => {target.can.arrange = value;}, 'Saved')}/></Setting>
         <Setting title="Add their own rows" hint="Paste list links and pick collections."><Switch label="Add their own rows" checked={person.can.add} onChange={value => edit(target => {target.can.add = value;}, 'Saved')}/></Setting>
-        <Setting title="Change playback" hint="Quality, languages, subtitles and the rest."><Switch label="Change playback" checked={person.can.playback} onChange={value => edit(target => {target.can.playback = value;}, 'Saved')}/></Setting>
+        <Setting title="Change playback" hint="Quality, languages, subtitles and the rest."><Switch label="Change playback" checked={person.can.playback} onChange={value => edit(target => {target.can.playback = value; if (!value) target.can.limit = false;}, 'Saved')}/></Setting>
+        {person.can.playback && <Setting title="Change their content limit" hint={person.can.limit ? 'They can raise or lower it themselves.' : 'Stays where you set it, while they change the rest.'}><Switch label="Change their content limit" checked={!!person.can.limit} onChange={value => edit(target => {target.can.limit = value;}, 'Saved')}/></Setting>}
       </div>
       <h3 className="sub">Profile</h3>
       <div className="card settings">

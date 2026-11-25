@@ -169,7 +169,15 @@ test('an invited person is held to what the manager allowed', async () => {
   const reordered = await guest('PUT', '/api/people/ada', {...mine, rows: [...rows].reverse(), can: {arrange: true, add: true, playback: true}, paused: false});
   assert.equal(reordered.status, 200);
   const after = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
-  assert.deepEqual(after.can, {arrange: true, add: false, playback: false}); assert.equal(after.rows[0].id, rows.at(-1).id);
+  assert.deepEqual(after.can, {arrange: true, add: false, playback: false, limit: false}); assert.equal(after.rows[0].id, rows.at(-1).id);
+  // Playback opened up, but not the content limit: the rest can change, the limit cannot, until that is opened up as well.
+  const open = async (can, settings) => {const p = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada'); assert.equal((await owner('PUT', '/api/people/ada', {name: p.name, groupId: p.groupId, rows: p.rows, settings: settings ?? p.settings, can: {...p.can, ...can}, v: p.v})).status, 200);};
+  const settled = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').settings;
+  const own = async settings => {const p = (await guest('GET', '/api/state')).body.hub.people[0]; return (await guest('PUT', '/api/people/ada', {name: p.name, groupId: p.groupId, rows: p.rows, settings: {...p.settings, ...settings}, can: p.can, trakt: p.trakt, lists: p.lists, v: p.v})).status;};
+  await open({playback: true});
+  assert.equal(await own({quality: 'best'}), 200); assert.equal(await own({limit: 'all'}), 403);
+  await open({limit: true}); assert.equal(await own({limit: 'teen'}), 200);
+  await open({playback: false, limit: true}, settled); assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').can, {arrange: true, add: false, playback: false, limit: false}, 'the limit goes with playback');
   for (const [method, path] of [['PUT', '/api/hub'], ['PUT', '/api/groups/family'], ['DELETE', '/api/people/ben'], ['PUT', '/api/services/TorBox'], ['PUT', '/api/keys/tmdb'], ['PUT', '/api/account']]) assert.equal((await guest(method, path, method === 'DELETE' ? undefined : {})).status, 403, path);
 });
 let player;

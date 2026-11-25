@@ -81,7 +81,7 @@ const cleanPassword = (value: unknown) => typeof value === 'string' && value.len
 interface HubData {host: string; hostUrl: string; serverName?: string; metaUrl?: string; missing?: string[]; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; order?: string[]}
 interface GroupData {rows: Row[] | null; settings: Overrides; paused?: boolean}
 // picks: Trakt rows they switched on or off while following the Home above (see rowsOf in data.ts).
-interface PersonData {rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean}; trakt: boolean; lists: boolean}
+interface PersonData {rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; trakt: boolean; lists: boolean}
 interface HubRow {id: string; code: string; owner: string; data: string; version: number}
 interface GroupRow {id: string; name: string; data: string; version: number}
 interface PersonRow {id: string; grp: string; name: string; data: string; joined: number; paused: number; version: number}
@@ -245,13 +245,18 @@ async function savePerson(env: Env, who: Who, id: string, body: Body) {
     }
     const picks = body.picks === undefined ? before.picks : cleanPicks(body.picks);
     if (JSON.stringify(picks) !== JSON.stringify(before.picks)) {if (!before.can.arrange) bad(403, 'Arranging Home is turned off for you'); next.picks = picks;}
-    if (JSON.stringify(settings) !== JSON.stringify(before.settings)) {if (!before.can.playback) bad(403, 'Changing playback is turned off for you'); next.settings = settings;}
+    if (JSON.stringify(settings) !== JSON.stringify(before.settings)) {
+      if (!before.can.playback) bad(403, 'Changing playback is turned off for you');
+      // The content limit is theirs to change only when the manager said so as well.
+      if ((settings as Overrides).limit !== (before.settings as Overrides).limit && !before.can.limit) bad(403, 'Your content limit is set for you');
+      next.settings = settings;
+    }
     const done = await env.DB.prepare('UPDATE people SET name = ?, login = ?, data = ?, version = version + 1 WHERE hub = ? AND id = ? AND version = ?').bind(name, slug(name), JSON.stringify(next), hub, id, Number(body.v)).run().catch(() => bad(409, TAKEN));
     versioned(done.meta.changes); return {v: Number(body.v) + 1};
   }
   const can = body.can as Record<string, unknown> | undefined, grp = text(body.groupId, 40, 'Group');
   const was = current ? JSON.parse(current.data) as PersonData : null;
-  const data: PersonData = {rows, ...(body.picks !== undefined ? {picks: cleanPicks(body.picks)} : was?.picks ? {picks: was.picks} : {}), settings, can: {arrange: flag(can?.arrange), add: flag(can?.add), playback: flag(can?.playback)},
+  const data: PersonData = {rows, ...(body.picks !== undefined ? {picks: cleanPicks(body.picks)} : was?.picks ? {picks: was.picks} : {}), settings, can: {arrange: flag(can?.arrange), add: flag(can?.add), playback: flag(can?.playback), limit: flag(can?.playback) && flag(can?.limit)},
     // Connections are made and undone on their own, after a check; a page save never changes them.
     trakt: was?.trakt ?? false, lists: was?.lists ?? false};
   if (!await env.DB.prepare('SELECT 1 FROM groups WHERE hub = ? AND id = ?').bind(hub, grp).first()) bad(400, 'That group is gone');
