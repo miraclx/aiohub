@@ -1,19 +1,21 @@
 /* All of a person's Trakt lists as one Home row (SHELF_ROW, "My Trakt lists"): a collection with a wide tile for each list, their
-   own and the ones they liked, pictured by the backdrop of the list's first title (TMDB). Opening a tile shows the list, served by
+   own and the ones they liked, pictured by the backdrop (TMDB) of its best-known title: the one most people rated on Trakt, of its
+   first hundred. Opening a tile shows the list, served by
    the hub as any of their own lists is (rows.ts). Which lists there are, and their pictures, are worked out ahead by the cron
    (refreshShelf, run from foryou.ts) and kept per hub and person, so a sync only reads what was kept and every sync writes the
-   same. Worked out again once a day; a list whose first title is unchanged keeps its picture without asking TMDB again. */
+   same. Worked out again once a day; a list whose best-known title is unchanged keeps its picture without asking TMDB again. */
 import type {Env} from './util';
 import {getSecret, now} from './util';
 import {read} from './trakt';
 
 export const SHELF_ROW = 'trakt-lists', SHELF = 'shelf';
-// At most this many lists, so one run's calls (two for the lists, one for each list's first title, one for each new picture)
+// At most this many lists, so one run's calls (two for the lists, one for each list's titles, one for each new picture)
 // stay well inside what a Worker may make.
 const MOST = 16, DAY = 86400, RETRY = 3600, HUB = '#hub';
 export interface Shelf {id: string; title: string; first: string; cover: string}
 type TraktList = {name?: string; ids?: {trakt?: number}};
-type Listed = {movie?: {ids?: {tmdb?: number | null}}; show?: {ids?: {tmdb?: number | null}}};
+type Media = {ids?: {tmdb?: number | null}; votes?: number};
+type Listed = {movie?: Media; show?: Media};
 
 /* The lists as kept: [] when none were worked out yet. */
 export function shelfFrom(items: string | null | undefined): Shelf[] {
@@ -27,22 +29,28 @@ export async function shelfOf(env: Env, hub: string, person: string, before: She
   const mine = await read<TraktList[]>(env, hub, person, '/users/me/lists'), liked = await read<{list?: TraktList}[]>(env, hub, person, '/users/likes/lists?limit=50');
   if (!Array.isArray(mine) || !Array.isArray(liked)) return null;
   const name = (text: unknown) => String(text ?? 'A list').slice(0, 80), lists: {id: string; title: string; ask: string}[] = [];
-  for (const list of mine) if (Number.isInteger(list.ids?.trakt)) lists.push({id: `trakt-mine.${list.ids!.trakt}`, title: name(list.name), ask: `/users/me/lists/${list.ids!.trakt}/items?limit=5`});
+  for (const list of mine) if (Number.isInteger(list.ids?.trakt)) lists.push({id: `trakt-mine.${list.ids!.trakt}`, title: name(list.name), ask: `/users/me/lists/${list.ids!.trakt}/items?limit=100&extended=full`});
   for (const like of liked) {
     const id = like.list?.ids?.trakt;
-    if (Number.isInteger(id) && !lists.some(list => list.id.endsWith(`.${id}`))) lists.push({id: `trakt-liked.${id}`, title: name(like.list!.name), ask: `/lists/${id}/items?limit=5`});
+    if (Number.isInteger(id) && !lists.some(list => list.id.endsWith(`.${id}`))) lists.push({id: `trakt-liked.${id}`, title: name(like.list!.name), ask: `/lists/${id}/items?limit=100&extended=full`});
   }
   const key = await getSecret<string>(env, hub, HUB, 'key:tmdb'), had = new Map(before.map(item => [item.id, item])), out: Shelf[] = [];
   for (const list of lists.slice(0, MOST)) {
-    // The first film or show on it (a person on a list has no picture); a list Trakt did not answer for keeps what it had.
+    // Its best-known film or show (a person on a list has no picture; the earlier of two as well known); a list Trakt did not
+    // answer for keeps what it had.
     const items = await read<Listed[]>(env, hub, person, list.ask), kept = had.get(list.id);
-    const first = Array.isArray(items) ? items.map(firstOf).find(Boolean) ?? '' : kept?.first ?? '';
+    const first = Array.isArray(items) ? bestOf(items) : kept?.first ?? '';
     const cover = kept && kept.first === first && kept.cover ? kept.cover : first && key ? await backdrop(env, key, first) : '';
     out.push({id: list.id, title: list.title, first, cover});
   }
   return out;
 }
-const firstOf = (item: Listed) => Number(item.movie?.ids?.tmdb) > 0 ? `movie/${item.movie!.ids!.tmdb}` : Number(item.show?.ids?.tmdb) > 0 ? `tv/${item.show!.ids!.tmdb}` : '';
+const pathOf = (item: Listed) => Number(item.movie?.ids?.tmdb) > 0 ? `movie/${item.movie!.ids!.tmdb}` : Number(item.show?.ids?.tmdb) > 0 ? `tv/${item.show!.ids!.tmdb}` : '';
+function bestOf(items: Listed[]) {
+  let best = '', most = -1;
+  for (const item of items) {const path = pathOf(item), votes = Number((item.movie ?? item.show)?.votes) || 0; if (path && votes > most) {best = path; most = votes;}}
+  return best;
+}
 /* A title's main backdrop on TMDB, as a picture address, or '' when it has none. */
 async function backdrop(env: Env, key: string, path: string) {
   const got = await fetch(`${env.TMDB_API ?? 'https://api.themoviedb.org/3'}/${path}?api_key=${encodeURIComponent(key)}`, {headers: {accept: 'application/json', 'user-agent': 'AIOHub/1.0'}}).catch(() => null);

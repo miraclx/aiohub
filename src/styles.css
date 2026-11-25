@@ -457,3 +457,7 @@ a.primary.button { display: inline-flex; align-items: center; min-height: 34px; 
 .accounts .who { margin: 2px 0 4px; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .accounts .who strong { color: var(--text); font-weight: 600; }
 .accounts .account-row > div:first-child { min-width: 0; }
+/* Advanced: one line a setup, its keys unfolded beneath it. */
+.door-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.settings .door-keys { border-top: 1px solid var(--line); }
+.door-note { margin-top: 16px; }

@@ -82,6 +82,12 @@ await job('Trakt sync').getByText('every 5 min').waitFor();
 await job('Trakt sync').getByText(/^Ran today at \d/).waitFor(); await job('Trakt sync').getByText(/^next run in \d min$/).waitFor();
 await job('Trakt and MDBList check').getByText(/^every day at \d/).waitFor(); await job('Trakt and MDBList check').getByText('Not run yet').waitFor(); await job('Trakt and MDBList check').getByText(/^next run (today|tomorrow)$/).waitFor();
 await work.scrollIntoViewIfNeeded(); await shot(owner, '5b-background');
+// Advanced: behind the password again, then one line a setup, grouped, its keys folded away until asked for.
+const advanced = owner.locator('section', {has: owner.getByRole('heading', {name: 'Advanced'})});
+await advanced.getByRole('button', {name: 'Show'}).click(); await advanced.getByLabel('Your password').fill('correct horse'); await advanced.getByRole('button', {name: 'Show'}).click();
+await advanced.getByRole('heading', {name: 'Shared'}).waitFor(); assert.equal(await advanced.locator('.creds code').count(), 0, 'keys start folded');
+if (await advanced.getByRole('button', {name: 'Keys'}).count()) {await advanced.getByRole('button', {name: 'Keys'}).first().click(); await advanced.locator('.creds code').first().waitFor();}
+await advanced.scrollIntoViewIfNeeded(); await shot(owner, '5e-advanced');
 // The hub's Home keeps a place for each of a person's own rows, each saying what fills it: Trakt, MDBList, or for Recently Watched
 // whichever the person has. Both watchlists are on, so their names tell them apart.
 await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later', {hasText: 'Watchlist · Trakt'}).getByText('Trakt · Appears once someone connects Trakt').waitFor();

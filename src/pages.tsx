@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'react';
+import {Fragment, useEffect, useState} from 'react';
 import {QRCodeSVG} from 'qrcode.react';
 import {FOR_YOU_KINDS, SAMPLE, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, resolve, samplePassword, samplePin, slug, traktRows} from './data';
 import type {Device, Group, Hub, Miss, Person, Row, Settings} from './data';
@@ -633,22 +633,34 @@ interface Doors {aiostreams: Door | null; aiometadata: Door | null; own?: (Door 
 function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
   const [asking, setAsking] = useState(false), [pass, setPass] = useState(''), [busy, setBusy] = useState(false), [doors, setDoors] = useState<Doors | null>(null);
   const copy = (text: string) => () => {void navigator.clipboard?.writeText(text).catch(() => {}); toast('Copied');};
-  const door = (name: string, found: Door | null, note: string) => <Setting key={name} column title={name} hint={found ? note : 'Not made yet. It appears once the hub has its keys.'}>
-    {found && <dl className="creds inner"><div><dt>ID</dt><dd><code>{found.id}</code><button type="button" className="ghost small" onClick={copy(found.id)}>Copy</button></dd></div>
-      <div><dt>Password</dt><dd><Secret value={found.password} label={`${name} password`} onCopy={() => toast('Copied')}/></dd></div>
-      <div><dt></dt><dd><a className="ghost small button" href={found.open} target="_blank" rel="noreferrer">Open {name}</a></dd></div></dl>}</Setting>;
+  // One line a setup: what it is and a way in, its keys folded away until asked for.
+  const [keys, setKeys] = useState<string | null>(null);
+  const door = (key: string, title: string, found: Door | null, note: string) => <Fragment key={key}>
+    <Setting title={title} hint={found ? note : 'Not made yet. It appears once the hub has its keys.'}>
+      {found && <div className="door-actions"><button type="button" className="ghost small" aria-expanded={keys === key} onClick={() => setKeys(keys === key ? null : key)}>{keys === key ? 'Hide keys' : 'Keys'}</button>
+        <a className="ghost small button" href={found.open} target="_blank" rel="noreferrer" aria-label={`Open ${title}`}>Open</a></div>}</Setting>
+    {found && keys === key && <dl className="creds inner door-keys"><div><dt>ID</dt><dd><code>{found.id}</code><button type="button" className="ghost small" onClick={copy(found.id)}>Copy</button></dd></div>
+      <div><dt>Password</dt><dd><Secret value={found.password} label={`${title} password`} onCopy={() => toast('Copied')}/></dd></div></dl>}
+  </Fragment>;
+  const groupsOwn = (doors?.own ?? []).filter(found => found.group), peopleOwn = (doors?.own ?? []).filter(found => !found.group);
   return <section>
     <div className="section-head"><div><h2>Advanced</h2><p className="muted">Step into the setups behind your hub, on AIOStreams and AIOMetadata themselves, for anything this site doesn’t offer.</p></div></div>
     {!doors ? <div className="card settings"><Setting column title="Open the setups" hint="These are the real keys to your hub’s setups, so your password is asked for again. Anyone holding them can change the setups directly.">
       {asking ? <form className="field-row" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call<Doors>('POST', '/api/hub/advanced', {password: pass}).then(found => {setDoors(found); setPass('');}, (error: Error) => toast(error.message)).finally(() => setBusy(false));}}>
         <input type="password" aria-label="Your password" placeholder="Your password" autoComplete="current-password" autoFocus value={pass} onChange={event => setPass(event.target.value)}/><button className="primary" disabled={busy || !pass}>Show</button></form>
         : <button type="button" className="ghost small" onClick={() => setAsking(true)}>Show</button>}</Setting></div>
-    : <div className="card settings">
-      {door('AIOStreams', doors.aiostreams, doors.front ? 'Sources, filters, sorting and the stream label. It finds the streams; browsing happens on each person’s own AIOMetadata. If it asks, use this ID and password.' : 'Sources, filters, sorting and the stream label. If it asks, use this ID and password.')}
-      {door('AIOMetadata', doors.aiometadata, doors.front ? 'The hub’s own setup. It draws the posters everyone sees. It asks for this password.' : 'Catalogs, collections and posters for the shared Home. It asks for this password.')}
-      {(doors.own ?? []).map(found => door(`AIOMetadata for ${found.name}`, found, found.player ? `${found.name}’s own server: their Home, looks, accounts and what they’ve watched. Their apps reach it through the hub, which keeps it in step with the hub and their group.` : `${found.group ? `Home, looks and accounts for the ${found.name} group` : `${found.name}’s own Home, looks and accounts`}. The hub made it because they differ from the shared one, and removes it once they don’t.`))}
-      <Setting column title="What the hub keeps putting back" hint={`The hub rewrites the things it manages each time you change something here: debrid account, the sources it lists, quality and size, languages, the stream label, people, Home rows and collections. Anything else you add there is left alone. ${doors.front ? 'Each person’s Home lives on their own AIOMetadata setup, listed above.' : 'A group’s or a person’s own Home lives in its own AIOMetadata setup, listed above when there is one.'}`}><button type="button" className="ghost small" onClick={() => setDoors(null)}>Hide</button></Setting>
-    </div>}
+    : <>
+      <h3 className="sub first">Shared</h3>
+      <div className="card settings">
+        {door('aiostreams', 'AIOStreams', doors.aiostreams, doors.front ? 'Finds the streams for everyone: sources, filters, sorting and the stream label.' : 'Sources, filters, sorting and the stream label.')}
+        {door('aiometadata', 'AIOMetadata', doors.aiometadata, doors.front ? 'The hub’s own setup: the Home everyone starts from, and its posters.' : 'Catalogs, collections and posters for the shared Home.')}
+      </div>
+      {!!groupsOwn.length && <><h3 className="sub">Groups</h3><div className="card settings">
+        {groupsOwn.map(found => door(`g:${found.name}`, found.name, found, 'On AIOMetadata while this group’s Home or looks differ from the hub’s; removed once they don’t.'))}</div></>}
+      {!!peopleOwn.length && <><h3 className="sub">People</h3><div className="card settings">
+        {peopleOwn.map(found => door(`p:${found.name}`, found.name, found, found.player ? 'Their Home, looks, accounts and what they’ve watched, on AIOMetadata. Their apps reach it through the hub.' : 'On AIOMetadata while their Home or looks differ from their group’s; removed once they don’t.'))}</div></>}
+      <div className="card settings door-note"><Setting column title="What the hub keeps putting back" hint={`The hub rewrites the things it manages each time you change something here: debrid account, the sources it lists, quality and size, languages, the stream label, people, Home rows and collections. Anything else you add there is left alone. ${doors.front ? 'Each person’s Home lives on their own AIOMetadata setup, listed above.' : 'A group’s or a person’s own Home lives in its own AIOMetadata setup, listed above when there is one.'}`}><button type="button" className="ghost small" onClick={() => setDoors(null)}>Hide</button></Setting></div>
+    </>}
   </section>;
 }
 /* What the hub does on its own, one compact row per job, with how often it runs: the five-minute run (Trakt calls that waited,

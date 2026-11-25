@@ -75,7 +75,7 @@ const READS = {
   '/users/me/lists': [{name: 'Heist nights', privacy: 'private', item_count: 2, ids: {trakt: 501, slug: 'heist-nights'}}],
   '/users/likes/lists': [{type: 'list', list: {name: 'Liked one', privacy: 'public', item_count: 1, ids: {trakt: 777}}}],
   '/users/me/lists/501/items': [{type: 'movie', movie: MOVIE.pulp}, {type: 'show', show: BB}],
-  '/lists/777/items': [{type: 'person', person: {name: 'Someone'}}, {type: 'show', show: BB}],
+  '/lists/777/items': [{type: 'person', person: {name: 'Someone'}}, {type: 'movie', movie: {...MOVIE.gump, votes: 40}}, {type: 'show', show: {...BB, votes: 900}}],
 };
 // Lists anyone may look up on Trakt with the site's app alone: one public, one private.
 const PUBLIC = {'/users/someone/lists/heist': {name: 'Heist classics', privacy: 'public', item_count: 9, ids: {trakt: 9001}}, '/users/someone/lists/secret': {name: 'Secret', privacy: 'private', item_count: 3, ids: {trakt: 9002}}};
@@ -796,8 +796,9 @@ test('her own lists and what her watching suggests are hers alone, from her own 
   assert.equal(catalogsOf('Ben').some(item => /list_mine/.test(item.id)), false);
   assert.equal((await owner('PUT', '/api/people/ada', {...ada, rows: null, v: (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').v})).status, 200);
   await syncAll(); assert.equal(catalogsOf('Ada').some(item => /list_mine/.test(item.id)), false);
-  // All her Trakt lists as one row (shelf.ts). The cron works out each list's picture, the backdrop of its first film or show
-  // (none for one whose first has none on TMDB), and her setup gets a collection: a wide tile for each list, opening that list.
+  // All her Trakt lists as one row (shelf.ts). The cron works out each list's picture, the backdrop of its film or show
+  // (the best-known: most rated on Trakt; none for one whose best-known has none on TMDB), and her setup gets a collection: a wide
+  // tile for each list, opening that list.
   const later = (await owner('GET', '/api/state')).body.hub;
   assert.equal((await owner('PUT', '/api/people/ada', {...ada, rows: [{id: 'trakt-lists', title: 'My Trakt lists', kind: 'Collection · 2 lists', source: 'Trakt · all your lists', origin: 'own', on: true}, ...later.rows], v: later.people.find(person => person.id === 'ada').v})).status, 200);
   for (let i = 0; i < 8 && !sql("SELECT 1 FROM rows_cache WHERE kind = 'shelf'").length; i++) await cron();
