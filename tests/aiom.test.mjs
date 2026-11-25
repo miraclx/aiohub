@@ -33,7 +33,7 @@ const TMDB = {
   'movie/155/credits': {crew: [{id: 525, name: 'Christopher Nolan', job: 'Director'}]},
   'movie/550/credits': {crew: [{id: 7467, name: 'David Fincher', job: 'Director'}]},
   'tv/60622': {name: 'Fargo', genres: [{id: 80}, {id: 18}], last_episode_to_air: {season_number: 5, episode_number: 10}},
-  'tv/1396': {name: 'Breaking Bad', genres: [{id: 18}], last_episode_to_air: {season_number: 5, episode_number: 16}},
+  'tv/1396': {name: 'Breaking Bad', genres: [{id: 18}], last_episode_to_air: {season_number: 5, episode_number: 16}, backdrop_path: '/bb-backdrop.jpg'},
 };
 const fake = {tmdb: [], flix: [], configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: [], ticks: [], positions: [], slow: 0, busy: 0, most: 0, catalogs: []};
 const uuidOf = n => `${String(n).padStart(8, '0')}-0000-4000-8000-0000000000aa`, ITEM = 'a1110100-0000-eaf7-78ff-ffffff010000';
@@ -75,6 +75,7 @@ const READS = {
   '/users/me/lists': [{name: 'Heist nights', privacy: 'private', item_count: 2, ids: {trakt: 501, slug: 'heist-nights'}}],
   '/users/likes/lists': [{type: 'list', list: {name: 'Liked one', privacy: 'public', item_count: 1, ids: {trakt: 777}}}],
   '/users/me/lists/501/items': [{type: 'movie', movie: MOVIE.pulp}, {type: 'show', show: BB}],
+  '/lists/777/items': [{type: 'person', person: {name: 'Someone'}}, {type: 'show', show: BB}],
 };
 // Lists anyone may look up on Trakt with the site's app alone: one public, one private.
 const PUBLIC = {'/users/someone/lists/heist': {name: 'Heist classics', privacy: 'public', item_count: 9, ids: {trakt: 9001}}, '/users/someone/lists/secret': {name: 'Secret', privacy: 'private', item_count: 3, ids: {trakt: 9002}}};
@@ -773,7 +774,7 @@ test('her own lists and what her watching suggests are hers alone, from her own 
   // Never the manager's to see, even for her.
   assert.equal((await owner('GET', '/api/people/ada/lists')).status, 403); assert.equal((await owner('GET', '/api/people/ada/because')).status, 403);
   const got = (await adaSite('GET', '/api/people/ada/lists')).body.lists;
-  assert.deepEqual(got, [{id: 'trakt-mine.501', title: 'Heist nights', kind: 'List · 2 titles', source: 'Trakt · your list'}, {id: 'trakt-liked.777', title: 'Liked one', kind: 'List · 1 title', source: 'Trakt · liked'}, {id: 'mdblist.4242.movie', title: 'Award winners', kind: 'List · 60 titles', source: 'MDBList · your list'}]);
+  assert.deepEqual(got, [{id: 'trakt-lists', title: 'My Trakt lists', kind: 'Collection · 2 lists', source: 'Trakt · all your lists'}, {id: 'trakt-mine.501', title: 'Heist nights', kind: 'List · 2 titles', source: 'Trakt · your list'}, {id: 'trakt-liked.777', title: 'Liked one', kind: 'List · 1 title', source: 'Trakt · liked'}, {id: 'mdblist.4242.movie', title: 'Award winners', kind: 'List · 60 titles', source: 'MDBList · your list'}]);
   // Kept a while, for her alone: asking again reads neither service.
   const reads = trakt.reads.length; assert.deepEqual((await adaSite('GET', '/api/people/ada/lists')).body.lists, got); assert.equal(trakt.reads.length, reads);
   assert.deepEqual(sql("SELECT person FROM rows_cache WHERE kind = 'lists'"), [{person: 'ada'}]);
@@ -795,6 +796,23 @@ test('her own lists and what her watching suggests are hers alone, from her own 
   assert.equal(catalogsOf('Ben').some(item => /list_mine/.test(item.id)), false);
   assert.equal((await owner('PUT', '/api/people/ada', {...ada, rows: null, v: (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').v})).status, 200);
   await syncAll(); assert.equal(catalogsOf('Ada').some(item => /list_mine/.test(item.id)), false);
+  // All her Trakt lists as one row (shelf.ts). The cron works out each list's picture, the backdrop of its first film or show
+  // (none for one whose first has none on TMDB), and her setup gets a collection: a wide tile for each list, opening that list.
+  const later = (await owner('GET', '/api/state')).body.hub;
+  assert.equal((await owner('PUT', '/api/people/ada', {...ada, rows: [{id: 'trakt-lists', title: 'My Trakt lists', kind: 'Collection · 2 lists', source: 'Trakt · all your lists', origin: 'own', on: true}, ...later.rows], v: later.people.find(person => person.id === 'ada').v})).status, 200);
+  for (let i = 0; i < 8 && !sql("SELECT 1 FROM rows_cache WHERE kind = 'shelf'").length; i++) await cron();
+  assert.deepEqual(JSON.parse(sql("SELECT items FROM rows_cache WHERE person = 'ada' AND kind = 'shelf'")[0].items), [
+    {id: 'trakt-mine.501', title: 'Heist nights', first: 'movie/680', cover: ''}, {id: 'trakt-liked.777', title: 'Liked one', first: 'tv/1396', cover: 'https://image.tmdb.org/t/p/w780/bb-backdrop.jpg'}]);
+  await syncAll();
+  const shelf = collectionsOf('Ada').find(item => item.id === 'aiohub-trakt-lists');
+  assert.deepEqual(shelf?.folders.map(folder => [folder.title, folder.shape, folder.coverImageUrl, folder.sources[0].catalogId]), [
+    ['Heist nights', 'LANDSCAPE', '', 'custom.aiohub_rows.all.list_mine_501'], ['Liked one', 'LANDSCAPE', 'https://image.tmdb.org/t/p/w780/bb-backdrop.jpg', 'custom.aiohub_rows.all.list_liked_777']]);
+  assert.ok(catalogsOf('Ada').some(item => item.id === 'custom.aiohub_rows.all.list_liked_777' && !item.showInHome), 'each list is there for its tile, not as a row of its own');
+  assert.equal(collectionsOf('Ben').some(item => item.id === 'aiohub-trakt-lists'), false);
+  // Asked again within the day, nothing is worked out again.
+  const asked = fake.tmdb.length; await cron(); assert.equal(fake.tmdb.length, asked);
+  assert.equal((await owner('PUT', '/api/people/ada', {...ada, rows: null, v: (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').v})).status, 200);
+  await syncAll(); assert.equal(collectionsOf('Ada').some(item => item.id === 'aiohub-trakt-lists'), false);
   // Trakt disconnected: her lists, like everything read from her Trakt, are forgotten.
   assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200); assert.deepEqual(sql("SELECT kind FROM rows_cache WHERE person = 'ada' AND kind NOT LIKE 'history%'"), []);
 });

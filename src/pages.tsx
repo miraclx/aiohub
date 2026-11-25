@@ -676,6 +676,9 @@ function Background({hub}: {hub: Hub}) {
     {name: 'Trakt sync', every: 'every 5 min', last: `${ran(jobs.last)}${jobs.waiting ? ` · ${jobs.waiting} waiting to send` : ''}`, next: `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
     {name: 'Trakt and MDBList check', every: `every day at ${time(start)}`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next run ${day(daily)}`},
     ...(hub.front && jobs.forYouHour !== undefined ? [forYouJob(jobs, now, time, day, ran)] : []),
+    // Each My Trakt lists row: its lists and pictures looked at again a day after the last time (shelf.ts), one person a run.
+    ...(hub.front ? [{name: 'My Trakt lists rows', every: 'every day', last: `${ran(jobs.shelved ?? null)}${jobs.shelves ? ` · ${jobs.shelves} ${jobs.shelves === 1 ? 'person' : 'people'}` : ''}`,
+      next: jobs.shelfDue ? `next run ${day((jobs.shelfDue + 86_400) * 1000)}` : 'once someone adds one'}] : []),
   ];
   return <section>
     <div className="section-head"><div><h2>Background work</h2></div></div>

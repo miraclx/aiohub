@@ -12,6 +12,7 @@ import {rows} from './rows';
 import {PAIRS, copy, forgetShown, moving, shown} from './places';
 import {because} from './suggest';
 import {STAND_INS, kindsOf, namesOf, pickHour} from './foryou';
+import {SHELF_ROW} from './shelf';
 import type {Env} from './util';
 import {blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp, unseal} from './util';
 
@@ -161,7 +162,7 @@ async function state(env: Env, who: Who) {
     env.DB.prepare(`SELECT (SELECT at FROM runs WHERE job = 'cron') AS last, (SELECT count FROM runs WHERE job = 'cron') AS runs, (SELECT since FROM runs WHERE job = 'cron') AS since,
       (SELECT max(at) FROM drift WHERE hub = ?1 AND work IS NULL AND result IS NOT NULL) AS ran, (SELECT count(*) FROM trakt_outbox WHERE hub = ?1) AS waiting,
       (SELECT max(day) FROM drift WHERE hub = ?1 AND work IS NULL) AS checked, (SELECT count(*) FROM drift WHERE hub = ?1 AND day = (SELECT max(day) FROM drift WHERE hub = ?1) AND work IS NULL) AS people, (SELECT count(*) FROM drift WHERE hub = ?1 AND work IS NOT NULL) AS checking,
-      (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing`).bind(hub.id, new Date().toISOString().slice(0, 10)),
+      (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing, (SELECT max(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelved, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelves, (SELECT min(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelfDue`).bind(hub.id, new Date().toISOString().slice(0, 10)),
     // Who has played something here: their Recently Watched has something in it even without Trakt or MDBList.
     env.DB.prepare('SELECT DISTINCT person FROM plays WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
     // What each For you place holds today, by name only (the manager sees them on that person's Home tab).
@@ -504,6 +505,9 @@ async function ownLists(env: Env, hub: string, id: string): Promise<OwnList[]> {
     for (const list of Array.isArray(mine) ? mine : []) if (Number.isInteger(list.ids?.trakt)) out.push({id: `trakt-mine.${list.ids!.trakt}`, title: name(list.name), kind: count(list.item_count), source: 'Trakt · your list'});
     for (const like of Array.isArray(liked) ? liked : []) if (Number.isInteger(like.list?.ids?.trakt) && !out.some(item => item.id.endsWith(`.${like.list!.ids!.trakt}`))) out.push({id: `trakt-liked.${like.list!.ids!.trakt}`, title: name(like.list!.name), kind: count(like.list!.item_count), source: 'Trakt · liked'});
   }
+  // All their Trakt lists as one row, a tile each (shelf.ts): a collection, which only AIOMetadata in front can show.
+  const trakts = out.filter(item => item.id.startsWith('trakt-')).length;
+  if (trakts && env.FRONT === 'aiometadata') out.unshift({id: SHELF_ROW, title: 'My Trakt lists', kind: `Collection · ${trakts} ${trakts === 1 ? 'list' : 'lists'}`, source: 'Trakt · all your lists'});
   const lists = await getSecret<{key: string}>(env, hub, id, 'mdblist');
   if (lists?.key) {
     const got = await mdblist(env, lists.key)('/lists/user');

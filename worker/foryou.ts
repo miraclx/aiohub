@@ -15,6 +15,7 @@ import {getSecret, now} from './util';
 import {upNextOf, watchedOf} from './rows';
 import type {Item} from './rows';
 import {syncPlayers} from './native';
+import {refreshShelf} from './shelf';
 import type {Synced} from './native';
 
 const DAY = 86400, HOUR = 5, CALLS = 22, TMDB_OWNER = '#tmdb', HUB = '#hub', SYNC_TRIES = 12, SYNC_BUDGET = 16;
@@ -249,6 +250,8 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
     else await env.DB.prepare('UPDATE foryou_sync SET tries = tries + ?, at = ? WHERE hub = ?').bind(got.more ? 0 : 1, now(), pending.hub).run();
     return true;
   }
+  // Someone's My Trakt lists row, worked out again (shelf.ts): one person a run, before the picks.
+  if (await refreshShelf(env, people.results as {hub: string; id: string; data: string}[], hub => flag(env, hub))) return true;
   // Whoever has no place on is done at once; then one person a run is picked for.
   const idle = due.filter(item => !item.places.length), next = due.find(item => item.places.length);
   const keep = (item: typeof due[number], picks: Record<string, Pick>) => env.DB.prepare(`INSERT INTO foryou (hub, person, day, sig, picks, before, at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person) DO UPDATE SET

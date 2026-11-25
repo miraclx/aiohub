@@ -29,7 +29,7 @@ export interface Addon {id: string; name: string; note: string; locked?: boolean
 export interface Hub {
   // The five-minute background work (manager only): last run (unix seconds), runs counted, calls waiting for Trakt, the last day the
   // Trakt/MDBList check finished, for how many people, and how many are part way through.
-  jobs?: {last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number;
+  jobs?: {shelved?: number | null; shelves?: number; shelfDue?: number | null; last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number;
     /* For you (each person's apps on their own AIOMetadata only): people picked for today of everyone, the last pick, whether the
        hub's apps are waiting to be brought in step, and the UTC hour picking starts. */
     picked?: number; pickedAt?: number | null; everyone?: number; syncing?: number; forYouHour?: number};
