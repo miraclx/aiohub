@@ -16,9 +16,15 @@ AIOHub is a small site that sets up Jellyfin player apps for a household or a gr
 When a person connects Trakt, the hub:
 
 - reads their history, watchlist and lists, to fill their rows and to pick For you rows for them;
-- adds to their history what they watch in their apps (scrobbling), and, when they ask, what they watched before connecting.
+- adds to their history what they watch in their apps, as it plays; keeps their Trakt and their progress here matching, adding plays and paused spots missing on either side and removing nothing; adds what they watched here before connecting only if they agree.
 
 It never posts comments or ratings, never touches other people's accounts, and never shares the sign-in with anyone else. Disconnecting Trakt deletes the stored sign-in; it can also be revoked any time at trakt.tv under Settings, Connected apps.
+
+Keeping Trakt and their progress matching is the person's own choice, made on their own page; it stays off until they turn it on.
+
+## MDBList
+
+While a person's progress is kept in their MDBList, what they play, tick as watched or pause in their apps is written to their MDBList, and plays and paused spots from their Trakt are added to it to keep the two matching. Their MDBList key also reads their watchlist and lists for their rows. Removing the key stops all of it; nothing in their MDBList account is removed.
 
 ## Where it lives
 

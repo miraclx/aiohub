@@ -10,7 +10,7 @@
    Trakt's history takes finished watches only: a part-watched title goes to Trakt as a paused point (/scrobble/pause, under 80%,
    dated when it is sent), unless Trakt already holds a point for it. */
 import type {Env} from './util';
-import {getSecret, now, putSecret} from './util';
+import {getSecret, now} from './util';
 import {LINK, deliver, read} from './trakt';
 import type {Link} from './trakt';
 import {SAME, traktPlays} from './drift';
@@ -19,15 +19,16 @@ import {server} from './here';
 import type {Ids, Via} from './here';
 export type Cell = 'has' | 'add' | 'none';
 export interface Entry {key: string; title: string; detail: string; at: string; pct?: number; kind: 'movie' | 'show'; ids: Ids; season?: number; episode?: number; trakt: Cell; lists: Cell}
-export interface Plan {watched: Entry[]; partway: Entry[]; already: number; unknown: number; more: boolean; trakt: boolean; lists: boolean}
+// waiting: how many are left for a later pass (more than one pass checks).
+export interface Plan {watched: Entry[]; partway: Entry[]; already: number; unknown: number; more: boolean; waiting?: number; trakt: boolean; lists: boolean}
 /* Why a look or a copy could not be done, in words the page shows as they are: never a key or what the other side sent back.
    `status` 503: that side did not answer, so asking again later may work; otherwise (409) something here has to change first. */
 export type Failed = {error: string; status?: number};
 export const NO_SETUP: Failed = {error: 'Your player setup isn’t made yet.'};
 export const NO_ANSWER = {
   trakt: {error: 'Trakt is busy right now.', status: 503},
-  mdblist: {error: 'MDBList didn’t answer. If this lasts a day, paste a new key.', status: 503},
-  server: {error: 'Your server didn’t answer.', status: 503},
+  mdblist: {error: 'MDBList isn’t taking requests from your key right now. If this lasts a day, paste a new key.', status: 503},
+  server: {error: 'Your player setup didn’t answer. Try again in a minute, or ask your manager.', status: 503},
 } satisfies Record<string, Failed>;
 
 // A Worker may make about 50 calls per request, so each pass checks this many titles with MDBList, reads this many pages of Trakt
@@ -54,6 +55,18 @@ export const pauseOf = (entry: {kind: 'movie' | 'show'; ids: Ids; season?: numbe
   return entry.kind === 'movie' ? {movie: {ids: entry.ids}, progress} : {show: {ids: entry.ids}, episode: {season: entry.season, number: entry.episode}, progress};
 };
 
+/* What the hub copied to each of a person's places (the `sent` table): each play once, never again, so one they deleted there
+   stays deleted. Copies made before the table, kept in their vault as `carried` (MDBList's by the play's key, Trakt's as t:<key>),
+   still count. Read once per pass; written in one batch. */
+export type Place = 'trakt' | 'here' | 'mdblist';
+export async function ledger(env: Env, hub: string, person: string, place: Place): Promise<Set<string>> {
+  const rows = (await env.DB.prepare('SELECT play FROM sent WHERE hub = ? AND person = ? AND place = ?').bind(hub, person, place).all<{play: string}>()).results.map(row => row.play);
+  if (place === 'here') return new Set(rows);
+  const old = await getSecret<string[]>(env, hub, person, 'carried') ?? [];
+  return new Set([...rows, ...old.filter(key => key.startsWith('t:') === (place === 'trakt')).map(key => place === 'trakt' ? key.slice(2) : key)]);
+}
+export const remember = (env: Env, hub: string, person: string, place: Place, plays: string[]) => plays.slice(0, 200).map(play => env.DB.prepare('INSERT INTO sent (hub, person, place, play, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').bind(hub, person, place, play.slice(0, 200), now()));
+
 export const mdblist = (env: Env, key: string) => async (path: string, body?: unknown) => {
   const answer = await fetch(`${env.MDBLIST_API ?? 'https://api.mdblist.com'}${path}${path.includes('?') ? '&' : '?'}apikey=${encodeURIComponent(key)}`,
     {method: body === undefined ? 'GET' : 'POST', headers: {accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'AIOHub/1.0'}, body: body === undefined ? undefined : JSON.stringify(body)}).catch(() => null);
@@ -61,18 +74,21 @@ export const mdblist = (env: Env, key: string) => async (path: string, body?: un
 };
 
 /* `skip`: what the person left out, never offered again. */
-/* `want`: which of the two to look at (both, unless said). MDBList's key is used even while the person is still moving to it. */
-export async function plan(env: Env, hub: string, person: string, skip: Set<string> = new Set(), want: {trakt?: boolean; lists?: boolean} = {trakt: true, lists: true}): Promise<Plan | Failed> {
+/* `want`: which of the two to look at (both, unless said). MDBList's key is used even while the person is still moving to it.
+   `before` false: what was watched here before Trakt was connected stays off Trakt (they have not agreed to send it; sync.ts). */
+export interface Want {trakt?: boolean; lists?: boolean; before?: boolean}
+export async function plan(env: Env, hub: string, person: string, skip: Set<string> = new Set(), want: Want = {trakt: true, lists: true}): Promise<Plan | Failed> {
   const lists = want.lists ? await getSecret<{key: string}>(env, hub, person, 'mdblist') : null, held = env.TRAKT_CLIENT_ID && want.trakt ? await getSecret<Link>(env, hub, person, LINK) : null, link = held && !held.again ? held : null;
   if (!lists?.key && !link) return {error: 'Connect Trakt or MDBList first.'};
-  const via = await getSecret<Via>(env, hub, person, 'upstream-aiom');
-  if (!via) return NO_SETUP;
-  // Copied before: a tracker may still answer from a few minutes ago, so these are never sent twice. MDBList's by the play's key,
-  // Trakt's as t:<key>.
-  const carried = new Set(await getSecret<string[]>(env, hub, person, 'carried') ?? []);
+  // Copied before: a tracker may still answer from a few minutes ago, and one the person deleted there stays deleted, so these are
+  // never sent twice.
+  const toLists = lists?.key ? await ledger(env, hub, person, 'mdblist') : new Set<string>(), toTrakt = link ? await ledger(env, hub, person, 'trakt') : new Set<string>();
   const rows = (await env.DB.prepare('SELECT item, updated, scrobbled FROM plays WHERE hub = ? AND person = ? ORDER BY updated DESC LIMIT 500').bind(hub, person).all<{item: string; updated: number; scrobbled: string | null}>()).results;
   const none: Plan = {watched: [], partway: [], already: 0, unknown: 0, more: false, trakt: !!link, lists: !!lists?.key};
+  // Nothing played here: nothing to copy, with or without a player setup.
   if (!rows.length) return none;
+  const via = await getSecret<Via>(env, hub, person, 'upstream-aiom');
+  if (!via) return NO_SETUP;
   const own = await server(via);
   if (!own) return NO_ANSWER.server;
   try {
@@ -91,9 +107,11 @@ export async function plan(env: Env, hub: string, person: string, skip: Set<stri
         at: data.LastPlayedDate ?? new Date((here?.updated ?? now()) * 1000).toISOString(), ...(partway ? {pct: Math.round(pct)} : {}), ...(episode ? {season: item.ParentIndexNumber, episode: item.IndexNumber} : {}), trakt: 'none', lists: 'none'};
       entry.key = `${watched ? 'w' : 'p'}:${where(entry)}`;
       if (skip.has(entry.key)) continue;
-      if (lists?.key) entry.lists = carried.has(entry.key) ? 'has' : 'add';
-      // Trakt: a finished watch it was never sent as it happened (sent: scrobbled is set, after the link was made).
-      if (link) entry.trakt = carried.has(`t:${entry.key}`) || (!partway && here?.scrobbled && (!link.since || (here.updated ?? 0) >= link.since)) ? 'has' : 'add';
+      if (lists?.key) entry.lists = toLists.has(entry.key) ? 'has' : 'add';
+      // Trakt: a finished watch it was never sent as it happened (sent: scrobbled is set, after the link was made). One from before
+      // the link only when the person said so.
+      const early = !!link?.since && (here?.updated ?? 0) < link.since;
+      if (link) entry.trakt = toTrakt.has(entry.key) || (!partway && here?.scrobbled && !early) ? 'has' : early && want.before === false ? 'none' : 'add';
       if (entry.lists === 'add' || entry.trakt === 'add') all.push(entry);
     }
     let more = false;
@@ -145,7 +163,7 @@ export async function plan(env: Env, hub: string, person: string, skip: Set<stri
       }
     }
     const kept = all.filter(entry => decided.has(entry) && (entry.lists === 'add' || entry.trakt === 'add'));
-    return {...none, watched: kept.filter(entry => entry.pct == null), partway: kept.filter(entry => entry.pct != null), already: decided.size - kept.length, unknown, more};
+    return {...none, watched: kept.filter(entry => entry.pct == null), partway: kept.filter(entry => entry.pct != null), already: decided.size - kept.length, unknown, more, waiting: all.length - decided.size};
   } catch {
     return NO_ANSWER.server;
   } finally {
@@ -154,7 +172,7 @@ export async function plan(env: Env, hub: string, person: string, skip: Set<stri
 }
 
 /* Plays as Trakt and MDBList both take them: films on their own, episodes under their show and season, each with its own date. */
-function history(entries: Entry[]) {
+export function history(entries: Pick<Entry, 'kind' | 'ids' | 'season' | 'episode' | 'at'>[]) {
   const movies = entries.filter(entry => entry.kind === 'movie').map(entry => ({ids: entry.ids, watched_at: entry.at})), shows = new Map<number, {ids: Ids; seasons: Map<number, {number: number; watched_at: string}[]>}>();
   for (const entry of entries.filter(item => item.kind === 'show')) {
     const show = shows.get(entry.ids.tmdb!) ?? {ids: entry.ids, seasons: new Map<number, {number: number; watched_at: string}[]>()}; shows.set(entry.ids.tmdb!, show);
@@ -165,8 +183,9 @@ function history(entries: Entry[]) {
 }
 /* Copies one pass of the plan, worked out again here rather than taken from the page. Says whether there is more to do. Trakt gets
    its plays through the outbox, so a moment when Trakt turns calls away only delays them. */
-type Carried = {watched: number; partway: number; trakt: number; missed: number; more: boolean};
-export async function carry(env: Env, hub: string, person: string, skip: Set<string> = new Set(), want: {trakt?: boolean; lists?: boolean} = {trakt: true, lists: true}): Promise<Carried | Failed> {
+// left: about how many are still to copy after this pass.
+type Carried = {watched: number; partway: number; trakt: number; missed: number; more: boolean; left?: number};
+export async function carry(env: Env, hub: string, person: string, skip: Set<string> = new Set(), want: Want = {trakt: true, lists: true}): Promise<Carried | Failed> {
   // One pass at a time per person (two clicks at once would both send): claimed here, let go at the end. A claim left by a pass
   // that never finished is taken over after two minutes.
   const claim = await env.DB.prepare("INSERT INTO ops (hub, kind, target, state, created, updated) VALUES (?1, 'carry', ?2, 'requested', ?3, ?3) ON CONFLICT (hub, kind, target) DO UPDATE SET created = excluded.created, updated = excluded.updated WHERE ops.created < ?4")
@@ -175,22 +194,22 @@ export async function carry(env: Env, hub: string, person: string, skip: Set<str
   try {return await carryPass(env, hub, person, skip, want);}
   finally {await env.DB.prepare("DELETE FROM ops WHERE hub = ? AND kind = 'carry' AND target = ?").bind(hub, person).run();}
 }
-async function carryPass(env: Env, hub: string, person: string, skip: Set<string>, want: {trakt?: boolean; lists?: boolean}): Promise<Carried | Failed> {
+async function carryPass(env: Env, hub: string, person: string, skip: Set<string>, want: Want): Promise<Carried | Failed> {
   const got = await plan(env, hub, person, skip, want);
   if ('error' in got) return got;
-  const done: string[] = [], toLists = got.watched.filter(entry => entry.lists === 'add'), pausing = got.partway.filter(entry => entry.lists === 'add'), toTrakt = got.watched.filter(entry => entry.trakt === 'add');
+  const done: string[] = [], toTraktDone: string[] = [], toLists = got.watched.filter(entry => entry.lists === 'add'), pausing = got.partway.filter(entry => entry.lists === 'add'), toTrakt = got.watched.filter(entry => entry.trakt === 'add');
   const traktPausing = got.partway.filter(entry => entry.trakt === 'add');
   let missed = 0, sent = 0, refused = false;
   if (toTrakt.length) {
     const how = await deliver(env, hub, person, 'carry', {kind: 'mark', path: '/sync/history', body: history(toTrakt)});
     if (how === 'off') return {error: 'Trakt needs connecting again. Nothing was copied.'};
-    done.push(...toTrakt.map(entry => `t:${entry.key}`)); sent = toTrakt.length;
+    toTraktDone.push(...toTrakt.map(entry => entry.key)); sent = toTrakt.length;
   }
   // Paused points one at a time, through the outbox (Trakt takes one write a second per person).
   for (const entry of traktPausing.slice(0, PAUSES)) {
     const how = await deliver(env, hub, person, `carry:${where(entry)}`, {kind: 'pause', path: '/scrobble/pause', body: pauseOf(entry)});
     if (how === 'off') return {error: 'Trakt needs connecting again.'};
-    done.push(`t:${entry.key}`); sent++;
+    toTraktDone.push(entry.key); sent++;
   }
   const lists = want.lists ? await getSecret<{key: string}>(env, hub, person, 'mdblist') : null, ask = lists?.key ? mdblist(env, lists.key) : null;
   if (ask && toLists.length) {
@@ -209,10 +228,9 @@ async function carryPass(env: Env, hub: string, person: string, skip: Set<string
     const answer = await ask!('/scrobble/pause', entry.kind === 'movie' ? {movie: {ids: entry.ids}, progress} : {show: {ids: entry.ids, season: {number: entry.season, episode: {number: entry.episode}}}, progress});
     if (answer.status === 200 || answer.status === 201) done.push(entry.key); else missed++;
   }
-  if (done.length) {
-    const before = await getSecret<string[]>(env, hub, person, 'carried') ?? [];
-    await (await putSecret(env, hub, person, 'carried', [...done, ...before].slice(0, 3000))).run();
-  }
+  // Noted as sent once it is sent or waiting in the outbox, so neither a second pass nor a later look sends it again.
+  if (done.length || toTraktDone.length) await env.DB.batch([...remember(env, hub, person, 'mdblist', done), ...remember(env, hub, person, 'trakt', toTraktDone)]);
   if (refused) return {error: sent ? 'Trakt has them; MDBList didn’t take its share just now. Try again in a moment.' : 'MDBList did not take it. Nothing was copied; try again in a moment.'};
-  return {watched: toLists.length, partway: Math.min(pausing.length, PAUSES), trakt: sent, missed, more: got.more || pausing.length > PAUSES || traktPausing.length > PAUSES};
+  const left = Math.max(0, pausing.length - PAUSES) + Math.max(0, traktPausing.length - PAUSES) + (got.waiting ?? 0);
+  return {watched: toLists.length, partway: Math.min(pausing.length, PAUSES), trakt: sent, missed, more: got.more || pausing.length > PAUSES || traktPausing.length > PAUSES, left};
 }

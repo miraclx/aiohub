@@ -484,3 +484,22 @@ label.sheet-sub { display: block; }
 /* A look that failed: an empty ring, since nothing is under way (wait) and nothing is known to be in step (ok). */
 .trackers .dot.off { background: transparent; border: 1.5px solid var(--muted); }
 .trackers .note { display: block; margin-top: 2px; }
+/* Accounts: one line of how something stands, a dot then the words (wrapping under the words, never under the dot). */
+.accounts .status-line { display: flex; align-items: flex-start; gap: 10px; margin: 0; color: var(--text); line-height: 20px; }
+.accounts .status-line .dot { box-sizing: border-box; width: 8px; height: 8px; flex-shrink: 0; margin-top: 6px; background: var(--ok); border-radius: 50%; }
+.accounts .status-line .dot.wait { background: var(--muted); }
+.accounts .status-line .dot.off { background: transparent; border: 1.5px solid var(--muted); }
+.accounts .status-line .link { margin-left: 2px; }
+/* The question after connecting Trakt: two ticks and Done, set apart like a note. */
+.accounts .consent { display: grid; gap: 12px; padding: 14px; border-radius: 12px; background: var(--raised); }
+.accounts .consent .tick { display: flex; gap: 12px; align-items: flex-start; font-size: 14px; color: var(--muted); cursor: pointer; }
+.accounts .consent .tick strong { color: var(--text); font-weight: 600; }
+.accounts .consent .tick input { width: 20px; height: 20px; flex-shrink: 0; margin: 1px 0 0; accent-color: var(--accent); }
+.accounts .consent-actions { display: flex; align-items: center; gap: 16px; }
+/* MDBList's one switch: keep my progress there. */
+.accounts .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.accounts .toggle-row p { margin-top: 2px; }
+.accounts .toggle-row strong { font-weight: 600; font-size: 15px; }
+/* Your progress: the comparison's one button, with Show what's different beside it. */
+.trackers-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
+div.trackers { display: grid; gap: 6px; }

@@ -11,7 +11,8 @@ export const LINK = 'trakt-scrobble', PENDING = 'trakt-scrobble-pending';
 const DAY = 86400, CLAIM = 60, QUIET = 1800, SWEEP = 4, OOB = 'urn:ietf:wg:oauth:2.0:oob';
 // `redirect` is the address the sign-in came back to; Trakt wants the same one when the login is renewed.
 // `since`: when it was connected. A play here from before then never reached Trakt, so it can be copied over from the person's page.
-export interface Link {access: string; refresh: string; expires: number; username: string; redirect?: string; again?: boolean; renewing?: number; since?: number}
+// `ask`: the person signed in to Trakt themselves and has not yet said whether it is kept matching (sync.ts): their own page asks.
+export interface Link {access: string; refresh: string; expires: number; username: string; redirect?: string; again?: boolean; renewing?: number; since?: number; ask?: boolean}
 type Ids = {tmdb?: number; imdb?: string};
 export type Target = {movie: {ids: Ids}} | {show: {ids: Ids}; episode: {season: number; number: number}};
 
@@ -32,17 +33,25 @@ export const taken = (status: number | null) => status !== null && status !== 0 
 export async function keepLink(env: Env, hub: string, person: string, link: Link) {
   await env.DB.batch([await putSecret(env, hub, person, LINK, {...link, since: link.since ?? now()}), drop(env, hub, person, PENDING)]);
 }
+/* The person answered whether their Trakt is kept matching (sync.ts): their page stops asking. Written only over exactly what was
+   read, so a renewal at the same moment is never undone. */
+export async function answered(env: Env, hub: string, person: string) {
+  const text = (await env.DB.prepare('SELECT value FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(hub, person, LINK).first<{value: string}>())?.value;
+  const link = await unseal<Link>(env, `${hub}/${person}/${LINK}`, text);
+  if (link?.ask) await swap(env, hub, person, text!, {...link, ask: false});
+}
 export async function disconnect(env: Env, hub: string, person: string) {
   const link = await getSecret<Link>(env, hub, person, LINK);
   if (link?.access) await signin(env, '/oauth/revoke', {token: link.access, client_id: env.TRAKT_CLIENT_ID});
   await env.DB.batch([drop(env, hub, person, LINK), drop(env, hub, person, PENDING), ...forgetTrakt(env, hub, person), env.DB.prepare("UPDATE plays SET scrobbled = NULL WHERE hub = ? AND person = ? AND scrobbled IN ('playing', 'paused')").bind(hub, person)]);
 }
-/* What waits for or came from a person's Trakt: gone with the connection, the person, or the hub. */
-export const forgetTrakt = (env: Env, hub: string, person: string) => ['trakt_outbox', 'rows_cache', 'drift'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ? AND person = ?`).bind(hub, person));
+/* What waits for or came from a person's Trakt, and whether it is kept matching: gone with the connection, the person, or the hub.
+   What was sent where (`sent`) stays while the person does, so connecting again sends nothing twice. */
+export const forgetTrakt = (env: Env, hub: string, person: string) => ['trakt_outbox', 'rows_cache', 'drift', 'sync'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ? AND person = ?`).bind(hub, person));
 /* What the page shows: connected as whom, or that Trakt wants connecting again. */
 export async function links(env: Env, hub: string, rows: {owner: string; value: string}[]) {
-  const out: Record<string, {username: string; again: boolean}> = {};
-  for (const row of rows) {const link = await unseal<Link>(env, `${hub}/${row.owner}/${LINK}`, row.value); if (link) out[row.owner] = {username: link.username, again: !!link.again};}
+  const out: Record<string, {username: string; again: boolean; ask: boolean}> = {};
+  for (const row of rows) {const link = await unseal<Link>(env, `${hub}/${row.owner}/${LINK}`, row.value); if (link) out[row.owner] = {username: link.username, again: !!link.again, ask: !!link.ask};}
   return out;
 }
 
@@ -68,7 +77,7 @@ async function access(env: Env, hub: string, person: string, failed = ''): Promi
   const answer = await signin(env, '/oauth/token', {refresh_token: link.refresh, client_id: env.TRAKT_CLIENT_ID, redirect_uri: link.redirect || OOB, grant_type: 'refresh_token'});
   const got = answer?.ok ? await answer.json().catch(() => null) as {access_token?: string; refresh_token?: string; expires_in?: number; created_at?: number} | null : null;
   if (got?.access_token && got.refresh_token) {
-    await swap(env, hub, person, mine, {access: got.access_token, refresh: got.refresh_token, expires: Number(got.created_at ?? now()) + Number(got.expires_in ?? 7 * DAY), username: link.username, redirect: link.redirect, since: link.since});
+    await swap(env, hub, person, mine, {access: got.access_token, refresh: got.refresh_token, expires: Number(got.created_at ?? now()) + Number(got.expires_in ?? 7 * DAY), username: link.username, redirect: link.redirect, since: link.since, ask: link.ask});
     return got.access_token;
   }
   // Trakt no longer takes this connection (taken back on Trakt, or long unused): it has to be made again. Anything else is a blip.

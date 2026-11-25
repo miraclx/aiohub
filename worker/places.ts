@@ -16,7 +16,7 @@ import {getSecret, now, putSecret} from './util';
 import {LINK} from './trakt';
 import type {Link} from './trakt';
 import {traktPlays} from './drift';
-import {NO_ANSWER, NO_SETUP, carry, mdblist, pauseOf, plan, pointKey, traktPoints} from './carry';
+import {NO_ANSWER, NO_SETUP, carry, ledger, mdblist, pauseOf, plan, pointKey, remember, traktPoints} from './carry';
 import type {Failed, TraktPoint} from './carry';
 import {deliver} from './trakt';
 import type {Cell} from './carry';
@@ -28,30 +28,39 @@ export const PAIRS: Pair[] = ['here-trakt', 'here-mdblist', 'mdblist-here', 'mdb
 export interface Line {key: string; title: string; detail: string; at: string; pct?: number; here: Cell; trakt: Cell; lists: Cell; elsewhere?: boolean}
 export interface Look {lines: Line[]; more: boolean; unmatched: number; already: number; checked?: number}
 /* A play another place has that Here lacks, with the id Here knows it by. */
-interface Incoming {key: string; kind: 'movie' | 'show'; ids: Ids; title: string; season?: number; episode?: number; at: string; pct?: number; id: string; runtime?: number}
+export interface Incoming {key: string; kind: 'movie' | 'show'; ids: Ids; title: string; season?: number; episode?: number; at: string; pct?: number; id: string; runtime?: number}
 
 // Trakt plays from this far back are offered to Here; MDBList is read whole when moving back, the newest this many at a time.
 // A pass ticks Here until its own calls reach BUDGET, leaving room in the Worker's ~50 for the rest of the pass.
-const SPAN = 14 * 86400, CHECK = 300, BUDGET = 22;
+// NEAR: a spot here stays when the other side's is from no more than this much later (a send can take that long to land).
+export const SPAN = 14 * 86400, CHECK = 300, BUDGET = 22, NEAR = 600;
 const detail = (season?: number, episode?: number) => season != null ? `Season ${season} · Episode ${episode}` : 'Movie';
 const same = (a: string, b: string) => a.replace(/-/g, '').toLowerCase() === b.replace(/-/g, '').toLowerCase();
-const where = (kind: string, tmdb: number | undefined, season?: number, episode?: number) => `${kind}/${tmdb}${season != null ? `:${season}:${episode}` : ''}`;
+export const where = (kind: string, tmdb: number | undefined, season?: number, episode?: number) => `${kind}/${tmdb}${season != null ? `:${season}:${episode}` : ''}`;
 
-/* What Here holds of these plays: each one Here lacks (with its id there), how many it has, how many it does not know. */
-async function lacking(own: Server, plays: Omit<Incoming, 'id'>[]) {
+/* How a play brought here is noted as sent (carry.ts, ledger): a finished one by title or episode; a spot with when it was left
+   there too, so a later spot from the same place can still come. */
+export const sentKey = (play: {key: string; at: string; pct?: number}) => play.pct != null ? `${play.key}@${play.at}` : play.key;
+/* What Here holds of these plays: each one Here lacks (with its id there), how many it has, how many it does not know.
+   Watched beats part-watched. A spot here gives way to another place's only when that one is later by more than a send can take
+   (Trakt and MDBList date a spot when it reaches them, so the hub's own would otherwise look newer) and not where Here already is. */
+export async function lacking(own: Server, plays: Omit<Incoming, 'id'>[]) {
   const withId = plays.map(play => ({...play, id: packed(play.kind === 'movie' ? 'movie' : 'episode', play.ids, play.season, play.episode) ?? ''})).filter(play => play.id);
   const found = await own.items(withId.map(play => play.id)), out: Incoming[] = [];
   let has = 0, unknown = plays.length - withId.length;
   for (const play of withId) {
     const item = found.find(held => same(held.Id, play.id));
     if (!item) {unknown++; continue;}
-    if (item.UserData?.Played || (play.pct != null && Number(item.UserData?.PlaybackPositionTicks) > 0)) {has++; continue;}
+    if (item.UserData?.Played) {has++; continue;}
+    const ticks = Number(item.UserData?.PlaybackPositionTicks) || 0, last = Date.parse(item.UserData?.LastPlayedDate ?? '') || 0;
+    // With no date for Here's spot there is no telling which is later: Here's stays.
+    if (play.pct != null && ticks > 0 && (!last || Date.parse(play.at) <= last + NEAR * 1000 || (item.RunTimeTicks && Math.abs(ticks / item.RunTimeTicks * 100 - play.pct) <= 1))) {has++; continue;}
     out.push({...play, runtime: item.RunTimeTicks});
   }
   return {out, has, unknown};
 }
-/* Plays on Trakt in the last two weeks, newest first, one per title or episode. null when Trakt did not answer. */
-async function fromTrakt(env: Env, hub: string, person: string) {
+/* Plays on Trakt in the last two weeks (or since `from`), newest first, one per title or episode. null when Trakt did not answer. */
+async function fromTrakt(env: Env, hub: string, person: string, from = now() - SPAN) {
   const titles: Record<string, {kind: 'movie' | 'show'; tmdb: number; imdb?: string; name: string}> = {}, plays: Omit<Incoming, 'id'>[] = [], seen = new Set<string>();
   let more = false;
   // Where Trakt holds a part-watched title: brought Here as a position, where Here has none.
@@ -59,7 +68,7 @@ async function fromTrakt(env: Env, hub: string, person: string) {
   const points = await traktPoints(env, hub, person) ?? [];
   for (const point of points) {const play = fromPoint(point); if (play && !seen.has(play.key)) {seen.add(play.key); plays.push(play);}}
   for (let page = 1; page <= 3; page++) {
-    const got = await traktPlays(env, hub, person, now() - SPAN, now(), page, titles);
+    const got = await traktPlays(env, hub, person, from, now(), page, titles);
     if (!got) return null;
     for (const play of got.plays) {
       const title = titles[play.t], key = `i:${where(title.kind, title.tmdb, play.s, play.e)}`;
@@ -74,7 +83,7 @@ async function fromTrakt(env: Env, hub: string, person: string) {
 interface Media {title?: string; ids?: {tmdb?: number | null; imdb?: string | null}}
 const idsOf = (media?: Media): Ids => ({tmdb: Number(media?.ids?.tmdb) || undefined, ...(/^tt\d+$/.test(media?.ids?.imdb ?? '') ? {imdb: media!.ids!.imdb!} : {})});
 /* A paused point (Trakt's or MDBList's) as a part-watched play, or null for one that is finished or has nothing to go by. */
-function fromPoint(point: TraktPoint): Omit<Incoming, 'id'> | null {
+export function fromPoint(point: TraktPoint): Omit<Incoming, 'id'> | null {
   const pct = Math.round(Number(point.progress)), movie = point.type === 'movie', media = movie ? point.movie : point.show, key = pointKey(point);
   if (!key || !(pct >= 1 && pct < 80) || (!movie && (point.episode?.season == null || point.episode.number == null))) return null;
   return {key: `ip:${key}`, kind: movie ? 'movie' : 'show', ids: idsOf(media), title: String(media?.title ?? 'Untitled').slice(0, 200), ...(movie ? {} : {season: point.episode!.season, episode: point.episode!.number}), at: point.paused_at ?? new Date().toISOString(), pct};
@@ -122,8 +131,6 @@ export async function look(env: Env, hub: string, person: string, pair: Pair, sk
     more = out.more; unmatched = out.unknown; already = out.already;
   }
   if (pair === 'here-trakt' || pair === 'mdblist-here') {
-    const via = await getSecret<Via>(env, hub, person, 'upstream-aiom');
-    if (!via) return NO_SETUP;
     let plays: Omit<Incoming, 'id'>[];
     if (pair === 'here-trakt') {
       const got = await fromTrakt(env, hub, person);
@@ -136,8 +143,14 @@ export async function look(env: Env, hub: string, person: string, pair: Pair, sk
       if (!got) return NO_ANSWER.mdblist;
       plays = got;
     }
-    plays = plays.filter(play => !skip.has(play.key));
+    // What the hub ticked here before is never ticked again, so one unticked since stays that way.
+    const done = await ledger(env, hub, person, 'here');
+    plays = plays.filter(play => !skip.has(play.key) && !done.has(sentKey(play)));
     if (plays.length > CHECK) {more = true; plays = plays.slice(0, CHECK);}
+    // Nothing the other side has to bring here: no need of their server.
+    if (!plays.length) return {lines: lines.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)), more, unmatched, already, incoming};
+    const via = await getSecret<Via>(env, hub, person, 'upstream-aiom');
+    if (!via) return NO_SETUP;
     const own = await server(via);
     if (!own) return NO_ANSWER.server;
     try {
@@ -151,7 +164,7 @@ export async function look(env: Env, hub: string, person: string, pair: Pair, sk
 }
 
 /* The person's own server passes nothing on to a tracker right now: ticking Here cannot echo anywhere. */
-async function quiet(env: Env, hub: string, person: string) {
+export async function quiet(env: Env, hub: string, person: string) {
   const made = await getSecret<{uuid: string; password: string; at?: string}>(env, hub, person, 'aiom');
   if (!made) return false;
   const read = await fetch(`${made.at ?? env.AIOM_ORIGIN}/api/config/load/${made.uuid}`, {method: 'POST', headers: {'content-type': 'application/json', accept: 'application/json', 'user-agent': 'AIOHub/1.0'}, body: JSON.stringify({password: made.password})}).catch(() => null);
@@ -160,57 +173,72 @@ async function quiet(env: Env, hub: string, person: string) {
 }
 /* Ticks plays Here, as many as fit in one pass. Episodes go by the show's own numbering on this server: one it does not have under
    that season and number is left out (counted as not matched), never guessed. */
-async function tickHere(own: Server, plays: Incoming[]) {
+export async function tickHere(own: Server, plays: Incoming[], budget = BUDGET) {
   let added = 0, unmatched = 0, left = 0;
+  // Which were ticked, and which this server numbers differently (never guessed again): by each play's key. One the server did not
+  // answer about is neither, and is tried again later.
+  const done: string[] = [], missed: string[] = [];
   const shows = new Map<string, Map<string, string> | null>();
   for (const play of plays) {
-    if (own.counter.calls > BUDGET) {left++; continue;}
+    if (own.counter.calls > budget) {left++; continue;}
     let id = play.id;
     if (play.kind === 'show') {
       const series = packed('series', play.ids) ?? '';
       if (!shows.has(series)) shows.set(series, series ? await own.episodes(series) : null);
       const numbered = shows.get(series);
       id = numbered?.get(`${play.season}:${play.episode}`) ?? '';
-      if (!id) {unmatched++; continue;}
+      if (!id) {unmatched++; if (numbered) missed.push(sentKey(play)); continue;}
     }
-    const done = play.pct != null ? (play.runtime ? await own.position(id, play.runtime * play.pct / 100) : false) : await own.mark(id, play.at);
-    if (done) added++; else unmatched++;
+    const taken = play.pct != null ? (play.runtime ? await own.position(id, play.runtime * play.pct / 100) : false) : await own.mark(id, play.at);
+    if (taken) {added++; done.push(sentKey(play));} else unmatched++;
   }
-  return {added, unmatched, left};
+  return {added, unmatched, left, done, missed};
 }
 
 /* One pass of Add (or Move) for a pair. `leave`: what the person tapped out, kept out for good. */
-export async function copy(env: Env, hub: string, person: string, pair: Pair, skip: Set<string>): Promise<{added: number; unmatched: number; more: boolean} | Failed> {
-  let added = 0, unmatched = 0, more = false;
+export async function copy(env: Env, hub: string, person: string, pair: Pair, skip: Set<string>, want: {before?: boolean} = {}): Promise<{added: number; unmatched: number; more: boolean; left: number} | Failed> {
+  let added = 0, unmatched = 0, more = false, left = 0;
   if (pair === 'mdblist-trakt') {
     const got = await pointsBoth(env, hub, person);
     if ('error' in got) return got;
     const lists = (await getSecret<{key: string}>(env, hub, person, 'mdblist'))!, ask = mdblist(env, lists.key), todo = got.points.filter(point => !skip.has(point.key));
+    // A spot is sent once (by where it is and when it was left there): a later one is a new spot.
+    const toTrakt: string[] = [], toLists: string[] = [];
     for (const point of todo.slice(0, 10)) {
-      if (point.to === 'trakt') {if (await deliver(env, hub, person, `carry:${point.key.slice(3)}`, {kind: 'pause', path: '/scrobble/pause', body: pauseOf(point)}) === 'off') return {error: 'Trakt needs connecting again.'}; added++;}
-      else {const answer = await ask('/scrobble/pause', point.kind === 'movie' ? {movie: {ids: point.ids}, progress: Math.min(79.99, point.pct!)} : {show: {ids: point.ids, season: {number: point.season, episode: {number: point.episode}}}, progress: Math.min(79.99, point.pct!)}); if (answer.status === 200 || answer.status === 201) added++; else unmatched++;}
+      if (point.to === 'trakt') {if (await deliver(env, hub, person, `carry:${point.key.slice(3)}`, {kind: 'pause', path: '/scrobble/pause', body: pauseOf(point)}) === 'off') return {error: 'Trakt needs connecting again.'}; added++; toTrakt.push(`${point.key}@${point.at}`);}
+      else {const answer = await ask('/scrobble/pause', listsPause(point)); if (answer.status === 200 || answer.status === 201) {added++; toLists.push(`${point.key}@${point.at}`);} else unmatched++;}
     }
-    return {added, unmatched, more: todo.length > 10};
+    if (toTrakt.length || toLists.length) await env.DB.batch([...remember(env, hub, person, 'trakt', toTrakt), ...remember(env, hub, person, 'mdblist', toLists)]);
+    return {added, unmatched, more: todo.length > 10, left: Math.max(0, todo.length - 10)};
   }
-  if (pair !== 'here-mdblist' && !await quiet(env, hub, person)) return {error: 'Your setup is still switching over. Try again in a moment.'};
   // Out of Here first (to Trakt or MDBList), through carry.ts, which keeps one pass per person at a time.
   if (pair !== 'mdblist-here') {
-    const got = await carry(env, hub, person, skip, pair === 'here-trakt' ? {trakt: true} : {lists: true});
+    const got = await carry(env, hub, person, skip, pair === 'here-trakt' ? {trakt: true, before: want.before} : {lists: true});
     if ('error' in got) return got;
-    added += got.watched + got.partway + got.trakt; more ||= got.more; unmatched += got.missed;
-    if (pair === 'here-mdblist') return {added, unmatched, more};
+    added += got.watched + got.partway + got.trakt; more ||= got.more; unmatched += got.missed; left += got.left ?? 0;
+    if (pair === 'here-mdblist') return {added, unmatched, more, left};
   }
   const found = await look(env, hub, person, pair, skip, false);
   if ('error' in found) return found;
-  if (!found.incoming.length) return {added, unmatched, more: more || found.more};
+  if (!found.incoming.length) return {added, unmatched, more: more || found.more, left};
+  // Ticking here only while their server passes nothing on to a tracker, or it would echo there.
+  if (!await quiet(env, hub, person)) return {error: 'Your setup is still switching over. Try again in a moment.'};
   const via = (await getSecret<Via>(env, hub, person, 'upstream-aiom'))!, own = await server(via);
   if (!own) return NO_ANSWER.server;
   try {
     const got = await tickHere(own, found.incoming);
-    return {added: added + got.added, unmatched: unmatched + got.unmatched, more: more || found.more || got.left > 0};
+    // Each ticked once: one the person unticks later stays unticked. One this server could not take is not tried again either.
+    const noted = [...got.done, ...got.missed];
+    if (noted.length) await env.DB.batch(remember(env, hub, person, 'here', noted));
+    return {added: added + got.added, unmatched: unmatched + got.unmatched, more: more || found.more || got.left > 0, left: left + got.left};
   } finally {await own.done();}
 }
 
+/* A paused spot as MDBList takes it: an episode under its show, by season; kept under 80%, where it would count as watched. */
+export const listsPause = (point: {kind: 'movie' | 'show'; ids: Ids; season?: number; episode?: number; pct?: number}) => {
+  const progress = Math.min(79.99, Math.max(1, point.pct!));
+  return point.kind === 'movie' ? {movie: {ids: point.ids}, progress} : {show: {ids: point.ids, season: {number: point.season, episode: {number: point.episode}}}, progress};
+};
 /* What the card shows, worked out when it opens and kept for six hours per person and pair: MDBList allows a person 1,000 calls a
    day, and Trakt turns away busy callers. Checking again (`fresh`) looks anew unless the last look is under two minutes old. */
 const KEPT = 6 * 3600, AGAIN = 120;

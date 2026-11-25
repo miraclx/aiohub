@@ -37,7 +37,10 @@ export interface Shown {key: string; kind: string; name: string; why?: Why; seed
 export interface ForYouDetail {places: Record<string, Shown>; options: Shown[]; none: Record<string, string>; never: {seed: string; title: string}[]}
 /* pickedAt: when their For you places were last picked (unix seconds); shelfAt: when their My Trakt lists row was last worked out,
    0 while it waits to be again. */
-export interface Person {forYou?: Record<string, string>; forYouKinds?: Record<string, string>; pickedAt?: number; forYouDetail?: ForYouDetail; shelfAt?: number; shelfTiles?: {title: string; image: string}[]; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; pin: string | null; password: string; devices: Device[]}
+/* Whether their Trakt is kept matching their progress (worker/sync.ts), and how that stands: `ask` while they have yet to answer,
+   the last good pass, since when it has failed and why, since when a call has waited for Trakt (unix seconds). */
+export interface Matching {on: boolean; earlier: boolean; ask: boolean; good: number; failing: number | null; why: string | null; waiting: number | null}
+export interface Person {matching?: Matching | null; forYou?: Record<string, string>; forYouKinds?: Record<string, string>; pickedAt?: number; forYouDetail?: ForYouDetail; shelfAt?: number; shelfTiles?: {title: string; image: string}[]; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
 export interface Hub {
@@ -46,7 +49,9 @@ export interface Hub {
   jobs?: {shelved?: number | null; shelves?: number; shelfDue?: number | null; last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number;
     /* For you (each person's apps on their own AIOMetadata only): people picked for today of everyone, the last pick, whether the
        hub's apps are waiting to be brought in step, and the UTC hour picking starts. */
-    picked?: number; pickedAt?: number | null; everyone?: number; syncing?: number; forYouHour?: number};
+    picked?: number; pickedAt?: number | null; everyone?: number; syncing?: number; forYouHour?: number;
+    /* Trakt matching (worker/sync.ts): the last good pass for anyone here, and how many have it on. */
+    matched?: number | null; matching?: number};
   // In a person's view: their manager's own sign-in is set aside in this browser, to go back to.
   manager?: boolean;
   // front: each person's apps sign in to their own AIOMetadata setup; only then are there For you places. forYouHour: the UTC hour
