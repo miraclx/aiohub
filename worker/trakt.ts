@@ -7,7 +7,7 @@
    STRICTLY OFF: for someone whose sync is off, no start, pause, stop or tick is sent, kept or tried, whoever asks. The gate is
    here, where every such call passes (deliver, flush, sweep), asked of the database each time and never remembered; front.ts
    and the passes that end here have their own on top. A heart for Favorites (hearts.ts) is the person's other, separate switch
-   and is not held by this one.
+   (their watchlist, not their watching) and is not held by this one.
    Nothing at all while TRAKT_CLIENT_ID is unset. */
 import type {Env} from './util';
 import {getSecret, now, putSecret, seal, unseal} from './util';
@@ -72,10 +72,12 @@ export async function disconnect(env: Env, hub: string, person: string) {
    watchlist go off and its ledger goes too (`favs`, `hearts`: hearts.ts): only rows here, never a heart on their server or a
    title on Trakt. */
 export const forgetTrakt = (env: Env, hub: string, person: string) => ['trakt_outbox', 'rows_cache', 'drift', 'sync', 'favs', 'hearts'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ? AND person = ?`).bind(hub, person));
-/* What the page shows: connected as whom, or that Trakt wants connecting again. */
+/* What the page shows: connected as whom, or that Trakt wants connecting again. `since`: since when what is watched here goes to
+   Trakt by itself (when sync was last turned on, else when it was connected), which is what tells one set of earlier plays
+   from another (api.ts). */
 export async function links(env: Env, hub: string, rows: {owner: string; value: string}[]) {
-  const out: Record<string, {username: string; again: boolean; ask: boolean}> = {};
-  for (const row of rows) {const link = await unseal<Link>(env, `${hub}/${row.owner}/${LINK}`, row.value); if (link) out[row.owner] = {username: link.username, again: !!link.again, ask: !!link.ask};}
+  const out: Record<string, {username: string; again: boolean; ask: boolean; since: number}> = {};
+  for (const row of rows) {const link = await unseal<Link>(env, `${hub}/${row.owner}/${LINK}`, row.value); if (link) out[row.owner] = {username: link.username, again: !!link.again, ask: !!link.ask, since: link.on ?? link.since ?? 0};}
   return out;
 }
 

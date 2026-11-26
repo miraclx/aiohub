@@ -24,9 +24,6 @@ export interface Settings {
 }
 export type Overrides = Partial<Settings>;
 export interface Device {id: string; app: string; name: string; seen: string; place?: string; net?: string}
-// Plays one of Trakt and MDBList has and the other lacks, from the daily look (drift.ts on the Worker).
-export interface Miss {kind: 'movie' | 'show'; tmdb: number; name: string; season?: number; episode?: number; at: number; key: string}
-export interface Drift {checked: number; since: number; toMdblist: Miss[]; toTrakt: Miss[]}
 /* What a For you pick says of itself on the site: its key, kind and name, and what it came from (`why`, worded on the site, so a
    time reads in the viewer's own days). `seed`: the title it was worked out from, which can be left out for good; `keep`: the place
    keeps it at the daily pick. */
@@ -40,10 +37,13 @@ export interface ForYouDetail {places: Record<string, Shown>; options: Shown[]; 
 /* Whether their Trakt sync is on (worker/sync.ts: off, nothing of their watching moves either way), and how that stands: `ask` while they have yet to answer,
    the last good pass, since when it has failed and why, since when a call has waited for Trakt, and until when Trakt asked the
    hub to wait (unix seconds). */
-export interface Matching {on: boolean; earlier: boolean; ask: boolean; good: number; failing: number | null; why: string | null; waiting: number | null; until?: number}
-// hearts: "Show my Trakt watchlist as Favorites in the apps" (worker/hearts.ts), on or off. Only on a person's own page, and only
-// when it is theirs to have: null or missing for anyone else.
-export interface Person {matching?: Matching | null; hearts?: {on: boolean} | null; forYou?: Record<string, string>; forYouKinds?: Record<string, string>; pickedAt?: number; forYouDetail?: ForYouDetail; shelfAt?: number; shelfTiles?: {title: string; image: string; liked?: boolean}[]; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; pin: string | null; password: string; devices: Device[]}
+// `earlier`: they agreed to send what they watched here before turning sync on; `passed`: they said "Not now" to that, for the
+// plays from before this turning on.
+export interface Matching {on: boolean; earlier: boolean; passed?: boolean; ask: boolean; good: number; failing: number | null; why: string | null; waiting: number | null; until?: number}
+// hearts: their watchlist as Favorites in the apps (worker/hearts.ts), on or off. Only on a person's own page, and only when it is
+// theirs to have: null or missing for anyone else. `extra`: hearts of theirs that their Trakt watchlist lacks, as last counted,
+// for the offer to add them (`more`: more than the offer holds).
+export interface Person {matching?: Matching | null; hearts?: {on: boolean; extra?: number; more?: boolean} | null; forYou?: Record<string, string>; forYouKinds?: Record<string, string>; pickedAt?: number; forYouDetail?: ForYouDetail; shelfAt?: number; shelfTiles?: {title: string; image: string; liked?: boolean}[]; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
 export interface Hub {
@@ -119,7 +119,7 @@ export function aboutRow(row: {id: string; source: string}, mine = true): string
       : `${kind} Trakt recommends for ${mine ? 'you' : 'them'}, from ${your} whole Trakt history. What is on ${your} watchlist is left out.`;
     case 'up-next': return `From ${your} Trakt: shows with an episode ${you} haven’t watched yet, the ones ${you} watched most lately first.`;
     case 'watchlist': return row.source === 'Trakt and MDBList' ? `${Your} Trakt and MDBList watchlists as one list, newest added first. A title on both shows once.` : `${Your} ${['MDBList', 'Trakt or MDBList'].includes(row.source) ? row.source : 'Trakt'} watchlist, newest added first.`;
-    case 'recently-watched': return `What ${you} watched lately, newest first, each show once. From ${row.source === 'MDBList' ? `${your} MDBList` : row.source === 'Played here' ? `what ${you} played here` : `${your} Trakt history`}.`;
+    case 'recently-watched': return `What ${you} watched lately, newest first, each show once. From ${row.source === 'MDBList' ? `${your} MDBList` : row.source === 'Played here' ? `what ${you} played here` : row.source === TRAKT_AND_HERE ? `${your} Trakt history and what ${you} finished here` : `${your} Trakt history`}.`;
     case 'trakt-lists': return `${Your} own Trakt lists, a tile for each. Opening a tile shows that list. Checked once a day.`;
     case 'trakt-liked-lists': return `Trakt lists ${you} liked, a tile for each. Opening a tile shows that list. Checked once a day.`;
   }
@@ -386,8 +386,10 @@ export const hasTrakt = (person: Person) => person.trakt || (!!person.history &&
 // MDBList rows come with their own key saved, whether or not progress is kept there.
 export const hasLists = (person: Person) => person.lists || !!person.listsKept;
 /* Where a person's Recently Watched comes from: Trakt connected to the hub, else their MDBList, else what they played here. The
-   older Trakt link through AIOMetadata does not count: the hub cannot read it. */
-export const sourceOf = (person: Person) => (person.history ? !person.history.again : SAMPLE && person.trakt) ? 'Trakt' : hasLists(person) ? 'MDBList' : 'Played here';
+   older Trakt link through AIOMetadata does not count: the hub cannot read it. With Trakt connected and their Trakt sync off,
+   Trakt does not hear of what is watched here, so the row is Trakt's history and what they finished here together (rows.ts). */
+export const TRAKT_AND_HERE = 'Trakt and played here';
+export const sourceOf = (person: Person) => (person.history ? !person.history.again : SAMPLE && person.trakt) ? (person.history && !person.matching?.on ? TRAKT_AND_HERE : 'Trakt') : hasLists(person) ? 'MDBList' : 'Played here';
 /* What can be filled for a person, from their accounts and their watching. */
 export const linkedOf = (hub: Hub, person: Person): Linked => ({trakt: hasTrakt(person), lists: hasLists(person), watched: SAMPLE || hasLists(person) || !!person.history && !person.history.again || !!person.played,
   kids: resolve(hub, hub.groups.find(item => item.id === person.groupId), person).values.limit === 'kids', front: !!hub.front});

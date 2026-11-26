@@ -31,8 +31,9 @@ itself and hosts no video.
 - **Their own Trakt and MDBList.** Trakt and MDBList are services that keep a record of what you watch, plus watchlists
   and lists. A person can connect either or both. Connecting gives its rows on Home and sends nothing. Each has one
   Sync switch, off until it is turned on: on, what is watched here goes there as it plays and what is watched elsewhere
-  comes back; off, nothing moves either way. Sync only adds: nothing is ever removed or marked unwatched. Their lists
-  and liked lists can be rows on Home.
+  comes back; off, nothing moves either way. Sync only adds: nothing is ever removed or marked unwatched. One more
+  switch shows their watchlist as Favorites in the apps: hearts follow their Trakt watchlist, and MDBList follows Trakt.
+  Their lists and liked lists can be rows on Home.
 - **Playback settings.** Quality (Data saver, Balanced or Best), a size limit, audio languages, subtitles, skipping intros and
   credits where a title has them marked, and hiding what they have already watched.
 - **Devices.** Every signed-in app is listed with its name, when it was last seen and roughly where. Any of them can be
@@ -189,6 +190,11 @@ Newest first. Dates are the commit dates on `main`.
 
 ### 2026-11-26
 
+- Accounts has one Sync card: a plain line of what is synced, a switch per account for your watching, and one switch that
+  shows your watchlist as Favorites, with or without MDBList. Trakt leads the watchlist and MDBList follows; a title that
+  leaves your Trakt watchlist loses its heart, and hearts that were never on Trakt are left alone. Earlier plays and hearts
+  you already had are offered once, never added by themselves. A whole season ticked in an app counts as its episodes, and
+  Recently Watched includes what you finished here while Trakt sync is off.
 - Accounts have one idea each: Connect gives the rows, and one Sync switch moves watching both ways. Trakt sends nothing
   until its sync is on, and asks once right after you connect. MDBList's switch is called Sync too.
 - Each account-driven row says in one line what it is, where it is edited and in Add row.

@@ -85,6 +85,10 @@ export async function server(via: Via) {
       const held = await ask<{Items?: Item[]}>(`/Users/${user}/Items?Ids=${encodeURIComponent(id)}`);
       return !held ? 'down' : held.Items?.length && !!held.Items[0].UserData?.IsFavorite === on ? 'done' : 'no';
     },
+    /* The films and shows they have hearted, the first `most` as the server lists them, with their ids. null when it did not
+       answer. Asked for the way an app asks for its Favorites screen (both spellings of the filter); a title that does not say
+       it is hearted is the caller's to leave out, so a server that ignored the filter adds nothing. */
+    favourites: async (most: number) => (await ask<{Items?: Item[]}>(`/Users/${user}/Items?Recursive=true&Filters=IsFavorite&IsFavorite=true&IncludeItemTypes=Movie,Series&Fields=ProviderIds&Limit=${most}`))?.Items ?? null,
     done: () => fetch(`${via.base}/Sessions/Logout`, {method: 'POST', headers: head(token)}).catch(() => null),
   };
 }

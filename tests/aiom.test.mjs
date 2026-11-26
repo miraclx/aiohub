@@ -46,7 +46,7 @@ const TMDB = {
   'movie/9001/release_dates': {results: [{iso_3166_1: 'US', release_dates: [{certification: 'G'}]}]}, 'movie/9002/release_dates': {results: [{iso_3166_1: 'US', release_dates: [{certification: 'R'}]}]},
   'collection/2344': {name: 'The Matrix Collection', parts: [{id: 603, title: 'The Matrix', release_date: '1999-03-30', vote_average: 8.2}, {id: 604, title: 'The Matrix Reloaded', release_date: '2003-05-15', vote_average: 7.0}]},
 };
-const fake = {favs: new Map(), hearts: [], tmdb: [], flix: [], configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: [], ticks: [], positions: [], slow: 0, busy: 0, most: 0, catalogs: []};
+const fake = {favs: new Map(), hearts: [], favReads: 0, unfiltered: false, tmdb: [], flix: [], configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: [], ticks: [], positions: [], slow: 0, busy: 0, most: 0, catalogs: []};
 const uuidOf = n => `${String(n).padStart(8, '0')}-0000-4000-8000-0000000000aa`, ITEM = 'a1110100-0000-eaf7-78ff-ffffff010000';
 // What Ada's own server holds: a film she watched, an episode she is partway through, one MDBList already has, and their show.
 const FILM = 'a1110100-0000-eaf7-78ff-ffffff050000', LEFT = 'a1110100-0000-eaf7-78ff-ffffff060000', EP3 = 'a1110100-0000-eaf7-78ff-ffffff070000';
@@ -67,11 +67,13 @@ const HELD = {
 // Trakt: single-use refresh tokens, and every call as Ada logged. Each title above runs 6000 seconds. `refuse` turns that many
 // writes away with a 429, as Trakt's Cloudflare does to the shared addresses Workers call from; `refuseReads` does it to reads.
 // `retryAfter`: the seconds a refused write is told to wait (Trakt's own limit says so; Cloudflare's refusal does not).
+// `pace`: as Trakt's own limit of one write a second per person: a write within that many milliseconds of the last one taken is
+// turned away (429), so a burst only gets through one at a time.
 // `activity`: what Trakt's /sync/last_activities says changed last (sync.ts reads it first).
 // `watched`: every show she watched, each with its seasons, and each episode with when it was last watched. Read two ways (sync.ts,
 // nextUp): /sync/watched/shows?extended=noseasons lists the shows without their seasons, and /shows/<Trakt id>/progress/watched
 // gives one show's `last_episode`. `big`: the list comes back over a megabyte long.
-const trakt = {calendar: {shows: [], dvd: []}, hidden: {progress_watched: [], dropped: []}, activity: {movies: {watched_at: '2020-01-01T00:00:00.000Z', paused_at: '2020-01-01T00:00:00.000Z'}, episodes: {watched_at: '2020-01-01T00:00:00.000Z', paused_at: '2020-01-01T00:00:00.000Z'}}, history: [], watched: [], playback: null, watchlist: null, calls: [], reads: [], issued: 0, valid: new Set(), refresh: '', expiresIn: 7 * 86400, refreshed: [], revoked: [], stop: 201, refuse: 0, refused: [], refuseReads: false, retryAfter: 0};
+const trakt = {calendar: {shows: [], dvd: []}, hidden: {progress_watched: [], dropped: []}, activity: {movies: {watched_at: '2020-01-01T00:00:00.000Z', paused_at: '2020-01-01T00:00:00.000Z'}, episodes: {watched_at: '2020-01-01T00:00:00.000Z', paused_at: '2020-01-01T00:00:00.000Z'}}, history: [], watched: [], playback: null, watchlist: null, calls: [], reads: [], issued: 0, valid: new Set(), refresh: '', expiresIn: 7 * 86400, refreshed: [], revoked: [], stop: 201, refuse: 0, refused: [], refuseReads: false, retryAfter: 0, pace: 0, lastWrite: 0};
 // The hub keeps Trakt's paused list a few minutes: a test that changes the list has the kept one forgotten, as if time had passed.
 let paused = null;
 Object.defineProperty(trakt, 'playback', {get: () => paused, set: value => {paused = value; try {sql("DELETE FROM rows_cache WHERE kind = 'playback'");} catch { /* before the database is there */ }}});
@@ -85,7 +87,8 @@ const DAY = 86400, ago = days => new Date((Math.floor(Date.now() / 1000) - Math.
 const MOVIE = {inception: {title: 'Inception', ids: {imdb: 'tt1375666', tmdb: 27205}}, fight: {title: 'Fight Club', ids: {imdb: 'tt0137523', tmdb: 550}}, pulp: {title: 'Pulp Fiction', ids: {imdb: 'tt0110912', tmdb: 680}},
   gump: {title: 'Forrest Gump', ids: {imdb: 'tt0109830', tmdb: 13}}, knight: {title: 'The Dark Knight', ids: {imdb: 'tt0468569', tmdb: 155}}, heat: {title: 'Heat', ids: {imdb: 'tt0113277', tmdb: 949}}};
 const BB = {title: 'Breaking Bad', ids: {imdb: 'tt0903747', tmdb: 1396}};
-const lists = {plays: {}, recent: {movies: [], shows: [], episodes: []}, refuse: false, playback: null, watchlist: [], reads: []};
+// `all`: every call made to MDBList, as its method and address without the key.
+const lists = {plays: {}, recent: {movies: [], shows: [], episodes: []}, refuse: false, playback: null, watchlist: [], reads: [], all: []};
 const READS = {
   '/sync/watchlist/all/added/desc': () => trakt.watchlist ?? WATCHLIST,
   '/sync/history': () => trakt.history,
@@ -154,7 +157,8 @@ function traktAnswer(request, path, body, send, answer) {
     return answer.end(JSON.stringify(ask.has('page') ? all.slice((page - 1) * limit, page * limit) : all));
   }
   if (trakt.refuse > 0) {trakt.refuse--; trakt.refused.push({path, body}); if (!trakt.retryAfter) return send(429, {}); answer.writeHead(429, {'content-type': 'application/json', 'retry-after': String(trakt.retryAfter)}); return answer.end('{}');}
-  trakt.calls.push({path, body, auth});
+  if (trakt.pace && Date.now() - trakt.lastWrite < trakt.pace) {trakt.refused.push({path, body}); return send(429, {});}
+  trakt.lastWrite = Date.now(); trakt.calls.push({path, body, auth});
   // Her watchlist, added to and removed from as Trakt's docs give the two calls: movies and shows by their ids; 201 with what was
   // added (listed now) or was there already, 200 with what was deleted. Only once a test has given her a watchlist of its own.
   if (path === '/sync/watchlist' || path === '/sync/watchlist/remove') {
@@ -176,6 +180,7 @@ http.createServer(async (request, answer) => {
   const [id, pass] = request.headers.authorization?.startsWith('Basic ') ? atob(request.headers.authorization.slice(6)).split(':') : [];
   const mine = () => fake.configs.get(id)?.password === pass ? fake.configs.get(id) : null;
   if (request.url.startsWith('/trakt/')) return traktAnswer(request, request.url.slice(6), body, send, answer);
+  if (request.url.startsWith('/mdblist/')) lists.all.push(`${request.method} ${request.url.split('?')[0]}`);
   // TMDB's public lists, by number: one with titles, one empty.
   if (request.url.startsWith('/tmdb3/list/')) {const id = request.url.split('/')[3].split('?')[0]; return !request.url.includes('api_key=good-tmdb-key') ? send(401, {}) : id === '8300' ? send(200, {name: 'Festival picks', item_count: 14}) : id === '8301' ? send(200, {name: 'Empty', item_count: 0}) : send(404, {});}
   // TMDB for For you, and FlixPatrol's public charts. Every ask is noted (`fake.tmdb`).
@@ -264,6 +269,12 @@ http.createServer(async (request, answer) => {
     if (own && own[3] && request.method === 'POST') {if (held) {held.UserData = {...held.UserData, PlaybackPositionTicks: body.PlaybackPositionTicks, LastPlayedDate: new Date(Math.min(Date.parse(body.LastPlayedDate ?? '') || Date.now(), Date.now())).toISOString()}; fake.positions.push({id: held.Id, ticks: body.PlaybackPositionTicks, at: body.LastPlayedDate});} return held ? send(200, {}) : send(400, {});}
     if (own && own[3]) return held ? send(200, held.UserData ?? {}) : send(404, {});
     if (rest.startsWith('/Shows/')) {const series = decodeURIComponent(rest.split('/')[2]); return send(200, {Items: Object.values(HELD).filter(item => item.SeriesId === series && item.Listed !== false)});}
+    // Her Favorites, asked for the way an app's Favorites screen does (unobserved on AIOMetadata 4.1.0: assumed): the films and
+    // shows she hearted, up to Limit, each saying it is hearted. `unfiltered`: a server that ignores the filter and lists them all.
+    if (rest.startsWith(`/Users/${uuid}/Items?`) && /[?&]IsFavorite=true(&|$)/.test(rest) && /[?&]Filters=IsFavorite(&|$)/.test(rest)) {
+      fake.favReads++; const limit = Number(new URLSearchParams(rest.split('?')[1]).get('Limit')) || 100;
+      return send(200, {Items: Object.values(HELD).filter(item => (item.Type === 'Movie' || item.Type === 'Series') && (fake.unfiltered || favs.has(item.Id))).slice(0, limit).map(item => favs.has(item.Id) ? {...item, UserData: {...item.UserData, IsFavorite: true}} : item)});
+    }
     if (rest.startsWith(`/Users/${uuid}/Items?Ids=`)) return send(200, {Items: decodeURIComponent(rest.split('Ids=')[1].split('&')[0]).split(',').map(id => HELD[id]).filter(Boolean).map(item => favs.has(item.Id) ? {...item, UserData: {...item.UserData, IsFavorite: true}} : item)});
     if (rest.startsWith(`/Users/${uuid}/Items/`)) {const id = rest.split('/').pop().split('?')[0], {UserData, ...held} = HELD[id] ?? {}; return send(200, {Id: ITEM, Name: 'Meta Movie', ...held, RunTimeTicks: 6000e7, ServerId: uuid, UserData: {Key: uuid}, Poster: `${UP}/jellyfin/${uuid}/Items/${ITEM}/Images/Primary`});}
     return send(200, {Seen: rest});
@@ -529,7 +540,7 @@ const syncOn = async (earlier = false) => {assert.equal((await adaSite('POST', '
 const matchingOf = async () => (await adaSite('GET', '/api/state')).body.hub.people[0].matching;
 test('connecting Trakt alone sends nothing: a film played through, a tick and the cron say nothing to Trakt, and nothing is kept to send, until she turns sync on', async () => {
   // Connected by her manager a moment ago: sync is off, and has never been asked about.
-  assert.deepEqual(await matchingOf(), {on: false, earlier: false, ask: false, good: 0, failing: null, why: null, waiting: null});
+  assert.deepEqual(await matchingOf(), {on: false, earlier: false, passed: false, ask: false, good: 0, failing: null, why: null, waiting: null});
   const STAR = pack('movie', 'tt0076759'), state = () => sql(`SELECT scrobbled, scrobbled_at, position FROM plays WHERE item = '${STAR}'`)[0];
   HELD[STAR] = {Id: STAR, Type: 'Movie', Name: 'Star Wars', ProviderIds: {Tmdb: '11', Imdb: 'tt0076759'}, RunTimeTicks: 6000e7, UserData: {}};
   trakt.calls = []; trakt.refused = []; trakt.reads = [];
@@ -758,6 +769,14 @@ test('a connection near its end is renewed once, and the new pair is kept', asyn
 });
 // What the page lists as missing on either side (the day's look is shown even when nothing is).
 const missing = drift => drift ? [...drift.toMdblist, ...drift.toTrakt] : [];
+// What the day's look found for her, less what she left out, as the hub keeps it (it is no part of what a page loads any more:
+// the cron copies it across by itself). Each play with the key she would leave it out by.
+const lookOf = () => {
+  const row = sql("SELECT result, skipped, at FROM drift WHERE person = 'ada'")[0]; if (!row?.result) return null;
+  const found = JSON.parse(row.result), skip = new Set(JSON.parse(row.skipped ?? '[]')), keyOf = miss => `${miss.kind}/${miss.tmdb}${miss.season == null ? '' : `:${miss.season}:${miss.episode}`}@${miss.at}`;
+  const keep = list => list.filter(miss => !skip.has(keyOf(miss))).map(miss => ({...miss, key: keyOf(miss)}));
+  return {checked: row.at, toMdblist: keep(found.toMdblist), toTrakt: keep(found.toTrakt)};
+};
 test('once a day her Trakt and MDBList are compared over two weeks, a few steps a run, only with her Trakt sync on; what differs is hers alone and goes across by itself', async () => {
   const T = {e3: ago(1), inception: ago(2), e2: ago(3), e1: ago(3.1), pulp: ago(4), fight: ago(5), gump: ago(6), knight: ago(7), old: ago(20)}, plus = (time, hours) => new Date(Date.parse(time) + hours * 3600e3).toISOString();
   trakt.history = [{watched_at: T.inception, type: 'movie', movie: MOVIE.inception}, {watched_at: T.e2, type: 'episode', episode: {season: 1, number: 2}, show: BB}, {watched_at: T.e1, type: 'episode', episode: {season: 1, number: 1}, show: BB},
@@ -787,18 +806,18 @@ test('once a day her Trakt and MDBList are compared over two weeks, a few steps 
   assert.match(trakt.reads.find(read => read.where === '/sync/history').query, /start_at=.*end_at=.*page=1&limit=100/);
   // Looking wrote nothing anywhere.
   assert.deepEqual(trakt.calls, []); assert.equal(fake.watched.length, posted);
-  const mine = (await adaSite('GET', '/api/state')).body.hub.people[0].drift, line = miss => [miss.name, miss.season ?? null, miss.episode ?? null, new Date(miss.at * 1000).toISOString()];
+  const mine = lookOf(), line = miss => [miss.name, miss.season ?? null, miss.episode ?? null, new Date(miss.at * 1000).toISOString()];
   assert.deepEqual(mine.toMdblist.map(line), [['Inception', null, null, T.inception], ['Breaking Bad', 1, 2, T.e2]]);
   assert.deepEqual(mine.toTrakt.map(line), [['Breaking Bad', 1, 3, T.e3], ['Pulp Fiction', null, null, T.pulp]]);
   assert.ok(mine.checked > 0, 'when it was checked');
-  // It is hers: the manager sees nothing and cannot touch it.
-  assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').drift, null);
+  // It is hers: no page is given any of it (hers or her manager's), and the manager cannot touch it.
+  assert.ok(!('drift' in (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada'))); assert.ok(!('drift' in (await adaSite('GET', '/api/state')).body.hub.people[0]));
   assert.equal((await owner('POST', '/api/people/ada/drift', {})).status, 403);
   // A play she says is not right is left out, now and in later looks, and is never copied.
   const pulp = mine.toTrakt.find(miss => miss.name === 'Pulp Fiction');
   assert.equal((await owner('POST', '/api/people/ada/drift', {skip: pulp.key})).status, 403);
   assert.equal((await adaSite('POST', '/api/people/ada/drift', {skip: pulp.key})).status, 200);
-  assert.deepEqual((await adaSite('GET', '/api/state')).body.hub.people[0].drift.toTrakt.map(line), [['Breaking Bad', 1, 3, T.e3]]);
+  assert.deepEqual(lookOf().toTrakt.map(line), [['Breaking Bad', 1, 3, T.e3]]);
   // What she watched here before (some of it before sync was on) would go to Trakt too; here she leaves it out, so what goes
   // below is only the day's look. (Copying watched-here plays is tested on its own, further down.)
   const here = (await adaSite('GET', '/api/people/ada/carry')).body;
@@ -810,19 +829,19 @@ test('once a day her Trakt and MDBList are compared over two weeks, a few steps 
   await cron(day + 600e3); await heard(1);
   assert.deepEqual(trakt.calls.map(({path, body}) => ({path, body})), [{path: '/sync/history', body: {shows: [{ids: {tmdb: 1396, imdb: 'tt0903747'}, seasons: [{number: 1, episodes: [{number: 3, watched_at: T.e3}]}]}]}}]);
   assert.deepEqual(fake.watched.slice(posted), [{movies: [{ids: {tmdb: 27205, imdb: 'tt1375666'}, watched_at: T.inception}], shows: [{ids: {tmdb: 1396, imdb: 'tt0903747'}, seasons: [{number: 1, episodes: [{number: 2, watched_at: T.e2}]}]}]}]);
-  assert.deepEqual(missing((await adaSite('GET', '/api/state')).body.hub.people[0].drift), []);
+  assert.deepEqual(missing(lookOf()), []);
   // The next day both have everything but the play she skipped, which stays out: nothing is shown.
   trakt.history.unshift({watched_at: T.e3, type: 'episode', episode: {season: 1, number: 3}, show: BB});
   lists.plays['movie/27205'] = [{watched_at: T.inception}]; lists.plays['show/1396'].push({season_num: 1, episode_num: 2, watched_at: T.e2}); trakt.calls = [];
   await cron(day + DAY * 1e3); await cron(day + DAY * 1e3 + 300e3);
   assert.deepEqual(sql('SELECT day, work IS NULL AS done FROM drift'), [{day: '2026-06-02', done: 1}]);
-  assert.deepEqual(missing((await adaSite('GET', '/api/state')).body.hub.people[0].drift), []); assert.deepEqual(trakt.calls, []);
+  assert.deepEqual(missing(lookOf()), []); assert.deepEqual(trakt.calls, []);
   // A day MDBList does not answer: no differences are made up from it, and the look is tried again on the next run.
   lists.refuse = true; await cron(day + 2 * DAY * 1e3);
   assert.deepEqual(sql('SELECT day, json_extract(work, \'$.tries\') AS tries FROM drift'), [{day: '2026-06-03', tries: 1}]);
-  assert.deepEqual(missing((await adaSite('GET', '/api/state')).body.hub.people[0].drift), []);
+  assert.deepEqual(missing(lookOf()), []);
   lists.refuse = false; await cron(day + 2 * DAY * 1e3 + 300e3); await cron(day + 2 * DAY * 1e3 + 600e3);
-  assert.equal(sql('SELECT work FROM drift')[0].work, null); assert.deepEqual(missing((await adaSite('GET', '/api/state')).body.hub.people[0].drift), []);
+  assert.equal(sql('SELECT work FROM drift')[0].work, null); assert.deepEqual(missing(lookOf()), []);
 });
 test('once a day what she watched here and her MDBList lacks is sent by itself: once, with its name kept, never what she left out, and only after she played something', async () => {
   // A film her server holds as watched, played through the hub an hour ago, which MDBList never heard of. Everything else she
@@ -1316,7 +1335,7 @@ test('Trakt sync: hers to turn on, asked after her own sign-in with what she wat
   sql(`INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) SELECT id, 'ada', '${MEMENTO}', 'Memento', 'Movie', 6000, 6000, 'Strand · Mac', 0, unixepoch() - 30 * 86400, '' FROM hubs`);
   // Connected by her manager: off, and not asked; only she can turn it on, from her own page.
   await connect();
-  assert.deepEqual((await me()).matching, {on: false, earlier: false, ask: false, good: 0, failing: null, why: null, waiting: null});
+  assert.deepEqual((await me()).matching, {on: false, earlier: false, passed: false, ask: false, good: 0, failing: null, why: null, waiting: null});
   for (const [method, path] of [['POST', ''], ['GET', ''], ['GET', '/synced'], ['POST', '/pass']]) assert.equal((await owner(method, `/api/people/ada/matching${path}`, method === 'GET' ? undefined : {on: true})).status, 403);
   // Connected by herself: asked on her page, with how many things she watched here before connecting.
   const got = issue();
@@ -2211,37 +2230,41 @@ const listedFilm = (title, days) => ({type: 'movie', movie: {title: title.imdb, 
 const hearted = () => [...(fake.favs.get(uuid) ?? [])].sort(), heartWrites = from => fake.hearts.slice(from).map(write => `${write.on ? '+' : '-'}${Object.entries(FAV).find(([, title]) => title.id === write.id)?.[0] ?? write.id}`);
 const listCalls = () => trakt.calls.filter(call => call.path.startsWith('/sync/watchlist')).map(({path, body}) => ({path, body})), removes = () => trakt.calls.filter(call => call.path === '/sync/watchlist/remove').length;
 const ledgerOf = () => Object.fromEntries(sql("SELECT key, state FROM hearts WHERE person = 'ada' ORDER BY key").map(row => [row.key, row.state]));
+// Which of them the hub itself saw on her Trakt watchlist, and what her setup says of hearts right now: where they go, and whether
+// it tells MDBList of what she does (MDBList sync on).
+const seenOf = () => Object.fromEntries(sql("SELECT key, seen FROM hearts WHERE person = 'ada' ORDER BY key").map(row => [row.key, row.seen]));
+const setupOf = () => {const config = playerOf('Ada')[1].config; return [config.jellyfinWatchlistServices, config.mdblistWatchTracking];};
+const FAV_NEVER = {id: pack('movie', 'tt7000030'), imdb: 'tt7000030', tmdb: 99};
 // Her turn comes again at once, with the Watchlist read afresh, as if twenty minutes had passed.
 const heartsTurn = async () => {sql("UPDATE favs SET checked = 0; DELETE FROM rows_cache WHERE kind LIKE 'watchlist%'"); await cron();};
 const favorites = (who, on) => who('POST', '/api/people/ada/favorites', {on});
 const heartsOf = async who => (await who('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').hearts;
 let keptInLists = false;
 const tap = (id, method, other = false) => raw(other ? `/UserFavoriteItems/${id}?userId=${jf}` : `/Users/${jf}/FavoriteItems/${id}`, token, {method});
-test('Favorites from the Trakt watchlist is offered only to someone with Trakt on the hub and hearts kept on their server; someone with their own MDBList key cannot turn it on', async () => {
+test('the watchlist as Favorites is offered to anyone with Trakt on the hub, with or without an MDBList key of their own; with MDBList alone there is no switch, and her setup itself shows her MDBList watchlist as Favorites', async () => {
   for (const title of [...Object.values(FAV), FAV_SHOW]) HELD[title.id] = {Id: title.id, Type: title === FAV_SHOW ? 'Series' : 'Movie', Name: title.imdb, ProviderIds: {Tmdb: String(title.tmdb), Imdb: title.imdb}};
   HELD[FAV_EP] = {Id: FAV_EP, Type: 'Episode', Name: 'One', SeriesId: FAV_SHOW.id, ParentIndexNumber: 1, IndexNumber: 1, ProviderIds: {}};
-  // Her MDBList key is kept and Trakt is not connected: not offered, and refused.
+  // Her MDBList key is kept and Trakt is not connected: not offered, and refused. Her setup sends hearts to her MDBList itself.
   keptInLists = (await adaSite('GET', '/api/state')).body.hub.people[0].lists;
   assert.equal(sql("SELECT count(*) AS n FROM secrets WHERE owner = 'ada' AND kind = 'mdblist'")[0].n, 1); assert.equal(await heartsOf(adaSite), null);
-  assert.equal((await favorites(adaSite, true)).status, 409);
+  const refused = await favorites(adaSite, true); assert.equal(refused.status, 409); assert.equal(refused.body.message, 'Connect Trakt first.');
+  assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(setupOf(), [['mdblist'], keptInLists]);
   trakt.calls.length = 0; fake.hearts.length = 0; trakt.watchlist = [listedFilm(FAV.one, 1), listedFilm(FAV.two, 2)]; await connect();
-  // Trakt connected, but with a key of her own her app Favorites are her MDBList watchlist: still not offered, still refused,
-  // and with the row forced in behind the API the hook and the cron do nothing for her.
-  assert.equal(await heartsOf(adaSite), null);
-  const refused = await favorites(adaSite, true); assert.equal(refused.status, 409); assert.equal(refused.body.message, 'Favorites in your apps already follow your MDBList watchlist.');
+  // Trakt connected too, her key kept and her MDBList sync off: offered, on her own page only, and off to start with. Trakt
+  // leads, and with MDBList not synced her setup keeps hearts on the server, so nothing hearted reaches MDBList.
+  assert.equal((await owner('DELETE', '/api/people/ada/mdblist')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(setupOf(), [['server'], false]); assert.deepEqual(await heartsOf(adaSite), {on: false}); assert.equal(await heartsOf(owner), null);
   assert.deepEqual(sql('SELECT person FROM favs'), []);
-  sql("INSERT INTO favs (hub, person) SELECT id, 'ada' FROM hubs");
-  assert.equal((await tap(FAV.one.id, 'POST')).status, 200); assert.equal((await tap(FAV.one.id, 'DELETE')).status, 200); await cron(); await pause(700);
-  assert.deepEqual(listCalls(), []); assert.deepEqual(heartWrites(0), ['+one', '-one'], 'only her own app’s two'); assert.deepEqual(ledgerOf(), {});
-  sql('DELETE FROM favs');
-  // The key gone, and her setup brought in step: offered, on her own page only, and off to start with.
+  // The key gone, and her setup brought in step: Trakt alone, hearts on the server, still offered.
   assert.equal((await owner('DELETE', '/api/people/ada/mdblist/key')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
-  assert.deepEqual(playerOf('Ada')[1].config.jellyfinWatchlistServices, ['server']);
+  assert.deepEqual(setupOf(), [['server'], false]);
   assert.deepEqual(await heartsOf(adaSite), {on: false}); assert.equal(await heartsOf(owner), null);
 });
 test('a manager cannot turn Favorites from the watchlist on for someone', async () => {
   const got = await favorites(owner, true); assert.equal(got.status, 403); assert.equal(got.body.message, 'Only they can do this, from their own page');
   assert.equal((await favorites(owner, false)).status, 403); assert.deepEqual(sql('SELECT person FROM favs'), []); assert.deepEqual(await heartsOf(adaSite), {on: false});
+  // Nor answer the offer for hearts she already had.
+  assert.equal((await owner('POST', '/api/people/ada/favorites/add', {})).status, 403); assert.equal((await owner('POST', '/api/people/ada/favorites/later', {})).status, 403);
 });
 test('with the switch off (as it starts) the hook does nothing and the cron step does nothing', async () => {
   const before = fake.hearts.length, signIns = fake.signIns, reads = trakt.reads.length;
@@ -2249,7 +2272,10 @@ test('with the switch off (as it starts) the hook does nothing and the cron step
   await cron(); await cron(); await pause(700);
   // Her own heart is on her server and nowhere else; the hub hearted nothing, read nothing of Trakt's and signed in nowhere.
   assert.deepEqual(listCalls(), []); assert.deepEqual(heartWrites(before), ['+mine', `+${FAV_SHOW.id}`, `-${FAV_SHOW.id}`]); assert.deepEqual(hearted(), [FAV.mine.id]);
-  assert.equal(fake.signIns, signIns); assert.equal(trakt.reads.length, reads); assert.deepEqual(ledgerOf(), {});
+  // (Another cron step may read her Trakt meanwhile, for her For you rows: Up Next and her history. Never her watchlist.)
+  assert.equal(fake.signIns, signIns); assert.deepEqual(trakt.reads.slice(reads).map(read => read.where).filter(where => where.startsWith('/sync/watchlist')), [], JSON.stringify(trakt.reads.slice(reads).map(read => read.where))); assert.deepEqual(ledgerOf(), {});
+  // The offer cannot be answered either while it is off.
+  assert.equal((await adaSite('POST', '/api/people/ada/favorites/add', {})).status, 409); assert.deepEqual(listCalls(), []);
 });
 test('switched on, her Trakt watchlist is hearted on her own server, newest first, a few a run, each once; a heart of her own is left hers; none of it is echoed to Trakt', async () => {
   // Newest first: one … five, with a title her server does not have and the one she hearted herself in between.
@@ -2258,7 +2284,8 @@ test('switched on, her Trakt watchlist is hearted on her own server, newest firs
   assert.equal((await favorites(adaSite, true)).status, 200); assert.deepEqual(await heartsOf(adaSite), {on: true}); assert.equal(await heartsOf(owner), null);
   // The Background work row on the Hub page has it, by a count only.
   const jobs = (await owner('GET', '/api/state')).body.hub.jobs; assert.equal(jobs.hearting, 1); assert.equal(jobs.hearted, 0);
-  // Her setup not yet saying hearts stay on the server (as before its next save): nothing is written.
+  // Her setup saying hearts go on to MDBList while MDBList sync is off (a key of hers kept, before its next save): nothing is
+  // written, since a heart of the hub's would land in an account that is not synced.
   const from = fake.hearts.length, config = playerOf('Ada')[1].config; config.jellyfinWatchlistServices = ['mdblist'];
   await heartsTurn(); assert.deepEqual(heartWrites(from), []); config.jellyfinWatchlistServices = ['server'];
   // Four a run, newest first; the next run takes the rest by itself, and the one after has nothing to do.
@@ -2267,6 +2294,8 @@ test('switched on, her Trakt watchlist is hearted on her own server, newest firs
   await heartsTurn(); await heartsTurn(); assert.deepEqual(heartWrites(from).length, 5);
   assert.deepEqual(hearted(), Object.values(FAV).map(title => title.id).sort());
   assert.deepEqual(ledgerOf(), {'movie:tt7000001': 'hub', 'movie:tt7000002': 'hub', 'movie:tt7000003': 'hub', 'movie:tt7000004': 'hub', 'movie:tt7000005': 'hub', 'movie:tt7000006': 'own', 'movie:tt7999999': 'miss'});
+  // Each heart the hub made, and hers that it found while Trakt listed it, is noted as seen on Trakt; the title her server lacks is not.
+  assert.deepEqual(seenOf(), {'movie:tt7000001': 1, 'movie:tt7000002': 1, 'movie:tt7000003': 1, 'movie:tt7000004': 1, 'movie:tt7000005': 1, 'movie:tt7000006': 1, 'movie:tt7999999': 0});
   assert.equal(sql("SELECT listed FROM hearts WHERE key = 'movie:tt7000001'")[0].listed, Math.floor(Date.parse(trakt.watchlist[0].listed_at) / 1000));
   assert.ok((await owner('GET', '/api/state')).body.hub.jobs.hearted > 0);
   // The hub's own hearts went straight to her server, never through the hook: Trakt heard of no watchlist change.
@@ -2292,20 +2321,31 @@ test('a Trakt removal is only ever sent from the hook that hears an app’s own 
   assert.deepEqual(naming, ['front.ts']);
   const source = readFileSync(new URL('front.ts', dir), 'utf8'); assert.equal(source.split("'/sync/watchlist/remove'").length, 2, 'built in one place');
   assert.ok(!/from '\.\/trakt'/.test(readFileSync(new URL('hearts.ts', dir), 'utf8').replace("import {LINK} from './trakt';", '')), 'the cron step imports nothing that sends to Trakt');
+  // The one other place that sends a heart to Trakt (the offer for hearts she already had, api.ts) names only the add.
+  assert.equal(readdirSync(dir).filter(name => readFileSync(new URL(name, dir), 'utf8').includes("kind: 'unheart'")).join(), 'front.ts');
 });
-test('a title that left the Trakt watchlist loses its heart only if the hub made it; a list Trakt did not give, or an empty one, is never read as everything having left', async () => {
+test('in step with Trakt: a title that left the watchlist loses its heart when the hub saw it there (one it made, or hers found hearted while listed), never one that was never on Trakt; a list Trakt did not give, or an empty one, is never read as everything having left', async () => {
   const from = fake.hearts.length, all = trakt.watchlist;
+  // Two hearts that were never on her Trakt watchlist: one she made on her server that the hub never heard of, and one an app
+  // made that the hook sent on but Trakt never listed (noted as hers, not seen there).
+  HELD[FAV_NEVER.id] = {Id: FAV_NEVER.id, Type: 'Movie', Name: FAV_NEVER.imdb, ProviderIds: {Tmdb: String(FAV_NEVER.tmdb), Imdb: FAV_NEVER.imdb}};
+  fake.favs.get(uuid).add(FAV_SHOW.id); fake.favs.get(uuid).add(FAV_NEVER.id);
+  sql(`INSERT INTO hearts (hub, person, key, item, state, listed, at, seen) SELECT id, 'ada', 'movie:${FAV_NEVER.imdb}', '${FAV_NEVER.id}', 'own', 1, 1, 0 FROM hubs`);
   // Trakt not answering, with nothing kept; then a watchlist that reads as empty: no heart is touched.
   trakt.refuseReads = true; await heartsTurn(); trakt.refuseReads = false; waited();
   trakt.watchlist = []; await heartsTurn(); await heartsTurn();
-  assert.deepEqual(heartWrites(from), []); assert.equal(hearted().length, 6);
-  // One the hub hearted and the one she hearted herself both leave her watchlist: only the hub's own heart goes.
+  assert.deepEqual(heartWrites(from), []); assert.equal(hearted().length, 8);
+  // One the hub hearted and the one she hearted herself (found hearted while Trakt listed it) both leave her watchlist: both
+  // lose their hearts on her server. The two that were never on Trakt keep theirs, run after run.
   trakt.watchlist = all.filter(entry => ![FAV.three.imdb, FAV.mine.imdb].includes(entry.movie.ids.imdb));
-  await heartsTurn(); await heartsTurn();
-  assert.deepEqual(heartWrites(from), ['-three']); assert.ok(hearted().includes(FAV.mine.id)); assert.ok(!hearted().includes(FAV.three.id));
-  assert.equal(ledgerOf()['movie:tt7000003'], 'left'); assert.equal(ledgerOf()['movie:tt7000006'], 'own');
+  await heartsTurn(); await heartsTurn(); await heartsTurn();
+  assert.deepEqual(heartWrites(from).sort(), ['-mine', '-three']); assert.ok(!hearted().includes(FAV.mine.id)); assert.ok(!hearted().includes(FAV.three.id));
+  assert.ok(hearted().includes(FAV_SHOW.id)); assert.ok(hearted().includes(FAV_NEVER.id));
+  assert.equal(ledgerOf()['movie:tt7000003'], 'left'); assert.equal(ledgerOf()['movie:tt7000006'], 'left'); assert.equal(ledgerOf()[`movie:${FAV_NEVER.imdb}`], 'own');
   // None of that reached Trakt.
-  await pause(500); assert.deepEqual(listCalls(), []);
+  await pause(500); assert.deepEqual(listCalls(), []); assert.equal(removes(), 0);
+  // As it was, for what follows: the two extra hearts gone again.
+  fake.favs.get(uuid).delete(FAV_SHOW.id); fake.favs.get(uuid).delete(FAV_NEVER.id); sql(`DELETE FROM hearts WHERE key = 'movie:${FAV_NEVER.imdb}'`); sql('UPDATE favs SET found = NULL');
 });
 test('a heart made in an app adds the title to her Trakt watchlist, and one taken away in an app removes it: films and shows only, by their ids, once the server took it', async () => {
   const from = fake.hearts.length;
@@ -2320,6 +2360,8 @@ test('a heart made in an app adds the title to her Trakt watchlist, and one take
   assert.deepEqual(listCalls()[1], {path: '/sync/watchlist', body: {shows: [{ids: {tmdb: 80, imdb: 'tt7000010'}}]}});
   await pause(400);
   assert.equal(ledgerOf()['movie:tt7000004'], 'gone'); assert.equal(ledgerOf()['series:tt7000010'], 'own');
+  // What the hook sent on is hers, and not yet seen on Trakt: only the list itself can say it got there.
+  assert.equal(seenOf()['series:tt7000010'], 0); assert.equal(seenOf()['movie:tt7000004'], 0);
   assert.deepEqual(sql("SELECT kind FROM rows_cache WHERE person = 'ada' AND kind LIKE 'watchlist%'"), [], 'her kept Watchlist row is read again');
   assert.ok(!trakt.watchlist.some(entry => entry.movie?.ids.imdb === FAV.four.imdb)); assert.ok(trakt.watchlist.some(entry => entry.show?.ids.imdb === FAV_SHOW.imdb));
   // An episode, a title with no ids Trakt could use, and a heart her server refused (a title it does not have): nothing is sent.
@@ -2336,31 +2378,242 @@ test('a heart made in an app adds the title to her Trakt watchlist, and one take
   assert.deepEqual(listCalls()[2], {path: '/sync/watchlist/remove', body: {movies: [{ids: {tmdb: 75, imdb: 'tt7000005'}}]}}); await pause(500); assert.deepEqual(waiting(), []);
   assert.ok(from < fake.hearts.length);
 });
-test('turned off, or with an MDBList key of her own saved, nothing more is sent and no heart moves; disconnecting Trakt turns it off and clears the ledger without touching hearts or Trakt', async () => {
-  // The film she un-hearted is off her Trakt watchlist by now (its remove went through).
-  trakt.watchlist = trakt.watchlist.filter(entry => entry.movie?.ids.imdb !== FAV.four.imdb);
-  const calls = () => listCalls().length, sent = calls(), had = hearted(), listed = trakt.watchlist.length;
+test('a heart an app made and the hook sent on is kept in step once Trakt lists it: leaving the watchlist then takes the heart away on her server, and nothing is removed from Trakt for it', async () => {
+  // The show she hearted in an app is on her Trakt watchlist now (the hook's add): the next look sees it there.
+  await heartsTurn(); assert.equal(ledgerOf()['series:tt7000010'], 'own'); assert.equal(seenOf()['series:tt7000010'], 1);
+  // She takes it off her watchlist on Trakt itself: its heart goes on her server, by the hub, straight there.
+  const writes = fake.hearts.length, sent = listCalls().length, gone = removes();
+  trakt.watchlist = trakt.watchlist.filter(entry => entry.show?.ids.imdb !== FAV_SHOW.imdb);
+  await heartsTurn(); await heartsTurn(); await pause(500);
+  assert.deepEqual(heartWrites(writes), [`-${FAV_SHOW.id}`]); assert.ok(!hearted().includes(FAV_SHOW.id)); assert.equal(ledgerOf()['series:tt7000010'], 'left');
+  assert.equal(listCalls().length, sent, 'Trakt heard nothing'); assert.equal(removes(), gone);
+});
+test('hearts she already had that her Trakt watchlist lacks are counted by the cron and offered once: added only when she asks, a few dozen at most, and never offered again after Not now', async () => {
+  // Three hearts of her own that were never on Trakt, made on her server directly (the hook never heard of them).
+  const EXTRA = Object.fromEntries([['a', 'tt7000021', 91], ['b', 'tt7000022', 92], ['c', 'tt7000023', 93]].map(([name, imdb, tmdb]) => [name, {id: pack('movie', imdb), imdb, tmdb}]));
+  for (const title of Object.values(EXTRA)) {HELD[title.id] = {Id: title.id, Type: 'Movie', Name: title.imdb, ProviderIds: {Tmdb: String(title.tmdb), Imdb: title.imdb}}; fake.favs.get(uuid).add(title.id);}
+  fake.favs.get(uuid).delete(OTHER); fake.favs.get(uuid).delete(FAV_EP);
+  const had = hearted(), sent = listCalls().length, reads = fake.favReads, foundOf = () => JSON.parse(sql("SELECT found FROM favs WHERE person = 'ada'")[0].found ?? 'null');
+  // Not counted when the page loads, and not on every run: only once the count is due (a few times a day).
+  assert.deepEqual(await heartsOf(adaSite), {on: true}); await heartsTurn(); assert.equal(fake.favReads, reads); assert.deepEqual(await heartsOf(adaSite), {on: true});
+  sql('UPDATE favs SET found_at = 0'); await heartsTurn(); assert.equal(fake.favReads, reads + 1);
+  // What is on the watchlist, what the hub hearted or took away, and what she un-hearted are not among them: only the three.
+  assert.deepEqual(foundOf().list.map(heart => heart.key).sort(), ['movie:tt7000021', 'movie:tt7000022', 'movie:tt7000023']); assert.equal(foundOf().more, false);
+  assert.deepEqual(await heartsOf(adaSite), {on: true, extra: 3, more: false}); assert.equal(await heartsOf(owner), null);
+  // Counting wrote nothing anywhere: no heart moved, and Trakt heard nothing.
+  assert.deepEqual(hearted(), had); await pause(400); assert.equal(listCalls().length, sent);
+  // A server that ignores the filter and lists every title adds nothing: only what it says is hearted counts.
+  fake.unfiltered = true; sql('UPDATE favs SET found_at = 0'); await heartsTurn(); fake.unfiltered = false; assert.equal(foundOf().list.length, 3);
+  // The count is hours old by the time she answers: a heart she took off in an app since (the hook noted it) is no part of the
+  // offer any more. Add them sends the other two and leaves that one off Trakt.
+  assert.equal((await tap(EXTRA.c.id, 'DELETE')).status, 200); for (let n = 0; n < 50 && listCalls().length < sent + 1; n++) await pause(100); await pause(300);
+  assert.equal(ledgerOf()['movie:tt7000023'], 'gone'); const early = await adaSite('POST', '/api/people/ada/favorites/add', {}); assert.deepEqual(early.body, {added: 2, more: false});
+  for (let n = 0; n < 50 && listCalls().length < sent + 2; n++) await pause(100); await pause(300);
+  assert.deepEqual(listCalls().at(-1), {path: '/sync/watchlist', body: {movies: [{ids: {tmdb: 91, imdb: 'tt7000021'}}, {ids: {tmdb: 92, imdb: 'tt7000022'}}]}}); assert.equal(ledgerOf()['movie:tt7000023'], 'gone');
+  // Back as it was for what follows (that add and her un-heart undone here and on the stand-in), and counted again.
+  sql("DELETE FROM hearts WHERE key LIKE '%:tt700002_'"); fake.favs.get(uuid).add(EXTRA.c.id); trakt.watchlist = trakt.watchlist.filter(entry => !/^tt700002/.test((entry.movie ?? entry.show).ids.imdb)); trakt.calls.splice(-2);
+  sql('UPDATE favs SET found_at = 0'); await heartsTurn(); assert.equal(foundOf().list.length, 3);
+  // Not now: kept for those three, which are never offered again, however often they are counted. Nothing is sent.
+  assert.deepEqual((await adaSite('POST', '/api/people/ada/favorites/later', {})).body, {added: 0}); assert.deepEqual(await heartsOf(adaSite), {on: true});
+  for (const key of ['movie:tt7000021', 'movie:tt7000022', 'movie:tt7000023']) assert.equal(ledgerOf()[key], 'pass');
+  sql('UPDATE favs SET found_at = 0'); await heartsTurn(); assert.equal(foundOf(), null); assert.deepEqual(await heartsOf(adaSite), {on: true}); await pause(300); assert.equal(listCalls().length, sent);
+  // Passed on, they stay out of step on purpose: never taken away for not being on Trakt.
+  await heartsTurn(); assert.deepEqual(hearted(), had);
+  // A new set later (two more hearts): offered again, and Add them sends one watchlist add for both, through the outbox, noted
+  // as hers. Only ever an add.
+  const MORE = Object.fromEntries([['d', 'tt7000024', 94], ['e', 'tt7000025', 95]].map(([name, imdb, tmdb]) => [name, {id: pack(name === 'e' ? 'series' : 'movie', imdb), imdb, tmdb}]));
+  for (const [name, title] of Object.entries(MORE)) {HELD[title.id] = {Id: title.id, Type: name === 'e' ? 'Series' : 'Movie', Name: title.imdb, ProviderIds: {Tmdb: String(title.tmdb), Imdb: title.imdb}}; fake.favs.get(uuid).add(title.id);}
+  sql('UPDATE favs SET found_at = 0'); await heartsTurn(); assert.deepEqual(await heartsOf(adaSite), {on: true, extra: 2, more: false}); assert.equal(listCalls().length, sent, 'never by itself');
+  const writes = fake.hearts.length, added = await adaSite('POST', '/api/people/ada/favorites/add', {}); assert.deepEqual(added.body, {added: 2, more: false});
+  for (let n = 0; n < 50 && listCalls().length < sent + 1; n++) await pause(100);
+  assert.deepEqual(listCalls().slice(sent), [{path: '/sync/watchlist', body: {movies: [{ids: {tmdb: 94, imdb: 'tt7000024'}}], shows: [{ids: {tmdb: 95, imdb: 'tt7000025'}}]}}]);
+  assert.equal(ledgerOf()['movie:tt7000024'], 'own'); assert.equal(ledgerOf()['series:tt7000025'], 'own'); assert.deepEqual(await heartsOf(adaSite), {on: true});
+  // Asked again, there is nothing left to add; and once Trakt lists them the next look counts them seen there, writing no heart.
+  assert.deepEqual((await adaSite('POST', '/api/people/ada/favorites/add', {})).body, {added: 0}); await pause(300); assert.equal(listCalls().length, sent + 1);
+  await heartsTurn(); assert.equal(seenOf()['movie:tt7000024'], 1); assert.equal(seenOf()['series:tt7000025'], 1); assert.deepEqual(heartWrites(writes), []);
+  // Capped: with more hearts than the offer holds, it holds fifty and says there are more; Add them sends those fifty in one call.
+  const MANY = Array.from({length: 55}, (_, n) => ({id: pack('movie', `tt71${String(n).padStart(5, '0')}`), imdb: `tt71${String(n).padStart(5, '0')}`, tmdb: 7100000 + n}));
+  for (const title of MANY) {HELD[title.id] = {Id: title.id, Type: 'Movie', Name: title.imdb, ProviderIds: {Tmdb: String(title.tmdb), Imdb: title.imdb}}; fake.favs.get(uuid).add(title.id);}
+  sql('UPDATE favs SET found_at = 0'); await heartsTurn(); assert.deepEqual(await heartsOf(adaSite), {on: true, extra: 50, more: true});
+  const capped = await adaSite('POST', '/api/people/ada/favorites/add', {}); assert.deepEqual(capped.body, {added: 50, more: true});
+  for (let n = 0; n < 50 && listCalls().length < sent + 2; n++) await pause(100);
+  assert.equal(listCalls().at(-1).path, '/sync/watchlist'); assert.equal(listCalls().at(-1).body.movies.length, 50); assert.equal(removes(), 2, 'only the two her own app asked for, earlier');
+  // Those gone again, with their notes, for what follows.
+  for (const title of [...MANY, ...Object.values(EXTRA), ...Object.values(MORE)]) {fake.favs.get(uuid).delete(title.id); delete HELD[title.id];}
+  sql("DELETE FROM hearts WHERE key LIKE 'movie:tt71_____' OR key LIKE '%:tt700002_'"); sql('UPDATE favs SET found = NULL'); trakt.watchlist = trakt.watchlist.filter(entry => !/^tt(71|700002)/.test((entry.movie ?? entry.show).ids.imdb));
+});
+test('with her own MDBList key too, Trakt still leads: MDBList sync on, her setup passes hearts on to MDBList itself and the cron step runs as before; MDBList sync off, hearts stay on her server; the hub never calls MDBList for a heart, and removes nothing from Trakt outside the hook', async () => {
+  const mdbHearts = () => lists.all.filter(call => /watchlist/.test(call) && !call.startsWith('GET ')), turns = async n => {for (let i = 0; i < n; i++) await heartsTurn();};
+  // Her key saved, with MDBList sync on: the switch stays as she set it, the ledger stays, and her setup now sends hearts on to
+  // MDBList by itself (['mdblist'] with tracking on).
+  const ledger = ledgerOf(), gone = removes();
+  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(setupOf(), [['mdblist'], true]); assert.deepEqual(await heartsOf(adaSite), {on: true}); assert.deepEqual(ledgerOf(), ledger); assert.equal(await heartsOf(owner), null);
+  lists.all.length = 0;
+  // The cron step runs for ['mdblist']: a title newly on her Trakt watchlist is hearted on her server, and one that left it
+  // (the hub's own heart) loses its heart there. Her server does the rest for MDBList; the hub asks nothing of MDBList.
+  const from = fake.hearts.length; trakt.watchlist = [listedFilm(FAV.four, 0), ...trakt.watchlist.filter(entry => entry.movie?.ids.imdb !== FAV.one.imdb && entry.movie?.ids.imdb !== FAV.four.imdb)];
+  await turns(3); assert.deepEqual(heartWrites(from).sort(), ['+four', '-one']); assert.equal(ledgerOf()['movie:tt7000001'], 'left'); assert.equal(ledgerOf()['movie:tt7000004'], 'hub');
+  await pause(400); assert.equal(removes(), gone, 'no Trakt removal from the cron'); assert.deepEqual(mdbHearts(), []);
+  // The hook, the same: an app's heart adds to Trakt and an app's un-heart removes from Trakt, the only removal there is.
+  const sent = listCalls().length;
+  assert.equal((await tap(FAV.one.id, 'POST')).status, 200); for (let n = 0; n < 50 && listCalls().length < sent + 1; n++) await pause(100);
+  assert.deepEqual(listCalls().at(-1), {path: '/sync/watchlist', body: {movies: [{ids: {tmdb: 71, imdb: 'tt7000001'}}]}});
+  assert.equal((await tap(FAV.one.id, 'DELETE')).status, 200); for (let n = 0; n < 50 && listCalls().length < sent + 2; n++) await pause(100);
+  assert.deepEqual(listCalls().at(-1), {path: '/sync/watchlist/remove', body: {movies: [{ids: {tmdb: 71, imdb: 'tt7000001'}}]}}); await pause(400);
+  assert.equal(removes(), gone + 1); assert.deepEqual(mdbHearts(), [], 'the hub itself never writes a heart to MDBList');
+  // A title taken off her MDBList watchlist changes nothing on Trakt and is not put back: the hub does not read MDBList for
+  // hearts at all, and its looks at Trakt find nothing to do.
+  const writes = fake.hearts.length; lists.watchlist = []; await turns(2); await pause(300); assert.deepEqual(heartWrites(writes), []); assert.equal(removes(), gone + 1);
+  // Her setup saying anything else right now (hearts to MDBList with tracking off, as between a change and its save): nothing
+  // is written by the hub until it is saved.
+  const config = playerOf('Ada')[1].config; config.mdblistWatchTracking = false;
+  trakt.watchlist = [listedFilm(FAV.one, 0), ...trakt.watchlist]; await turns(2); assert.deepEqual(heartWrites(writes), []); config.mdblistWatchTracking = true;
+  await turns(2); assert.deepEqual(heartWrites(writes), ['+one']);
+  // MDBList sync off, her key kept: her setup keeps hearts on the server (['server'], nothing passed on), and the hub goes on as
+  // with Trakt alone: its own writes go to her server and nowhere else.
+  assert.equal((await owner('DELETE', '/api/people/ada/mdblist')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(setupOf(), [['server'], false]); assert.deepEqual(await heartsOf(adaSite), {on: true});
+  const off = fake.hearts.length; lists.all.length = 0; trakt.watchlist = trakt.watchlist.filter(entry => entry.movie?.ids.imdb !== FAV.one.imdb);
+  await turns(2); assert.deepEqual(heartWrites(off), ['-one']); await pause(300); assert.deepEqual(mdbHearts(), []); assert.equal(removes(), gone + 1);
+  // Switched off and on with the key kept: no heart moves, nothing is removed from Trakt.
+  assert.equal((await favorites(adaSite, false)).status, 200); await cron(); await pause(300); assert.equal(removes(), gone + 1); assert.equal((await favorites(adaSite, true)).status, 200);
+  // The key gone again, as it was: Trakt alone.
+  assert.equal((await owner('DELETE', '/api/people/ada/mdblist/key')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(setupOf(), [['server'], false]);
+});
+/* Shows to tick whole: each with a Season title per season and its episodes, as her server would list them. */
+const LONG = {id: pack('series', 'tt7300000'), imdb: 'tt7300000', tmdb: 7300}, HUGE = {id: pack('series', 'tt7400000'), imdb: 'tt7400000', tmdb: 7400}, BURST = {id: pack('series', 'tt7600000'), imdb: 'tt7600000', tmdb: 7600};
+const seasonOf = (show, n) => `season-${show.imdb}-${n}`, episodeOf = (show, s, e) => pack('episode', show.imdb, s, e);
+const hold = (show, name, seasons) => {
+  HELD[show.id] = {Id: show.id, Type: 'Series', Name: name, ProviderIds: {Tmdb: String(show.tmdb), Imdb: show.imdb}};
+  for (const [s, count] of Object.entries(seasons)) {
+    HELD[seasonOf(show, s)] = {Id: seasonOf(show, s), Type: 'Season', Name: `Season ${s}`, SeriesId: show.id, SeriesName: name, IndexNumber: Number(s)};
+    for (let e = 1; e <= count; e++) HELD[episodeOf(show, Number(s), e)] = {Id: episodeOf(show, Number(s), e), Type: 'Episode', Name: `Episode ${e}`, SeriesId: show.id, SeriesName: name, ParentIndexNumber: Number(s), IndexNumber: e, RunTimeTicks: 3000e7, ProviderIds: {}};
+  }
+};
+const tick = (id, method = 'POST') => raw(`/Users/${jf}/PlayedItems/${id}`, token, {method, ...(method === 'POST' ? {body: '{}'} : {})});
+const playsOf = title => sql(`SELECT item, detail, position, duration, playing, ids, scrobbled FROM plays WHERE person = 'ada' AND title = '${title}'`);
+const landed = async (title, n) => {for (let i = 0; i < 60 && playsOf(title).length < n; i++) await pause(100); await pause(400); return playsOf(title);};
+const marksOf = title => sql(`SELECT count(*) AS n FROM sittings WHERE person = 'ada' AND parts = 'marked' AND item IN (SELECT item FROM plays WHERE person = 'ada' AND title = '${title}')`)[0].n;
+const historyCalls = () => trakt.calls.filter(call => call.path === '/sync/history');
+test('a tick on a whole season or show is each of its episodes ticked, never one play of the season or show; over sixty episodes nothing is noted; a tick taken away is sent nowhere; and while her Trakt sync is off what she finished here joins Recently Watched', async () => {
+  hold(LONG, 'Long Show', {1: 20, 2: 3}); hold(HUGE, 'Huge Show', {1: 61});
+  // Her Trakt is connected and its sync is off (never turned on for this connection).
+  assert.equal((await matchingOf()).on, false); trakt.calls.length = 0;
+  // Season 1 ticked whole in an app, as one request for the season: twenty plays, one an episode, each at its end and a line of
+  // its own on Activity, and none for the season itself.
+  assert.equal((await tick(seasonOf(LONG, 1))).status, 200);
+  const first = await landed('Long Show', 20), numbered = (season, count) => Array.from({length: count}, (_, n) => `Season ${season} · Episode ${n + 1}`).sort();
+  assert.deepEqual(first.map(row => row.detail).sort(), numbered(1, 20)); assert.deepEqual(first.map(row => row.item).sort(), Array.from({length: 20}, (_, n) => episodeOf(LONG, 1, n + 1)).sort());
+  assert.ok(first.every(row => row.position === 3000 && row.duration === 3000 && row.playing === 0 && row.ids === null && row.scrobbled === null), JSON.stringify(first[0]));
+  assert.deepEqual(sql(`SELECT item FROM plays WHERE person = 'ada' AND item IN ('${seasonOf(LONG, 1)}', '${LONG.id}')`), [], 'never a play of the season or the show'); assert.equal(marksOf('Long Show'), 20);
+  // The whole show ticked: what is finished here already stays as it was, and season 2's three episodes join.
+  assert.equal((await tick(LONG.id)).status, 200); const all = await landed('Long Show', 23);
+  assert.deepEqual(all.map(row => row.detail).sort(), [...numbered(1, 20), ...numbered(2, 3)].sort()); assert.equal(marksOf('Long Show'), 23);
+  // More than sixty episodes, as a season or as a show: nothing is noted. Nor for a season her server lists no episodes for.
+  HELD['season-none'] = {Id: 'season-none', Type: 'Season', Name: 'Season 9', SeriesId: 'nothing-here', SeriesName: 'Gone Show', IndexNumber: 9};
+  for (const id of [seasonOf(HUGE, 1), HUGE.id, 'season-none']) assert.equal((await tick(id)).status, 200);
+  await pause(1500); assert.deepEqual(playsOf('Huge Show'), []); assert.deepEqual(playsOf('Gone Show'), []);
+  assert.deepEqual(sql(`SELECT item FROM plays WHERE person = 'ada' AND item IN ('${seasonOf(HUGE, 1)}', '${HUGE.id}', 'season-none')`), []);
+  // The season's tick taken away in the app: her server hears, and nothing else changes anywhere.
+  assert.equal((await tick(seasonOf(LONG, 1), 'DELETE')).status, 200); await pause(600); assert.equal(playsOf('Long Show').length, 23);
+  // With sync off none of it reached Trakt or waits to.
+  assert.deepEqual(trakt.calls, []); assert.deepEqual(waiting(), []);
+  // Recently Watched, while her Trakt sync is off: Trakt's history and what she finished or ticked here as one list, newest
+  // first, each title once. One only begun here is not in it.
+  const watched = playerOf('Ada')[1].config.catalogs.find(item => item.id === 'custom.aiohub_rows.all.history').sourceUrl, fresh = () => sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind LIKE 'history%'");
+  const row = async () => {const out = []; for (let skip = 0; skip < 200; skip += 20) {const page = (await (await fetch(skip ? watched.replace(/\.json$/, `/skip=${skip}.json`) : watched)).json()).metas; out.push(...page); if (page.length < 20) break;} return out;};
+  const SEEN = pack('movie', 'tt7500001'), HALF = pack('movie', 'tt7500002');
+  sql(`INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) SELECT id, 'ada', '${SEEN}', 'Seen Through', 'Movie', 5800, 6000, 'Test · Phone', 0, unixepoch() - 600, '' FROM hubs;
+    INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) SELECT id, 'ada', '${HALF}', 'Half Seen', 'Movie', 900, 6000, 'Test · Phone', 0, unixepoch() - 30, '' FROM hubs`);
+  const longOnTrakt = {title: 'Long Show', ids: {imdb: LONG.imdb, tmdb: LONG.tmdb}};
+  trakt.history = [{watched_at: ago(2), type: 'movie', movie: MOVIE.heat}, {watched_at: ago(5), type: 'episode', episode: {season: 1, number: 1}, show: longOnTrakt}, {watched_at: ago(6), type: 'movie', movie: MOVIE.gump}]; fresh();
+  const off = await row(), names = off.map(meta => meta.name);
+  assert.equal(names[0], 'Long Show', 'ticked here just now, though Trakt has it from five days ago'); assert.equal(names.filter(name => name === 'Long Show').length, 1, 'a title in both shows once');
+  assert.ok(names.includes('Seen Through')); assert.ok(!names.includes('Half Seen')); assert.ok(names.indexOf('Seen Through') < names.indexOf('Heat')); assert.ok(names.indexOf('Heat') < names.indexOf('Forrest Gump'));
+  assert.equal(new Set(off.map(meta => meta.id)).size, off.length); assert.deepEqual(off.find(meta => meta.name === 'Long Show'), {id: LONG.imdb, type: 'series', name: 'Long Show'});
+  // With her Trakt sync on it is Trakt's history alone again (Trakt then has what she watches here too).
+  await syncOn(); fresh();
+  assert.deepEqual(await row(), [{id: 'tt0113277', type: 'movie', name: 'Heat'}, {id: LONG.imdb, type: 'series', name: 'Long Show'}, {id: 'tt0109830', type: 'movie', name: 'Forrest Gump'}]);
+  sql(`DELETE FROM plays WHERE person = 'ada' AND item IN ('${SEEN}', '${HALF}')`);
+});
+test('with Trakt sync on: a season ticked whole is one history add for its episodes, a burst of twenty single ticks is twenty plays and twenty history adds sent one at a time, and an episode un-ticked afterwards is not ticked again by sync', async () => {
+  hold(BURST, 'Burst Show', {1: 20, 2: 4});
+  assert.equal((await matchingOf()).on, true); trakt.calls.length = 0; trakt.history = [];
+  // Season 2, one request: four plays here, and one add to her Trakt history naming all four under the show, dated now.
+  assert.equal((await tick(seasonOf(BURST, 2))).status, 200);
+  const season = await landed('Burst Show', 4); for (let n = 0; n < 50 && historyCalls().length < 1; n++) await pause(100); await pause(300);
+  assert.equal(season.length, 4); assert.equal(historyCalls().length, 1); const [show] = historyCalls()[0].body.shows;
+  assert.deepEqual(show.ids, {tmdb: 7600, imdb: 'tt7600000'}); assert.deepEqual(show.seasons.map(item => [item.number, item.episodes.map(episode => episode.number)]), [[2, [1, 2, 3, 4]]]);
+  assert.ok(show.seasons[0].episodes.every(episode => Math.abs(Date.parse(episode.watched_at) - Date.now()) < 60_000)); assert.equal(historyCalls()[0].body.movies, undefined);
+  // Each episode keeps what Trakt knows it by and that Trakt was told, as a single tick does.
+  const kept = playsOf('Burst Show'); assert.ok(kept.every(row => row.scrobbled === 'watched' && row.position === 3000)); assert.deepEqual(kept.map(row => JSON.parse(row.ids).episode.number).sort(), [1, 2, 3, 4]);
+  assert.deepEqual(JSON.parse(kept[0].ids).show, {ids: {tmdb: 7600, imdb: 'tt7600000'}});
+  // Ticked again whole: nothing new here, and nothing more to Trakt.
+  assert.equal((await tick(seasonOf(BURST, 2))).status, 200); await pause(1200); assert.equal(historyCalls().length, 1); assert.equal(playsOf('Burst Show').length, 4);
+  // She takes the tick off two of them in the app: her server hears and Trakt does not. Trakt lists all four as watched (its
+  // own copy of what the hub sent); her next turn of sync does not tick them back.
+  assert.equal((await tick(episodeOf(BURST, 2, 1), 'DELETE')).status, 200); assert.equal((await tick(seasonOf(BURST, 2), 'DELETE')).status, 200); await pause(500);
+  assert.equal(trakt.calls.length, 1, 'nothing is un-watched on Trakt');
+  const onTrakt = {title: 'Burst Show', ids: {imdb: BURST.imdb, tmdb: BURST.tmdb}}, at = new Date().toISOString(), ticks = fake.ticks.length;
+  trakt.history = [1, 2, 3, 4].map(number => ({watched_at: at, type: 'episode', episode: {season: 2, number}, show: onTrakt}));
+  trakt.activity = {movies: trakt.activity.movies, episodes: {watched_at: at, paused_at: trakt.activity.episodes.paused_at}};
+  for (const id of [1, 2, 3, 4].map(number => episodeOf(BURST, 2, number))) HELD[id].UserData = {};
+  sql("UPDATE sync SET checked = 0 WHERE person = 'ada'"); await cron(); sql("UPDATE sync SET checked = 0 WHERE person = 'ada'"); await cron();
+  assert.deepEqual(fake.ticks.slice(ticks).filter(tick => HELD[tick.id]?.SeriesId === BURST.id), [], 'not ticked again'); sql("UPDATE sync SET checked = 9000000000 WHERE person = 'ada'");
+  // Twenty episodes ticked one by one at once, as an app marking "up to here" might: each request is its own, Trakt takes one write a second
+  // and turns the rest of the burst away (as it does), and the outbox sends what waits one at a time until all twenty are there, each once.
+  trakt.calls.length = 0; trakt.pace = 1000; trakt.refused.length = 0;
+  const burst = await Promise.all(Array.from({length: 20}, (_, n) => tick(episodeOf(BURST, 1, n + 1)))); assert.ok(burst.every(answer => answer.status === 200));
+  for (let n = 0; n < 80 && playsOf('Burst Show').length < 24; n++) await pause(250);
+  for (let round = 0; round < 12 && (waiting().length || historyCalls().length < 20); round++) {await pause(1500); resumed(); await cron();}
+  const twenty = playsOf('Burst Show').filter(row => row.detail.startsWith('Season 1 ·'));
+  assert.deepEqual(twenty.map(row => row.detail).sort(), Array.from({length: 20}, (_, n) => `Season 1 · Episode ${n + 1}`).sort()); assert.ok(twenty.every(row => row.position === row.duration && row.duration > 0 && row.playing === 0 && row.scrobbled === 'watched'), JSON.stringify(twenty.find(row => row.scrobbled !== 'watched')));
+  assert.equal(marksOf('Burst Show'), 24);
+  const sent = historyCalls().flatMap(call => call.body.shows.flatMap(item => item.seasons.flatMap(part => part.episodes.map(episode => `${part.number}:${episode.number}`))));
+  assert.deepEqual(sent.sort(), Array.from({length: 20}, (_, n) => `1:${n + 1}`).sort(), 'twenty history adds, each episode once'); assert.equal(historyCalls().length, 20);
+  assert.ok(trakt.refused.length > 0, 'the burst was turned away, and what waited went out one at a time'); assert.deepEqual(waiting(), []);
+  trakt.pace = 0; trakt.calls.length = 0; trakt.history = [];
+});
+test('earlier plays are offered once, with sync on: Not now is kept for the plays from before this turning on, and a later turning on offers its own', async () => {
+  const me = async () => (await adaSite('GET', '/api/state')).body.hub.people[0].matching, earlier = async () => (await adaSite('GET', '/api/people/ada/matching')).body.earlier;
+  // The switch drives what it always did: off, then on, with nothing else asked.
+  assert.equal((await adaSite('POST', '/api/people/ada/matching', {on: false})).status, 200); assert.deepEqual([(await me()).on, (await me()).earlier, (await me()).passed], [false, false, false]);
+  assert.deepEqual(sql("SELECT matching, earlier FROM sync WHERE person = 'ada'"), [{matching: 0, earlier: 0}]);
+  // What she ticked here while sync was off (the whole show, further up) is from before this turning on.
+  await pause(1100); await syncOn(); assert.deepEqual(sql("SELECT matching, earlier FROM sync WHERE person = 'ada'"), [{matching: 1, earlier: 0}]);
+  const count = await earlier(); assert.ok(count >= 23, String(count)); assert.equal((await me()).passed, false);
+  // Not now: hers alone to say, and nothing is sent for it.
+  trakt.calls.length = 0;
+  assert.equal((await owner('POST', '/api/people/ada/matching/later', {})).status, 403);
+  assert.equal((await adaSite('POST', '/api/people/ada/matching/later', {})).status, 200); assert.equal((await me()).passed, true); assert.equal((await me()).earlier, false);
+  await pause(400); assert.deepEqual(trakt.calls, []); assert.deepEqual(waiting(), []);
+  // Still kept after a look at the page, and while sync stays on.
+  assert.equal((await me()).passed, true);
+  // Off and on again later: a new turning on, so its earlier plays are offered once more.
+  assert.equal((await adaSite('POST', '/api/people/ada/matching', {on: false})).status, 200); await pause(1100); await syncOn();
+  assert.equal((await me()).passed, false); assert.ok(await earlier() >= 23);
+  // Sync off again for what follows, with nothing left waiting.
+  assert.equal((await adaSite('POST', '/api/people/ada/matching', {on: false})).status, 200); assert.deepEqual(waiting(), []);
+});
+test('turned off, nothing more is sent and no heart moves; disconnecting Trakt turns it off and clears the ledger without touching hearts or Trakt', async () => {
+  // With her own MDBList key and MDBList sync on, so every path here runs while her setup passes hearts on to MDBList.
+  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(setupOf(), [['mdblist'], true]);
+  const calls = () => listCalls().length, sent = calls(), had = hearted(), listed = trakt.watchlist.length, gone = removes();
   // Off: an app's DELETE and POST pass through to her server and go no further; the cron leaves her alone.
   assert.equal((await favorites(adaSite, false)).status, 200); assert.deepEqual(await heartsOf(adaSite), {on: false});
-  assert.equal((await tap(FAV.one.id, 'DELETE')).status, 200); assert.equal((await tap(FAV.one.id, 'POST')).status, 200);
+  assert.equal((await tap(FAV.two.id, 'DELETE')).status, 200); assert.equal((await tap(FAV.two.id, 'POST')).status, 200);
   const writes = fake.hearts.length; await cron(); await cron(); await pause(700);
   assert.equal(calls(), sent); assert.deepEqual(heartWrites(writes), []); assert.deepEqual(hearted(), had); assert.equal(trakt.watchlist.length, listed);
   assert.ok(Object.keys(ledgerOf()).length > 5, 'the ledger stays for when it is turned on again');
-  // On again, then an MDBList key of her own is saved: the switch goes off by itself, and an app's DELETE sends nothing.
-  assert.equal((await favorites(adaSite, true)).status, 200);
-  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key', keep: true})).body, {username: 'adalists'});
-  assert.deepEqual(sql('SELECT person FROM favs'), []); assert.deepEqual(sql('SELECT key FROM hearts'), []); assert.equal(await heartsOf(adaSite), null);
-  assert.equal((await tap(FAV.one.id, 'DELETE')).status, 200); await cron(); await pause(700); assert.equal(calls(), sent); assert.equal(trakt.watchlist.length, listed);
-  assert.equal((await tap(FAV.one.id, 'POST')).status, 200); await pause(500); assert.equal(calls(), sent);
-  // The key gone again and the switch on: the hub finds the hearts there already and counts them hers. Then Trakt is disconnected.
-  assert.equal((await owner('DELETE', '/api/people/ada/mdblist/key')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
-  assert.equal((await favorites(adaSite, true)).status, 200); await heartsTurn(); assert.ok(Object.values(ledgerOf()).includes('own'));
+  // On again: the hub finds the hearts as its ledger left them. Then Trakt is disconnected: the switch and the ledger go.
+  assert.equal((await favorites(adaSite, true)).status, 200); await heartsTurn();
   const before = fake.hearts.length; assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200);
   assert.deepEqual(sql('SELECT person FROM favs'), []); assert.deepEqual(sql('SELECT key FROM hearts'), []);
-  await cron(); assert.equal((await tap(FAV.one.id, 'DELETE')).status, 200); assert.equal((await tap(FAV.one.id, 'POST')).status, 200); await pause(700);
-  assert.equal(calls(), sent); assert.equal(removes(), 2, 'only the two her own app asked for, earlier'); assert.equal(trakt.watchlist.length, listed);
-  assert.deepEqual(heartWrites(before), ['-one', '+one'], 'only her own app’s'); assert.deepEqual(hearted(), had);
-  assert.equal((await favorites(adaSite, true)).status, 409); assert.equal(await heartsOf(adaSite), null);
+  await cron(); assert.equal((await tap(FAV.two.id, 'DELETE')).status, 200); assert.equal((await tap(FAV.two.id, 'POST')).status, 200); await pause(700);
+  assert.equal(calls(), sent); assert.equal(removes(), gone, 'none but the ones her own app asked for, earlier'); assert.equal(trakt.watchlist.length, listed);
+  assert.deepEqual(heartWrites(before), ['-two', '+two'], 'only her own app’s'); assert.deepEqual(hearted(), had);
+  const refused = await favorites(adaSite, true); assert.equal(refused.status, 409); assert.equal(refused.body.message, 'Connect Trakt first.'); assert.equal(await heartsOf(adaSite), null);
   // As it was before these tests: her MDBList key kept, Trakt not connected.
   assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key', ...(keptInLists ? {} : {keep: true})})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'}); trakt.watchlist = null;
 });
@@ -2376,6 +2629,7 @@ test('signing out and removing a person', async () => {
   assert.equal((await raw('/System/Info', token)).status, 401);
   // Removed with Favorites from his watchlist on and hearts in its ledger (put there directly): both go with him, and nothing
   // is taken off anyone's Trakt.
+  Object.assign(playerOf('Ben')[1].config, {jellyfinWatchlistServices: ['mdblist'], mdblistWatchTracking: true});
   sql("INSERT INTO favs (hub, person) SELECT id, 'ben' FROM hubs; INSERT INTO hearts (hub, person, key, item, state, listed, at) SELECT id, 'ben', 'movie:tt7000001', 'x', 'hub', 1, 1 FROM hubs");
   const removesBefore = removes();
   assert.equal((await owner('DELETE', '/api/people/ben')).status, 200);

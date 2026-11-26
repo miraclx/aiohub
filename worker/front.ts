@@ -9,6 +9,7 @@ import type {Env} from './util';
 import {blocked, failed, getSecret, guesses, newId, newToken, now, putSecret, same, sha, unseal} from './util';
 import type {Target} from './trakt';
 import {LINK, brief, deliver, history, progressOf, soon} from './trakt';
+import {history as historyOf} from './carry';
 import {heartKey, heartsOn, noteHeart} from './hearts';
 import {forgetWatchlist} from './rows';
 import {syncPlayers} from './native';
@@ -134,7 +135,7 @@ const noted = new Map<string, number>(), seen = new Map<string, {pos: number; at
 // A paused player that keeps reporting is noted once in ten minutes: still heard on Activity (src/activity.tsx), and well inside the
 // half hour after which Trakt is told a quiet play stopped (QUIET in trakt.ts).
 const EVERY = 60_000, PAUSED_EVERY = 600_000, APART = 1800;
-async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', text: string, where: {place: string; net: string}, origin: string, when = Date.now()) {
+async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', text: string, where: {place: string; net: string}, origin: string, when = Date.now(), asked?: Called | null) {
   let report: {ItemId?: string; PositionTicks?: number; IsPaused?: boolean};
   try {report = JSON.parse(text);} catch {return;}
   const item = String(report.ItemId ?? '').slice(0, 200), key = `${hub}/${seat.person}/${item}`, last = noted.get(key) ?? 0, paused = report.IsPaused === true;
@@ -187,7 +188,7 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   if (known && (known.art || kind !== 'start')) {await env.DB.batch([env.DB.prepare('UPDATE plays SET position = ?, playing = ?, paused = ?, since = ?, device = ?, updated = ?, place = ?, net = ?, parts = ?, pauses = ?, idle = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, pausedNow, since, seat.on, stamp, where.place, where.net, parts, pauses, idle, hub, seat.person, item), ...sitting(known.duration, position), ...tidy]); ended = done(known.duration, position, known.art);}
   else {
     // First report for this title: ask AIOStreams what it is called, as this person.
-    const called = await calledBy(seat, item);
+    const called = asked ?? await calledBy(seat, item);
     if (!called) return;
     const {about, title, detail, art} = called;
     const first = !await env.DB.prepare('SELECT 1 FROM plays WHERE hub = ? AND person = ? LIMIT 1').bind(hub, seat.person).first();
@@ -359,10 +360,11 @@ async function idsOf(env: Env, hub: string, seat: Seat, item: string): Promise<s
    the hub's own un-hearting (which goes straight to their server, never through here), the switch going off, a disconnect or a
    removal (tests/aiom.test.mjs holds each of those to no remove).
    Whether it is on is asked of the database for each heart, never remembered (a seat is kept twenty seconds, and the switch may
-   have gone off, or an MDBList key of their own come, since). The title's ids are asked of their server as scrobbling asks
+   have gone off since). Their MDBList is never called from here: with their own key and MDBList sync on, their own server has
+   already passed the heart on to their MDBList watchlist by the time this runs (hearts.ts), and with it off nothing does. The title's ids are asked of their server as scrobbling asks
    (idsOf); one with none Trakt can use, or anything but a film or a show, is left alone. What was sent is noted in the ledger:
-   'own' for an add, 'gone' for a remove, dated now, so the cron neither takes their heart away nor puts one back that they
-   removed. The kept Watchlist row goes, so it is read again with the change. */
+   'own' for an add, 'gone' for a remove, dated now and not yet seen on Trakt (the cron confirms an add once the list shows it,
+   and only then keeps it in step), so the cron neither takes their heart away nor puts one back that they removed. The kept Watchlist row goes, so it is read again with the change. */
 const FAVOURITE = /^\/(?:users\/[^/]+\/favoriteitems|userfavoriteitems)\/([\w-]{1,80})$/i;
 async function hearted(env: Env, hub: string, seat: Seat, item: string, off: boolean) {
   if (!await heartsOn(env, hub, seat.person)) return;
@@ -377,10 +379,64 @@ async function hearted(env: Env, hub: string, seat: Seat, item: string, off: boo
   // Kept to try again: once it has gone (or has been tried twice more), the Watchlist row is read afresh once more.
   if (got === 'kept') {await soon(env, hub, seat.person); await forgetWatchlist(env, hub, seat.person).run();}
 }
+/* A tick as watched from an app (PlayedItems). Apps offer it on an episode or a film, and also on a whole season or show ("Season
+   Watched", "Up to Here Watched"); how they send those is not known, so both shapes are taken:
+   - one tick per episode, in a burst: each is its own request, noted as any tick is (note, 'mark'), and with Trakt sync on each
+     is one history add through the outbox, which sends a person's calls one at a time, a second apart.
+   - one tick whose title is a Season or a Series: never one play of that title. Its episodes are asked of their server in one
+     read (a season's own, or the whole show's) and each is noted as ticked, in two writes, with one history add for all of
+     them when Trakt sync is on. More than MARK_MOST episodes, or a show or season the server does not list episodes for:
+     nothing is noted (a Worker on the Free plan may do only so much a run; their server still holds the ticks).
+   An episode already finished here is left as it was, and so is one the hub itself ticked from Trakt (the `here` ledger): neither
+   is new, and Trakt has both. Each episode noted keeps what Trakt knows it by and that Trakt was told (`ids`, `scrobbled`), as a
+   single tick does, so a look at Trakt later never brings it back as something watched elsewhere: an episode un-ticked here
+   afterwards stays un-ticked. */
+const MARK_MOST = 60;
+async function marked(env: Env, hub: string, seat: Seat, item: string, where: {place: string; net: string}, origin: string, when: number) {
+  const called = await calledBy(seat, item), type = called?.about.Type;
+  if (type !== 'Series' && type !== 'Season') return note(env, hub, seat, 'mark', JSON.stringify({ItemId: item}), where, origin, when, called);
+  const about = called!.about, series = type === 'Series' ? item : String(about.SeriesId ?? ''), season = type === 'Season' ? about.IndexNumber : undefined;
+  if (!/^[\w-]{1,80}$/.test(series) || (type === 'Season' && season == null)) return;
+  const listed = await fetch(`${seat.base}/Shows/${encodeURIComponent(series)}/Episodes?UserId=${encodeURIComponent(seat.upId)}${type === 'Season' ? `&SeasonId=${encodeURIComponent(item)}` : ''}`, {headers: {accept: 'application/json', authorization: asPerson(seat)}})
+    .then(answer => answer.ok ? answer.json() : null).catch(() => null) as {Items?: About[]} | null;
+  // By season and number, each once; a season's tick takes only that season, whatever the server sent back.
+  const taken = new Set<string>(), episodes = (listed?.Items ?? []).filter(episode => /^[\w-]{1,80}$/.test(episode.Id ?? '') && (episode.Type ?? 'Episode') === 'Episode' && Number.isInteger(episode.ParentIndexNumber) && Number.isInteger(episode.IndexNumber)
+    && (season == null || episode.ParentIndexNumber === season) && !taken.has(`${episode.ParentIndexNumber}:${episode.IndexNumber}`) && !!taken.add(`${episode.ParentIndexNumber}:${episode.IndexNumber}`));
+  // Only how many is noted, never whose or what.
+  if (!episodes.length || episodes.length > MARK_MOST) {if (episodes.length) console.error('mark', 'too many episodes', episodes.length); return;}
+  const stamp = Math.floor(when / 1000), title = String((type === 'Series' ? about.Name : about.SeriesName) || episodes[0].SeriesName || about.Name || '').slice(0, 200), ids_ = JSON.stringify(episodes.map(episode => episode.Id));
+  const [had, any] = await env.DB.batch([env.DB.prepare('SELECT item, position, duration, scrobbled FROM plays WHERE hub = ?1 AND person = ?2 AND item IN (SELECT value FROM json_each(?3))').bind(hub, seat.person, ids_),
+    env.DB.prepare('SELECT 1 AS yes FROM plays WHERE hub = ? AND person = ? LIMIT 1').bind(hub, seat.person)]);
+  const known = new Map((had.results as {item: string; position: number; duration: number; scrobbled: string | null}[]).map(row => [row.item, row]));
+  // Their Trakt, only with sync on (the seat says so, and deliver asks again): the show's ids, and what the hub ticked from Trakt.
+  const ids = seat.scrobble ? traktIds((await aboutOf(seat, series))?.Items?.[0]?.ProviderIds) : {}, usable = !!(ids.tmdb || ids.imdb);
+  const ticked = usable && ids.tmdb ? new Set((await env.DB.prepare("SELECT play FROM sent WHERE hub = ? AND person = ? AND place = 'here' AND play LIKE ?").bind(hub, seat.person, `i:show/${ids.tmdb}:%`).all<{play: string}>()).results.map(row => row.play)) : new Set<string>();
+  const todo = episodes.filter(episode => {const row = known.get(episode.Id!); return !(row && row.duration > 0 && row.position >= row.duration * 0.9) && !ticked.has(`i:show/${ids.tmdb}:${episode.ParentIndexNumber}:${episode.IndexNumber}`);});
+  if (!todo.length) return;
+  // One history add for every episode Trakt was not told of before, dated now, as a single tick is.
+  const fresh = usable ? todo.filter(episode => !['watched', 'held-watched'].includes(known.get(episode.Id!)?.scrobbled ?? '')) : [], at = new Date().toISOString();
+  const got = fresh.length ? await deliver(env, hub, seat.person, `marks:${series}:${season ?? 'all'}`, {kind: 'mark', path: '/sync/history', body: historyOf(fresh.map(episode => ({kind: 'show' as const, ids, season: episode.ParentIndexNumber, episode: episode.IndexNumber, at})))}) : 'off';
+  const told = new Set(got === 'off' ? [] : fresh.map(episode => episode.Id!)), art = /^[\w-]{1,80}$/.test(series) ? series : '';
+  const rows = JSON.stringify(todo.map(episode => ({item: episode.Id, detail: `Season ${episode.ParentIndexNumber} · Episode ${episode.IndexNumber}`, length: Math.round(Number(episode.RunTimeTicks ?? 0) / 1e7),
+    ...(told.has(episode.Id!) ? {ids: JSON.stringify({show: {ids}, episode: {season: episode.ParentIndexNumber!, number: episode.IndexNumber!}} satisfies Target), told: 1} : {})})));
+  // Each as a single tick leaves it: at its end, not playing, with a line of its own on Activity (parts "marked").
+  await env.DB.batch([env.DB.prepare(`INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net, paused, since, parts, pauses, idle, ids, scrobbled, scrobbled_at)
+      SELECT ?1, ?2, json_extract(e.value, '$.item'), ?3, json_extract(e.value, '$.detail'), json_extract(e.value, '$.length'), json_extract(e.value, '$.length'), ?4, 0, ?5, ?6, ?7, ?8, 0, ?5, '0-0', 0, 0,
+        json_extract(e.value, '$.ids'), CASE WHEN json_extract(e.value, '$.told') = 1 THEN 'watched' END, CASE WHEN json_extract(e.value, '$.told') = 1 THEN ?5 END FROM json_each(?9) e WHERE true
+      ON CONFLICT (hub, person, item) DO UPDATE SET position = CASE WHEN plays.duration > 0 THEN plays.duration ELSE excluded.position END, playing = 0, paused = 0, since = excluded.since, device = excluded.device, updated = excluded.updated, place = excluded.place, net = excluded.net,
+        ids = coalesce(excluded.ids, plays.ids), scrobbled = coalesce(excluded.scrobbled, plays.scrobbled), scrobbled_at = coalesce(excluded.scrobbled_at, plays.scrobbled_at)`).bind(hub, seat.person, title, seat.on, stamp, art, where.place, where.net, rows),
+    env.DB.prepare(`INSERT OR IGNORE INTO sittings (hub, person, item, started, device, position, playing, paused, since, updated, place, net, parts)
+      SELECT ?1, ?2, json_extract(e.value, '$.item'), ?3, ?4, json_extract(e.value, '$.length'), 0, 0, ?3, ?3, ?5, ?6, 'marked' FROM json_each(?7) e`).bind(hub, seat.person, stamp, seat.on, where.place, where.net, rows)]);
+  // Their first plays here: Recently Watched has something in it now (as in note).
+  if (!any.results.length && !seat.trakt) {const found = await env.DB.prepare('SELECT id, data FROM hubs WHERE id = ?').bind(hub).first<{id: string; data: string}>(); if (found) await syncPlayers(env, found, origin).catch(() => null);}
+  if (got === 'kept') await soon(env, hub, seat.person);
+}
+interface About {Id?: string; Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string}
+type Called = NonNullable<Awaited<ReturnType<typeof calledBy>>>;
 /* What a title is called, asked of the person's own server as them: its name (the show's, for an episode), which episode or
    "Movie", and the id its picture is under. null when the server does not say. */
 async function calledBy(seat: Seat, item: string) {
-  const about = await fetch(`${seat.base}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: asPerson(seat)}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string} | null;
+  const about = await fetch(`${seat.base}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: asPerson(seat)}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as About | null;
   if (!about?.Name) return null;
   const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
   const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
@@ -498,7 +554,9 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
   if (seat && body && REPORTS[lower]) ctx.waitUntil(note(env, hub, seat, REPORTS[lower], body, whereOf(request, env), url.origin, whenOf(request, env)).catch(() => {}));
   // Ticked as watched in an app without playing it: kept like a finished play, so it can be copied to MDBList later too.
   const ticked = seat && request.method === 'POST' ? /^\/(?:users\/[^/]+\/playeditems|userplayeditems)\/([\w-]{1,80})$/i.exec(path) : null;
-  if (seat && ticked) ctx.waitUntil(note(env, hub, seat, 'mark', JSON.stringify({ItemId: ticked[1]}), whereOf(request, env), url.origin, whenOf(request, env)).catch(() => {}));
+  // A tick on a whole show or season is each of its episodes ticked, never one play of the show or season itself (see marked).
+  // Taking a tick away (DELETE) only goes on to their server: nothing is un-watched anywhere else (adds only).
+  if (seat && ticked) ctx.waitUntil(marked(env, hub, seat, ticked[1], whereOf(request, env), url.origin, whenOf(request, env)).catch(() => {}));
   // AIOMetadata's libraries are its catalog rows, so "watched, in this library" only covers what the row shows today. In a real
   // Jellyfin server a library holds everything, which is what history readers (Trakt's own Jellyfin sync) rely on: they ask
   // library by library. So a watched list asked for under one of the person's own top-level libraries is answered from all of

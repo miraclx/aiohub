@@ -495,7 +495,7 @@ label.sheet-sub { display: block; }
 .accounts .status-line .dot.wait { background: var(--muted); }
 .accounts .status-line .dot.off { background: transparent; border: 1.5px solid var(--muted); }
 .accounts .status-line .link { margin-left: 2px; }
-/* The question after connecting Trakt: what sync does, the tick for earlier plays, and Turn on, set apart like a note. */
+/* The question after connecting Trakt: what sync does, then Turn on or Not now, set apart like a note. */
 .accounts .consent p { margin: 0; }
 .accounts .consent .ask { font-size: 14px; color: var(--muted); line-height: 20px; }
 .accounts .consent .ask strong { color: var(--text); font-weight: 600; }
@@ -504,7 +504,20 @@ label.sheet-sub { display: block; }
 .accounts .consent .tick strong { color: var(--text); font-weight: 600; }
 .accounts .consent .tick input { width: 20px; height: 20px; flex-shrink: 0; margin: 1px 0 0; accent-color: var(--accent); }
 .accounts .consent-actions { display: flex; align-items: center; gap: 16px; }
-/* An account's one switch (MDBList's Sync, Favorites from the Trakt watchlist). */
-.accounts .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
-.accounts .toggle-row p { margin-top: 2px; }
-.accounts .toggle-row strong { font-weight: 600; font-size: 15px; }
+/* The Sync card, a card of its own under the accounts: a line of what is synced, then a part for watching and one for the
+   watchlist. Each switch has its name on the left and what it means or how it stands on the lines under it. */
+.accounts + .accounts { margin-top: 16px; }
+.accounts .sync-summary { margin-top: 4px; color: var(--text); font-size: 15px; line-height: 21px; }
+.accounts .sync-part { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
+.accounts .sync-part h4 { margin: 0; color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.accounts .sync-part p { margin: 0; }
+.accounts .sync-part h4 + p { margin-top: -6px; }
+.accounts .sync-row { display: grid; gap: 8px; }
+.accounts .sync-row + .sync-row { padding-top: 12px; border-top: 1px dashed var(--line); }
+.accounts .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.accounts .switch-row strong { font-weight: 600; font-size: 15px; }
+.accounts .switch-row .switch { flex-shrink: 0; }
+/* A one-off offer under a switch (earlier plays, hearts Trakt lacks): what it is, then what can be done about it. */
+.accounts .offer { display: grid; gap: 8px; padding: 12px 14px; border-radius: 12px; background: var(--raised); }
+.accounts .offer > p:first-child { color: var(--text); font-size: 14px; line-height: 20px; }
+.accounts .offer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; }

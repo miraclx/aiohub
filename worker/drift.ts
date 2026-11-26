@@ -185,13 +185,6 @@ export async function skip(env: Env, hub: string, person: string, keys: string[]
   await env.DB.prepare('UPDATE drift SET skipped = ? WHERE hub = ? AND person = ?').bind(JSON.stringify([...new Set([...keys, ...kept])].slice(0, 1000)), hub, person).run();
 }
 export const skippedOf = async (env: Env, hub: string, person: string) => new Set(JSON.parse((await env.DB.prepare('SELECT skipped FROM drift WHERE hub = ? AND person = ?').bind(hub, person).first<{skipped: string | null}>())?.skipped ?? '[]') as string[]);
-/* The day's look as the person's page shows it, missing or not: when it was checked, and what one side lacks (less what they left out). */
-export function looked(row: {result: string | null; skipped: string | null; at: number} | undefined) {
-  if (!row?.result) return null;
-  const found = differing(row.result, row.skipped), base = JSON.parse(row.result) as Found;
-  return {checked: row.at, since: base.since, toMdblist: found?.toMdblist ?? [], toTrakt: found?.toTrakt ?? []};
-}
-
 const ids = (miss: Miss) => ({tmdb: miss.tmdb, ...(miss.imdb ? {imdb: miss.imdb} : {})});
 /* Plays as Trakt and MDBList both take them: films on their own, episodes under their show and season, each with its date. */
 function body(list: Miss[]) {
@@ -218,7 +211,7 @@ const near = (plays: Play[], miss: Miss) => plays.some(play => keyOf(play) === m
    nothing that arrived since is sent twice; then the plays are taken off the list, and only then sent. Only adds: nothing on
    either side is changed or removed. (A play MDBList gets that is older than the newest it has for an episode is kept as history
    only, which is what it is.) */
-export async function fix(env: Env, hub: string, person: string): Promise<{trakt: number; mdblist: number} | {error: string}> {
+async function fix(env: Env, hub: string, person: string): Promise<{trakt: number; mdblist: number} | {error: string}> {
   const row = await env.DB.prepare('SELECT result, skipped FROM drift WHERE hub = ? AND person = ?').bind(hub, person).first<{result: string | null; skipped: string | null}>(), listed = differing(row?.result ?? null, row?.skipped ?? null);
   const lists = await getSecret<{key: string}>(env, hub, person, 'mdblist'), link = await getSecret<Link>(env, hub, person, LINK);
   if (!listed || !lists?.key || !link) return {trakt: 0, mdblist: 0};
