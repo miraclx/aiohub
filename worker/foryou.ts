@@ -385,7 +385,9 @@ function lately(before: {day: string; picks: string; before: string} | undefined
   const kept = read<string[]>(before.before || '[]', []);
   return before.day === day ? kept : [...new Set([...keysOf(before.picks), ...kept])].slice(0, REMEMBER);
 }
-const flag = (env: Env, hub: string) => env.DB.prepare('INSERT INTO foryou_sync (hub, at, tries) VALUES (?, ?, 0) ON CONFLICT (hub) DO UPDATE SET at = excluded.at, tries = 0').bind(hub, now());
+/* A hub's setups are to be saved again by the cron (forYou, above), in the first run with nothing else to do. Also asked by
+   api.ts when someone's Watchlist switch is turned, so their setup follows even if the page was closed before it synced. */
+export const flag = (env: Env, hub: string) => env.DB.prepare('INSERT INTO foryou_sync (hub, at, tries) VALUES (?, ?, 0) ON CONFLICT (hub) DO UPDATE SET at = excluded.at, tries = 0').bind(hub, now());
 
 /* ---------- from a Home ---------- */
 /* Asked from a For you row's Edit sheet (api.ts), by the person or their manager. `use`: one of the day's other options goes in this

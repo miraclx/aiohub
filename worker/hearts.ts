@@ -1,7 +1,8 @@
-/* The watchlist as Favorites: a person's own choice, off until they turn it on from their own page (api.ts, 'favorites'; never
-   anyone else's: it writes to their Trakt). For anyone whose Trakt is connected to the hub and who has a setup of their own, with
-   or without an MDBList key of theirs. `favs` holds the switch, `hearts` the ledger (migrations 0029 and 0030), both by hub and
-   person. Trakt leads: its watchlist decides what is hearted.
+/* The Watchlist switch on the Sync card, for someone whose Trakt is connected to the hub: off until it is turned on (api.ts,
+   'favorites': by them, or by their manager only while they have not joined). For anyone with a setup of their own, with or
+   without an MDBList key of theirs. `favs` holds the switch, `hearts` the ledger (migrations 0029 and 0030), both by hub and
+   person. Trakt leads: its watchlist decides what is hearted. (The same switch, for someone with MDBList alone, is only their
+   setup's jellyfinWatchlistServices: native.ts. Nothing in this file runs for them: MAY, below, needs Trakt.)
    - Trakt to the apps, here: a cron step, one person a run, each about every twenty minutes. The titles on their Trakt watchlist
      (the list the Watchlist row keeps, rows.ts) are hearted on their own server, newest first, a few a run; the next run takes
      the rest. Each heart the hub made is in the ledger with Trakt's listed_at. A title is hearted again only when Trakt lists it
@@ -15,7 +16,8 @@
    - MDBList follows, through their own server: with their own MDBList key and MDBList sync on, their setup passes every heart
      made or taken away on to their MDBList watchlist by itself (native.ts, jellyfinWatchlistServices ['mdblist'] with
      mdblistWatchTracking). The hub never calls MDBList for a heart. With MDBList sync off their setup keeps hearts on the server
-     (['server']), and nothing reaches MDBList. A setup that says anything else right now is left alone until its next save.
+     (['server']), and nothing reaches MDBList. A setup that says anything else right now (the switch just turned, and the
+     setup not saved yet) is left alone until its next save.
    - Every write goes straight to their own server, signed in as them (here.ts), so the hook below never sees it.
    - The apps to Trakt: front.ts (hearted), as an app's own heart passes through. That is the one place a title is ever taken off
      someone's Trakt watchlist: in answer to their app taking a heart away, while the switch is on. Nothing in this file writes to
@@ -69,13 +71,15 @@ export const noteHearts = (env: Env, hub: string, person: string, hearts: Spare[
     .bind(hub, person, state, now(), JSON.stringify(hearts.map(({key, item}) => ({key, item}))));
 /* The offer answered (api.ts): what was counted goes, and is counted again in COUNT_EVERY. */
 export const clearFound = (env: Env, hub: string, person: string) => env.DB.prepare('UPDATE favs SET found = NULL, found_at = ? WHERE hub = ? AND person = ?').bind(now(), hub, person);
-/* Whether their setup, as it is right now, lets the hub heart on their server: hearts stay there (['server']), or it passes them
-   on to their own MDBList with MDBList sync on (['mdblist'] and mdblistWatchTracking, which only a key of their own gets:
-   native.ts). ['mdblist'] without that (a key of theirs kept while MDBList sync is off, until the setup's next save) would turn
-   a heart of the hub's into a change to an account that is not synced: nothing is written then. */
+/* Whether their setup, as it is right now, is the one the switch being on comes to (native.ts), so a heart of the hub's lands
+   where their apps read them: hearts stay on the server (['server']) with MDBList sync off, or go on to their own MDBList
+   (['mdblist']) with MDBList sync on (mdblistWatchTracking, which only a key of their own gets). Anything else is a setup between
+   a change and its save, and nothing is written then: ['mdblist'] without tracking would turn a heart of the hub's into a
+   change to an account that is not synced, and ['server'] with tracking is a setup from before the switch was turned on, about
+   to read saves from MDBList instead. */
 export const heartsStay = (setup: Record<string, unknown> | null) => {
-  const services = setup?.jellyfinWatchlistServices;
-  return Array.isArray(services) && services.length === 1 && (services[0] === 'server' || (services[0] === 'mdblist' && setup?.mdblistWatchTracking === true));
+  const services = setup?.jellyfinWatchlistServices, tracking = setup?.mdblistWatchTracking === true;
+  return Array.isArray(services) && services.length === 1 && services[0] === (tracking ? 'mdblist' : 'server');
 };
 
 /* One step of the cron (index.ts): one person a run, across every hub. True when it did more than look (see CHEAP). */

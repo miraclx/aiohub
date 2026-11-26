@@ -40,9 +40,10 @@ export interface ForYouDetail {places: Record<string, Shown>; options: Shown[]; 
 // `earlier`: they agreed to send what they watched here before turning sync on; `passed`: they said "Not now" to that, for the
 // plays from before this turning on.
 export interface Matching {on: boolean; earlier: boolean; passed?: boolean; ask: boolean; good: number; failing: number | null; why: string | null; waiting: number | null; until?: number}
-// hearts: their watchlist as Favorites in the apps (worker/hearts.ts), on or off. Only on a person's own page, and only when it is
-// theirs to have: null or missing for anyone else. `extra`: hearts of theirs that their Trakt watchlist lacks, as last counted,
-// for the offer to add them (`more`: more than the offer holds).
+// hearts: their Watchlist switch on the Sync card (worker/hearts.ts, worker/native.ts), on or off. Given when it can do something
+// for them (a setup of their own and an account connected), to them and to their manager: null or missing otherwise. `extra`:
+// titles they saved that their Trakt watchlist lacks, as last counted, for the offer to add them (`more`: more than the offer
+// holds), on their own page only.
 export interface Person {matching?: Matching | null; hearts?: {on: boolean; extra?: number; more?: boolean} | null; forYou?: Record<string, string>; forYouKinds?: Record<string, string>; pickedAt?: number; forYouDetail?: ForYouDetail; shelfAt?: number; shelfTiles?: {title: string; image: string; liked?: boolean}[]; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
@@ -58,7 +59,7 @@ export interface Hub {
     /* Trakt sync (worker/sync.ts): the last good pass for anyone here, how many have it on, and about how many minutes pass
        between one person's turns (one person each run across the site). */
     matched?: number | null; matching?: number; syncEvery?: number;
-    /* Favorites from Trakt watchlists (worker/hearts.ts): the last look that went well for anyone here, and how many have it on. */
+    /* The Watchlist switch with Trakt connected (worker/hearts.ts): the last look that went well for anyone here, and how many have it on. */
     hearted?: number | null; hearting?: number;
     /* What was watched here and MDBList lacks (worker/sync.ts, leftovers): the last finished look for anyone here, and how many
        have MDBList sync on. */

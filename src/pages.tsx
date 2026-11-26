@@ -165,18 +165,18 @@ const Who = ({name}: {name: string}) => <p className="who" title={name || undefi
 /* What the Accounts tab says, and the Worker does (trakt.ts, sync.ts, hearts.ts, native.ts):
    - Connect means the hub reads from an account, for its rows on Home. It never writes to it. The Trakt and MDBList cards hold
      only that: connect or disconnect, who it is connected as, and what connecting gives.
-   - Sync means the hub keeps something the same in both places, and is the Sync card's alone. Two things can be synced: their
-     watching (finished plays and paused spots; adds only, nothing is ever un-watched), a switch per connected account; and their
-     watchlist, shown as Favorites in the apps (the only place a removal can happen), one switch.
-   - With both accounts connected, Trakt leads and MDBList follows.
+   - Sync is what writes, and is the Sync card's alone: a switch per connected account for what they watch (finished plays and
+     paused spots; adds only, nothing is ever marked unwatched), and one Watchlist switch for the titles they save in the apps
+     (the only place a removal can happen: an un-save in an app, with Trakt connected and the switch on).
+   - Which watchlist is not a setting: Trakt's when Trakt is connected, with MDBList following; else MDBList's.
    What each switch drives has one owner, made here once (useTraktSync, useListsSync) and read by the cards: the page's rounds of
    catching up must never run twice. */
 function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {hub, live} = page, group = hub.groups.find(item => item.id === person.groupId)!;
-  const trakt = useTraktSync(page, person, mine), lists = useListsSync(page, person);
+  const trakt = useTraktSync(page, person, mine), lists = useListsSync(page, person, mine || !person.joined);
   const linked = live ? !!person.history || person.lists || !!person.listsKept || !!person.moving : !!person.trakt || person.lists;
   return <section>
-    <div className="section-head"><div><h2>Accounts</h2><p className="muted">{mine ? 'Connect your own accounts. Nobody else sees them. Connecting only reads from an account, to fill your rows on Home. It never writes to it. Both are optional, and nothing you watch is lost without them.' : live ? <>{person.name} can connect their own from their page, or you can do it here with them. Connecting only reads from an account. It never writes to it.</> : <>Only {person.name} can connect these, from their own page. <a className="link" href={`#/person/${person.id}/settings`}>Get their link</a></>}</p></div></div>
+    <div className="section-head"><div><h2>Accounts</h2><p className="muted">{mine ? 'Connect your own accounts. Connecting only reads from them. Sync, below, is what writes.' : live ? <>{person.name} can connect their own accounts, or you can do it here with them. Connecting only reads from them. Sync, below, is what writes.</> : <>Only {person.name} can connect these, from their own page. <a className="link" href={`#/person/${person.id}/settings`}>Get their link</a></>}</p></div></div>
     <ul className="accounts">
       <li><div><h3>Streams</h3><p>Played through the shared {resolve(hub, group, person).values.debrid} account. Nothing to set up.</p></div><span className="pill ok">Shared</span></li>
       <Trakt page={page} person={person} mine={mine}/>
@@ -361,8 +361,9 @@ function useTraktSync(page: PageProps, person: Person, mine: boolean) {
    back what only MDBList has, then switches back (places.ts), so nothing is lost either way. Where progress is kept is never
    said on the page. The page drives the copying, a pass at a time, and picks it up again if it was left part way; while it
    runs, in either direction, the line reads "Catching up. You can keep watching." The manager's switch, and Disconnect while
-   sync is on (the MDBList card), go the same way. One owner (Accounts): the copying must never run twice. */
-function useListsSync(page: PageProps, person: Person) {
+   sync is on (the MDBList card), go the same way, and only while the person has not joined (`sets`: the switch is theirs, or their
+   manager's until they join; the hub refuses anyone else). One owner (Accounts): the copying must never run twice. */
+function useListsSync(page: PageProps, person: Person, sets: boolean) {
   const {toast, live} = page, at = `/api/people/${person.id}/mdblist`, moving = person.moving ?? null;
   // A switch under way: which way, how many copied of about how many. Then why it stopped, if it did.
   const [copying, setCopying] = useState<{to: 'mdblist' | 'here'; done: number; total: number} | null>(null), [stopped, setStopped] = useState(''), [busy, setBusy] = useState(false);
@@ -386,10 +387,10 @@ function useListsSync(page: PageProps, person: Person) {
     } catch (error) {setStopped((error as Error).message); await live!.reload(); return false;} finally {setCopying(null);}
   };
   // Left part way (the page was closed): picked up again when it opens.
-  useEffect(() => {if (live && moving && !copying) void move(moving === 'here' ? 'here' : 'mdblist');}, [person.id]);
+  useEffect(() => {if (live && sets && moving && !copying) void move(moving === 'here' ? 'here' : 'mdblist');}, [person.id]);
   // The switch: on copies then switches; off while copying over undoes it at once (nothing switched yet).
   const flip = (on: boolean) => {
-    if (copying || busy) return;
+    if (copying || busy || !sets) return;
     if (on && moving === 'here') {setBusy(true); void live!.call('POST', `/api/people/${person.id}/moving`, {to: null}).then(() => {setStopped(''); return done('MDBList sync stays on');}, fail(toast)).finally(() => setBusy(false)); return;}
     if (!on && moving === 'mdblist') {setBusy(true); void live!.call('DELETE', at).then(() => {setStopped(''); return done('MDBList sync stays off');}, fail(toast)).finally(() => setBusy(false)); return;}
     void move(on ? 'mdblist' : 'here');
@@ -417,120 +418,118 @@ function Synced({page, person}: {page: PageProps; person: Person}) {
       : <p className="muted small">Nothing has needed syncing yet.</p> : <p className="muted small">{got.failed && got.who === whose ? 'Couldn’t load the list just now.' : 'Loading…'}</p>)}
   </div>;
 }
-/* The Sync card, shown once any account is connected: everything the hub keeps the same in both places, and nothing else does.
-   - On top, one line in plain words of what is synced right now, built from the switches.
-   - The one question, right after their own Trakt sign-in ("Sync your watching with Trakt?"): answering it sets the Trakt switch,
-     and it is never asked again.
-   - Watching: a switch per connected account, each with one line of how it stands under it. On is on and off is off. Trakt's
-     is theirs alone (a manager sees how it stands and who can turn it on); MDBList's goes the same way whoever flips it. The
-     status line never reads as if all were well while Trakt has asked the hub to wait or is not answering. Under Trakt's
-     switch, once and only with sync on: what they watched here before turning it on, to look at, add or leave.
-   - Watchlist: one switch for whatever is connected, theirs alone, with Trakt on the hub (hearts.ts); under it, once, the hearts
-     they already had that Trakt lacks, to add or leave (counted by the cron, never here). Someone with MDBList alone has no
-     switch: their own server keeps their Favorites and their MDBList watchlist the same, and the card says so.
-   What was synced lists what the hub did. Where their progress is kept is not said here. */
+/* The Sync card, shown once any account is connected: every switch that writes to an account, and nothing else. Stupid simple
+   on purpose: a row a switch, each with its name, the switch, one sentence of what it does, and under that at most one quiet
+   line. Nothing on it explains sync twice.
+   - A row only for an account that is connected: Trakt, MDBList, then Watchlist for whatever is connected (the hub says when
+     it can be had: `hearts`). Then one line, "Sync never marks anything as unwatched.", and What was synced.
+   - Under a switch: normally "Last checked 6:20 PM" (Trakt) or nothing. A status line speaks only when something is unusual
+     (catching up, told to wait, not answering, sign in again, stopped), one short sentence each.
+   - The one question, right after their own Trakt sign-in: answering it sets the Trakt switch, and it is never asked again.
+   - Two one-off offers, each one line with what can be done, and a small confirm before anything is added: what they watched
+     here before turning Trakt sync on, and titles they had saved that their Trakt watchlist lacks (counted by the cron).
+   - Who sets what (the API holds the same rule: api.ts, `theirs`): they set all three from their own page. Their manager sets
+     none of them once they have joined (each shows as it is, with one line saying so); for someone who has not joined, the
+     manager sets MDBList sync and Watchlist, and Trakt sync waits for them (only they can turn it on, from their own page).
+   Where their progress is kept is not said here. */
 function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: Person; mine: boolean; trakt: ReturnType<typeof useTraktSync>; lists: ReturnType<typeof useListsSync>}) {
   const {hub, toast, live} = page, link = person.history, matching = person.matching ?? null;
-  const [listing, setListing] = useState(false), [going, setGoing] = useState(false);
-  // The preview has no hub behind it: its two Trakt switches are kept here, for show.
+  const [listing, setListing] = useState(false), [going, setGoing] = useState(false), [sure, setSure] = useState<'' | 'plays' | 'saves'>('');
+  // The preview has no hub behind it: its Trakt and Watchlist switches are kept here, for show.
   const [shown, setShown] = useState({watching: true, hearts: false});
-  const you = mine ? 'you' : 'they', your = mine ? 'your' : 'their', Your = mine ? 'Your' : 'Their', have = mine ? 'you’ve' : 'they’ve', saved = `${Your} watching is still being saved.`;
+  const I = mine ? 'I' : 'they', my = mine ? 'my' : 'their', your = mine ? 'your' : 'their', Your = mine ? 'Your' : 'Their', keep = `${mine ? 'You' : 'They'} can keep watching.`;
+  // Theirs to set, or their manager's while they have not joined. Trakt sync is theirs alone.
+  const sets = mine || !person.joined;
   const hasTrakt = live ? !!link : !!person.trakt, on = live ? !!link && !link.again : !!person.trakt;
   const hasLists = live ? person.lists || !!person.listsKept || !!person.moving : person.lists;
   const watching = live ? on && !!matching?.on : hasTrakt && shown.watching;
-  const hearts = live ? (mine && on ? person.hearts ?? null : null) : mine && hasTrakt && hub.front ? {on: shown.hearts} as NonNullable<Person['hearts']> : null;
+  const hearts = live ? person.hearts ?? null : hub.front && (hasTrakt || hasLists) ? {on: shown.hearts} as NonNullable<Person['hearts']> : null;
   const {catching, earlier} = trakt, {copying, stopped} = lists;
-  // The line on top: what is synced right now, in plain words.
-  const places = [...(watching ? ['Trakt'] : []), ...(person.lists ? ['MDBList'] : [])], favorites = hearts?.on ? `${Your} watchlist shows as Favorites.` : '';
-  const summary = places.length || favorites ? [places.length ? `${Your} watching is synced with ${places.join(' and ')}.` : `${Your} watching isn’t synced.`, favorites].filter(Boolean).join(' ') : 'Nothing is synced.';
   // The question, once: while they have yet to answer after their own sign-in.
   const asking = !!live && mine && on && !!matching?.ask && !matching.on;
-  /* The one line of how Trakt sync stands, and its dot: green only when the last look went well. Told to wait (by Trakt, with the
-     time), not answered, MDBList refusing, or stuck for three days each say so at once, with what the person can do, if anything. */
+  /* Under the Trakt switch. Unusual: told to wait (by Trakt, with the time), not answering, their MDBList key refused, nothing
+     taken for three days (with Try again), or paused until Trakt is signed in to again. Otherwise only when it last checked. */
   const time = Date.now() / 1000, since = Math.min(matching?.failing ?? Infinity, matching?.waiting ?? Infinity), stuck = since < Infinity && time - since > STUCK;
   // Calls of theirs waiting for Trakt for a while (it keeps turning them away): not answering, though no look has failed.
   const queued = !!matching?.waiting && time - matching.waiting > QUEUED;
   const day = (s: number) => new Date(s * 1000).toLocaleDateString(undefined, {weekday: 'long'}), why = matching?.failing ? matching.why ?? '' : '';
-  // What sync on means, said on every line that says it is on.
-  const both = `Sync is on. What ${you} watch here or in other Trakt apps shows up in both. Nothing is removed.`, off = 'Sync is off. Nothing is sent to Trakt and nothing comes back.';
-  const status: {dot: 'ok' | 'wait' | 'off'; text: ReactNode} | null = !live ? {dot: watching ? 'ok' : 'off', text: watching ? both : off}
-    : link?.again ? {dot: 'off', text: matching?.on ? `Sync is paused until ${mine ? 'you sign' : `${person.name} signs`} in to Trakt again.` : `Sync is off. ${mine ? 'Sign' : `${person.name} can sign`} in to Trakt again above.`}
-    : !matching || asking ? null
-    : catching && (catching.total || catching.sent) ? {dot: 'wait', text: <>Catching up: {Math.min(catching.sent, catching.total || catching.sent)} of {catching.total || catching.sent} added to Trakt. {mine ? 'You' : 'They'} can keep watching.</>}
-    : !matching.on ? {dot: 'off', text: mine ? off : `${off} Only ${person.name} can turn it on, from their own page.`}
-    : (matching.until ?? 0) > time ? {dot: 'wait', text: <>Sync is on. {toldToWait(matching.until!)} {saved}</>}
-    : why.startsWith('MDBList') ? {dot: 'off', text: <>MDBList isn’t taking requests from {your} key, so sync is paused. If this lasts a day, paste a new key.</>}
-    : stuck ? {dot: 'off', text: <>Trakt hasn’t taken updates since {day(since)}. {saved} {mine && <button type="button" className="link small" disabled={!!catching} onClick={() => void trakt.catchUp(true)}>Try again</button>}</>}
-    : why.startsWith('Trakt') || (queued && !why) ? {dot: 'wait', text: <>Trakt didn’t answer just now. The hub tries again within the hour. {saved}</>}
-    : why ? {dot: 'wait', text: <>{why} {saved}</>}
-    : matching.good ? {dot: 'ok', text: <>{both} Last checked {whenOf(matching.good * 1000)}.</>}
-    : {dot: 'wait', text: <>{both} First check in a few minutes.</>};
-  // Hiding takes two switches: MDBList sync (here), and Hide what's been watched (under Playback).
+  const odd: {dot: 'wait' | 'off'; text: ReactNode} | null = !live || !matching || asking ? null
+    : link?.again ? matching.on ? {dot: 'off', text: mine ? 'Paused. Sign in to Trakt again, above.' : 'Paused until they sign in to Trakt again.'} : null
+    : catching && (catching.total || catching.sent) ? {dot: 'wait', text: `Catching up. ${keep}`}
+    : !matching.on ? null
+    : (matching.until ?? 0) > time ? {dot: 'wait', text: toldToWait(matching.until!)}
+    : why.startsWith('MDBList') ? {dot: 'off', text: `MDBList isn’t accepting ${your} key. If that lasts a day, connect MDBList again.`}
+    : stuck ? {dot: 'off', text: <>Trakt hasn’t answered since {day(since)}. {mine && <button type="button" className="link small" disabled={!!catching} onClick={() => void trakt.catchUp(true)}>Try again</button>}</>}
+    : why.startsWith('Trakt') || (queued && !why) ? {dot: 'wait', text: 'Trakt isn’t answering. We’ll try again within the hour.'}
+    : why ? {dot: 'wait', text: why}
+    : null;
+  const checked = !!live && on && !asking && !!matching?.on && !odd && !!matching.good ? `Last checked ${whenOf(matching.good * 1000)}` : '';
+  // Leaving watched titles out of rows takes two switches: MDBList sync (here), and Hide what's been watched (under Playback).
   const hiding = resolve(hub, hub.groups.find(item => item.id === person.groupId), person).values.hideWatched, playback = mine ? '#/me/playback' : `#/person/${person.id}/playback`;
-  // While the copy runs, either way, one calm line (how far it has got is not said: the counts are of plays, and mean little).
-  const line: ReactNode = copying ? `Catching up. ${mine ? 'You' : 'They'} can keep watching.`
-    : !person.lists ? 'Sync is off. Nothing is sent to MDBList and nothing comes back.'
-    : hiding ? `Sync is on. Rows hide what ${have} watched.`
-    : <>Sync is on. To hide what {have} watched, turn on Hide what’s been watched under <a className="link" href={playback}>Playback</a>.</>;
+  // (Why catching up stopped is the hub's own words: only their first sentence is said here, to keep the line short.)
   const preview = () => toast('Preview: nothing is connected here');
-  // The watchlist switch and its offer: saved once the hub answers.
-  const ask = (path: string, body: unknown, note: (got: {added?: number; more?: boolean}) => string) => {setGoing(true); void live!.call<{added?: number; more?: boolean}>('POST', `/api/people/${person.id}/favorites${path}`, body).then(got => {toast(note(got)); return live!.reload();}, fail(toast)).finally(() => setGoing(false));};
-  const extra = hearts?.on ? hearts.extra ?? 0 : 0;
-  // Without the switch: someone with MDBList alone (their own server ties Favorites to their MDBList watchlist, native.ts), and a
-  // manager looking at someone with Trakt (whether it is on is theirs alone to see).
-  const aside = hearts || !hub.front ? null : !hasTrakt && hasLists ? <p className="muted small">{Your} Favorites in the apps are {your} MDBList watchlist. {Your} own player setup keeps the two the same, so there is nothing to turn on here.</p>
-    : !mine && on ? <p className="muted small">Showing the watchlist as Favorites is {person.name}’s own choice, from their own page.</p> : null;
-  return <ul className="accounts"><li className="stacked sync-card">
-    <div><h3>Sync</h3><p className="sync-summary" role="status">{summary}</p></div>
-    <p className="muted small">Sync keeps something the same here and in an account. {mine ? 'Each switch is yours to turn on or off.' : `Trakt’s switches are ${person.name}’s own.`}</p>
-    {asking && <div className="consent">
-      <p className="ask"><strong>Sync your watching with Trakt?</strong> What you watch here goes to Trakt, and what you watch in other Trakt apps comes back here. Nothing is removed.</p>
-      <p className="muted small">To start, what you watched on Trakt in the last 14 days is added here.{!person.lists && ' For each show you watched there in the last 120 days, the latest episode is ticked too, so Next Up carries on.'}</p>
-      <div className="consent-actions"><button type="button" className="primary small" disabled={trakt.busy} onClick={() => void trakt.turn(true)}>Turn on</button>
-        <button type="button" className="link small" disabled={trakt.busy} onClick={() => void trakt.turn(false)}>Not now</button></div>
-    </div>}
-    <div className="sync-part"><h4>Watching</h4>
-      <p className="muted small">Finished plays and paused spots. Sync only adds: nothing is ever un-watched.</p>
-      {hasTrakt && <div className="sync-row">
-        <div className="switch-row"><strong>Trakt</strong><Switch checked={watching} disabled={!mine || (!!live && !on) || trakt.busy} label={`Sync ${mine ? 'my' : `${person.name}’s`} watching with Trakt`} onChange={value => live ? void trakt.turn(value) : setShown({...shown, watching: value})}/></div>
-        {status && <p className="small status-line" role="status"><span className={`dot ${status.dot}`} aria-hidden="true"/><span>{status.text}</span></p>}
-        {/* Once, with sync on: what they watched here before turning it on. Never part of turning sync on itself. */}
-        {earlier && !catching && <div className="offer">
-          <p>{things(earlier.n)} you watched here before turning sync on {earlier.n === 1 ? 'isn’t' : 'aren’t'} on Trakt.</p>
-          <div className="offer-actions"><button type="button" className="link small" aria-expanded={listing} onClick={() => setListing(!listing)}>{listing ? 'Hide them' : 'Show them'}</button>
-            <button type="button" className="link small" disabled={trakt.busy} onClick={() => {setListing(false); void trakt.turn(true, true);}}>Add them</button>
-            <button type="button" className="link small" disabled={trakt.busy} onClick={() => {setListing(false); trakt.later();}}>Not now</button></div>
-          <p className="muted small">Trakt can’t undo this in one go.</p>
-          {listing && <div className="listed">{earlier.plays.map((play, n) => <p key={n}><strong>{play.title}</strong> · {play.detail} · {dateOf(play.at * 1000)}</p>)}{earlier.n > earlier.plays.length && <p>and {earlier.n - earlier.plays.length} more</p>}</div>}
-        </div>}
-        {!!live && mine && on && matching?.on && <Synced page={page} person={person}/>}
-      </div>}
-      {hasLists && <div className="sync-row">
-        <div className="switch-row"><strong>MDBList</strong><Switch checked={copying ? copying.to === 'mdblist' : lists.target} disabled={lists.busy} onChange={value => live ? lists.flip(value) : preview()} label={`Sync ${mine ? 'my' : `${person.name}’s`} watching with MDBList`}/></div>
-        {stopped && !copying ? <p className="small status-line" role="status"><span className="dot off" aria-hidden="true"/><span>Catching up stopped: {stopped} <button type="button" className="link small" onClick={() => void lists.move(person.moving === 'here' ? 'here' : 'mdblist')}>Try again</button></span></p>
-          : <p className="small status-line" role="status"><span className={`dot ${copying ? 'wait' : person.lists ? 'ok' : 'off'}`} aria-hidden="true"/><span>{line}</span></p>}
+  // The Watchlist switch and its offer: saved once the hub answers. The switch changes their setup, so the apps follow (`apps`).
+  const ask = (path: string, body: unknown, note: (got: {added?: number; more?: boolean}) => string, apps = false) => {setGoing(true); void live!.call<{added?: number; more?: boolean}>('POST', `/api/people/${person.id}/favorites${path}`, body).then(got => {toast(note(got)); if (apps) live!.apps(); return live!.reload();}, fail(toast)).finally(() => setGoing(false));};
+  const extra = mine && hearts?.on ? hearts.extra ?? 0 : 0, both = hasTrakt && hasLists;
+  // Which watchlist is not a setting: Trakt's when Trakt is connected, else MDBList's. Named only when both are connected.
+  const saves = both ? `Titles ${I} save in the apps go on ${my} Trakt watchlist, and what’s on it shows as saved there.${person.lists ? ` ${Your} MDBList watchlist follows.` : ''}`
+    : `Titles ${I} save in the apps go on ${my} watchlist, and ${my} watchlist shows as saved there.`;
+  return <div className="card settings sync-card">
+    <div className="setting column"><h3>Sync</h3>
+      {!sets && <p role="note">{person.name} manages their own sync.</p>}
+      {asking && <div className="consent">
+        <p className="ask"><strong>Sync what you watch with Trakt?</strong> What you watch here goes to Trakt, and what you watch in other Trakt apps comes back.</p>
+        <div className="consent-actions"><button type="button" className="primary small" disabled={trakt.busy} onClick={() => void trakt.turn(true)}>Turn on</button>
+          <button type="button" className="link small" disabled={trakt.busy} onClick={() => void trakt.turn(false)}>Not now</button></div>
       </div>}
     </div>
-    {/* The watchlist (worker/hearts.ts): theirs alone to turn on, and only offered when it can be had (the hub says). */}
-    {(hearts || aside) && <div className="sync-part"><h4>Watchlist</h4>
-      {hearts ? <div className="sync-row">
-        <div className="switch-row"><strong>Show my watchlist as Favorites in the apps</strong><Switch checked={hearts.on} disabled={going} label="Show my watchlist as Favorites in the apps" onChange={value => live ? ask('', {on: value}, () => value ? 'Your Trakt watchlist will show as Favorites' : 'Favorites no longer follow your Trakt watchlist') : setShown({...shown, hearts: value})}/></div>
-        <p className="muted small">Titles on your Trakt watchlist get a heart in the apps. A heart in an app adds the title to your Trakt watchlist, and removing a heart removes it from there.</p>
-        <p className="muted small">A title that leaves your Trakt watchlist loses its heart. Hearts that were never on Trakt are left alone. Turning this off leaves every heart and your watchlist as they are.</p>
-        {hasLists && <p className="muted small">With both connected, Trakt leads: its watchlist decides what is hearted, and your MDBList watchlist follows while MDBList sync is on.</p>}
-        {/* Once: hearts they already had that Trakt lacks. Never added by itself. */}
-        {extra > 0 && <div className="offer">
-          <p>You have {hearts.more ? 'more than ' : ''}{extra} {extra === 1 ? 'heart' : 'hearts'} that {extra === 1 ? 'isn’t' : 'aren’t'} on your Trakt watchlist.</p>
-          <div className="offer-actions"><button type="button" className="link small" disabled={going} onClick={() => ask('/add', {}, got => got.more ? `Adding ${got.added} to your Trakt watchlist. The rest are offered after the next check.` : `Adding ${got.added} to your Trakt watchlist`)}>Add them</button>
-            <button type="button" className="link small" disabled={going} onClick={() => ask('/later', {}, () => 'Left as they are')}>Not now</button></div>
-        </div>}
-      </div> : aside}
+    {hasTrakt && <div className="setting column sync-row">
+      <div className="switch-row"><h3>Trakt</h3><Switch checked={watching} disabled={!mine || (!!live && !on) || trakt.busy} label="Trakt sync" onChange={value => live ? void trakt.turn(value) : setShown({...shown, watching: value})}/></div>
+      <p>Keep what {I} watch the same here and on Trakt.</p>
+      {odd ? <p className="status-line" role="status"><span className={`dot ${odd.dot}`} aria-hidden="true"/><span>{odd.text}</span></p>
+        : checked ? <p className="quiet">{checked}</p>
+        : !mine && sets ? <p className="quiet">Only {person.name} can turn this on, after they join.</p> : null}
+      {/* Once, with sync on: what they watched here before turning it on. Never part of turning sync on itself. */}
+      {earlier && !catching && <div className="offer">
+        <p>{things(earlier.n)} you watched here earlier {earlier.n === 1 ? 'isn’t' : 'aren’t'} on Trakt.</p>
+        <div className="offer-actions"><button type="button" className="link small" aria-expanded={listing} onClick={() => setListing(!listing)}>{listing ? 'Hide them' : 'Show them'}</button>
+          <button type="button" className="link small" disabled={trakt.busy} onClick={() => setSure('plays')}>Add them</button>
+          <button type="button" className="link small" disabled={trakt.busy} onClick={() => {setListing(false); trakt.later();}}>Not now</button></div>
+        {listing && <div className="listed">{earlier.plays.map((play, n) => <p key={n}><strong>{play.title}</strong> · {play.detail} · {dateOf(play.at * 1000)}</p>)}{earlier.n > earlier.plays.length && <p>and {earlier.n - earlier.plays.length} more</p>}</div>}
+      </div>}
+      {sure === 'plays' && earlier && <Confirm plain title={`Add ${things(earlier.n)} to Trakt?`} body="Trakt can’t undo this in one go." action="Add them" onYes={() => {setSure(''); setListing(false); void trakt.turn(true, true);}} onClose={() => setSure('')}/>}
     </div>}
-  </li></ul>;
+    {hasLists && <div className="setting column sync-row">
+      <div className="switch-row"><h3>MDBList</h3><Switch checked={copying ? copying.to === 'mdblist' : lists.target} disabled={!sets || lists.busy} onChange={value => live ? lists.flip(value) : preview()} label="MDBList sync"/></div>
+      <p>Keep what {I} watch the same here and on MDBList.</p>
+      {copying ? <p className="status-line" role="status"><span className="dot wait" aria-hidden="true"/><span>Catching up. {keep}</span></p>
+        : stopped ? <p className="status-line" role="status"><span className="dot off" aria-hidden="true"/><span>Catching up stopped. {/^[^.]*\./.exec(stopped)?.[0] ?? stopped} {sets && <button type="button" className="link small" onClick={() => void lists.move(person.moving === 'here' ? 'here' : 'mdblist')}>Try again</button>}</span></p>
+        : person.lists && !hiding ? <p className="quiet">Want watched titles left out of {your} rows? Turn it on under <a className="link" href={playback}>Playback</a>.</p> : null}
+    </div>}
+    {/* Watchlist (worker/hearts.ts, worker/native.ts): only offered when it can be had (the hub says). */}
+    {hearts && <div className="setting column sync-row">
+      <div className="switch-row"><h3>Watchlist</h3><Switch checked={hearts.on} disabled={!sets || going} label="Watchlist sync" onChange={value => live ? ask('', {on: value}, () => value ? 'Watchlist is on' : 'Watchlist is off. Nothing was removed.', true) : setShown({...shown, hearts: value})}/></div>
+      <p>{saves}</p>
+      <p>The save button is the heart in some apps.</p>
+      {/* With MDBList alone, saves reach it only through MDBList sync (native.ts): said while that is off. */}
+      {!hasTrakt && !person.lists && <p className={hearts.on ? 'status-line' : 'quiet'} role={hearts.on ? 'status' : undefined}>{hearts.on && <span className="dot wait" aria-hidden="true"/>}<span>This works once MDBList sync is on.</span></p>}
+      {/* Once: titles they had already saved that their Trakt watchlist lacks. Never added by itself. */}
+      {extra > 0 && <div className="offer">
+        <p>{hearts.more ? 'More than ' : ''}{extra} {extra === 1 ? 'title' : 'titles'} you saved in the apps {extra === 1 ? 'isn’t' : 'aren’t'} on your watchlist.</p>
+        <div className="offer-actions"><button type="button" className="link small" disabled={going} onClick={() => setSure('saves')}>Add them</button>
+          <button type="button" className="link small" disabled={going} onClick={() => ask('/later', {}, () => 'Left as they are')}>Not now</button></div>
+      </div>}
+      {sure === 'saves' && <Confirm plain title={`Add ${extra} ${extra === 1 ? 'title' : 'titles'} to your watchlist?`} body="They go on your Trakt watchlist. You can take any of them off later." action="Add them" onYes={() => {setSure(''); ask('/add', {}, got => got.more ? `Adding ${got.added} to your watchlist. The rest are offered after the next check.` : `Adding ${got.added} to your watchlist`);}} onClose={() => setSure('')}/>}
+    </div>}
+    <div className="setting column sync-foot"><p>Sync never marks anything as unwatched.</p>
+      {!!live && mine && on && matching?.on && <Synced page={page} person={person}/>}
+    </div>
+  </div>;
 }
 /* The MDBList card: Connect gives its rows, and that is all it holds. Optional and free. Connecting saves their own key (checked
    with MDBList, kept in the vault); it reads their lists from then on and writes nothing. Whether their watching is synced with
-   it is the Sync card's switch (useListsSync). Disconnect while sync is on turns it off the same way first, so nothing is lost.
+   it is the Sync card's switch (useListsSync). Disconnect while sync is on turns it off the same way first, so nothing is lost:
+   that is the switch's to do, so a manager is not offered Disconnect for someone who has joined while their sync is on.
    Another MDBList account is Disconnect, then Connect. */
 function MdbList({page, person, mine, sync}: {page: PageProps; person: Person; mine: boolean; sync: ReturnType<typeof useListsSync>}) {
   const {update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
@@ -556,7 +555,7 @@ function MdbList({page, person, mine, sync}: {page: PageProps; person: Person; m
   // why someone disconnects: MDBList stopped taking their key), they can disconnect anyway.
   const drop = async () => {setDropping(false); if (person.lists || moving === 'here') {if (await move('here')) forget(); else setAnyway(true);} else forget();};
   return <li className="stacked"><div className="account-row"><div><h3>MDBList <span className="free">Free</span></h3>{connected && <Who name={person.listsName ?? ''}/>}</div>
-    {connected ? <button type="button" className="ghost small" disabled={busy || !!copying} onClick={() => setDropping(true)}>Disconnect</button>
+    {connected ? (mine || !person.joined || !(person.lists || moving)) && <button type="button" className="ghost small" disabled={busy || !!copying} onClick={() => setDropping(true)}>Disconnect</button>
       : !keying && <button type="button" className="primary small" disabled={busy} onClick={() => setKeying(true)}>Connect</button>}</div>
     <Gains lines={gains}/>
     {keying && <form className="stack link-back" onSubmit={event => {event.preventDefault(); save();}}>
@@ -831,9 +830,9 @@ function Background({hub}: {hub: Hub}) {
     // or longer once more than four people sync (the hub says how long; never how many).
     ...(hub.scrobble ? [{name: 'Trakt sync: Trakt to here', every: `For everyone with Trakt sync on, one person each run, so each person about every ${jobs.syncEvery ?? 20} min; for one person at once when they turn it on`, last: jobs.matching ? `${ran(jobs.matched ?? null)} · ${jobs.matching} ${jobs.matching === 1 ? 'person' : 'people'}` : 'Nobody has it on yet',
       next: jobs.matching ? `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'once someone turns it on'}] : []),
-    // Watchlists as Favorites (worker/hearts.ts): in the same five-minute run, one person each run, for whoever turned it on from
-    // their own page: a few hearts made or taken away to match their Trakt watchlist, and now and then their hearts counted.
-    ...(hub.scrobble && hub.front ? [{name: 'Watchlists as Favorites', every: 'For everyone who turned it on, one person each run: a few hearts added or taken away to match their Trakt watchlist, and their hearts counted a few times a day', last: jobs.hearting ? `${ran(jobs.hearted || null)} · ${jobs.hearting} ${jobs.hearting === 1 ? 'person' : 'people'}` : 'Nobody has it on yet',
+    // The Watchlist switch with Trakt connected (worker/hearts.ts): in the same five-minute run, one person each run, for whoever
+    // has it on: a few titles saved or un-saved on their server to match their Trakt watchlist, and now and then their saves counted.
+    ...(hub.scrobble && hub.front ? [{name: 'Watchlist sync with Trakt', every: 'For everyone with Watchlist on and Trakt connected, one person each run: a few titles saved or un-saved in their apps to match their Trakt watchlist, and their saved titles counted a few times a day', last: jobs.hearting ? `${ran(jobs.hearted || null)} · ${jobs.hearting} ${jobs.hearting === 1 ? 'person' : 'people'}` : 'Nobody has it on yet',
       next: jobs.hearting ? `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'once someone turns it on'}] : []),
     // What was watched here and a person's MDBList lacks (worker/sync.ts, leftovers): once a day each, for whoever has MDBList
     // sync on and played something since.

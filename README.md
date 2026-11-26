@@ -31,8 +31,9 @@ itself and hosts no video.
 - **Their own Trakt and MDBList.** Trakt and MDBList are services that keep a record of what you watch, plus watchlists
   and lists. A person can connect either or both. Connecting gives its rows on Home and sends nothing. Each has one
   Sync switch, off until it is turned on: on, what is watched here goes there as it plays and what is watched elsewhere
-  comes back; off, nothing moves either way. Sync only adds: nothing is ever removed or marked unwatched. One more
-  switch shows their watchlist as Favorites in the apps: hearts follow their Trakt watchlist, and MDBList follows Trakt.
+  comes back; off, nothing moves either way. Sync never marks anything as unwatched. One more switch, Watchlist, makes
+  the titles they save in the apps (the heart or Save button) and their watchlist one list: Trakt's watchlist when Trakt is
+  connected, with MDBList following, else MDBList's.
   Their lists and liked lists can be rows on Home.
 - **Playback settings.** Quality (Data saver, Balanced or Best), a size limit, audio languages, subtitles, skipping intros and
   credits where a title has them marked, and hiding what they have already watched.
@@ -190,6 +191,10 @@ Newest first. Dates are the commit dates on `main`.
 
 ### 2026-11-26
 
+- The Sync card is one row a switch: Trakt, MDBList and Watchlist, each with one sentence, and a status line only when
+  something is unusual. Watchlist follows one rule for everyone: off, the titles you save stay in the apps; on, they and your
+  watchlist are one list (Trakt's when connected, else MDBList's, which no longer happens by itself). A manager can set
+  MDBList sync and Watchlist only for someone who has not joined.
 - Accounts has one Sync card: a plain line of what is synced, a switch per account for your watching, and one switch that
   shows your watchlist as Favorites, with or without MDBList. Trakt leads the watchlist and MDBList follows; a title that
   leaves your Trakt watchlist loses its heart, and hearts that were never on Trakt are left alone. Earlier plays and hearts

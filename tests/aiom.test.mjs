@@ -350,8 +350,8 @@ test('a change at the hub reaches everyone who has not changed it for themselves
   const [, ada] = playerOf('Ada'), [, ben] = playerOf('Ben');
   assert.equal(ada.config.apiKeys.mdblist, 'ada-mdblist-key'); assert.equal(ada.config.mdblistWatchTracking, true); assert.equal(ada.config.playbackReporting, true);
   assert.equal(ben.config.apiKeys.mdblist, undefined); assert.equal(ben.config.mdblistWatchTracking, false);
-  // Hearts in an app go to a person's own MDBList, never to a key that is not theirs.
-  assert.deepEqual([ada.config.jellyfinWatchlistServices, ben.config.jellyfinWatchlistServices], [['mdblist'], ['server']]);
+  // What is saved in an app stays on the server for everyone until their Watchlist switch is on: MDBList sync alone sends it nowhere.
+  assert.deepEqual([ada.config.jellyfinWatchlistServices, ben.config.jellyfinWatchlistServices], [['server'], ['server']]);
 });
 let token, jf, uuid;
 test('an app signs in through the hub and never sees the setup, its address or its private routes', async () => {
@@ -1074,7 +1074,7 @@ test('Recently Watched follows each person’s accounts (Trakt, else MDBList, el
   const hubHome = [...fake.homes.values()].find(home => !home.config.jellyfinUserName);
   assert.ok(hubHome && !hubHome.config.catalogs.some(item => /^custom\./.test(item.id)), 'the hub’s Home has no one’s own rows');
   // Without her MDBList key: what she played here, never Ben's, and her MDBList answers are let go.
-  assert.equal((await owner('DELETE', '/api/people/ada/mdblist/key')).status, 200);
+  assert.equal((await adaSite('DELETE', '/api/people/ada/mdblist/key')).status, 200);
   assert.deepEqual(sql("SELECT kind FROM rows_cache WHERE person = 'ada' AND kind LIKE 'mdb%'"), []);
   assert.deepEqual((await get(theirList)).body, {metas: []});
   const hers = (await get(adaWatched)).body.metas, mine = sql("SELECT title FROM plays WHERE person = 'ada' ORDER BY updated DESC").map(row => row.title);
@@ -1083,7 +1083,7 @@ test('Recently Watched follows each person’s accounts (Trakt, else MDBList, el
   assert.deepEqual(await syncAll(), {state: 'ok'});
   assert.deepEqual(rowsOf(playerOf('Ada')[1].config), [['custom.aiohub_rows.movie.recommended', 'movie', 'Recommended Movies', true], ['custom.aiohub_rows.series.recommended', 'series', 'Recommended Shows', true], ['custom.aiohub_rows.all.history', 'all', 'Recently Watched', false]]);
   // Her key back, as before.
-  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual((await adaSite('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'});
   lists.recent = {movies: [], shows: [], episodes: []}; lists.watchlist = [];
 });
 const hubRows = async rows => {const state = (await owner('GET', '/api/state')).body.hub; assert.equal((await owner('PUT', '/api/hub', {...state, rows})).status, 200); return syncAll();};
@@ -1328,29 +1328,29 @@ test('two places are compared and copied across: paused points both ways, a move
   assert.equal((await adaSite('GET', '/api/state')).body.hub.people[0].lists, true);
   assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Ada')[1].config.playbackReporting, true);
   // The manager choosing Here for her keeps the key too; Remove key is what lets it go. A key pasted again takes effect at once.
-  assert.equal((await owner('DELETE', '/api/people/ada/mdblist')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.equal((await adaSite('DELETE', '/api/people/ada/mdblist')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
   assert.equal(playerOf('Ada')[1].config.mdblistWatchTracking, false); assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').listsKept, true);
-  assert.equal((await owner('DELETE', '/api/people/ada/mdblist/key')).status, 200); assert.deepEqual(sql("SELECT kind FROM secrets WHERE owner = 'ada' AND kind = 'mdblist'"), []);
-  assert.equal((await owner('POST', '/api/people/ada/mdblist', {reuse: true})).status, 400, 'nothing saved to take up');
-  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'});
+  assert.equal((await adaSite('DELETE', '/api/people/ada/mdblist/key')).status, 200); assert.deepEqual(sql("SELECT kind FROM secrets WHERE owner = 'ada' AND kind = 'mdblist'"), []);
+  assert.equal((await adaSite('POST', '/api/people/ada/mdblist', {reuse: true})).status, 400, 'nothing saved to take up');
+  assert.deepEqual((await adaSite('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'});
   assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(playerOf('Ada')[1].config.mdblistWatchTracking, true);
   lists.playback = null; trakt.playback = null; trakt.history = [];
   assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200);
 });
 test('Trakt sync: hers to turn on, asked after her own sign-in with what she watched here before listed; caught up at once, earlier plays only if ticked; the manager’s switch copies first', async () => {
   const me = async () => (await adaSite('GET', '/api/state')).body.hub.people[0];
-  // The manager switching her progress goes the same way as hers: back here (copying what only MDBList has first), then to MDBList
-  // (copying what only here has), each switching once it is across. Only counts come back; looking stays hers alone.
-  assert.equal((await owner('POST', '/api/people/ada/moving', {to: 'here'})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  // Switching her progress: back here (copying what only MDBList has first), then to MDBList (copying what only here has), each
+  // switching once it is across. Only counts come back. Hers to do now that she has joined; looking was always hers alone.
+  assert.equal((await adaSite('POST', '/api/people/ada/moving', {to: 'here'})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
   assert.equal((await owner('POST', '/api/people/ada/compare/mdblist-here', {})).status, 403, 'copying anything else is hers');
   assert.equal((await owner('GET', '/api/people/ada/compare/mdblist-here')).status, 403);
-  const back = (await owner('POST', '/api/people/ada/compare/mdblist-here', {switch: true})).body;
+  const back = (await adaSite('POST', '/api/people/ada/compare/mdblist-here', {switch: true})).body;
   assert.equal(back.switched, true, JSON.stringify(back)); assert.deepEqual(Object.keys(back).sort(), ['added', 'left', 'more', 'switched', 'unmatched']);
   assert.equal((await me()).lists, false); assert.deepEqual(await syncAll(), {state: 'ok'});
-  assert.equal((await owner('POST', '/api/people/ada/mdblist', {reuse: true, moving: true})).status, 200); assert.equal((await me()).moving, 'mdblist');
-  assert.equal((await owner('POST', '/api/people/ada/compare/here-mdblist', {switch: true})).body.switched, true); assert.equal((await me()).lists, true);
+  assert.equal((await adaSite('POST', '/api/people/ada/mdblist', {reuse: true, moving: true})).status, 200); assert.equal((await me()).moving, 'mdblist');
+  assert.equal((await adaSite('POST', '/api/people/ada/compare/here-mdblist', {switch: true})).body.switched, true); assert.equal((await me()).lists, true);
   // Back to progress here for what follows.
-  assert.equal((await owner('DELETE', '/api/people/ada/mdblist')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.equal((await adaSite('DELETE', '/api/people/ada/mdblist')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
 
   // Something she watched here long ago, before any Trakt was connected (her other plays here were copied or left out earlier).
   const MEMENTO = pack('movie', 'tt0209144');
@@ -1570,7 +1570,7 @@ test('Next Up: the latest episode of each show she watched on Trakt in the last 
 test('with progress in MDBList and sync on, what the daily look finds goes across by itself, through the outbox, once', async () => {
   trakt.refuse = 0;
   // Her progress in MDBList again (the key she saved, at once), and a day's look that found a play MDBList has and Trakt lacks.
-  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'});
+  assert.deepEqual((await adaSite('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'});
   // Pulp Fiction just now; Forrest Gump a day ago, before she connected Trakt. She agreed to send earlier plays, then took it back.
   sql("UPDATE sync SET earlier = 0 WHERE person = 'ada'");
   const day = Date.UTC(2026, 6, 1, 5), at = Math.floor(Date.now() / 1000) - 5, found = JSON.stringify({since: 0, trakt: 1, mdblist: 2, toMdblist: [], toTrakt: [{kind: 'movie', tmdb: 680, imdb: 'tt0110912', name: 'Pulp Fiction', at}, {kind: 'movie', tmdb: 13, imdb: 'tt0109830', name: 'Forrest Gump', at: at - 86400}]});
@@ -2275,27 +2275,27 @@ const favorites = (who, on) => who('POST', '/api/people/ada/favorites', {on});
 const heartsOf = async who => (await who('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').hearts;
 let keptInLists = false;
 const tap = (id, method, other = false) => raw(other ? `/UserFavoriteItems/${id}?userId=${jf}` : `/Users/${jf}/FavoriteItems/${id}`, token, {method});
-test('the watchlist as Favorites is offered to anyone with Trakt on the hub, with or without an MDBList key of their own; with MDBList alone there is no switch, and her setup itself shows her MDBList watchlist as Favorites', async () => {
+test('the Watchlist switch is offered to anyone with an account connected and a setup of their own, off to start with: with it off, what she saves stays on her server whatever is connected', async () => {
   for (const title of [...Object.values(FAV), FAV_SHOW]) HELD[title.id] = {Id: title.id, Type: title === FAV_SHOW ? 'Series' : 'Movie', Name: title.imdb, ProviderIds: {Tmdb: String(title.tmdb), Imdb: title.imdb}};
   HELD[FAV_EP] = {Id: FAV_EP, Type: 'Episode', Name: 'One', SeriesId: FAV_SHOW.id, ParentIndexNumber: 1, IndexNumber: 1, ProviderIds: {}};
-  // Her MDBList key is kept and Trakt is not connected: not offered, and refused. Her setup sends hearts to her MDBList itself.
+  // Her MDBList key is kept and Trakt is not connected: offered, to her and (to see) to her manager, and off. Her setup keeps
+  // what she saves on her server, MDBList sync on or not (the MDBList-only switch has its own test, further down).
   keptInLists = (await adaSite('GET', '/api/state')).body.hub.people[0].lists;
-  assert.equal(sql("SELECT count(*) AS n FROM secrets WHERE owner = 'ada' AND kind = 'mdblist'")[0].n, 1); assert.equal(await heartsOf(adaSite), null);
-  const refused = await favorites(adaSite, true); assert.equal(refused.status, 409); assert.equal(refused.body.message, 'Connect Trakt first.');
-  assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(setupOf(), [['mdblist'], keptInLists]);
+  assert.equal(sql("SELECT count(*) AS n FROM secrets WHERE owner = 'ada' AND kind = 'mdblist'")[0].n, 1); assert.deepEqual(await heartsOf(adaSite), {on: false}); assert.deepEqual(await heartsOf(owner), {on: false});
+  assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(setupOf(), [['server'], keptInLists]);
   trakt.calls.length = 0; fake.hearts.length = 0; trakt.watchlist = [listedFilm(FAV.one, 1), listedFilm(FAV.two, 2)]; await connect();
-  // Trakt connected too, her key kept and her MDBList sync off: offered, on her own page only, and off to start with. Trakt
-  // leads, and with MDBList not synced her setup keeps hearts on the server, so nothing hearted reaches MDBList.
-  assert.equal((await owner('DELETE', '/api/people/ada/mdblist')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
-  assert.deepEqual(setupOf(), [['server'], false]); assert.deepEqual(await heartsOf(adaSite), {on: false}); assert.equal(await heartsOf(owner), null);
+  // Trakt connected too, her key kept and her MDBList sync off: offered, and off to start with (her manager sees that much,
+  // never the count for the offer). Her setup keeps hearts on the server, so nothing hearted reaches MDBList.
+  assert.equal((await adaSite('DELETE', '/api/people/ada/mdblist')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(setupOf(), [['server'], false]); assert.deepEqual(await heartsOf(adaSite), {on: false}); assert.deepEqual(await heartsOf(owner), {on: false});
   assert.deepEqual(sql('SELECT person FROM favs'), []);
   // The key gone, and her setup brought in step: Trakt alone, hearts on the server, still offered.
-  assert.equal((await owner('DELETE', '/api/people/ada/mdblist/key')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.equal((await adaSite('DELETE', '/api/people/ada/mdblist/key')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
   assert.deepEqual(setupOf(), [['server'], false]);
-  assert.deepEqual(await heartsOf(adaSite), {on: false}); assert.equal(await heartsOf(owner), null);
+  assert.deepEqual(await heartsOf(adaSite), {on: false}); assert.deepEqual(await heartsOf(owner), {on: false});
 });
-test('a manager cannot turn Favorites from the watchlist on for someone', async () => {
-  const got = await favorites(owner, true); assert.equal(got.status, 403); assert.equal(got.body.message, 'Only they can do this, from their own page');
+test('a manager cannot turn the Watchlist switch on or off for someone who has joined', async () => {
+  const got = await favorites(owner, true); assert.equal(got.status, 403); assert.equal(got.body.message, 'Ada manages their own sync.');
   assert.equal((await favorites(owner, false)).status, 403); assert.deepEqual(sql('SELECT person FROM favs'), []); assert.deepEqual(await heartsOf(adaSite), {on: false});
   // Nor answer the offer for hearts she already had.
   assert.equal((await owner('POST', '/api/people/ada/favorites/add', {})).status, 403); assert.equal((await owner('POST', '/api/people/ada/favorites/later', {})).status, 403);
@@ -2315,7 +2315,7 @@ test('switched on, her Trakt watchlist is hearted on her own server, newest firs
   // Newest first: one … five, with a title her server does not have and the one she hearted herself in between.
   const GHOST = {imdb: 'tt7999999', tmdb: 7999};
   trakt.watchlist = [listedFilm(FAV.one, 1), listedFilm(GHOST, 1.5), listedFilm(FAV.two, 2), listedFilm(FAV.mine, 2.5), listedFilm(FAV.three, 3), listedFilm(FAV.four, 4), listedFilm(FAV.five, 5)];
-  assert.equal((await favorites(adaSite, true)).status, 200); assert.deepEqual(await heartsOf(adaSite), {on: true}); assert.equal(await heartsOf(owner), null);
+  assert.equal((await favorites(adaSite, true)).status, 200); assert.deepEqual(await heartsOf(adaSite), {on: true}); assert.deepEqual(await heartsOf(owner), {on: true});
   // The Background work row on the Hub page has it, by a count only.
   const jobs = (await owner('GET', '/api/state')).body.hub.jobs; assert.equal(jobs.hearting, 1); assert.equal(jobs.hearted, 0);
   // Her setup saying hearts go on to MDBList while MDBList sync is off (a key of hers kept, before its next save): nothing is
@@ -2433,7 +2433,7 @@ test('hearts she already had that her Trakt watchlist lacks are counted by the c
   sql('UPDATE favs SET found_at = 0'); await heartsTurn(); assert.equal(fake.favReads, reads + 1);
   // What is on the watchlist, what the hub hearted or took away, and what she un-hearted are not among them: only the three.
   assert.deepEqual(foundOf().list.map(heart => heart.key).sort(), ['movie:tt7000021', 'movie:tt7000022', 'movie:tt7000023']); assert.equal(foundOf().more, false);
-  assert.deepEqual(await heartsOf(adaSite), {on: true, extra: 3, more: false}); assert.equal(await heartsOf(owner), null);
+  assert.deepEqual(await heartsOf(adaSite), {on: true, extra: 3, more: false}); assert.deepEqual(await heartsOf(owner), {on: true}, 'the count is hers alone');
   // Counting wrote nothing anywhere: no heart moved, and Trakt heard nothing.
   assert.deepEqual(hearted(), had); await pause(400); assert.equal(listCalls().length, sent);
   // A server that ignores the filter and lists every title adds nothing: only what it says is hearted counts.
@@ -2481,8 +2481,8 @@ test('with her own MDBList key too, Trakt still leads: MDBList sync on, her setu
   // Her key saved, with MDBList sync on: the switch stays as she set it, the ledger stays, and her setup now sends hearts on to
   // MDBList by itself (['mdblist'] with tracking on).
   const ledger = ledgerOf(), gone = removes();
-  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'});
-  assert.deepEqual(setupOf(), [['mdblist'], true]); assert.deepEqual(await heartsOf(adaSite), {on: true}); assert.deepEqual(ledgerOf(), ledger); assert.equal(await heartsOf(owner), null);
+  assert.deepEqual((await adaSite('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(setupOf(), [['mdblist'], true]); assert.deepEqual(await heartsOf(adaSite), {on: true}); assert.deepEqual(ledgerOf(), ledger); assert.deepEqual(await heartsOf(owner), {on: true});
   lists.all.length = 0;
   // The cron step runs for ['mdblist']: a title newly on her Trakt watchlist is hearted on her server, and one that left it
   // (the hub's own heart) loses its heart there. Her server does the rest for MDBList; the hub asks nothing of MDBList.
@@ -2503,17 +2503,20 @@ test('with her own MDBList key too, Trakt still leads: MDBList sync on, her setu
   // is written by the hub until it is saved.
   const config = playerOf('Ada')[1].config; config.mdblistWatchTracking = false;
   trakt.watchlist = [listedFilm(FAV.one, 0), ...trakt.watchlist]; await turns(2); assert.deepEqual(heartWrites(writes), []); config.mdblistWatchTracking = true;
+  // The other way round (hearts kept on the server while her setup tells MDBList of what she does: a setup from before the
+  // switch was turned on, not saved yet, about to read her saves from MDBList instead): nothing is written either.
+  config.jellyfinWatchlistServices = ['server']; await turns(2); assert.deepEqual(heartWrites(writes), [], 'not into a setup about to change'); config.jellyfinWatchlistServices = ['mdblist'];
   await turns(2); assert.deepEqual(heartWrites(writes), ['+one']);
   // MDBList sync off, her key kept: her setup keeps hearts on the server (['server'], nothing passed on), and the hub goes on as
   // with Trakt alone: its own writes go to her server and nowhere else.
-  assert.equal((await owner('DELETE', '/api/people/ada/mdblist')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.equal((await adaSite('DELETE', '/api/people/ada/mdblist')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
   assert.deepEqual(setupOf(), [['server'], false]); assert.deepEqual(await heartsOf(adaSite), {on: true});
   const off = fake.hearts.length; lists.all.length = 0; trakt.watchlist = trakt.watchlist.filter(entry => entry.movie?.ids.imdb !== FAV.one.imdb);
   await turns(2); assert.deepEqual(heartWrites(off), ['-one']); await pause(300); assert.deepEqual(mdbHearts(), []); assert.equal(removes(), gone + 1);
   // Switched off and on with the key kept: no heart moves, nothing is removed from Trakt.
   assert.equal((await favorites(adaSite, false)).status, 200); await cron(); await pause(300); assert.equal(removes(), gone + 1); assert.equal((await favorites(adaSite, true)).status, 200);
   // The key gone again, as it was: Trakt alone.
-  assert.equal((await owner('DELETE', '/api/people/ada/mdblist/key')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(setupOf(), [['server'], false]);
+  assert.equal((await adaSite('DELETE', '/api/people/ada/mdblist/key')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(setupOf(), [['server'], false]);
 });
 /* Shows to tick whole: each with a Season title per season and its episodes, as her server would list them. */
 const LONG = {id: pack('series', 'tt7300000'), imdb: 'tt7300000', tmdb: 7300}, HUGE = {id: pack('series', 'tt7400000'), imdb: 'tt7400000', tmdb: 7400}, BURST = {id: pack('series', 'tt7600000'), imdb: 'tt7600000', tmdb: 7600};
@@ -2632,7 +2635,7 @@ test('earlier plays are offered once, with sync on: Not now is kept for the play
 });
 test('turned off, nothing more is sent and no heart moves; disconnecting Trakt turns it off and clears the ledger without touching hearts or Trakt', async () => {
   // With her own MDBList key and MDBList sync on, so every path here runs while her setup passes hearts on to MDBList.
-  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(setupOf(), [['mdblist'], true]);
+  assert.deepEqual((await adaSite('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(setupOf(), [['mdblist'], true]);
   const calls = () => listCalls().length, sent = calls(), had = hearted(), listed = trakt.watchlist.length, gone = removes();
   // Off: an app's DELETE and POST pass through to her server and go no further; the cron leaves her alone.
   assert.equal((await favorites(adaSite, false)).status, 200); assert.deepEqual(await heartsOf(adaSite), {on: false});
@@ -2647,9 +2650,77 @@ test('turned off, nothing more is sent and no heart moves; disconnecting Trakt t
   await cron(); assert.equal((await tap(FAV.two.id, 'DELETE')).status, 200); assert.equal((await tap(FAV.two.id, 'POST')).status, 200); await pause(700);
   assert.equal(calls(), sent); assert.equal(removes(), gone, 'none but the ones her own app asked for, earlier'); assert.equal(trakt.watchlist.length, listed);
   assert.deepEqual(heartWrites(before), ['-two', '+two'], 'only her own app’s'); assert.deepEqual(hearted(), had);
-  const refused = await favorites(adaSite, true); assert.equal(refused.status, 409); assert.equal(refused.body.message, 'Connect Trakt first.'); assert.equal(await heartsOf(adaSite), null);
+  // The switch went off with Trakt. (With her MDBList key it is still offered, as MDBList's: the next test.)
+  assert.deepEqual(await heartsOf(adaSite), {on: false});
   // As it was before these tests: her MDBList key kept, Trakt not connected.
-  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key', ...(keptInLists ? {} : {keep: true})})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'}); trakt.watchlist = null;
+  assert.deepEqual((await adaSite('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key', ...(keptInLists ? {} : {keep: true})})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'}); trakt.watchlist = null;
+});
+test('with MDBList alone, the Watchlist switch is only her setup: off, what she saves stays on her server; on with MDBList sync on, her setup passes it on to her MDBList; on with MDBList sync off it stays on her server; the hub itself sends nothing anywhere', async () => {
+  const syncOn = async () => {assert.deepEqual((await adaSite('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'});};
+  const syncOff = async () => {assert.equal((await adaSite('DELETE', '/api/people/ada/mdblist')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});};
+  const sent = listCalls().length, reads = trakt.reads.length;
+  // Off, the default, with MDBList sync on: ['server'].
+  await syncOn(); assert.deepEqual(sql('SELECT person FROM favs'), []); assert.deepEqual(await heartsOf(adaSite), {on: false}); assert.deepEqual(setupOf(), [['server'], true]);
+  // On, with MDBList sync on: ['mdblist'], once her setup is saved again. The hub's setups are flagged for the cron as well, in
+  // case her page was closed before it asked. Her manager sees it on.
+  sql('DELETE FROM foryou_sync'); assert.equal((await favorites(adaSite, true)).status, 200); assert.equal(sql('SELECT hub FROM foryou_sync').length, 1);
+  assert.deepEqual(setupOf(), [['server'], true], 'not before her setup is saved'); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(setupOf(), [['mdblist'], true]);
+  assert.deepEqual(await heartsOf(adaSite), {on: true}); assert.deepEqual(await heartsOf(owner), {on: true});
+  // It is not the Trakt job's: the Background work row counts nobody, and the cron step and the hook leave her alone.
+  assert.equal((await owner('GET', '/api/state')).body.hub.jobs.hearting, 0);
+  const writes = fake.hearts.length; assert.equal((await tap(FAV.two.id, 'DELETE')).status, 200); assert.equal((await tap(FAV.two.id, 'POST')).status, 200); await heartsTurn(); await pause(500);
+  assert.deepEqual(heartWrites(writes), ['-two', '+two'], 'only her own app’s'); assert.equal(listCalls().length, sent); assert.deepEqual(ledgerOf(), {});
+  assert.deepEqual(trakt.reads.slice(reads).map(read => read.where).filter(where => where.startsWith('/sync/watchlist')), []);
+  // On, with MDBList sync off: ['server'], and the switch stays on (her page says it needs MDBList sync).
+  await syncOff(); assert.deepEqual(setupOf(), [['server'], false]); assert.deepEqual(await heartsOf(adaSite), {on: true});
+  // MDBList sync on again: ['mdblist'] again, with nothing more to turn.
+  await syncOn(); assert.deepEqual(setupOf(), [['mdblist'], true]);
+  // Off again: ['server']. This time by the cron alone (no page asks): the flag set by the switch brings her setup round.
+  sql('DELETE FROM foryou_sync'); assert.equal((await favorites(adaSite, false)).status, 200); assert.deepEqual(setupOf(), [['mdblist'], true]);
+  for (let n = 0; n < 8 && setupOf()[0][0] !== 'server'; n++) await cron();
+  assert.deepEqual(setupOf(), [['server'], true]); assert.deepEqual(await heartsOf(adaSite), {on: false});
+  // On, then her key removed: the switch goes off with it, so connecting again later starts with it off.
+  assert.equal((await favorites(adaSite, true)).status, 200); assert.equal((await adaSite('DELETE', '/api/people/ada/mdblist/key')).status, 200);
+  assert.deepEqual(sql('SELECT person FROM favs'), []); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(setupOf(), [['server'], false]); assert.equal(await heartsOf(adaSite), null);
+  // Nothing connected: there is nothing to turn on.
+  const refused = await favorites(adaSite, true); assert.equal(refused.status, 409); assert.equal(refused.body.message, 'Connect Trakt or MDBList first.');
+  assert.equal(listCalls().length, sent, 'Trakt heard nothing through any of it');
+  // As it was: her MDBList key kept, Trakt not connected.
+  assert.deepEqual((await adaSite('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key', ...(keptInLists ? {} : {keep: true})})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'});
+});
+test('one rule for who sets a sync switch: once she has joined her manager sets none of the three, by any route, and still sees how each stands; for someone who has not joined the manager sets MDBList sync and Watchlist, and Trakt sync stays theirs alone', async () => {
+  const people = async () => (await owner('GET', '/api/state')).body.hub.people, one = async id => (await people()).find(person => person.id === id);
+  const refused = async (path, method = 'POST', body = {}) => {const got = await owner(method, `/api/people/ada/${path}`, body); assert.equal(got.status, 403, `${method} ${path}`); assert.equal(got.body.message, 'Ada manages their own sync.', `${method} ${path}`);};
+  assert.equal((await one('ada')).joined, true); assert.equal((await one('ben')).joined, false);
+  // Ada has joined. With her MDBList sync off: the manager may still connect MDBList for her (connecting only reads), and turns
+  // nothing on, at once or by starting the copy.
+  assert.equal((await adaSite('DELETE', '/api/people/ada/mdblist')).status, 200);
+  await refused('mdblist', 'POST', {key: 'ada-mdblist-key'}); await refused('mdblist', 'POST', {reuse: true, moving: true}); await refused('compare/here-mdblist', 'POST', {switch: true});
+  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key', keep: true})).body, {username: 'adalists'}); assert.equal((await one('ada')).lists, false);
+  await refused('favorites', 'POST', {on: true}); assert.deepEqual(sql('SELECT person FROM favs'), []);
+  // Trakt sync was never a manager's, joined or not.
+  const trakt_ = await owner('POST', '/api/people/ada/matching', {on: true}); assert.equal(trakt_.status, 403); assert.equal(trakt_.body.message, 'Only they can do this, from their own page');
+  // With her MDBList sync and her Watchlist switch on: the manager turns neither off, by the switch's routes or by removing her key.
+  assert.deepEqual((await adaSite('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key'})).body, {username: 'adalists'}); assert.equal((await favorites(adaSite, true)).status, 200);
+  await refused('mdblist', 'DELETE'); await refused('mdblist/key', 'DELETE'); await refused('moving', 'POST', {to: 'here'}); await refused('moving', 'POST', {to: null}); await refused('compare/mdblist-here', 'POST', {switch: true});
+  await refused('favorites', 'POST', {on: false});
+  // Shown to the manager as they stand, and nothing changed.
+  const ada = await one('ada'); assert.equal(ada.lists, true); assert.equal(ada.moving, null); assert.deepEqual(ada.hearts, {on: true}); assert.deepEqual(sql('SELECT person FROM favs'), [{person: 'ada'}]);
+  assert.equal((await favorites(adaSite, false)).status, 200);
+  // Ben has not joined: the manager sets MDBList sync and Watchlist for him, and his setup follows the same rule. Nobody else can.
+  const ben = (path, method = 'POST', body = {}) => owner(method, `/api/people/ben/${path}`, body), bensSetup = () => {const config = playerOf('Ben')[1].config; return [config.jellyfinWatchlistServices, config.mdblistWatchTracking];};
+  assert.deepEqual((await ben('mdblist', 'POST', {key: 'ada-mdblist-key'})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.equal((await one('ben')).lists, true); assert.deepEqual((await one('ben')).hearts, {on: false}); assert.deepEqual(bensSetup(), [['server'], true]);
+  assert.equal((await ben('favorites', 'POST', {on: true})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual((await one('ben')).hearts, {on: true}); assert.deepEqual(bensSetup(), [['mdblist'], true]);
+  assert.equal((await adaSite('POST', '/api/people/ben/favorites', {on: false})).status, 403); assert.deepEqual(sql('SELECT person FROM favs'), [{person: 'ben'}]);
+  // The offer under the switch is never a manager's to answer, and Trakt sync is never a manager's to turn.
+  assert.equal((await ben('favorites/add')).status, 403); assert.equal((await ben('matching', 'POST', {on: true})).status, 403);
+  assert.equal((await ben('favorites', 'POST', {on: false})).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(bensSetup(), [['server'], true]);
+  assert.equal((await ben('mdblist', 'DELETE')).status, 200); assert.equal((await one('ben')).lists, false);
+  // As it was: Ben without a key, Ada's kept.
+  assert.equal((await ben('mdblist/key', 'DELETE')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(bensSetup(), [['server'], false]);
+  if (!keptInLists) assert.equal((await adaSite('DELETE', '/api/people/ada/mdblist')).status, 200);
+  assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal((await one('ada')).lists, keptInLists); assert.deepEqual(sql('SELECT person FROM favs'), []);
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);

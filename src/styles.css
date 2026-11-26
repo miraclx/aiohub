@@ -446,11 +446,11 @@ label.sheet-sub { display: block; }
 .accounts .gains p::before { content: ""; position: absolute; left: 2px; top: 8px; width: 4px; height: 4px; border-radius: 50%; background: var(--muted); }
 .accounts h3 .free { margin-left: 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
 /* A short list inside a card: earlier plays behind Show them, and What was synced. */
-.accounts .listed { display: grid; gap: 6px; margin-top: 8px; max-height: 260px; overflow-y: auto; }
-.accounts .listed p { margin: 0; font-size: 13px; }
-.accounts .listed strong { color: var(--text); font-weight: 600; }
+:is(.accounts, .sync-card) .listed { display: grid; gap: 6px; margin-top: 8px; max-height: 260px; overflow-y: auto; }
+:is(.accounts, .sync-card) .listed p { margin: 0; font-size: 13px; }
+:is(.accounts, .sync-card) .listed strong { color: var(--text); font-weight: 600; }
 .accounts .under-tick { margin: -6px 0 0 32px; }
-.accounts .synced > p { margin: 8px 0 0; }
+:is(.accounts, .sync-card) .synced > p { margin: 8px 0 0; }
 /* Connected as …: its own line, cut short with an ellipsis when long. */
 .accounts .who { margin: 2px 0 4px; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .accounts .who strong { color: var(--text); font-weight: 600; }
@@ -490,34 +490,37 @@ label.sheet-sub { display: block; }
 .if-now li small { display: block; color: var(--muted); font-size: 13px; }
 .settings .setting.column > button.ghost.small { align-self: flex-start; }
 /* Accounts: one line of how something stands, a dot then the words (wrapping under the words, never under the dot). */
-.accounts .status-line { display: flex; align-items: flex-start; gap: 10px; margin: 0; color: var(--text); line-height: 20px; }
-.accounts .status-line .dot { box-sizing: border-box; width: 8px; height: 8px; flex-shrink: 0; margin-top: 6px; background: var(--ok); border-radius: 50%; }
-.accounts .status-line .dot.wait { background: var(--muted); }
-.accounts .status-line .dot.off { background: transparent; border: 1.5px solid var(--muted); }
-.accounts .status-line .link { margin-left: 2px; }
+:is(.accounts, .sync-card) .status-line { display: flex; align-items: flex-start; gap: 10px; margin: 0; color: var(--text); line-height: 20px; }
+:is(.accounts, .sync-card) .status-line .dot { box-sizing: border-box; width: 8px; height: 8px; flex-shrink: 0; margin-top: 6px; background: var(--ok); border-radius: 50%; }
+:is(.accounts, .sync-card) .status-line .dot.wait { background: var(--muted); }
+:is(.accounts, .sync-card) .status-line .dot.off { background: transparent; border: 1.5px solid var(--muted); }
+:is(.accounts, .sync-card) .status-line .link { margin-left: 2px; }
 /* The question after connecting Trakt: what sync does, then Turn on or Not now, set apart like a note. */
-.accounts .consent p { margin: 0; }
-.accounts .consent .ask { font-size: 14px; color: var(--muted); line-height: 20px; }
-.accounts .consent .ask strong { color: var(--text); font-weight: 600; }
-.accounts .consent { display: grid; gap: 12px; padding: 14px; border-radius: 12px; background: var(--raised); }
-.accounts .consent .tick { display: flex; gap: 12px; align-items: flex-start; font-size: 14px; color: var(--muted); cursor: pointer; }
-.accounts .consent .tick strong { color: var(--text); font-weight: 600; }
-.accounts .consent .tick input { width: 20px; height: 20px; flex-shrink: 0; margin: 1px 0 0; accent-color: var(--accent); }
-.accounts .consent-actions { display: flex; align-items: center; gap: 16px; }
-/* The Sync card, a card of its own under the accounts: a line of what is synced, then a part for watching and one for the
-   watchlist. Each switch has its name on the left and what it means or how it stands on the lines under it. */
-.accounts + .accounts { margin-top: 16px; }
-.accounts .sync-summary { margin-top: 4px; color: var(--text); font-size: 15px; line-height: 21px; }
-.accounts .sync-part { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
-.accounts .sync-part h4 { margin: 0; color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
-.accounts .sync-part p { margin: 0; }
-.accounts .sync-part h4 + p { margin-top: -6px; }
-.accounts .sync-row { display: grid; gap: 8px; }
-.accounts .sync-row + .sync-row { padding-top: 12px; border-top: 1px dashed var(--line); }
-.accounts .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.accounts .switch-row strong { font-weight: 600; font-size: 15px; }
-.accounts .switch-row .switch { flex-shrink: 0; }
-/* A one-off offer under a switch (earlier plays, hearts Trakt lacks): what it is, then what can be done about it. */
-.accounts .offer { display: grid; gap: 8px; padding: 12px 14px; border-radius: 12px; background: var(--raised); }
-.accounts .offer > p:first-child { color: var(--text); font-size: 14px; line-height: 20px; }
-.accounts .offer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; }
+:is(.accounts, .sync-card) .consent p { margin: 0; }
+:is(.accounts, .sync-card) .consent .ask { font-size: 14px; color: var(--muted); line-height: 20px; }
+:is(.accounts, .sync-card) .consent .ask strong { color: var(--text); font-weight: 600; }
+:is(.accounts, .sync-card) .consent { display: grid; gap: 12px; padding: 14px; border-radius: 12px; background: var(--raised); }
+:is(.accounts, .sync-card) .consent .tick { display: flex; gap: 12px; align-items: flex-start; font-size: 14px; color: var(--muted); cursor: pointer; }
+:is(.accounts, .sync-card) .consent .tick strong { color: var(--text); font-weight: 600; }
+:is(.accounts, .sync-card) .consent .tick input { width: 20px; height: 20px; flex-shrink: 0; margin: 1px 0 0; accent-color: var(--accent); }
+:is(.accounts, .sync-card) .consent-actions { display: flex; align-items: center; gap: 16px; }
+/* The Sync card, a card of its own under the accounts, in the settings cards' language: a row a switch. Each row: its name on
+   the left and the switch on the right, the sentence of what it does under the name across the row, and under that at most
+   one quiet line (or a status line with its dot, when something is unusual). */
+.accounts + .sync-card { margin-top: 16px; }
+.sync-card .setting { gap: 6px; }
+.sync-card .setting:first-child { padding-bottom: 4px; }
+.sync-card .setting:first-child + .setting { border-top: 0; }
+/* (No last word alone on a line: a sentence here is short enough for that to read as a mistake on a phone.) */
+.sync-card .setting > p, .sync-card .offer p { margin: 0; line-height: 20px; text-wrap: pretty; }
+.sync-card .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.sync-card .switch-row .switch { flex-shrink: 0; }
+.sync-card .quiet { font-size: 13px; }
+.sync-card .status-line { color: var(--text); }
+.sync-card .consent, .sync-card .offer { margin-top: 6px; }
+.sync-card .sync-foot { gap: 8px; }
+.sync-card .sync-foot .link { color: var(--muted); }
+/* A one-off offer under a switch (earlier plays, saved titles Trakt lacks): one line of what it is, then what can be done. */
+:is(.accounts, .sync-card) .offer { display: grid; gap: 8px; padding: 12px 14px; border-radius: 12px; background: var(--raised); }
+:is(.accounts, .sync-card) .offer > p:first-child { color: var(--text); font-size: 14px; line-height: 20px; }
+:is(.accounts, .sync-card) .offer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; }

@@ -372,8 +372,8 @@ export function homeOf(rows: Row[], lists: boolean, trakt = false, served: Serve
   return {catalogs: [...catalogs, ...[...sources.values()].filter(item => !catalogs.some(made => made.id === item.id && made.type === item.type))], collections};
 }
 const address = (env: Env, made: Catalogs) => `${env.AIOM_ORIGIN}/stremio/${made.uuid}/manifest.json?v=${made.v}`;
-// `leads`: their Trakt is connected to the hub at all, even while it waits to be signed in to again: Trakt leads their Favorites.
-interface Want {rows: Row[]; settings: Settings; leads?: boolean; trakt?: string | null; lists?: string | null; reads?: string | null; served?: Served | null; picks?: Record<string, Pick>; shelf?: Shelf[]}
+// `saves`: their Watchlist switch is on (a row in `favs`, by hub and person: api.ts, 'favorites').
+interface Want {rows: Row[]; settings: Settings; saves?: boolean; trakt?: string | null; lists?: string | null; reads?: string | null; served?: Served | null; picks?: Record<string, Pick>; shelf?: Shelf[]}
 interface Keys {tmdb: string; mdblist: string | null}
 type Wanted = ReturnType<typeof homeOf> & Record<string, unknown>;
 const groupOwner = (id: string) => `#g:${id}`;
@@ -394,13 +394,15 @@ const art = (settings: Settings, pattern: string = settings.ageBadge ? BETTER.re
 // without it nothing is recorded anywhere (the hub's shared key is one account, so it is never used for that).
 // `$reads` is their MDBList key kept while progress is Here: it only reads their lists, and records and hides nothing.
 const wantedOf = (want: Want, keys: Keys, limit: Limit = 'all'): Wanted => ({...homeOf(want.rows, !!(keys.mdblist || want.lists || want.reads), !!want.trakt, want.served ?? null, limit, want.picks, want.settings.forYouOff, want.shelf), ...looks(want.settings), ...art(want.settings), hideWatchedTrakt: !!want.trakt && want.settings.hideWatched, $trakt: want.trakt ?? null,
-  // A heart (favourite) in an app is, to AIOMetadata, a watchlist add on every account its setup holds a key for, and its
-  // Favorites list is read from there. With only the hub's shared MDBList key in the setup, that would be the hub's account for
-  // everyone: so hearts stay on the server unless the key is the person's own.
-  // With their Trakt connected to the hub as well, Trakt leads their Favorites (hearts.ts) and MDBList only follows while its
-  // own sync is on (`lists`): with MDBList sync off (`reads`) hearts stay on the server, so nothing the hub or an app hearts
-  // is written to an account that is not synced. Someone with MDBList alone keeps Favorites as their MDBList watchlist.
-  jellyfinWatchlistServices: want.lists || (want.reads && !want.served?.trakt && !want.leads) ? ['mdblist'] : ['server'],
+  // A save (a favourite, the heart in some apps) is, to AIOMetadata, a watchlist add on every account its setup holds a key for,
+  // and its saved list is read from there. One rule for everyone, set by their Watchlist switch (`saves`):
+  // - Off, the default: saves stay on their own server (['server']) and reach no account, whatever is connected.
+  // - On: ['mdblist'] only with a key of their own and MDBList sync on (`lists`), so their server passes each save on to their
+  //   own MDBList watchlist. That is the whole of it for someone with MDBList alone, and how MDBList follows for someone whose
+  //   Trakt is connected to the hub (hearts.ts keeps their Trakt watchlist and their saves the same, on their server). On with
+  //   MDBList sync off (`reads`), or with no key of theirs: ['server'], so nothing saved is written to an account that is not
+  //   synced, and never to the hub's shared MDBList key.
+  jellyfinWatchlistServices: want.saves && want.lists ? ['mdblist'] : ['server'],
   playbackReporting: !!want.lists, mdblistWatchTracking: !!want.lists, hideWatchedMdblist: !!want.lists && want.settings.hideWatched, $lists: want.lists ?? null, ...(want.reads ? {$reads: want.reads} : {})});
 const LATER = 'AIOMetadata did not answer, so Home rows in the player apps were not updated. It will be tried again on your next change.';
 
@@ -555,9 +557,12 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
 export async function syncPlayers(site: Env, hub: {id: string; data: string}, origin = '', most = 30): Promise<Synced> {
   const data = JSON.parse(hub.data) as HubData, service = data.defaults.debrid, env = hosted(site, data);
   // The vault, the groups and the people in one trip to the database: each trip costs as much as a call to AIOStreams.
-  const [secretRows, groupRows, personRows, playRows, pickRows, shelfRows] = await env.DB.batch([env.DB.prepare('SELECT owner, kind, value FROM secrets WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, name, data FROM groups WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, grp, name, data FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
+  const [secretRows, groupRows, personRows, playRows, pickRows, shelfRows, saveRows] = await env.DB.batch([env.DB.prepare('SELECT owner, kind, value FROM secrets WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, name, data FROM groups WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, grp, name, data FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
     env.DB.prepare('SELECT DISTINCT person FROM plays WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT person, picks FROM foryou WHERE hub = ?').bind(hub.id),
-    env.DB.prepare('SELECT person, items FROM rows_cache WHERE hub = ? AND kind = ?').bind(hub.id, SHELF)]);
+    env.DB.prepare('SELECT person, items FROM rows_cache WHERE hub = ? AND kind = ?').bind(hub.id, SHELF),
+    // Whose Watchlist switch is on (wantedOf, jellyfinWatchlistServices).
+    env.DB.prepare('SELECT person FROM favs WHERE hub = ?').bind(hub.id)]);
+  const saving = new Set((saveRows.results as {person: string}[]).map(row => row.person));
   // Each person's Trakt lists as the cron last worked them out (shelf.ts), for their My Trakt lists row.
   const shelves = new Map((shelfRows.results as {person: string; items: string}[]).map(row => [row.person, shelfFrom(row.items)]));
   // What fills each person's For you places today (foryou.ts): only what was picked and kept, so every sync writes the same.
@@ -576,12 +581,10 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
   // something watched, the Watchlist with their MDBList key or Trakt, and their other Trakt rows once Trakt is connected to the hub. If their Trakt is also
   // connected on AIOMetadata, the hub's wins and AIOMetadata's is no longer used. Without AIOMetadata in front a row of one's own
   // would give everyone a Home setup of their own, so there only those with Trakt or MDBList in use get the address.
-  const viaHub = new Set<string>(), leads = new Set<string>(), keyed = new Set<string>(), served = new Map<string, string>(), minted = [], rowsAt = (env.SITE_ORIGIN || origin).replace(/\/$/, '');
+  const viaHub = new Set<string>(), keyed = new Set<string>(), served = new Map<string, string>(), minted = [], rowsAt = (env.SITE_ORIGIN || origin).replace(/\/$/, '');
   for (const name of env.TRAKT_CLIENT_ID ? vault.keys() : []) if (name.endsWith(`/${LINK}`)) {
     const owner = name.slice(0, -LINK.length - 1), link = await held<{again?: boolean}>(env, vault, hub.id, owner, LINK);
     if (link && !link.again) viaHub.add(owner);
-    // A login Trakt wants signed in to again still counts as connected for where hearts go (wantedOf): that must not flip back and forth.
-    if (link) leads.add(owner);
   }
   for (const name of vault.keys()) if (name.endsWith('/mdblist') && (await held<{key?: string}>(env, vault, hub.id, name.slice(0, -8), 'mdblist'))?.key) keyed.add(name.slice(0, -8));
   // Each person's own rows are read from this site's address. Without one (a sync started by no visit, and no SITE_ORIGIN) everyone's
@@ -600,7 +603,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
     // their own setup (AIOMetadata in front). Without that, a kept key would only make them a setup of their own for nothing.
     const at = served.get(row.id), hubTrakt = viaHub.has(row.id) && !!at, trakt = !hubTrakt && own.trakt ? linked.get(row.id) ?? null : null, lists = own.lists ? watching.get(row.id) ?? null : null, reads = own.lists || env.FRONT !== 'aiometadata' ? null : watching.get(row.id) ?? null;
     // Someone with Trakt or MDBList connected and no Home of their own gets those rows above the shared ones.
-    return {id: row.id, name: row.name, group, above, want: {rows: rowsOf(own.rows, above.rows, {trakt: !!(trakt || hubTrakt), lists: keyed.has(row.id), watched: hubTrakt || keyed.has(row.id) || played.has(row.id), kids: {...above.settings, ...own.settings}.limit === 'kids', front: env.FRONT === 'aiometadata'}, own.picks), settings: {...above.settings, ...own.settings}, leads: leads.has(row.id), trakt, lists, reads, served: at ? {at, trakt: hubTrakt, lists: keyed.has(row.id)} : null, picks: forYou.get(row.id), shelf: shelves.get(row.id)} as Want, tracks: !!lists, home: null as string | null, variants: [] as string[]};
+    return {id: row.id, name: row.name, group, above, want: {rows: rowsOf(own.rows, above.rows, {trakt: !!(trakt || hubTrakt), lists: keyed.has(row.id), watched: hubTrakt || keyed.has(row.id) || played.has(row.id), kids: {...above.settings, ...own.settings}.limit === 'kids', front: env.FRONT === 'aiometadata'}, own.picks), settings: {...above.settings, ...own.settings}, saves: saving.has(row.id), trakt, lists, reads, served: at ? {at, trakt: hubTrakt, lists: keyed.has(row.id)} : null, picks: forYou.get(row.id), shelf: shelves.get(row.id)} as Want, tracks: !!lists, home: null as string | null, variants: [] as string[]};
   });
 
   // Home. The hub has one setup on AIOMetadata; a group or a person gets their own only while theirs differs from the one above.
