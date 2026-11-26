@@ -1,17 +1,19 @@
-/* Copying what someone watched here to their own trackers (their MDBList, their Trakt, or both), once they connect one, when they ask
-   and after they have seen the plan.
+/* Copying what someone watched here to their own trackers (their MDBList, their Trakt, or both), for someone whose sync with
+   that tracker is on: Trakt's share only while their Trakt sync is on (asked in `plan`; with it off Trakt is not looked at and
+   nothing is offered or sent to it), MDBList's for their MDBList sync (the daily step, and the copy as it is turned on).
    AIOMetadata keeps what is played on a person's own server whether or not a tracker is connected, and once one is connected it
    shows both; nothing is lost by leaving it there. This is for having it in MDBList too (other apps read it there).
    Only titles played through the hub are looked at: on this path every play passes through it, so that is everything the
    server learned here, and it keeps the work small however long someone's MDBList history is. AIOMetadata is asked what it
    holds for those titles, MDBList and Trakt what they already have, and only the difference is offered.
-   Trakt: only plays that never reached it as they happened are looked at (nothing was sent for them: Trakt was not connected
-   yet, or the title could not be matched then), and a play Trakt already has within twelve hours counts as the same viewing.
+   Trakt: only plays that never reached it as they happened are looked at (nothing was sent for them: sync was not on yet, or
+   the title could not be matched then), and a play Trakt already has within twelve hours counts as the same viewing. One from
+   before sync was last turned on goes only if they ticked earlier plays.
    Trakt's history takes finished watches only: a part-watched title goes to Trakt as a paused point (/scrobble/pause, under 80%,
    dated when it is sent), unless Trakt already holds a point for it. */
 import type {Env} from './util';
 import {getSecret, now} from './util';
-import {LINK, deliver, read} from './trakt';
+import {LINK, deliver, read, syncOn} from './trakt';
 import type {Link} from './trakt';
 import {SAME, traktPlays} from './drift';
 
@@ -83,14 +85,22 @@ export async function synced(env: Env, hub: string, person: string) {
   const rows = (await env.DB.prepare('SELECT place, play, at, title, detail FROM sent WHERE hub = ? AND person = ? AND title IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 30').bind(hub, person).all<{place: Place; play: string; at: number; title: string; detail: string | null}>()).results;
   return rows.map(row => ({title: row.title, detail: row.detail ?? '', to: row.place, spot: /^(p|ip|ir|pm|pt):/.test(row.play), ...(row.play.startsWith('ir:') ? {updated: true} : {}), at: row.at}));
 }
-/* What they watched here before connecting Trakt, newest first, as the consent box lists it: from the plays kept here (title and
+/* Since when what is watched here goes to Trakt by itself: when their sync was last turned on (the moment they connected, for
+   someone who turned it on before that was kept). A play here from before then is an earlier play. */
+export const sendingSince = (link: Link) => link.on ?? link.since ?? 0;
+/* A play Trakt was told of as it happened, under this connection: `scrobbled` is set ('held' is a start still held back,
+   front.ts, so nothing was sent), and it was played since the link was made (one from before may be from another account). */
+const toldLive = (play: {scrobbled: string | null; updated: number} | undefined, link: Link) => !!play?.scrobbled && play.scrobbled !== 'held' && (!link.since || play.updated >= link.since);
+/* What they watched here before sync was turned on (`since`: sendingSince, or now while it is off), newest first, as the
+   question lists it: from the plays kept here (title and
    date), with no call to their server or to Trakt. The same plays a pass looks at (the newest 500, `plan`), less what was played
-   under 1%, what was sent to Trakt before (by the play's id here, kept with what was sent), and what is known to have been left
+   under 1%, what Trakt was told of as it played (sync was on then), what was sent to Trakt before (by the play's id here, kept
+   with what was sent), and what is known to have been left
    out. What is really sent can still be fewer: Trakt may already have a play, their server may no longer hold a title as watched,
    and one left out before Trakt's ids for it were looked up is not known here. */
-export async function earlierPlays(env: Env, hub: string, person: string, since: number, skip: Set<string>) {
-  const rows = (await env.DB.prepare('SELECT item, title, detail, position, duration, updated, ids FROM plays WHERE hub = ? AND person = ? ORDER BY updated DESC LIMIT 500').bind(hub, person).all<{item: string; title: string; detail: string; position: number; duration: number; updated: number; ids: string | null}>()).results;
-  const early = rows.filter(row => row.updated < since && row.duration > 0 && row.position * 100 >= row.duration);
+export async function earlierPlays(env: Env, hub: string, person: string, link: Link, since: number, skip: Set<string>) {
+  const rows = (await env.DB.prepare('SELECT item, title, detail, position, duration, updated, ids, scrobbled FROM plays WHERE hub = ? AND person = ? ORDER BY updated DESC LIMIT 500').bind(hub, person).all<{item: string; title: string; detail: string; position: number; duration: number; updated: number; ids: string | null; scrobbled: string | null}>()).results;
+  const early = rows.filter(row => row.updated < since && row.duration > 0 && row.position * 100 >= row.duration && !toldLive(row, link));
   if (!early.length) return [];
   const sent = await ledger(env, hub, person, 'trakt'), gone = new Set((await env.DB.prepare("SELECT item FROM sent WHERE hub = ? AND person = ? AND place = 'trakt' AND item IS NOT NULL").bind(hub, person).all<{item: string}>()).results.map(row => row.item));
   return early.filter(row => {
@@ -113,11 +123,13 @@ export const mdblist = (env: Env, key: string) => async (path: string, body?: un
 
 /* `skip`: what the person left out, never offered again. */
 /* `want`: which of the two to look at (both, unless said). MDBList's key is used even while the person is still moving to it.
-   `before` false: what was watched here before Trakt was connected stays off Trakt (they have not agreed to send it; sync.ts).
+   `before` false: what was watched here before sync was turned on stays off Trakt (they have not agreed to send it; sync.ts).
    `since`: only what was played here from then on. `few`: a cron pass, which checks and sends fewer (it shares its run). */
 export interface Want {trakt?: boolean; lists?: boolean; before?: boolean; since?: number; few?: boolean}
 export async function plan(env: Env, hub: string, person: string, skip: Set<string> = new Set(), want: Want = {trakt: true, lists: true}): Promise<Plan | Failed> {
-  const lists = want.lists ? await getSecret<{key: string}>(env, hub, person, 'mdblist') : null, held = env.TRAKT_CLIENT_ID && want.trakt ? await getSecret<Link>(env, hub, person, LINK) : null, link = held && !held.again ? held : null;
+  const lists = want.lists ? await getSecret<{key: string}>(env, hub, person, 'mdblist') : null, held = env.TRAKT_CLIENT_ID && want.trakt ? await getSecret<Link>(env, hub, person, LINK) : null;
+  // Trakt counts only while their sync is on: with it off nothing of theirs is compared with Trakt or sent there.
+  const link = held && !held.again && await syncOn(env, hub, person) ? held : null;
   if (!lists?.key && !link) return {error: 'Connect Trakt or MDBList first.'};
   // Copied before: a tracker may still answer from a few minutes ago, and one the person deleted there stays deleted, so these are
   // never sent twice.
@@ -147,11 +159,10 @@ export async function plan(env: Env, hub: string, person: string, skip: Set<stri
       entry.key = `${watched ? 'w' : 'p'}:${where(entry)}`;
       if (skip.has(entry.key)) continue;
       if (lists?.key) entry.lists = toLists.has(entry.key) ? 'has' : 'add';
-      // Trakt: a finished watch it was never sent as it happened (sent: scrobbled is set, after the link was made; 'held' is a start
-      // still held back, front.ts, so nothing was sent). One from before
-      // the link only when the person said so.
-      const early = !!link?.since && (here?.updated ?? 0) < link.since;
-      if (link) entry.trakt = toTrakt.has(entry.key) || (!partway && here?.scrobbled && here.scrobbled !== 'held' && !early) ? 'has' : early && want.before === false ? 'none' : 'add';
+      // Trakt: a finished watch it was never sent as it happened (toldLive). One from before sync was turned on only when the
+      // person said so.
+      const early = !!link && (here?.updated ?? 0) < sendingSince(link);
+      if (link) entry.trakt = toTrakt.has(entry.key) || (!partway && toldLive(here, link)) ? 'has' : early && want.before === false ? 'none' : 'add';
       if (entry.lists === 'add' || entry.trakt === 'add') all.push(entry);
     }
     let more = false;
@@ -243,13 +254,13 @@ async function carryPass(env: Env, hub: string, person: string, skip: Set<string
   let missed = 0, sent = 0, refused = false;
   if (toTrakt.length) {
     const how = await deliver(env, hub, person, 'carry', {kind: 'mark', path: '/sync/history', body: history(toTrakt)});
-    if (how === 'off') return {error: 'Trakt needs connecting again. Nothing was copied.'};
+    if (how === 'off') return {error: 'Trakt needs connecting again, or sync was just turned off. Nothing was copied.'};
     toTraktDone.push(...toTrakt.map(noted)); sent = toTrakt.length;
   }
   // Paused points one at a time, through the outbox (Trakt takes one write a second per person).
   for (const entry of traktPausing.slice(0, pauses)) {
     const how = await deliver(env, hub, person, `carry:${where(entry)}`, {kind: 'pause', path: '/scrobble/pause', body: pauseOf(entry)});
-    if (how === 'off') return {error: 'Trakt needs connecting again.'};
+    if (how === 'off') return {error: 'Trakt needs connecting again, or sync was just turned off.'};
     toTraktDone.push(noted(entry)); sent++;
   }
   const lists = want.lists ? await getSecret<{key: string}>(env, hub, person, 'mdblist') : null, ask = lists?.key ? mdblist(env, lists.key) : null;

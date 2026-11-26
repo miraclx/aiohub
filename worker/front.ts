@@ -44,7 +44,9 @@ const pictures = new Map<string, {location: string; until: number}>(), PICTURE =
 interface Upstream {user: string; pass: string; auth?: string; base?: string}
 interface Answer {AccessToken: string; User: {Id: string; Name?: string}; SessionInfo?: Record<string, unknown>}
 // hub: which hub the sign-in belongs to; a remembered seat answers only for that hub.
-interface Seat {hub: string; person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string; app: string; base: string; kind: string; scrobble: boolean}
+// trakt: their Trakt is connected to the hub (its rows, and Favorites if they turned that on). scrobble: their Trakt sync is on
+// too, so what they play is passed on to Trakt (see scrobble, below, which asks again each time).
+interface Seat {hub: string; person: string; jf: string; paused: boolean; seen: number; up: string; upId: string; at: number; on: string; app: string; base: string; kind: string; trakt: boolean; scrobble: boolean}
 // Kept for a few seconds per running copy of the Worker, so a page of posters is one lookup, not fifty.
 const hubs = new Map<string, {id: string; up: string; at: number; pictures: string; name: string}>(), seats = new Map<string, Seat>();
 /* A person's top-level libraries on their own server, asked for once and kept ten minutes per running copy. */
@@ -113,20 +115,20 @@ async function mint(env: Env, hub: string, person: string, jf: string, upstream:
 }
 async function seatOf(env: Env, hub: string, id: string): Promise<Seat | null> {
   const known = seats.get(id); if (known && known.hub === hub && Date.now() - known.at < REMEMBER) return known;
-  const row = await env.DB.prepare("SELECT d.person, d.seen, d.app, d.name, p.paused OR coalesce(json_extract(g.data, '$.paused'), 0) AS paused, p.jf, s.value, m.value AS via, EXISTS (SELECT 1 FROM secrets t WHERE t.hub = d.hub AND t.owner = d.person AND t.kind = ?) AS scrobble FROM devices d JOIN people p ON p.hub = d.hub AND p.id = d.person LEFT JOIN groups g ON g.hub = p.hub AND g.id = p.grp LEFT JOIN secrets s ON s.hub = d.hub AND s.owner = d.person AND s.kind = 'upstream' LEFT JOIN secrets m ON m.hub = d.hub AND m.owner = d.person AND m.kind = ? WHERE d.id = ? AND d.hub = ?")
-    .bind(LINK, VIA, id, hub).first<{person: string; seen: number; app: string; name: string; paused: number; jf: string; value: string | null; via: string | null; scrobble: number}>();
+  const row = await env.DB.prepare("SELECT d.person, d.seen, d.app, d.name, p.paused OR coalesce(json_extract(g.data, '$.paused'), 0) AS paused, p.jf, s.value, m.value AS via, EXISTS (SELECT 1 FROM secrets t WHERE t.hub = d.hub AND t.owner = d.person AND t.kind = ?) AS trakt, EXISTS (SELECT 1 FROM sync y WHERE y.hub = d.hub AND y.person = d.person AND y.matching = 1) AS synced FROM devices d JOIN people p ON p.hub = d.hub AND p.id = d.person LEFT JOIN groups g ON g.hub = p.hub AND g.id = p.grp LEFT JOIN secrets s ON s.hub = d.hub AND s.owner = d.person AND s.kind = 'upstream' LEFT JOIN secrets m ON m.hub = d.hub AND m.owner = d.person AND m.kind = ? WHERE d.id = ? AND d.hub = ?")
+    .bind(LINK, VIA, id, hub).first<{person: string; seen: number; app: string; name: string; paused: number; jf: string; value: string | null; via: string | null; trakt: number; synced: number}>();
   seats.delete(id); if (!row) return null;
   // A device signed in before its person's sign-in changed (moved to their own AIOMetadata setup, renamed) has no session there
   // yet: one is made now, so the app carries on without being signed out.
   const kind = row.via ? VIA : 'upstream', upstream = await unseal<Upstream>(env, `${hub}/${row.person}/${kind}`, row.via ?? row.value);
   const answer = upstream?.auth ? JSON.parse(upstream.auth) as Answer : upstream ? await mint(env, hub, row.person, row.jf, upstream, kind) : null;
   if (!answer) return null;
-  const seat = {hub, person: row.person, jf: row.jf, paused: !!row.paused, seen: row.seen, up: answer.AccessToken, upId: answer.User.Id, at: Date.now(), on: [row.app, row.name].filter(Boolean).join(' · '), app: row.app ?? '', base: upstream?.base ?? env.UP_ORIGIN + MOUNT, kind, scrobble: !!row.scrobble && !!env.TRAKT_CLIENT_ID};
+  const seat = {hub, person: row.person, jf: row.jf, paused: !!row.paused, seen: row.seen, up: answer.AccessToken, upId: answer.User.Id, at: Date.now(), on: [row.app, row.name].filter(Boolean).join(' · '), app: row.app ?? '', base: upstream?.base ?? env.UP_ORIGIN + MOUNT, kind, trakt: !!row.trakt && !!env.TRAKT_CLIENT_ID, scrobble: !!row.trakt && !!row.synced && !!env.TRAKT_CLIENT_ID};
   if (seats.size > 2000) seats.clear(); seats.set(id, seat); return seat;
 }
 /* Activity: players report what they are playing and how far in. The hub notes the latest state per person and title as those
    reports pass through: on start, on stop, and at most once a minute in between (once in ten minutes while it sits paused).
-   Nothing is sent on a person's behalf unless they connected Trakt history (scrobble, below). */
+   Nothing is sent on a person's behalf unless their Trakt is connected and they turned its sync on (scrobble, below). */
 const REPORTS: Record<string, 'start' | 'progress' | 'stop'> = {'/sessions/playing': 'start', '/sessions/playing/progress': 'progress', '/sessions/playing/stopped': 'stop'};
 const noted = new Map<string, number>(), seen = new Map<string, {pos: number; at: number; paused: boolean}>(), ends = new Set<string>();
 // A paused player that keeps reporting is noted once in ten minutes: still heard on Activity (src/activity.tsx), and well inside the
@@ -200,7 +202,7 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   if (ended && !ends.has(`${hub}/${seat.person}/${ended}`)) {if (ends.size > 5000) ends.clear(); ends.add(`${hub}/${seat.person}/${ended}`); await finished(env, hub, seat.person, ended);}
   // Their first play here: Recently Watched now has something in it, so their Home gets it without waiting for the site to be opened.
   // Not for someone with Trakt connected to the hub: theirs was there already.
-  if (firstHere && !seat.scrobble) {const found = await env.DB.prepare('SELECT id, data FROM hubs WHERE id = ?').bind(hub).first<{id: string; data: string}>(); if (found) await syncPlayers(env, found, origin).catch(() => null);}
+  if (firstHere && !seat.trakt) {const found = await env.DB.prepare('SELECT id, data FROM hubs WHERE id = ?').bind(hub).first<{id: string; data: string}>(); if (found) await syncPlayers(env, found, origin).catch(() => null);}
 }
 /* Which parts of a title were played, as merged "from-to" seconds. Nothing reports a seek or the playback speed, so a position
    that moved on by about the time that passed (up to twice it, plus 20 s, for faster playback and late reports) was played, and
@@ -276,7 +278,10 @@ async function listen(env: Env, hub: string, seat: Seat, kind: string, text: str
   await env.DB.prepare('INSERT INTO heard_fields (hub, app, kind, sig, first, last) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (hub, app, kind, sig) DO UPDATE SET last = excluded.last, count = count + 1').bind(hub, app, kind, sig, at, at).run();
 }
 const asPerson = (seat: Seat) => `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`;
-/* Trakt history, for a person who connected it (see trakt.ts). Starting, pausing, carrying on, stopping and ticking as watched are
+/* What is watched here, to Trakt, for a person whose Trakt is connected and whose sync is on (see trakt.ts, sync.ts). With sync
+   off none of this runs: the seat says so (kept twenty seconds), the one read below asks the database again (`synced`), so a
+   seat remembered from before sync went off sends, holds and notes nothing, and deliver asks a third time.
+   Starting, pausing, carrying on, stopping and ticking as watched are
    passed on as they happen, in the background; the app's own request never waits. Progress in between is not sent. A call
    Trakt does not take waits in the outbox; what Trakt was told here counts it as told, so what follows carries on from it.
    Trakt hears nothing of a sitting until enough of it has played to count (brief, in trakt.ts): a start shows there as "watching
@@ -290,13 +295,14 @@ const told = new Map<string, string>();
 async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', item: string, position: number, paused: boolean, jumped = false, during = false) {
   const key = `${hub}/${seat.person}/${item}`, want = kind === 'start' ? 'playing' : kind === 'progress' ? (paused ? 'paused' : 'playing') : 'stopped';
   if (told.size > 5000) told.clear(); told.set(key, want);
-  const row = await env.DB.prepare('SELECT duration, ids, scrobbled, scrobbled_at FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{duration: number; ids: string | null; scrobbled: string | null; scrobbled_at: number | null}>();
+  const row = await env.DB.prepare('SELECT duration, ids, scrobbled, scrobbled_at, (SELECT matching FROM sync WHERE hub = ?1 AND person = ?2) AS synced FROM plays WHERE hub = ?1 AND person = ?2 AND item = ?3').bind(hub, seat.person, item).first<{duration: number; ids: string | null; scrobbled: string | null; scrobbled_at: number | null; synced: number | null}>();
+  if (!row?.synced) return;
   // A pause or carrying on only counts inside a play Trakt was told about; a report that arrives after stop starts nothing.
   // A skip while playing is told as a fresh start from the new place.
   const skipped = jumped && want === 'playing' && row?.scrobbled === 'playing';
   // `held`: this title's start is being held back (see above). `live`: Trakt was told of a play of it that is still going.
   const held = !!row?.scrobbled?.startsWith('held'), live = row?.scrobbled === 'playing' || row?.scrobbled === 'paused';
-  if (!row || (kind === 'progress' && !skipped && !held && (row.scrobbled === want || !live))) return;
+  if (kind === 'progress' && !skipped && !held && (row.scrobbled === want || !live)) return;
   // Whether this device's sitting has too little played to count yet. A tick from the episode list a while later is no sitting.
   if (kind !== 'mark' || during) {
     const sat = await env.DB.prepare('SELECT parts, started, updated FROM sittings WHERE hub = ? AND person = ? AND item = ? AND device = ? ORDER BY started DESC LIMIT 1').bind(hub, seat.person, item, seat.on).first<{parts: string | null; started: number; updated: number}>();
@@ -523,7 +529,7 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
   }
   // A heart made or taken away in an app, once their own server took it (2xx): passed on to their Trakt watchlist if they
   // turned that on (see hearted). Only ever from here, after the answer, for a request an app sent.
-  const heart = live && live.kind === VIA && live.scrobble && upstream.ok && (request.method === 'POST' || request.method === 'DELETE') ? FAVOURITE.exec(path) : null;
+  const heart = live && live.kind === VIA && live.trakt && upstream.ok && (request.method === 'POST' || request.method === 'DELETE') ? FAVOURITE.exec(path) : null;
   if (live && heart) ctx.waitUntil(hearted(env, hub, live, heart[1], request.method === 'DELETE').catch(() => {}));
   // A title's file handed over: noted, for the download lines on Activity (see fetched).
   const file = live && request.method === 'GET' && upstream.status < 400 ? FETCH.exec(lower) : null;

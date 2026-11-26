@@ -29,8 +29,9 @@ itself and hosts no video.
   shows a six-digit code, and you approve it from your page on the hub. Phones and laptops sign in with the hub address, a
   name and a password.
 - **Their own Trakt and MDBList.** Trakt and MDBList are services that keep a record of what you watch, plus watchlists
-  and lists. A person can connect either or both. Plays are sent to Trakt as they happen. With sync turned on, plays and
-  paused spots missing on either side are added. Sync only adds: nothing is ever removed or marked unwatched. Their lists
+  and lists. A person can connect either or both. Connecting gives its rows on Home and sends nothing. Each has one
+  Sync switch, off until it is turned on: on, what is watched here goes there as it plays and what is watched elsewhere
+  comes back; off, nothing moves either way. Sync only adds: nothing is ever removed or marked unwatched. Their lists
   and liked lists can be rows on Home.
 - **Playback settings.** Quality (Data saver, Balanced or Best), a size limit, audio languages, subtitles, skipping intros and
   credits where a title has them marked, and hiding what they have already watched.
@@ -188,6 +189,9 @@ Newest first. Dates are the commit dates on `main`.
 
 ### 2026-11-26
 
+- Accounts have one idea each: Connect gives the rows, and one Sync switch moves watching both ways. Trakt sends nothing
+  until its sync is on, and asks once right after you connect. MDBList's switch is called Sync too.
+- Each account-driven row says in one line what it is, where it is edited and in Add row.
 - Favorites: an opt-in switch on the Trakt card shows your Trakt watchlist as Favorites in the apps, and a heart added or removed in an app adds or removes the title on your watchlist.
 - New for you: a row of new episodes of shows you watch, and watchlist movies that are now out to stream (needs Trakt).
 - Recommended Movies and Recommended Shows work without Trakt, worked out from what you watched.
@@ -197,7 +201,7 @@ Newest first. Dates are the commit dates on `main`.
 - A TV's Quick Connect link opens a page on the hub where you approve the code.
 - A For you row is picked again within minutes of finishing something.
 - The Accounts page shows what was synced and where, and says when the hub is waiting on Trakt.
-- Next Up in the apps carries on with shows watched on Trakt: with Trakt sync on and progress kept on the hub, the latest
+- Next Up in the apps carries on with shows watched on Trakt: with Trakt sync on (and MDBList sync off), the latest
   episode of each show from the last 120 days is ticked, with its Trakt date.
 
 ### 2026-11-25

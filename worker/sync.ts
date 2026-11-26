@@ -1,13 +1,17 @@
-/* Syncing a person's Trakt with their progress, once they turn it on from their own page (never from anyone else's: it
-   writes to their own accounts). Progress has one home, this hub (their own server) or their MDBList; Trakt keeps a copy.
-   - Here to Trakt: as it plays (front.ts, through the outbox). What was watched here before connecting goes only if they said so
+/* A person's Trakt sync: one switch, both directions, off until they turn it on from their own page (never from anyone else's: it
+   writes to their own accounts). The `sync` row holds it (`matching`). With it off, or no row at all (connected and never
+   answered, or connected by their manager), nothing of their watching moves either way: no play is sent (trakt.ts gates every
+   call), and nothing here reads their Trakt for plays or writes any (`pass` and `match` below ask for the row first, as does the
+   daily look, drift.ts). Connecting by itself only fills their Trakt rows (rows.ts).
+   Progress has one home, this hub (their own server) or their MDBList; Trakt keeps a copy.
+   - Here to Trakt: as it plays (front.ts, through the outbox). What was watched here before sync was turned on goes only if they said so
      (`earlier`): a pass at a time from their open page (`pass`), and once a day here for any play that never reached Trakt.
    - Trakt to the home: a cron step, one person a run, each about every twenty minutes (`match`). First one cheap read of what
      changed (Trakt's /sync/last_activities); only when a stamp moved is anything else read: Trakt's plays since then, and its
      paused spots. What the hub itself sent is left out. The rest is ticked on their own server, or added to their MDBList (a
      server write would be passed on to MDBList and echo; AIOMetadata reads MDBList for them).
    - MDBList and Trakt, for plays made in other apps: the daily look (drift.ts), which copies across by itself.
-   - Here to MDBList, for someone whose progress is kept in MDBList (with or without Trakt): once a day, what was watched here
+   - Here to MDBList, for someone whose MDBList sync is on (their progress is kept in MDBList; with or without Trakt): once a day, what was watched here
      and their MDBList lacks (`leftovers`). Their setup tells MDBList of each play itself; this is for any that never got there.
    Only adds: nothing is ever unwatched or removed, since a play missing on one side cannot be told from one deleted there. Each
    play goes to a place once (the `sent` ledger, carry.ts), so one deleted there stays deleted. A paused spot replaces the one in
@@ -312,8 +316,8 @@ export async function match(env: Env, time: number): Promise<boolean> {
   return got.calls > CHEAP;
 }
 
-/* The daily step for what was watched here and their MDBList lacks, for someone whose progress is kept in MDBList (Trakt or not,
-   sync on or not: keeping progress there is their say-so, and the switch copied the rest the same way). One person a run, from
+/* The daily step for what was watched here and their MDBList lacks, for someone whose MDBList sync is on (Trakt or not, Trakt
+   sync on or not: MDBList's switch is its own say-so, and turning it on copied the rest the same way). One person a run, from
    HOUR (UTC), and only when they played something since the last look; a run of its own (the last step, after For you had
    nothing to do: index.ts), since a look asks MDBList about each
    title (a few, `few` in carry.ts). The first look takes everything played here; later ones what was played since. What they

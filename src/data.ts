@@ -37,7 +37,7 @@ export interface Shown {key: string; kind: string; name: string; why?: Why; seed
 export interface ForYouDetail {places: Record<string, Shown>; options: Shown[]; none: Record<string, string>; never: {seed: string; title: string}[]}
 /* pickedAt: when their For you places were last picked (unix seconds); shelfAt: when their Trakt lists rows were last worked out,
    0 while they wait to be again; shelfTiles: each list's name and picture (`liked`: one they liked, not their own). */
-/* Whether their Trakt is synced with their progress (worker/sync.ts), and how that stands: `ask` while they have yet to answer,
+/* Whether their Trakt sync is on (worker/sync.ts: off, nothing of their watching moves either way), and how that stands: `ask` while they have yet to answer,
    the last good pass, since when it has failed and why, since when a call has waited for Trakt, and until when Trakt asked the
    hub to wait (unix seconds). */
 export interface Matching {on: boolean; earlier: boolean; ask: boolean; good: number; failing: number | null; why: string | null; waiting: number | null; until?: number}
@@ -61,7 +61,7 @@ export interface Hub {
     /* Favorites from Trakt watchlists (worker/hearts.ts): the last look that went well for anyone here, and how many have it on. */
     hearted?: number | null; hearting?: number;
     /* What was watched here and MDBList lacks (worker/sync.ts, leftovers): the last finished look for anyone here, and how many
-       keep their progress in MDBList. */
+       have MDBList sync on. */
     listed?: number | null; listers?: number};
   // In a person's view: their manager's own sign-in is set aside in this browser, to go back to.
   manager?: boolean;
@@ -104,6 +104,27 @@ export const traktRows = (): Row[] => [
   {id: 'recently-watched', title: 'Recently Watched', kind: 'Movies & shows, latest first', source: 'Trakt', origin: 'own', on: true, core: true},
 ];
 export const TRAKT_IDS = new Set(traktRows().map(row => row.id));
+/* What each account-driven row is and how it is put together, as one plain line: shown where the row is edited and in Add row.
+   The facts are the Worker's: New for you, Up Next, the Watchlist and Recently Watched in rows.ts, Recommended in rows.ts (Trakt's
+   own) and recs.ts (worked out from what was watched), the two rows of Trakt lists in shelf.ts. `source` is the row's own, as
+   their Home has it (personRows, below): it says which form a row with more than one takes. `mine`: said to the person
+   themselves. A row read from Trakt says so, which keeps the line true with their Trakt sync on or off: with it off Trakt does
+   not hear of what is watched here, so such a row goes by what Trakt has from elsewhere. */
+export function aboutRow(row: {id: string; source: string}, mine = true): string | undefined {
+  const you = mine ? 'you' : 'they', your = mine ? 'your' : 'their', Your = mine ? 'Your' : 'Their', kind = row.id === 'recommended-movies' ? 'Movies' : 'Shows';
+  switch (row.id) {
+    case 'new-for-you': return `From ${your} Trakt: new episodes of shows ${you} watch and watchlist movies now out to stream, newest first. A title leaves once ${you} start it.`;
+    case 'recommended-movies': case 'recommended-series': return row.source === 'What was watched'
+      ? `${kind} like the ones ${you} watched lately, a few from each in turn, worked out once a day. What ${you} watched or have on a watchlist is left out.`
+      : `${kind} Trakt recommends for ${mine ? 'you' : 'them'}, from ${your} whole Trakt history. What is on ${your} watchlist is left out.`;
+    case 'up-next': return `From ${your} Trakt: shows with an episode ${you} haven’t watched yet, the ones ${you} watched most lately first.`;
+    case 'watchlist': return row.source === 'Trakt and MDBList' ? `${Your} Trakt and MDBList watchlists as one list, newest added first. A title on both shows once.` : `${Your} ${['MDBList', 'Trakt or MDBList'].includes(row.source) ? row.source : 'Trakt'} watchlist, newest added first.`;
+    case 'recently-watched': return `What ${you} watched lately, newest first, each show once. From ${row.source === 'MDBList' ? `${your} MDBList` : row.source === 'Played here' ? `what ${you} played here` : `${your} Trakt history`}.`;
+    case 'trakt-lists': return `${Your} own Trakt lists, a tile for each. Opening a tile shows that list. Checked once a day.`;
+    case 'trakt-liked-lists': return `Trakt lists ${you} liked, a tile for each. Opening a tile shows that list. Checked once a day.`;
+  }
+  return undefined;
+}
 /* Which accounts a person has connected: Trakt (to the hub, or the older way through AIOMetadata), and an MDBList key; and whether
    the hub can show something they watched (Trakt connected to the hub, an MDBList key, or a play here). */
 export interface Linked {trakt: boolean; lists: boolean; watched: boolean; kids?: boolean; front?: boolean}

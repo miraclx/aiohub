@@ -1,13 +1,13 @@
 // The site's own API: managers' accounts, the hub they run, and what an invited person may change about themselves.
 // What reaches the streaming server goes through ./native.
-import {NO_ANSWER, carry, earlierPlays, mdblist, plan, synced} from './carry';
-import {fix, looked, skip, skippedOf} from './drift';
+import {NO_ANSWER, carry, earlierPlays, mdblist, plan, sendingSince, synced} from './carry';
+import {looked, skip, skippedOf} from './drift';
 import {FOR_YOU_KINDS, PICKABLE, WAS, current as currentRows, defaultAddons, defaultRows, defaultSettings, isPlace, pickable, slug, traktRows} from '../src/data';
 import type {Addon, Hub, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './native';
 import {forgetHub, forgetSeats} from './front';
-import {LINK, answered, brief, disconnect, forgetTrakt, keepLink, links, read, traktWait} from './trakt';
+import {LINK, answered, brief, disconnect, forgetTrakt, keepLink, links, read, stopSending, syncOn, traktWait} from './trakt';
 import type {Link} from './trakt';
 import {pass, turnEvery} from './sync';
 import {forgetHearts, mayHeart, turnHearts} from './hearts';
@@ -108,7 +108,8 @@ function ago(seen: number) {
 const groupDto = (row: GroupRow) => ({id: row.id, name: row.name, ...(JSON.parse(row.data) as GroupData), v: row.version});
 // moving: their MDBList key is kept while they move where progress is kept, to MDBList or back Here (see places.ts).
 // listsKept: they have an MDBList key saved. With progress kept Here it is kept but not used for progress, only to read their lists.
-// matching: whether their Trakt is synced with their progress (sync.ts), and how that stands: `ask` while they have yet to answer
+// matching: whether their Trakt sync is on (sync.ts: with it off nothing of their watching goes to Trakt or comes back), and how
+// that stands: `ask` while they have yet to answer
 // (they connected it themselves), the last good pass, since when it has been failing and why, and since when a call has waited for
 // Trakt (`waiting`), and until when Trakt asked the hub to wait, for reads or for writes (`until`, left out when it did not). Times
 // only; nothing of what they watched.
@@ -398,10 +399,10 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       if (!answer || answer.status >= 500) bad(502, 'MDBList did not answer. Try again in a moment.');
       if (answer!.status !== 200) bad(400, 'MDBList did not accept that key. Copy it from Preferences, API Access.');
       const username = String(((await answer!.json().catch(() => null)) as {username?: string} | null)?.username ?? '').slice(0, 80);
-      // Keep my progress in MDBList, turned on by the person or their manager: the key is kept, and progress moves over only once
+      // MDBList's Sync switch (the page never says so, but it is where progress is kept), turned on by the person or their manager: the key is kept, and progress moves over only once
       // their plays have (the page copies them, places.ts, then switches). A key pasted without either, or a new key for someone
       // already on MDBList, takes effect at once.
-      // `keep`: connecting MDBList on the MDBList card only saves the key; keeping progress there is its own switch.
+      // `keep`: connecting MDBList on the MDBList card only saves the key; Sync is its own switch.
       const moving = body.moving === true && !data.lists, keep = body.keep === true && !data.lists;
       // With a key of their own their app Favorites are their MDBList watchlist (native.ts): Favorites from the Trakt watchlist goes off
       // (hearts.ts). Rows here only: no heart and nothing on Trakt is touched.
@@ -416,12 +417,13 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
   if (action === 'scrobble' && env.TRAKT_CLIENT_ID) {
     // Trakt, connected by the person or by the manager with them, on Trakt's own sign-in page. The page does the sign-in with
     // Trakt itself (Trakt turns away the shared addresses Workers call from for a while at times) and hands the login over to be
-    // kept and renewed here. Once connected, the hub also serves their Trakt rows on Home (rows.ts), added to a Home of their own.
+    // kept and renewed here. Connecting gives their Trakt rows on Home (rows.ts), added to a Home of their own, and writes
+    // nothing to Trakt: what they watch moves only once they turn sync on ('matching', below).
     if (request.method === 'POST' && rest === 'link') {
       const access = text(body.access, 4000, 'Login').trim(), refresh = text(body.refresh, 4000, 'Login').trim(), redirect = text(body.redirect ?? '', 300, 'Address');
       if (!access || !refresh || (redirect && !/^https?:\/\/[^/]+\/api\/trakt\/callback$/.test(redirect))) bad(400, 'Trakt did not finish connecting. Try again.');
-      // Whether it is synced is theirs to say, on their own page, and asked anew for each connection: a person who signed in
-      // themselves is asked there at once; one connected by their manager sees "Turn on" there.
+      // Whether it is synced is theirs to say, on their own page, and asked anew for each connection (the sync row goes, so it is
+      // off): a person who signed in themselves is asked there at once; one connected by their manager sees "Turn on" there.
       await keepLink(env, hub, id, {access, refresh, expires: Math.floor(Number(body.created) || now()) + Math.floor(Number(body.lasts) || 7 * 86400), username: text(body.username ?? '', 80, 'Name').trim(), ...(redirect ? {redirect} : {}), ...(who.person === id ? {ask: true} : {})});
       // Favorites from the watchlist too (hearts.ts): off for a new connection, which may be another Trakt account, and its ledger with it.
       await env.DB.batch([env.DB.prepare('DELETE FROM sync WHERE hub = ? AND person = ?').bind(hub, id), ...forgetHearts(env, hub, id)]);
@@ -439,16 +441,16 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     }
   }
   if (action === 'matching') {
-    // Syncing their Trakt with their progress writes to their own accounts: only they turn it on or off, from their own page. A
+    // Trakt sync, both directions, writes to their own accounts: only they turn it on or off, from their own page. A
     // manager is refused whatever they send, and nothing of it (what was watched before, what was synced) is shown to them.
     if (who.person !== id) bad(403, 'Only they can do this, from their own page');
     const link = env.TRAKT_CLIENT_ID ? await getSecret<Link>(env, hub, id, LINK) : null;
     if (!link) bad(409, 'Connect Trakt first.');
     // What the hub synced for them lately, for What was synced on the Trakt card.
     if (request.method === 'GET' && rest === 'synced') return {synced: await synced(env, hub, id)};
-    // What they watched here before connecting, for the tick that offers to send it too: how many, and each one (the newest
-    // hundred), from the plays kept here.
-    if (request.method === 'GET' && !rest) {const plays = link!.since ? await earlierPlays(env, hub, id, link!.since, await skippedOf(env, hub, id)) : []; return {earlier: plays.length, plays: plays.slice(0, 100)};}
+    // What they watched here before sync was turned on (everything up to now, while it is off), for the tick that offers to send
+    // it too: how many, and each one (the newest hundred), from the plays kept here.
+    if (request.method === 'GET' && !rest) {const plays = await earlierPlays(env, hub, id, link!, await syncOn(env, hub, id) ? sendingSince(link!) : now(), await skippedOf(env, hub, id)); return {earlier: plays.length, plays: plays.slice(0, 100)};}
     if (request.method === 'POST' && rest === 'pass') {
       const got = await pass(env, hub, id, (JSON.parse(row.data) as PersonData).lists);
       // Looked at again next time: what was just sent is on the other side now.
@@ -457,13 +459,18 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     }
     if (request.method === 'POST' && !rest) {
       // Turned on afresh, the next look goes back two weeks (no stamps kept). `earlier` only goes with it on.
-      const on = flag(body.on), earlier = on && flag(body.earlier);
+      const on = flag(body.on), earlier = on && flag(body.earlier), was = await syncOn(env, hub, id);
+      // Their page stops asking; going from off to on, the moment is noted first, so nothing watched before it goes unless ticked.
+      await answered(env, hub, id, on && !was);
       // Next Up starts over with it (sync.ts, nextUp: the latest episode of each show watched on Trakt lately; what was ticked
       // before is never ticked twice): what it kept goes, unless sync was on already.
       await env.DB.batch([env.DB.prepare("DELETE FROM rows_cache WHERE hub = ?1 AND person = ?2 AND kind = 'backfill' AND NOT EXISTS (SELECT 1 FROM sync WHERE hub = ?1 AND person = ?2 AND matching = 1)").bind(hub, id),
         env.DB.prepare(`INSERT INTO sync (hub, person, matching, earlier) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (hub, person) DO UPDATE SET matching = excluded.matching, earlier = excluded.earlier,
-        stamps = CASE WHEN sync.matching = 0 THEN NULL ELSE sync.stamps END, checked = 0, failing = NULL, why = NULL`).bind(hub, id, on ? 1 : 0, earlier ? 1 : 0)]);
-      await answered(env, hub, id);
+        stamps = CASE WHEN sync.matching = 0 THEN NULL ELSE sync.stamps END, checked = 0, failing = NULL, why = NULL`).bind(hub, id, on ? 1 : 0, earlier ? 1 : 0),
+        // Off: what was still waiting to reach Trakt is dropped with it (trakt.ts, stopSending), in the same write.
+        ...(on ? [] : stopSending(env, hub, id))]);
+      // Their apps' sign-ins are read again, so the next report goes by the switch as it is now.
+      forgetSeats(hub, id);
       return {};
     }
   }
@@ -479,15 +486,12 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     return {};
   }
   if (action === 'drift' && request.method === 'POST') {
-    // "Add what's missing", from their own page: the plays they left out are kept out for good, then each side gets what it lacks
-    // (Trakt and MDBList from the day's look, and what was watched here copied to MDBList, a pass at a time).
+    // Plays they leave out, from their own page: kept out for good, of every later look and of sync. (Copying what the day's look
+    // found is the cron's alone now, for someone with sync on: drift.ts.)
     if (who.person !== id) bad(403, 'Only they can do this, from their own page');
     const leave = Array.isArray(body.leave) ? body.leave.slice(0, 200).map(key => text(key, 200, 'Play')) : body.skip !== undefined ? [text(body.skip, 200, 'Play')] : [];
     await skip(env, hub, id, leave);
-    if (body.skip !== undefined) return {};
-    const fixed = await fix(env, hub, id);
-    if ('error' in fixed) return bad(409, fixed.error);
-    return {trakt: fixed.trakt, mdblist: fixed.mdblist, more: false};
+    return {};
   }
   if (action === 'because' && request.method === 'GET') {
     // Suggested rows their own watching points to: on their own page only, from their own plays and Trakt pages.
@@ -534,14 +538,16 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     // switch, and only counts come back.
     const pair = oneOf(rest, PAIRS, 'Pair'), moves = request.method === 'POST' && body.switch === true && (pair === 'here-mdblist' || pair === 'mdblist-here');
     if (who.person !== id && !moves) bad(403, 'Only they can do this, from their own page');
+    // Anything between here (or MDBList) and Trakt, looking included, only while their Trakt sync is on.
+    if (pair.endsWith('-trakt') && !await syncOn(env, hub, id)) bad(409, 'Trakt sync is off. Turn it on first.');
     if (request.method === 'GET') {const got = await shown(env, hub, id, pair, await skippedOf(env, hub, id), new URL(request.url).searchParams.get('fresh') === '1'); return 'error' in got ? refuse(env, hub, id, got) : got;}
     if (request.method !== 'POST') bad(404, 'Not found');
     const leave = who.person === id && Array.isArray(body.leave) ? body.leave.slice(0, 500).map(key => text(key, 200, 'Play')) : [];
     await skip(env, hub, id, leave);
     // Moving where progress is kept: only from the state the person's page started it in.
     const kept = await getSecret<{moving?: string}>(env, hub, id, 'mdblist'), switching = body.switch === true;
-    if (switching && !((pair === 'here-mdblist' && kept?.moving === 'mdblist') || (pair === 'mdblist-here' && kept?.moving === 'here'))) bad(409, 'That move isn’t under way. The page has been refreshed.');
-    if (pair === 'mdblist-here' && kept?.moving !== 'here') bad(409, 'That move isn’t under way. The page has been refreshed.');
+    if (switching && !((pair === 'here-mdblist' && kept?.moving === 'mdblist') || (pair === 'mdblist-here' && kept?.moving === 'here'))) bad(409, 'That isn’t under way any more. The page has been refreshed.');
+    if (pair === 'mdblist-here' && kept?.moving !== 'here') bad(409, 'That isn’t under way any more. The page has been refreshed.');
     const got = await copy(env, hub, id, pair, await skippedOf(env, hub, id));
     // Looked at again next time: what was just sent is on the other side now.
     await forgetShown(env, hub, id).run();
@@ -558,7 +564,7 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     // Starting the move back Here (their MDBList stops hearing of plays once the page syncs), or staying on MDBList after all: by
     // the person or their manager, the same way.
     const to = body.to === 'here' ? 'here' : body.to === null ? null : bad(400, 'Not valid');
-    if (to && !(await personData(env, hub, id)).lists) bad(409, 'Progress is already kept here.');
+    if (to && !(await personData(env, hub, id)).lists) bad(409, 'MDBList sync is already off.');
     if (!await moving(env, hub, id, to)) bad(409, 'MDBList isn’t connected.');
     await forgetShown(env, hub, id).run();
     return {};

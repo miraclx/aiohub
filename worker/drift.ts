@@ -1,9 +1,9 @@
 /* Whether a person's Trakt and their own MDBList agree on what they watched in the last two weeks. Looked at once a day for
-   everyone with both connected (Trakt to the hub, MDBList with their own key). A play one has and the other lacks is copied across
-   by itself for someone who has Trakt sync on (sync.ts), a few each run, and never shown: only adds, each play once (the
-   `sent` ledger), so one they deleted on either side stays deleted. For anyone else it is shown on their own page, under Accounts,
-   and copied across only when they ask (`fix`). Looking never changes either side.
-   For someone with Trakt sync on the look is skipped on a day nothing moved: Trakt's last-activity stamps are as they were
+   everyone with both syncs on (Trakt sync, sync.ts; MDBList sync, with their own key). A play one has and the other lacks is
+   copied across by itself, a few each run (`fix`), and never shown: only adds, each play once (the `sent` ledger), so one they
+   deleted on either side stays deleted. With Trakt sync off nobody is looked at and nothing is copied: nothing of theirs moves
+   between the two. Looking never changes either side.
+   The look is skipped on a day nothing moved: Trakt's last-activity stamps are as they were
    at the last look (sync.ts keeps them), and MDBList lists nothing watched since.
    The two note a finish at slightly different moments, so plays of the same title within twelve hours are the same viewing.
    Workers Free allows about fifty outside calls and database queries per run, so the reading is spread over a few cron runs and
@@ -11,14 +11,14 @@
 import type {Env} from './util';
 import {getSecret, now} from './util';
 import {LINK, deliver, read} from './trakt';
-import {NO_ANSWER, ledger, mdblist, remember} from './carry';
+import {NO_ANSWER, ledger, mdblist, remember, sendingSince} from './carry';
 import type {Link} from './trakt';
 
 const DAY = 86400, SPAN = 14 * DAY;
 export const SAME = 12 * 3600;
 // The last hour is left out: a play may still be on its way to one of them. The day's look starts with the first cron run after
 // HOUR (UTC); each run makes up to STEP outside calls, and a look that keeps failing is let go after TRIES runs.
-const FRESH = 3600, HOUR = 4, STEP = 6, TRIES = 12, PAGES = 10, KEPT = 200, CHECK = 15, AUTO = 5, AGAIN = 1800;
+const FRESH = 3600, HOUR = 4, STEP = 6, TRIES = 12, PAGES = 10, KEPT = 200, AUTO = 5, AGAIN = 1800;
 
 type Kind = 'movie' | 'show';
 interface Title {kind: Kind; tmdb: number; imdb?: string; name: string}
@@ -90,15 +90,16 @@ function compare(work: Work): Found {
 export async function drift(env: Env, time: number): Promise<boolean> {
   const date = new Date(time), day = date.toISOString().slice(0, 10);
   if (!env.TRAKT_CLIENT_ID || date.getUTCHours() < HOUR) return false;
-  // One person a run: whoever is part way through, else whoever has not had today's look, else someone with Trakt sync on
-  // whose look found plays to copy across (not tried again within half an hour).
-  // Only someone whose progress is kept in MDBList: a key kept while progress is Here is not compared.
-  const who = await env.DB.prepare(`SELECT s.hub, s.owner AS person, d.day, d.work, coalesce(y.matching, 0) AS matching, y.stamps, y.daily FROM secrets s JOIN secrets m ON m.hub = s.hub AND m.owner = s.owner AND m.kind = 'mdblist'
+  // One person a run: whoever is part way through, else whoever has not had today's look, else someone whose look found plays
+  // to copy across (not tried again within half an hour).
+  // Only someone with Trakt sync on (the join: with it off they are never picked, so nothing of theirs is read or copied), and
+  // with MDBList sync on: a key kept while it is off is not compared.
+  const who = await env.DB.prepare(`SELECT s.hub, s.owner AS person, d.day, d.work, y.stamps, y.daily FROM secrets s JOIN secrets m ON m.hub = s.hub AND m.owner = s.owner AND m.kind = 'mdblist'
     JOIN people p ON p.hub = s.hub AND p.id = s.owner AND json_extract(p.data, '$.lists') = 1
-    LEFT JOIN drift d ON d.hub = s.hub AND d.person = s.owner LEFT JOIN sync y ON y.hub = s.hub AND y.person = s.owner
-    WHERE s.kind = ?1 AND (d.day IS NULL OR d.day < ?2 OR d.work IS NOT NULL OR (y.matching = 1 AND d.result IS NOT NULL AND json_array_length(d.result, '$.toTrakt') + json_array_length(d.result, '$.toMdblist') > 0 AND coalesce(d.fixed, 0) < ?3))
+    JOIN sync y ON y.hub = s.hub AND y.person = s.owner AND y.matching = 1 LEFT JOIN drift d ON d.hub = s.hub AND d.person = s.owner
+    WHERE s.kind = ?1 AND (d.day IS NULL OR d.day < ?2 OR d.work IS NOT NULL OR (d.result IS NOT NULL AND json_array_length(d.result, '$.toTrakt') + json_array_length(d.result, '$.toMdblist') > 0 AND coalesce(d.fixed, 0) < ?3))
     ORDER BY d.work IS NULL, d.day = ?2 LIMIT 1`)
-    .bind(LINK, day, now() - AGAIN).first<{hub: string; person: string; day: string | null; work: string | null; matching: number; stamps: string | null; daily: string | null}>();
+    .bind(LINK, day, now() - AGAIN).first<{hub: string; person: string; day: string | null; work: string | null; stamps: string | null; daily: string | null}>();
   if (!who) return false;
   const {hub, person} = who;
   // A play still waiting to reach Trakt would look missing there: the look waits for the outbox.
@@ -108,17 +109,17 @@ export async function drift(env: Env, time: number): Promise<boolean> {
   // Today's look is done: what it found is copied across, a few titles a run.
   if (who.day === day && !who.work) {
     await env.DB.prepare('UPDATE drift SET fixed = ? WHERE hub = ? AND person = ?').bind(now(), hub, person).run();
-    const got = await fix(env, hub, person, true);
+    const got = await fix(env, hub, person);
     if ('error' in got) console.error('drift fix', got.error);
     await stale(env, hub, person, 'error' in got ? got.error : null).run();
     return true;
   }
   const start = now(), ask = mdblist(env, lists.key);
-  // Trakt sync on, with nothing moved since the last look: Trakt's stamps as they were then, and MDBList lists nothing
+  // Nothing moved since the last look: Trakt's stamps as they were then, and MDBList lists nothing
   // watched since (one read). The day counts as looked at.
   const daily = who.daily ? JSON.parse(who.daily) as {w: number; p: number; at: number} : null, stamps = who.stamps ? JSON.parse(who.stamps) as {w: number; p: number} : null;
   const noted = () => env.DB.prepare('UPDATE sync SET daily = ? WHERE hub = ? AND person = ?').bind(JSON.stringify({...stamps, at: start}), hub, person);
-  if (who.matching && !who.work && daily && stamps && daily.w === stamps.w && daily.p === stamps.p) {
+  if (!who.work && daily && stamps && daily.w === stamps.w && daily.p === stamps.p) {
     const got = await ask(`/sync/watched?since=${encodeURIComponent(iso(daily.at - SAME))}&limit=1`), body = got.body as Record<string, unknown[]> | null;
     if (got.status === 200 && body && !Array.isArray(body) && !Object.values(body).some(list => Array.isArray(list) && list.length)) {
       await env.DB.batch([env.DB.prepare("INSERT INTO drift (hub, person, day) VALUES (?1, ?2, ?3) ON CONFLICT (hub, person) DO UPDATE SET day = excluded.day").bind(hub, person, day), noted()]);
@@ -154,10 +155,10 @@ export async function drift(env: Env, time: number): Promise<boolean> {
       work.todo.shift();
     } else break;
   }
-  if (failed) {await keep(++work.tries >= TRIES ? null : work, null); if (who.matching) await stale(env, hub, person, why).run(); return true;}
+  if (failed) {await keep(++work.tries >= TRIES ? null : work, null); await stale(env, hub, person, why).run(); return true;}
   if (work.page || !work.listed || work.todo.length) {await keep(work, null); return true;}
   await keep(null, compare(work));
-  if (who.matching) await env.DB.batch([stale(env, hub, person, null), ...(stamps ? [noted()] : [])]);
+  await env.DB.batch([stale(env, hub, person, null), ...(stamps ? [noted()] : [])]);
   return true;
 }
 /* The daily look failing (since when it first did, and why), or working again: shown on their page only after three days. */
@@ -167,7 +168,7 @@ const stale = (env: Env, hub: string, person: string, why: string | null) => why
 
 /* A play by title, episode and time: what a person skips is kept by this, so it stays skipped through later looks. */
 const playKey = (miss: Miss) => `${missKey(miss)}@${miss.at}`;
-/* What the page shows: the differences found, less what the person skipped, if any are left. Each comes with its key. */
+/* The differences found, less what the person skipped, if any are left. Each comes with its key. */
 export function differing(result: string | null, skipped: string | null = null) {
   const found = result ? JSON.parse(result) as Found : null, skip = new Set<string>(skipped ? JSON.parse(skipped) as string[] : []);
   if (!found) return null;
@@ -212,18 +213,21 @@ function rounds(list: Miss[]) {
 }
 const near = (plays: Play[], miss: Miss) => plays.some(play => keyOf(play) === missKey(miss) && Math.abs(play.at - miss.at) <= SAME);
 
-/* Copies across the plays the day's look found missing, when the person asks. First each side is asked again for those titles, so
+/* Copies across the plays the day's look found missing, by itself (the cron, above), and only while their Trakt sync is on. First
+   each side is asked again for those titles, so
    nothing that arrived since is sent twice; then the plays are taken off the list, and only then sent. Only adds: nothing on
    either side is changed or removed. (A play MDBList gets that is older than the newest it has for an episode is kept as history
    only, which is what it is.) */
-export async function fix(env: Env, hub: string, person: string, auto = false): Promise<{trakt: number; mdblist: number} | {error: string}> {
+export async function fix(env: Env, hub: string, person: string): Promise<{trakt: number; mdblist: number} | {error: string}> {
   const row = await env.DB.prepare('SELECT result, skipped FROM drift WHERE hub = ? AND person = ?').bind(hub, person).first<{result: string | null; skipped: string | null}>(), listed = differing(row?.result ?? null, row?.skipped ?? null);
   const lists = await getSecret<{key: string}>(env, hub, person, 'mdblist'), link = await getSecret<Link>(env, hub, person, LINK);
   if (!listed || !lists?.key || !link) return {trakt: 0, mdblist: 0};
-  // Sent once before: never again, so a play deleted on either side since stays deleted. By itself, a play from before Trakt was
-  // connected goes to Trakt only if they said so (sync.ts, `earlier`); it is taken off the list either way.
+  const sync = await env.DB.prepare('SELECT matching, earlier FROM sync WHERE hub = ? AND person = ?').bind(hub, person).first<{matching: number; earlier: number}>();
+  if (!sync?.matching) return {trakt: 0, mdblist: 0};
+  // Sent once before: never again, so a play deleted on either side since stays deleted. A play from before sync was turned on
+  // goes to Trakt only if they said so (sync.ts, `earlier`); it is taken off the list either way.
   const [onTrakt, onLists] = [await ledger(env, hub, person, 'trakt'), await ledger(env, hub, person, 'mdblist')];
-  const before = auto && link.since && !(await env.DB.prepare('SELECT earlier FROM sync WHERE hub = ? AND person = ?').bind(hub, person).first<{earlier: number}>())?.earlier ? link.since : 0;
+  const before = sync.earlier ? 0 : sendingSince(link);
   const found = {...listed, toTrakt: listed.toTrakt.filter(miss => !onTrakt.has(playKey(miss)) && miss.at >= before), toMdblist: listed.toMdblist.filter(miss => !onLists.has(playKey(miss)))};
   const titles: Record<string, Title> = {}, ask = mdblist(env, lists.key);
   let toTrakt = found.toTrakt;
@@ -237,7 +241,7 @@ export async function fix(env: Env, hub: string, person: string, auto = false): 
     toTrakt = toTrakt.filter(miss => !near(have, miss));
   }
   // MDBList is asked title by title, so a long list goes over a few clicks; the rest stays listed.
-  const checked = [...new Set(found.toMdblist.map(miss => `${miss.kind}/${miss.tmdb}`))].slice(0, auto ? AUTO : CHECK), have: Play[] = [];
+  const checked = [...new Set(found.toMdblist.map(miss => `${miss.kind}/${miss.tmdb}`))].slice(0, AUTO), have: Play[] = [];
   for (const t of checked) {
     const miss = found.toMdblist.find(item => `${item.kind}/${item.tmdb}` === t)!, plays = await mdblistPlays(ask, {kind: miss.kind, tmdb: miss.tmdb, name: miss.name}, t);
     if (!plays) return {error: 'MDBList isn’t answering just now. Try again in a few minutes.'};

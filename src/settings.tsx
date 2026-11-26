@@ -16,7 +16,7 @@ export interface EditorProps {
   reset: (key: keyof Settings) => void;
   update: (change: (hub: Hub) => void) => void; toast: (text: string) => void;
   live?: Live;
-  /* On a person's own page: whether their progress is kept in MDBList, which hiding what's been watched needs. */
+  /* On a person's own page: whether their MDBList sync is on, which hiding what's been watched needs. */
   kept?: boolean;
   /* On a person's own page: the content limit is set for them, so it is shown but not changed here. */
   limitSet?: boolean;
@@ -51,7 +51,7 @@ export function PlaybackEditor({hub, resolved: {values, from}, scope, set, reset
     <div className="card settings">
       {limitSet ? <Setting title="Content limit" hint="Set for you by whoever runs the hub."><span className="muted">{values.limit === 'kids' ? 'Kids' : values.limit === 'teen' ? 'Teens' : 'Everything'}</span></Setting> : <Setting title="Content limit" hint={values.limit === 'kids' ? 'Only titles rated PG or lower, in rows and in search. Anything without a rating is left out as well, so some rows come up shorter.' : values.limit === 'teen' ? 'Nothing rated above PG-13, in rows or in search.' : 'No limit on ratings.'} {...line('limit')}>
         <Segments label="Content limit" value={values.limit} onChange={value => set('limit', value)} options={[{value: 'kids', label: 'Kids'}, {value: 'teen', label: 'Teens'}, {value: 'all', label: 'Everything'}]}/></Setting>}
- {<Setting title="Hide what’s been watched" hint={unkept ? 'Works once progress is kept in MDBList, under Accounts. Then rows leave out what’s been watched; watchlists and search still show everything.' : scope.level === 'own' ? 'Rows leave out what’s been watched. Watchlists and search still show everything.' : 'Rows leave out what’s been watched, for anyone whose progress is kept in MDBList. Watchlists and search still show everything.'} {...line('hideWatched')}><Switch label="Hide watched" checked={values.hideWatched && !unkept} disabled={unkept} onChange={value => set('hideWatched', value)}/></Setting>}
+ {<Setting title="Hide what’s been watched" hint={unkept ? 'Works once MDBList sync is on, under Accounts. Then rows leave out what’s been watched; watchlists and search still show everything.' : scope.level === 'own' ? 'Rows leave out what’s been watched. Watchlists and search still show everything.' : 'Rows leave out what’s been watched, for anyone with MDBList sync on. Watchlists and search still show everything.'} {...line('hideWatched')}><Switch label="Hide watched" checked={values.hideWatched && !unkept} disabled={unkept} onChange={value => set('hideWatched', value)}/></Setting>}
       <Setting title="Hide episode spoilers" hint="Blurs the pictures of episodes not watched yet." {...line('spoilers')}><Switch label="Hide episode spoilers" checked={values.spoilers} onChange={value => set('spoilers', value)}/></Setting>
       <Setting title="Hide unreleased titles" hint="Nothing that cannot be watched yet." {...line('unreleased')}><Switch label="Hide unreleased titles" checked={values.unreleased} onChange={value => set('unreleased', value)}/></Setting>
       {<Setting title="Posters" hint={values.posters === 'better' ? 'Better Posters: clean art with the rating on it.' : 'Standard art, nothing added.'} {...line('posters')}>

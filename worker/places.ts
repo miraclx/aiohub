@@ -1,6 +1,7 @@
-/* The Trakt and MDBList card on a person's own Accounts page always compares two places: where their progress is kept (Here, their
-   own server; or their MDBList) and Trakt, or, while they move where progress is kept, the old place and the new one. Each line is a
-   play one of the two lacks; Add (or Move) copies it across. Nothing is ever removed anywhere.
+/* Two of a person's places side by side: where their progress is kept (Here, their own server; or their MDBList) and Trakt, or,
+   while MDBList's Sync switch moves where progress is kept, the old place and the new one. Each line is a play one of the two
+   lacks; a pass copies it across. Nothing is ever removed anywhere. The page uses the two moves (here-mdblist, mdblist-here);
+   the pairs with Trakt are answered only while their Trakt sync is on (api.ts), which does the same by itself (sync.ts).
    Pairs, by what is looked at:
    - here-trakt: plays here that never reached Trakt go to Trakt (carry.ts); plays on Trakt in the last two weeks that Here lacks
      ("watched elsewhere") are ticked Here.

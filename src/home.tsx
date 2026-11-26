@@ -2,7 +2,7 @@ import {useState} from 'react';
 import type React from 'react';
 import {DragDropProvider} from '@dnd-kit/react';
 import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
-import {FOR_YOU_KINDS, SECTIONS, TRAKT_IDS, folderFits, isPlace, nextPlace, sourceShown, suggestedFor, suggestionOf} from './data';
+import {FOR_YOU_KINDS, SECTIONS, TRAKT_IDS, aboutRow, folderFits, isPlace, nextPlace, sourceShown, suggestedFor, suggestionOf} from './data';
 import type {Cover, ForYouDetail, Level, Limit, Row, Shown} from './data';
 import {Art, Confirm, Covers, NameField, Segments, Sheet, Switch, hash} from './ui';
 
@@ -124,6 +124,8 @@ export interface HomeProps {
      the address of their Accounts tab. Add row lists them greyed, with the way to connect. */
   needs?: {id: string; title: string; needs: string}[]; accounts?: string;
   followLabel?: string; onFollow?: () => void; canAdd?: boolean; canArrange?: boolean; mine?: boolean;
+  /* On a person's own page, when they may not add rows: a quiet line where the Add row button would be, saying who can turn it on. */
+  addHint?: string;
   /* Whose Home this is, when it is a person's: their own rows' posters show only here. */
   person?: string;
   /* On a real hub: looks a pasted link up, and only what really reaches the player apps is offered. */
@@ -139,7 +141,7 @@ export interface HomeProps {
   onMute?: (kind: string) => void; onLess?: (kind: string) => void; order?: string[];
   times?: Times; forYou?: ForYouDetail; onPlace?: (place: string, asked: {use?: string; keep?: boolean; never?: boolean}, note: string) => void; onCheckLists?: () => void;
 }
-export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, needs = [], accounts, followLabel, onFollow, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute, onLess, order = [], times, forYou, onPlace, onCheckLists}: HomeProps) {
+export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, needs = [], accounts, followLabel, onFollow, canAdd = true, canArrange = true, mine = false, addHint, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute, onLess, order = [], times, forYou, onPlace, onCheckLists}: HomeProps) {
   const [adding, setAdding] = useState(false), [allLists, setAllLists] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
   // A For you row switched off is listed under Not on Home only for someone without Add row, who could not bring one back otherwise;
   // with Add row, "Another For you row" does that, and the For you rows already on Home say there are some.
@@ -164,12 +166,14 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, n
   const sections = [...SECTIONS].sort((a, b) => limit === 'all' ? 0 : Number(b.id === 'children') - Number(a.id === 'children'))
     .map(section => ({...section, items: picked.picks.filter(item => item.section === section.id)})).filter(section => section.items.length);
   // Anything already on this Home stays where it is in Add row, dimmed, saying where it is: groups never shift.
+  // An account-driven row (the two rows of their Trakt lists) says what it is instead of its kind (aboutRow, data.ts).
   const choice = (item: Pick, note: string) => {
-    const row = rows.find(each => each.id === item.id), at = row && (row.on ? 'On Home' : 'Not on Home');
+    const row = rows.find(each => each.id === item.id), at = row && (row.on ? 'On Home' : 'Not on Home'), about = aboutRow(item, mine);
+    if (about && !at) note = about;
     return <li key={item.id}><button type="button" disabled={!!at} onClick={() => add({id: item.id, title: item.title, kind: item.kind, source: item.source})}><span><strong>{item.title}</strong><small>{at || note}</small></span></button></li>;
   };
   return <section>
-    <div className="section-head"><div><h2>Home</h2><p className="muted">{mine ? 'What you see first when you open the player.' : level === 'own' ? 'What they see first when they open the player.' : 'The Home everyone here starts with.'}{canArrange ? ' Drag to reorder.' : ''}</p></div>{canAdd && <button type="button" className="primary" onClick={() => {setAllLists(false); setAdding(true);}}>+ Add row</button>}</div>
+    <div className="section-head"><div><h2>Home</h2><p className="muted">{mine ? 'What you see first when you open the player.' : level === 'own' ? 'What they see first when they open the player.' : 'The Home everyone here starts with.'}{canArrange ? ' Drag to reorder.' : ''}</p></div>{canAdd ? <button type="button" className="primary" onClick={() => {setAllLists(false); setAdding(true);}}>+ Add row</button> : addHint && <p className="muted small add-hint">{addHint}</p>}</div>
     {onFollow && <div className="notice"><span>This Home has its own changes.</span><button type="button" className="link" onClick={() => setFollowing(true)}>{followLabel}</button></div>}
     {following && onFollow && <Confirm title={`${followLabel}?`} body="This Home’s own changes are dropped: the order, which rows are on, rows added here and any new names. It shows the Home above it again, and follows its changes from then on." action={followLabel ?? 'Follow again'} onYes={() => {setFollowing(false); onFollow();}} onClose={() => setFollowing(false)}/>}
     {dropping && <Confirm title={`Remove “${dropping.title}”?`} body={dropping.covers ? 'It leaves this Home, with its folder order and names. It can be added again from Add row, as it first came.' : 'It leaves this Home. It can be added again from Add row.'} action="Remove" onYes={() => {const row = dropping; setDropping(null); onChange(rows.filter(item => item.id !== row.id), `Removed “${row.title}”`);}} onClose={() => setDropping(null)}/>}
@@ -189,7 +193,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, n
     {!on.length && <p className="empty">Nothing on Home yet. Add a row or turn one on below.</p>}
     {!!off.length && <details className="off" open={off.length <= 4}><summary>Not on Home <span className="count">{off.length}</span></summary>
       <ul>{off.map(row => {const place = placeHeld(row, level);
-        return <li key={row.id} className={place ? 'later' : undefined}><div><h3>{row.title}</h3><p>{place ? laterOf(row) : `${kindOf(row)} · ${sourceShown(row, limit)}`}</p></div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>;})}</ul>
+        return <li key={row.id} className={place ? 'later' : undefined}><div><h3>{row.title}</h3><p>{place ? laterOf(row) : `${kindOf(row)} · ${sourceShown(row, limit)}`}</p>{/* Off Home there is no Edit to say it in: what the row is, here. */}{!place && aboutRow(row, mine) && <p className="about-row">{aboutRow(row, mine)}</p>}</div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>;})}</ul>
     </details>}
     {adding && <Sheet title="Add a row" onClose={() => setAdding(false)}>
       <form className="link-form" onSubmit={event => {
@@ -208,7 +212,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, n
           : <p className="muted small">{listsHint}</p>}</>}
       {/* Rows an account would add: not to be picked yet, so greyed, each saying what it needs and where to connect it. */}
       {!!needs.length && accounts && <><h3 className="sheet-sub">With an account</h3>
-        <ul className="picks compact">{needs.map(item => <li key={item.id} className="needs"><span><strong>{item.title}</strong><small>Needs {item.needs}.</small></span><a className="link" href={accounts} aria-label={`Connect ${item.needs}, for ${item.title}`}>Connect</a></li>)}</ul></>}
+        <ul className="picks compact">{needs.map(item => <li key={item.id} className="needs"><span><strong>{item.title}</strong><small>{aboutRow({id: item.id, source: item.needs}, mine)} Needs {item.needs}.</small></span><a className="link" href={accounts} aria-label={`Connect ${item.needs}, for ${item.title}`}>Connect</a></li>)}</ul></>}
       {!!sections.length && <h3 className="sheet-sub">Ready-made rows</h3>}
       {sections.map(section => {
         const items = <ul className="picks compact">{section.items.map(item => choice(item, because[item.id] && level === 'own' ? `Because you watched ${because[item.id]}` : item.kind === 'Series' ? 'Shows' : item.kind.replace(/^Collection · /, '')))}</ul>;
@@ -227,6 +231,8 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, n
     </Sheet>}
     {folder && <Sheet title={folder.title} onClose={() => setArranging(null)}>
       {/* The name shown on Home and in the apps; what fills the row stays the same. */}
+      {/* What the row is and how it is put together, for the rows that follow a person's accounts (aboutRow, data.ts). */}
+      {aboutRow(folder, mine) && <p className="muted sheet-lead about-row">{aboutRow(folder, mine)}</p>}
       <h3 className="sheet-sub first">Name</h3><NameField label="Name of this row" value={folder.title} onSave={title => set(folder.id, {title}, `Renamed to “${title}”`)}/>
       {/* Checked once a day; a list added or renamed since can be brought in at once. */}
       {isShelf(folder.id) && onCheckLists && <><h3 className="sheet-sub">Lists</h3><p className="sheet-lead">Checked once a day for lists added, removed or renamed on Trakt.</p>

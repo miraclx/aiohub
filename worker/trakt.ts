@@ -1,8 +1,14 @@
-/* Sending what a person plays here to their own Trakt account, as it happens. They connect it on Trakt's own sign-in page, from
-   this site's page (Trakt in pages.tsx): the browser does the sign-in with Trakt itself, since Trakt often turns away the
-   shared addresses Workers call from (429, error 1015), and hands the login here to be kept in the vault and renewed.
-   For the same reason a call Trakt does not take waits in an outbox and is tried again (below).
-   Nothing is sent for anyone who has not connected, and nothing at all while TRAKT_CLIENT_ID is unset. */
+/* A person's own Trakt account, connected to the hub. They connect it on Trakt's own sign-in page, from this site's page (Trakt
+   in pages.tsx): the browser does the sign-in with Trakt itself, since Trakt often turns away the shared addresses Workers call
+   from (429, error 1015), and hands the login here to be kept in the vault and renewed.
+   Connecting only reads: it fills their Trakt rows (rows.ts) and writes nothing. What they watch here goes to Trakt as it plays
+   only while their sync is on (the `sync` row, `matching`: sync.ts), which is theirs alone to turn on. A call Trakt does not
+   take then waits in an outbox and is tried again (below).
+   STRICTLY OFF: for someone whose sync is off, no start, pause, stop or tick is sent, kept or tried, whoever asks. The gate is
+   here, where every such call passes (deliver, flush, sweep), asked of the database each time and never remembered; front.ts
+   and the passes that end here have their own on top. A heart for Favorites (hearts.ts) is the person's other, separate switch
+   and is not held by this one.
+   Nothing at all while TRAKT_CLIENT_ID is unset. */
 import type {Env} from './util';
 import {getSecret, now, putSecret, seal, unseal} from './util';
 
@@ -10,9 +16,10 @@ export const LINK = 'trakt-scrobble', PENDING = 'trakt-scrobble-pending';
 // Workers Free allows about fifty database queries and fifty outside calls per run, so the cron takes a few at a time.
 const DAY = 86400, CLAIM = 60, QUIET = 1800, SWEEP = 4, CLEAR = 5, OOB = 'urn:ietf:wg:oauth:2.0:oob';
 // `redirect` is the address the sign-in came back to; Trakt wants the same one when the login is renewed.
-// `since`: when it was connected. A play here from before then never reached Trakt, so it can be copied over from the person's page.
+// `since`: when it was connected. `on`: when sync was last turned on (not there for someone who turned it on before this was kept:
+// then `since` stands for it). A play here from before then never reached Trakt, and goes only if they tick earlier plays.
 // `ask`: the person signed in to Trakt themselves and has not yet said whether it is synced (sync.ts): their own page asks.
-export interface Link {access: string; refresh: string; expires: number; username: string; redirect?: string; again?: boolean; renewing?: number; since?: number; ask?: boolean}
+export interface Link {access: string; refresh: string; expires: number; username: string; redirect?: string; again?: boolean; renewing?: number; since?: number; on?: number; ask?: boolean}
 type Ids = {tmdb?: number; imdb?: string};
 export type Target = {movie: {ids: Ids}} | {show: {ids: Ids}; episode: {season: number; number: number}};
 
@@ -33,13 +40,28 @@ export const taken = (status: number | null) => status !== null && status !== 0 
 export async function keepLink(env: Env, hub: string, person: string, link: Link) {
   await env.DB.batch([await putSecret(env, hub, person, LINK, {...link, since: link.since ?? now()}), drop(env, hub, person, PENDING)]);
 }
-/* The person answered whether their Trakt is synced (sync.ts): their page stops asking. Written only over exactly what was
-   read, so a renewal at the same moment is never undone. */
-export async function answered(env: Env, hub: string, person: string) {
-  const text = (await env.DB.prepare('SELECT value FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(hub, person, LINK).first<{value: string}>())?.value;
-  const link = await unseal<Link>(env, `${hub}/${person}/${LINK}`, text);
-  if (link?.ask) await swap(env, hub, person, text!, {...link, ask: false});
+/* The person answered whether their Trakt is synced (sync.ts): their page stops asking. `turned`: it went from off to on just
+   now, which is noted (`on`), so what was watched here before this moment stays off Trakt unless they tick earlier plays.
+   Written only over exactly what was read, so a renewal at the same moment is never undone: it is read and tried once more. */
+export async function answered(env: Env, hub: string, person: string, turned: boolean) {
+  for (let tries = 0; tries < 2; tries++) {
+    const text = (await env.DB.prepare('SELECT value FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(hub, person, LINK).first<{value: string}>())?.value;
+    const link = await unseal<Link>(env, `${hub}/${person}/${LINK}`, text);
+    if (!link || (!link.ask && !turned) || await swap(env, hub, person, text!, {...link, ask: false, ...(turned ? {on: now()} : {})})) return;
+  }
 }
+/* Whether their sync is on: asked of the database each time, never remembered. */
+export const syncOn = async (env: Env, hub: string, person: string) => !!(await env.DB.prepare('SELECT matching FROM sync WHERE hub = ? AND person = ?').bind(hub, person).first<{matching: number}>())?.matching;
+/* Sync turned off: nothing more of their watching goes. What was still waiting to be sent is dropped, not left: left, it would go
+   out days late if sync came back on, unasked, and meanwhile it would read as "waiting for Trakt" and hold their Favorites step
+   up (hearts.ts looks at nobody with a call waiting). A play Trakt was mid-way through hearing of, or whose call was dropped
+   here, counts as never sent (as on a disconnect), so it is among the earlier plays they can tick if they turn sync on again.
+   A heart waiting for Favorites stays. Rows here only: nothing on Trakt changes. */
+const WATCHING = "('start', 'pause', 'stop', 'mark')";
+export const stopSending = (env: Env, hub: string, person: string) => [
+  env.DB.prepare(`UPDATE plays SET scrobbled = CASE WHEN scrobbled = 'held-watched' THEN 'watched' ELSE NULL END WHERE hub = ?1 AND person = ?2 AND (scrobbled IN ('playing', 'paused', 'held', 'held-watched')
+    OR item IN (SELECT item FROM trakt_outbox WHERE hub = ?1 AND person = ?2 AND kind IN ${WATCHING}))`).bind(hub, person),
+  env.DB.prepare(`DELETE FROM trakt_outbox WHERE hub = ? AND person = ? AND kind IN ${WATCHING}`).bind(hub, person)];
 export async function disconnect(env: Env, hub: string, person: string) {
   const link = await getSecret<Link>(env, hub, person, LINK);
   if (link?.access) await signin(env, '/oauth/revoke', {token: link.access, client_id: env.TRAKT_CLIENT_ID});
@@ -79,7 +101,7 @@ async function access(env: Env, hub: string, person: string, failed = ''): Promi
   const answer = await signin(env, '/oauth/token', {refresh_token: link.refresh, client_id: env.TRAKT_CLIENT_ID, redirect_uri: link.redirect || OOB, grant_type: 'refresh_token'});
   const got = answer?.ok ? await answer.json().catch(() => null) as {access_token?: string; refresh_token?: string; expires_in?: number; created_at?: number} | null : null;
   if (got?.access_token && got.refresh_token) {
-    await swap(env, hub, person, mine, {access: got.access_token, refresh: got.refresh_token, expires: Number(got.created_at ?? now()) + Number(got.expires_in ?? 7 * DAY), username: link.username, redirect: link.redirect, since: link.since, ask: link.ask});
+    await swap(env, hub, person, mine, {access: got.access_token, refresh: got.refresh_token, expires: Number(got.created_at ?? now()) + Number(got.expires_in ?? 7 * DAY), username: link.username, redirect: link.redirect, since: link.since, on: link.on, ask: link.ask});
     return got.access_token;
   }
   // Trakt no longer takes this connection (taken back on Trakt, or long unused): it has to be made again. Anything else is a blip.
@@ -174,7 +196,9 @@ export const progressOf = (position: number, duration: number) => Math.min(100, 
 // 'heart' and 'unheart': a watchlist add or remove for a heart made or taken away in an app (front.ts, hearted), kept and tried
 // like a tick. Their `item` is the title's ledger key, never a play's id, so nothing here mistakes one for a start or pause.
 export interface Call {kind: 'start' | 'pause' | 'stop' | 'mark' | 'heart' | 'unheart'; path: string; body: Record<string, unknown>}
-interface Waiting {id: number; hub: string; person: string; kind: Call['kind']; path: string; body: string; made: number; tries: number; next: number; doubt: number}
+interface Waiting {id: number; hub: string; person: string; kind: Call['kind']; path: string; body: string; made: number; tries: number; next: number; doubt: number; synced: number | null}
+/* A call that tells Trakt of watching (anything but a heart): only ever for someone whose sync is on. */
+const watching = (kind: Call['kind']) => kind !== 'heart' && kind !== 'unheart';
 const STALE = 300, WEEK = 7 * DAY, SOON = [2, 5], LATER = 240, BATCH = 8;
 const wait = (tries: number, after: number) => Math.max(SOON[tries] ?? LATER, after);
 /* A finished watch that had to wait is added to history at the time it ended: a late stop would be stamped when it got through.
@@ -185,15 +209,17 @@ function late(call: {kind: string; path: string; body: Record<string, unknown>; 
   const {progress: _, ...target} = call.body;
   return ['/sync/history', history(target as unknown as Target, new Date(call.made * 1000).toISOString())];
 }
-/* Sends one call as this person, or keeps it to send later. 'off' when they are not connected; 'kept' when it waits. `made` is
-   when it happened, if that was a while ago. */
+/* Sends one call as this person, or keeps it to send later. 'off' when they are not connected, or when the call tells of
+   watching and their sync is off (asked here, in the one question below, so no caller can get past it); 'kept' when it waits.
+   `made` is when it happened, if that was a while ago. */
 export async function deliver(env: Env, hub: string, person: string, item: string, call: Call, made = now()): Promise<'sent' | 'kept' | 'off'> {
   const keep = (tries: number, next: number, doubt: number) => env.DB.prepare('INSERT INTO trakt_outbox (hub, person, item, kind, path, body, made, tries, next, doubt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .bind(hub, person, item, call.kind, call.path, JSON.stringify(call.body), made, tries, next, doubt);
   const ended = env.DB.prepare("DELETE FROM trakt_outbox WHERE hub = ? AND person = ? AND item = ? AND kind IN ('start', 'pause')").bind(hub, person, item);
   // Whether anything of theirs is waiting already, and whether Trakt asked the hub to wait before sending more: one question.
-  const line = await env.DB.prepare('SELECT (SELECT 1 FROM trakt_outbox WHERE hub = ?1 AND person = ?2 LIMIT 1) AS queued, (SELECT at FROM rows_cache WHERE hub = ?1 AND person = ?2 AND kind = ?3 AND at > ?4) AS until')
-    .bind(hub, person, HELD, now()).first<{queued: number | null; until: number | null}>();
+  const line = await env.DB.prepare('SELECT (SELECT 1 FROM trakt_outbox WHERE hub = ?1 AND person = ?2 LIMIT 1) AS queued, (SELECT at FROM rows_cache WHERE hub = ?1 AND person = ?2 AND kind = ?3 AND at > ?4) AS until, (SELECT matching FROM sync WHERE hub = ?1 AND person = ?2) AS synced')
+    .bind(hub, person, HELD, now()).first<{queued: number | null; until: number | null; synced: number | null}>();
+  if (watching(call.kind) && !line?.synced) return 'off';
   // Trakt asked for a wait: kept without being tried, due when the wait is over, in the order they came.
   if (line?.until) {await env.DB.batch([ended, keep(0, line.until, 0)]); return 'kept';}
   // Something already waiting for them: this one goes behind it, and the line is tried now.
@@ -215,11 +241,14 @@ export async function soon(env: Env, hub: string, person: string) {
 export async function flush(env: Env, only?: {hub: string; person: string}) {
   // A call waits while one before it for the same person is not due yet, or is being sent: their calls stay in order.
   const first = 'next <= ?1 AND NOT EXISTS (SELECT 1 FROM trakt_outbox o WHERE o.hub = t.hub AND o.person = t.person AND o.id < t.id AND o.next > ?1)';
-  const due = only ? env.DB.prepare(`SELECT * FROM trakt_outbox t WHERE hub = ?2 AND person = ?3 AND ${first} ORDER BY id LIMIT ?4`).bind(now(), only.hub, only.person, BATCH)
-    : env.DB.prepare(`SELECT * FROM trakt_outbox t WHERE ${first} ORDER BY id LIMIT ?2`).bind(now(), BATCH);
+  const synced = '(SELECT matching FROM sync y WHERE y.hub = t.hub AND y.person = t.person) AS synced';
+  const due = only ? env.DB.prepare(`SELECT t.*, ${synced} FROM trakt_outbox t WHERE hub = ?2 AND person = ?3 AND ${first} ORDER BY id LIMIT ?4`).bind(now(), only.hub, only.person, BATCH)
+    : env.DB.prepare(`SELECT t.*, ${synced} FROM trakt_outbox t WHERE ${first} ORDER BY id LIMIT ?2`).bind(now(), BATCH);
   const stuck = new Set<string>(), last = new Map<string, number>();
   for (const row of (await due.all<Waiting>()).results) {
     const who = `${row.hub}/${row.person}`;
+    // Their sync is off: a call telling of watching is dropped untried (see stopSending), whenever it was kept.
+    if (watching(row.kind) && !row.synced) {await env.DB.prepare('DELETE FROM trakt_outbox WHERE id = ?').bind(row.id).run(); continue;}
     if (stuck.has(who)) continue;
     // Trakt asked for a wait before more of theirs is sent: their line stays as it is until then (asked once per person a run).
     const until = await sendWait(env, row.hub, row.person);
@@ -255,12 +284,17 @@ export function brief(sitting: {parts?: string | null; started: number; updated:
 /* Players that went quiet without saying stop (closed, crashed, out of battery). After half an hour Trakt is told it stopped where
    it was last seen: from 80% that counts as watched, and below that Trakt keeps the spot (not for a sitting with too little
    played, see brief). A few at a time; the next run takes
-   the rest. Then whatever is waiting in the outbox. */
+   the rest. Then whatever is waiting in the outbox.
+   Only for someone whose sync is on. For anyone else nothing is said, a play left as "told" from when it was on counts as never
+   sent, and any call of their watching still in the outbox (kept before sync went off, or before sync was what sending went
+   by) is dropped in one statement, due or not. */
 export async function sweep(env: Env) {
   if (!env.TRAKT_CLIENT_ID) return;
-  const rows = (await env.DB.prepare("SELECT hub, person, item, position, duration, ids, updated FROM plays WHERE scrobbled IN ('playing', 'paused') AND updated < ? ORDER BY updated LIMIT ?").bind(now() - QUIET, SWEEP)
-    .all<{hub: string; person: string; item: string; position: number; duration: number; ids: string | null; updated: number}>()).results;
+  await env.DB.prepare(`DELETE FROM trakt_outbox WHERE kind IN ${WATCHING} AND NOT EXISTS (SELECT 1 FROM sync y WHERE y.hub = trakt_outbox.hub AND y.person = trakt_outbox.person AND y.matching = 1)`).run();
+  const rows = (await env.DB.prepare("SELECT hub, person, item, position, duration, ids, updated, (SELECT matching FROM sync y WHERE y.hub = plays.hub AND y.person = plays.person) AS synced FROM plays WHERE scrobbled IN ('playing', 'paused') AND updated < ? ORDER BY updated LIMIT ?").bind(now() - QUIET, SWEEP)
+    .all<{hub: string; person: string; item: string; position: number; duration: number; ids: string | null; updated: number; synced: number | null}>()).results;
   for (const row of rows) {
+    if (!row.synced) {await env.DB.prepare('UPDATE plays SET scrobbled = NULL WHERE hub = ? AND person = ? AND item = ?').bind(row.hub, row.person, row.item).run(); continue;}
     const target = row.ids ? JSON.parse(row.ids) as Target : null, progress = row.duration ? progressOf(row.position, row.duration) : 0;
     // Dated by when it was last seen, which a finished watch is added to history at if it has to wait (see `late`).
     // The latest sitting with it: one with too little played is let go without a word to Trakt (see brief).

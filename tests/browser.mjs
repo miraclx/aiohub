@@ -87,13 +87,15 @@ await fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/5 * 
 await owner.goto(BASE + '/#/hub/general'); await owner.reload(); const work = owner.locator('section', {has: owner.getByRole('heading', {name: 'Background work'})});
 const job = name => work.locator('.job', {has: owner.getByRole('heading', {name, exact: true})});
 await work.getByText('The hub does these by itself for everyone, one person at a time. Buttons on a person’s own page act for that person only, right away.').waitFor();
-await job('Sending plays to Trakt').getByText('For everyone every 5 min; for one person as they play', {exact: true}).waitFor();
-await job('Sending plays to Trakt').getByText(/^Ran today at \d/).waitFor(); await job('Sending plays to Trakt').getByText(/^next run in \d min$/).waitFor();
+// Trakt sync has two rows, one for each direction, and each says it is only for people with sync on.
+const SENDING = 'Trakt sync: here to Trakt', BRINGING = 'Trakt sync: Trakt to here';
+await job(SENDING).getByText('For everyone with Trakt sync on, every 5 min; for one person as they play', {exact: true}).waitFor();
+await job(SENDING).getByText(/^Ran today at \d/).waitFor(); await job(SENDING).getByText(/^next run in \d min$/).waitFor();
 // Trakt sync takes one person each run: about every 20 minutes each, and longer once more than four people sync (tests/aiom.test.mjs).
-await job('Trakt sync').getByText('For everyone, one person each run, so each person about every 20 min; for one person at once when they turn it on', {exact: true}).waitFor(); await job('Trakt sync').getByText('Nobody has it on yet').waitFor(); await job('Trakt sync').getByText('once someone turns it on').waitFor();
-await job('Plays missing from MDBList').getByText(/^For everyone who keeps progress in MDBList, every day from \d[^;]+$/).waitFor(); await job('Plays missing from MDBList').getByText('Nobody keeps progress in MDBList yet').waitFor(); await job('Plays missing from MDBList').getByText('once someone does').waitFor();
-assert.equal(await work.getByText(/matching/i).count(), 0);
-await job('Trakt and MDBList check').getByText(/^For everyone every day at \d[^;]+$/).waitFor(); await job('Trakt and MDBList check').getByText('Not run yet').waitFor(); await job('Trakt and MDBList check').getByText(/^next run (today|tomorrow)$/).waitFor();
+await job(BRINGING).getByText('For everyone with Trakt sync on, one person each run, so each person about every 20 min; for one person at once when they turn it on', {exact: true}).waitFor(); await job(BRINGING).getByText('Nobody has it on yet').waitFor(); await job(BRINGING).getByText('once someone turns it on').waitFor();
+await job('Plays missing from MDBList').getByText(/^For everyone with MDBList sync on, every day from \d[^;]+$/).waitFor(); await job('Plays missing from MDBList').getByText('Nobody has MDBList sync on yet').waitFor(); await job('Plays missing from MDBList').getByText('once someone does').waitFor();
+assert.equal(await work.getByText(/matching|scrobbl|progress/i).count(), 0);
+await job('Trakt and MDBList check').getByText(/^For everyone with both Trakt and MDBList sync on, every day at \d[^;]+$/).waitFor(); await job('Trakt and MDBList check').getByText('Not run yet').waitFor(); await job('Trakt and MDBList check').getByText(/^next run (today|tomorrow)$/).waitFor();
 // Recommended rows the hub works out itself: from four (UTC), so this run before then left it be.
 await job('Recommended rows').getByText(/^For everyone with a Recommended row on Home, every day from \d[^;]+$/).waitFor(); await job('Recommended rows').getByText('Not run yet').waitFor(); await job('Recommended rows').getByText(/^next run in \d min$/).waitFor();
 await work.scrollIntoViewIfNeeded(); await shot(owner, '5b-background');
@@ -140,14 +142,16 @@ await guest.goto(link); await guest.getByRole('heading', {name: 'Hi Ada'}).waitF
 await guest.getByLabel('Password').fill('my own password'); await guest.getByRole('button', {name: 'Continue'}).click();
 await guest.getByRole('tab', {name: 'Playback'}).or(guest.getByRole('link', {name: 'Playback'})).first().waitFor(); await shot(guest, '8-own-page');
 assert.equal(await guest.getByRole('link', {name: 'People'}).count(), 0);
-// Add row on her own Home, with no account connected yet: the rows an account would add are there greyed, each saying what it
-// needs, with a Connect that goes to her Accounts tab. They are not buttons: nothing is added by them.
+// Add row on her own Home, with no account connected yet: the rows an account would add are there greyed, each saying in one line
+// what it is and how it is put together, then what it needs, with a Connect that goes to her Accounts tab. They are not buttons:
+// nothing is added by them.
 await guest.goto(BASE + '/#/me/home'); await guest.getByRole('button', {name: '+ Add row'}).click();
 const wanting = guest.getByRole('dialog', {name: 'Add a row'}); await wanting.getByRole('heading', {name: 'With an account'}).waitFor();
 assert.deepEqual(await wanting.locator('li.needs').evaluateAll(lines => lines.map(line => [line.querySelector('strong').textContent, line.querySelector('small').textContent, line.querySelector('a').textContent, line.querySelector('a').getAttribute('href')])),
-  [['Watchlist', 'Needs Trakt or MDBList.', 'Connect', '#/me/accounts'], ['Up Next', 'Needs Trakt.', 'Connect', '#/me/accounts'], ['New for you', 'Needs Trakt.', 'Connect', '#/me/accounts']]);
+  [['Watchlist', 'Your Trakt or MDBList watchlist, newest added first. Needs Trakt or MDBList.', 'Connect', '#/me/accounts'], ['Up Next', 'From your Trakt: shows with an episode you haven’t watched yet, the ones you watched most lately first. Needs Trakt.', 'Connect', '#/me/accounts'],
+    ['New for you', 'From your Trakt: new episodes of shows you watch and watchlist movies now out to stream, newest first. A title leaves once you start it. Needs Trakt.', 'Connect', '#/me/accounts']]);
 assert.equal(await wanting.locator('li.needs button').count(), 0); assert.ok(Number(await wanting.locator('li.needs > span').first().evaluate(node => getComputedStyle(node).opacity)) < 1, 'greyed');
-if (shots) {await wanting.locator('li.needs').first().scrollIntoViewIfNeeded(); await guest.waitForTimeout(300); await guest.screenshot({path: `${shots}/real-6e-add-row-needs-phone.png`}); await guest.setViewportSize({width: 1280, height: 900}); await guest.waitForTimeout(300); await guest.screenshot({path: `${shots}/real-6e-add-row-needs-wide.png`}); await guest.setViewportSize({width: 390, height: 844});}
+if (shots) {await wanting.locator('li.needs').first().scrollIntoViewIfNeeded(); await guest.waitForTimeout(300); await guest.screenshot({path: `${shots}/real-sync-8-add-row-about-phone.png`}); await guest.setViewportSize({width: 1280, height: 900}); await guest.waitForTimeout(300); await guest.screenshot({path: `${shots}/real-sync-8-add-row-about-wide.png`}); await guest.setViewportSize({width: 390, height: 844});}
 await wanting.locator('li.needs', {hasText: 'Up Next'}).getByRole('link', {name: 'Connect Trakt, for Up Next'}).click(); await guest.getByRole('heading', {name: 'Trakt Free', exact: true}).waitFor();
 await guest.goto(BASE + '/#/me/playback'); await guest.getByText('Set for you by whoever runs the hub.').waitFor();
 await guest.goto(BASE + '/#/me/devices'); await guest.locator('.creds code').filter({hasText: /^Ada$/}).waitFor(); await guest.getByRole('button', {name: 'Show'}).click();
@@ -158,16 +162,18 @@ await guest.goto(link); await guest.getByText('Type your password').waitFor();
 await guest.getByLabel('Password').fill('my own password'); await guest.getByRole('button', {name: 'Continue'}).click(); await guest.getByRole('heading', {name: 'Ada', exact: true}).waitFor();
 
 // Accounts, on her own page: Trakt and MDBList, each leading with what it gives in short lines, each with one Connect. There is no
-// third card: the intro says where her progress is kept until MDBList keeps it.
+// third card, and nothing on the page says where her progress is kept.
 // (Toasts are kept out of these pictures: they sit over the card.)
 const both = async (page, name, part) => {const calm = await page.addStyleTag({content: '.toast { visibility: hidden !important; }'}); await part.scrollIntoViewIfNeeded(); await shot(page, `${name}-phone`); await page.setViewportSize({width: 1280, height: 900}); await part.scrollIntoViewIfNeeded(); await shot(page, `${name}-wide`); await page.setViewportSize({width: 390, height: 844}); await calm.evaluate(node => node.remove());};
 await guest.goto(BASE + '/#/me/accounts'); const trakt = guest.locator('.accounts > li', {has: guest.getByRole('heading', {name: 'Trakt Free', exact: true})});
-await guest.getByText('Connect your own accounts. Nobody else sees them. Both are optional: without them, your progress is kept on this hub.').waitFor();
-assert.deepEqual(await trakt.locator('.gains p').allTextContents(), ['Your watchlist, recommendations and recently watched appear on Home.', 'What you watch here is added to Trakt as it plays.']); assert.equal(await guest.getByText('Trakt history').count(), 0);
+await guest.getByText('Connect your own accounts. Nobody else sees them. Both are optional, and nothing you watch is lost without them.').waitFor();
+// What Connect gives, then what sync gives, which says it takes sync: nothing here says a play is sent just for connecting.
+assert.deepEqual(await trakt.locator('.gains p').allTextContents(), ['Your Trakt rows appear on Home: Watchlist, Recommended, Up Next, New for you and your lists.', 'With sync on, what you watch here and in other Trakt apps shows up in both.']); assert.equal(await guest.getByText('Trakt history').count(), 0);
+assert.equal(await guest.getByText('as it plays', {exact: false}).count(), 0);
 // MDBList is an account like Trakt, optional, and says what it is for before anything else; with none connected there is no switch.
 const mdb = guest.locator('.accounts > li', {has: guest.getByRole('heading', {name: 'MDBList Free', exact: true})}).first();
-assert.deepEqual(await mdb.locator('.gains p').allTextContents(), ['Hide what you’ve watched in every row. Only progress kept in MDBList makes that possible.', 'Lists that update themselves, and your MDBList watchlist on Home.', 'Your own copy of your progress, in an account you control, not only on this hub.']);
-assert.equal(await guest.getByRole('switch', {name: 'Keep my progress in MDBList'}).count(), 0);
+assert.deepEqual(await mdb.locator('.gains p').allTextContents(), ['Hide what you’ve watched in every row. That needs MDBList sync on.', 'Lists that update themselves, and your MDBList watchlist on Home.', 'With sync on, what you watch is also in your own MDBList account.']);
+const MDB_SYNC = 'Sync my watching with MDBList'; assert.equal(await guest.getByRole('switch', {name: MDB_SYNC}).count(), 0);
 assert.equal(await guest.getByRole('heading', {name: 'Your progress'}).count(), 0); assert.equal(await guest.locator('ul.accounts').count(), 1, 'no third card');
 await both(guest, '12-accounts', guest.locator('ul.accounts'));
 // Connect asks for her key; Cancel before saving leaves nothing changed.
@@ -178,43 +184,48 @@ await traktIn(guest.context());
 await trakt.getByRole('button', {name: 'Connect'}).click(); await trakt.getByText('Trakt asked us to wait a moment. Still connecting…').waitFor();
 await toast(guest).filter({hasText: 'Trakt connected as adatrakt'}).waitFor(); await trakt.getByText('Connected as adatrakt').waitFor();
 assert.equal(new URL(guest.url()).hash, '#/me/accounts', 'back where Connect was pressed, with nothing from Trakt left in the address');
-// Signed in herself, she is asked at once, on the Trakt card, whether to sync (on to start with): from now on, and honest that only
-// the last 14 days come over from Trakt, and the latest episode of each show from the last 120. Nothing watched here yet, so
-// there is no tick for earlier plays. The question stays until she answers, through a reload too.
-const consent = trakt.locator('.consent'), SYNC = 'Sync Trakt with this hub. From now on, what you watch in either ends up in both. Nothing is removed. What you watched on Trakt in the last 14 days is added to this hub too. For each show you watched there in the last 120 days, the latest episode is ticked here as well, so Next Up carries on.';
-await consent.getByText(SYNC).waitFor(); assert.equal(await consent.getByRole('checkbox').count(), 1); assert.equal(await consent.getByRole('checkbox').isChecked(), true);
-await consent.getByRole('button', {name: 'Not now'}).waitFor(); assert.equal(await trakt.locator('.status-line').count(), 0); await both(guest, '12d-trakt-consent', trakt);
-await guest.reload(); await consent.getByText(SYNC).waitFor();
-// With earlier plays to offer (made here directly in the local database), the second tick says how many, starts off, and Show them
+// Signed in herself, she is asked at once, on the Trakt card, whether to turn sync on: both directions in one question, with Turn
+// on as the suggested answer (the filled button) and Not now beside it; honest that only the last 14 days come over from Trakt,
+// and the latest episode of each show from the last 120. Nothing watched here yet, so there is no tick for earlier plays. Until
+// she answers sync is off, and the question stays, through a reload too.
+const consent = trakt.locator('.consent'), ASK = 'Sync your watching with Trakt? What you watch here goes to Trakt, and what you watch in other Trakt apps comes back here. Nothing is removed.';
+await consent.getByText(ASK, {exact: true}).waitFor(); assert.equal(await consent.getByRole('checkbox').count(), 0);
+await consent.getByText('To start, what you watched on Trakt in the last 14 days is added here. For each show you watched there in the last 120 days, the latest episode is ticked too, so Next Up carries on.', {exact: true}).waitFor();
+assert.deepEqual(await consent.locator('.consent-actions button').evaluateAll(buttons => buttons.map(button => [button.textContent, button.classList.contains('primary')])), [['Turn on', true], ['Not now', false]]);
+assert.equal(await trakt.locator('.status-line').count(), 0); assert.equal((await guest.evaluate(async () => (await (await fetch('/api/state')).json()).hub.people[0])).matching.on, false, 'off until she says');
+await both(guest, 'sync-1-trakt-ask', trakt);
+await guest.reload(); await consent.getByText(ASK, {exact: true}).waitFor();
+// With earlier plays to offer (made here directly in the local database), a tick of their own says how many, starts off, and Show them
 // lists each with its date, newest first. One barely started is not among them: it would not be sent.
 sqlLocal(`INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) SELECT id, 'ada', 'old-1', 'Old Film', 'Movie', 6000, 6000, 'Strand · Mac', 0, unixepoch() - 40 * 86400, '' FROM hubs;
   INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) SELECT id, 'ada', 'old-2', 'Old Show', 'Season 1 · Episode 2', 1200, 2400, 'Strand · Mac', 0, unixepoch() - 30 * 86400, '' FROM hubs;
   INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) SELECT id, 'ada', 'old-3', 'Barely Begun', 'Movie', 10, 6000, 'Strand · Mac', 0, unixepoch() - 20 * 86400, '' FROM hubs`);
-await guest.reload(); await consent.getByText('Also add the 2 things you watched here before connecting. Trakt can’t undo this in one go.').waitFor();
-assert.equal(await consent.getByRole('checkbox').nth(1).isChecked(), false); assert.equal(await consent.locator('.listed').count(), 0);
+await guest.reload(); await consent.getByText('Also add the 2 things you watched here before turning sync on. Trakt can’t undo this in one go.').waitFor();
+assert.equal(await consent.getByRole('checkbox').count(), 1, 'the one tick: earlier plays, apart from the answer'); assert.equal(await consent.getByRole('checkbox').isChecked(), false); assert.equal(await consent.locator('.listed').count(), 0);
 await consent.getByRole('button', {name: 'Show them'}).click(); const listed = await consent.locator('.listed p').allTextContents();
 assert.equal(listed.length, 2, 'as many as the tick says'); assert.match(listed[0], /^Old Show · Season 1 · Episode 2 · \S/); assert.match(listed[1], /^Old Film · Movie · \S/);
-assert.equal(await consent.getByRole('checkbox').nth(1).isChecked(), false, 'looking ticks nothing'); await both(guest, '12e-trakt-consent-earlier', trakt);
+assert.equal(await consent.getByRole('checkbox').isChecked(), false, 'looking ticks nothing'); await both(guest, '12e-trakt-consent-earlier', trakt);
 sqlLocal("DELETE FROM plays WHERE item LIKE 'old-%'");
-// She ticks both: catching up starts at once, a pass at a time, saying how far it has got (the first pass is answered here and the
+// She ticks it and turns sync on: catching up starts at once, a pass at a time, saying how far it has got (the first pass is answered here and the
 // next held a moment, so the line can be seen).
 let passGo; const held = new Promise(done => {passGo = done;}), passed = {n: 0}, passAt = /\/api\/people\/ada\/matching\/pass$/;
 const passing = async route => {if (++passed.n === 1) return route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({trakt: 12, home: 0, left: 25, more: true})}); await held; return route.continue();};
-await guest.route(passAt, passing); await consent.getByRole('checkbox').nth(1).check();
-await consent.getByRole('button', {name: 'Done'}).click(); await toast(guest).filter({hasText: 'Trakt sync is on'}).waitFor();
-await trakt.getByText('Adding 12 of 37 to Trakt. You can keep watching.').waitFor(); await guest.waitForTimeout(600); assert.equal(passed.n, 2, 'one round of passes, not two');
+await guest.route(passAt, passing); await consent.getByRole('checkbox').check();
+await consent.getByRole('button', {name: 'Turn on'}).click(); await toast(guest).filter({hasText: 'Trakt sync is on'}).waitFor();
+await trakt.getByText('Catching up: 12 of 37 added to Trakt. You can keep watching.').waitFor(); await guest.waitForTimeout(600); assert.equal(passed.n, 2, 'one round of passes, not two');
 await both(guest, '12h-trakt-adding', trakt); passGo();
-// Just on: syncing, with where her progress lives, and not green before the first good check.
+// Just on: what sync does, in one line, and not green before the first good check. The question is gone for good: asked once.
 const dot = kind => trakt.locator(`.status-line .dot.${kind}`).count(), syncIs = sets => {sqlLocal(`UPDATE sync SET ${sets}`); return guest.reload();}, time = () => Math.floor(Date.now() / 1000);
-await trakt.getByText('Syncing with this hub. First check in a few minutes.').waitFor(); assert.equal(await trakt.locator('.consent').count(), 0); assert.equal(await dot('ok'), 0); await guest.unroute(passAt, passing);
+const ON = 'Sync is on. What you watch here or in other Trakt apps shows up in both. Nothing is removed.';
+await trakt.getByText(`${ON} First check in a few minutes.`, {exact: false}).waitFor(); assert.equal(await trakt.locator('.consent').count(), 0); assert.equal(await dot('ok'), 0); await guest.unroute(passAt, passing);
 await both(guest, '12n-trakt-just-on', trakt);
-// With sync on nothing is compared and there is nothing to add by hand.
-assert.equal(await trakt.locator('.differ').count(), 0); assert.equal(await trakt.getByRole('button', {name: 'Add them'}).count(), 0);
-// Change opens the same question, as it stands, to turn it off or add earlier plays later; Not now leaves it.
-await trakt.getByRole('button', {name: 'Change'}).click(); await consent.getByText(SYNC).waitFor(); await consent.getByRole('button', {name: 'Not now'}).click();
-assert.equal(await trakt.locator('.consent').count(), 0); assert.equal(passed.n, 2); await trakt.getByText('Syncing with this hub.', {exact: false}).waitFor();
+await guest.reload(); await trakt.getByText(ON, {exact: false}).waitFor(); assert.equal(await trakt.locator('.consent').count(), 0, 'not asked again');
+// Change opens it as it stands, to add earlier plays later or turn it off; Done with nothing changed only closes it.
+await trakt.getByRole('button', {name: 'Change'}).click(); await consent.getByText('Sync with Trakt is on. What you watch here goes to Trakt, and what you watch in other Trakt apps comes back here. Nothing is removed.', {exact: true}).waitFor();
+await consent.getByText('Turning it off stops both directions. Nothing already added is removed.', {exact: true}).waitFor(); await consent.getByRole('button', {name: 'Turn off'}).waitFor(); await consent.getByRole('button', {name: 'Done'}).click();
+assert.equal(await trakt.locator('.consent').count(), 0); assert.equal(passed.n, 2); await trakt.getByText(ON, {exact: false}).waitFor();
 // Once a good check has run: when, and only then green.
-await syncIs(`good = ${time()}`); await trakt.getByText(/^Syncing with this hub\. Last checked \d[^.]*\. Change$/).waitFor(); assert.equal(await dot('ok'), 1); await both(guest, '12f-trakt-syncing', trakt);
+await syncIs(`good = ${time()}`); await trakt.getByText(/^Sync is on\. What you watch here or in other Trakt apps shows up in both\. Nothing is removed\. Last checked \d[^.]*\. Change$/).waitFor(); assert.equal(await dot('ok'), 1); await both(guest, 'sync-3-trakt-on', trakt);
 // What was synced: one short list, newest first, of what the hub did (made here directly in the local database). A play only noted
 // as never to be sent again has no title and is not listed.
 sqlLocal(`INSERT INTO sent (hub, person, place, play, at, title, detail) SELECT id, 'ada', 'trakt', 'w:movie/438631', unixepoch() - 86400, 'Dune', 'Movie' FROM hubs;
@@ -222,17 +233,17 @@ sqlLocal(`INSERT INTO sent (hub, person, place, play, at, title, detail) SELECT 
   INSERT INTO sent (hub, person, place, play, at, title, detail) SELECT id, 'ada', 'here', 'ir:movie/949@2026-01-02T00:00:00.000Z', unixepoch() - 90000, 'Heat', 'Movie' FROM hubs;
   INSERT INTO sent (hub, person, place, play, at) SELECT id, 'ada', 'here', 'i:movie/1', unixepoch() FROM hubs`);
 await trakt.getByRole('button', {name: 'What was synced'}).click(); await trakt.locator('.synced .listed p').first().waitFor(); const synced = await trakt.locator('.synced .listed p').allTextContents();
-assert.equal(synced.length, 3); assert.match(synced[0], /^Andor · Season 2 · Episode 4 · paused spot added to this hub · \S/); assert.match(synced[1], /^Dune · Movie · added to Trakt · \S/);
+assert.equal(synced.length, 3); assert.match(synced[0], /^Andor · Season 2 · Episode 4 · paused spot added here · \S/); assert.match(synced[1], /^Dune · Movie · added to Trakt · \S/);
 // A spot that took the place of an earlier one says so.
-assert.match(synced[2], /^Heat · Movie · paused spot updated in this hub · \S/);
+assert.match(synced[2], /^Heat · Movie · paused spot updated here · \S/);
 await both(guest, '12i-trakt-what-was-synced', trakt); await trakt.getByRole('button', {name: 'Hide what was synced'}).click(); sqlLocal('DELETE FROM sent');
 // Trakt asked the hub to wait: said with the time, never green, and no button until then.
 sqlLocal(`INSERT INTO rows_cache (hub, person, kind, at, items) SELECT id, 'ada', 'trakt-wait', unixepoch() + 1800, '' FROM hubs`); await guest.reload();
-await trakt.getByText(/^Syncing with this hub\. Trakt asked us to wait until \d[^.]*\. Your watching is still being saved\.$/).waitFor(); assert.equal(await dot('ok'), 0);
+await trakt.getByText(/^Sync is on\. Trakt asked us to wait until \d[^.]*\. Your watching is still being saved\.$/).waitFor(); assert.equal(await dot('ok'), 0);
 assert.equal(await trakt.locator('.status-line button').count(), 0, 'no button until then'); await both(guest, '12j-trakt-told-to-wait', trakt); sqlLocal("DELETE FROM rows_cache WHERE kind = 'trakt-wait'");
 // The same for a wait Trakt asked for on a write (kept apart, trakt.ts).
 sqlLocal(`INSERT INTO rows_cache (hub, person, kind, at, items) SELECT id, 'ada', 'trakt-wait-send', unixepoch() + 1800, '' FROM hubs`); await guest.reload();
-await trakt.getByText(/^Syncing with this hub\. Trakt asked us to wait until \d/).waitFor(); assert.equal(await dot('ok'), 0); sqlLocal("DELETE FROM rows_cache WHERE kind = 'trakt-wait-send'");
+await trakt.getByText(/^Sync is on\. Trakt asked us to wait until \d/).waitFor(); assert.equal(await dot('ok'), 0); sqlLocal("DELETE FROM rows_cache WHERE kind = 'trakt-wait-send'");
 // Not answering, with no time given: said at once (it used to read as fine for three days), not green.
 await syncIs(`failing = ${time() - 3600}, why = 'Trakt didn’t answer just now.'`);
 await trakt.getByText('Trakt didn’t answer just now. The hub tries again within the hour. Your watching is still being saved.', {exact: false}).waitFor(); assert.equal(await dot('ok'), 0); await both(guest, '12k-trakt-no-answer', trakt);
@@ -250,9 +261,14 @@ const lapsed = async route => {const response = await route.fetch(), body = awai
 await syncIs('failing = NULL, why = NULL'); await guest.route('**/api/state', lapsed); await guest.reload();
 await trakt.getByText('Trakt needs you to sign in again. Sync is paused until then.').waitFor(); await trakt.getByRole('button', {name: 'Connect'}).waitFor(); assert.equal(await dot('ok'), 0);
 await both(guest, '12m-trakt-sign-in-lapsed', trakt); await guest.unroute('**/api/state', lapsed);
-// Turned off (as for someone connected before this, or by their manager): Turn on asks the same question, which can wait.
-await syncIs('matching = 0, failing = NULL, why = NULL'); await trakt.getByText('Sync is off. What you watch here still reaches Trakt.', {exact: false}).waitFor(); assert.equal(await dot('ok'), 0);
-await trakt.getByRole('button', {name: 'Turn on'}).click(); await consent.getByText(SYNC).waitFor(); await consent.getByRole('button', {name: 'Not now'}).click(); await trakt.getByText('Sync is off. What you watch here still reaches Trakt.', {exact: false}).waitFor();
+// She turns it off, from Change: said plainly, both directions, and the line is not green. Turn on asks the same question, which
+// can wait (Not now leaves it off).
+const OFF = 'Sync is off. Nothing is sent to Trakt and nothing comes back.';
+await guest.reload(); await trakt.getByText(ON, {exact: false}).waitFor(); await trakt.getByRole('button', {name: 'Change'}).click(); await consent.getByRole('button', {name: 'Turn off'}).click();
+await toast(guest).filter({hasText: 'Trakt sync is off. Nothing is sent to Trakt and nothing comes back.'}).waitFor();
+await trakt.getByText(OFF, {exact: false}).waitFor(); assert.equal(await dot('ok'), 0); assert.equal(await dot('off'), 1); assert.equal((await guest.evaluate(async () => (await (await fetch('/api/state')).json()).hub.people[0])).matching.on, false);
+assert.equal(await trakt.getByText('still reaches', {exact: false}).count(), 0); await both(guest, 'sync-2-trakt-off', trakt);
+await trakt.getByRole('button', {name: 'Turn on'}).click(); await consent.getByText(ASK, {exact: true}).waitFor(); await consent.getByRole('button', {name: 'Not now'}).click(); await trakt.getByText(OFF, {exact: false}).waitFor();
 const [asked] = signins; assert.equal(asked.response_type, 'code'); assert.equal(asked.code_challenge_method, 'S256'); assert.equal(asked.prompt, undefined);
 assert.equal(asked.redirect_uri, `${BASE}/api/trakt/callback`); assert.equal(await guest.evaluate(() => sessionStorage.length), 0);
 // Favorites from her Trakt watchlist (worker/hearts.ts): not favOffered here, where nobody has a setup of their own. As the hub
@@ -272,7 +288,7 @@ await both(guest, '12o-trakt-favorites-off', trakt);
 await favs.click(); await toast(guest).filter({hasText: 'Your Trakt watchlist will show as Favorites'}).waitFor(); assert.deepEqual(favAsked, [{on: true}]);
 await trakt.getByRole('switch', {name: FAVS, checked: true}).waitFor(); await both(guest, '12p-trakt-favorites-on', trakt);
 await favs.click(); await toast(guest).filter({hasText: 'Favorites no longer follow your Trakt watchlist'}).waitFor(); assert.deepEqual(favAsked.at(-1), {on: false});
-await guest.unroute('**/api/state', favOffered); await guest.unroute('**/api/people/ada/favorites', favTurning); await guest.reload(); await trakt.getByText('Sync is off. What you watch here still reaches Trakt.', {exact: false}).waitFor(); assert.equal(await favs.count(), 0);
+await guest.unroute('**/api/state', favOffered); await guest.unroute('**/api/people/ada/favorites', favTurning); await guest.reload(); await trakt.getByText(OFF, {exact: false}).waitFor(); assert.equal(await favs.count(), 0);
 // An older Trakt link made through AIOMetadata shows as a quiet note she can remove (made here directly in the local database).
 execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', "INSERT INTO secrets (hub, owner, kind, value) SELECT id, 'ada', 'trakt', 'x' FROM hubs"], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
 await guest.reload(); await trakt.getByText('Nothing uses it any more').waitFor(); await shot(guest, '13-accounts-connected');
@@ -286,6 +302,18 @@ await guest.goto(BASE + '/#/me/home'); const onHome = guest.locator('.rows li h3
 assert.deepEqual((await onHome.allTextContents()).slice(0, 4), ['WatchlistFrom Trakt', 'Recommended MoviesFrom Trakt', 'Recommended ShowsFrom Trakt', 'Recently WatchedFrom Trakt']);
 assert.equal(await guest.locator('.rows li', {hasText: 'Recommended Movies'}).locator('.row-head p').textContent(), 'Movies');
 await both(guest, '13e-home-own-rows', guest.locator('.rows'));
+// Each account-driven row says in one line, where it is edited, what it is and how it is put together.
+const aboutOf = async name => {await guest.locator('.rows li', {hasText: name}).first().getByRole('button', {name: 'Edit'}).click(); const about = await guest.locator('dialog.sheet .about-row').textContent(); return about;};
+const closeSheet = () => guest.locator('dialog.sheet').getByRole('button', {name: 'Close'}).click();
+assert.equal(await aboutOf('Watchlist'), 'Your Trakt watchlist, newest added first.');
+if (shots) for (const [width, height] of [[390, 844], [1280, 900]]) {await guest.setViewportSize({width, height}); await guest.waitForTimeout(300); await guest.screenshot({path: `${shots}/real-sync-7-row-edit-about-${width < 600 ? 'phone' : 'wide'}.png`});} await guest.setViewportSize({width: 390, height: 844});
+await closeSheet(); assert.equal(await aboutOf('Recommended Movies'), 'Movies Trakt recommends for you, from your whole Trakt history. What is on your watchlist is left out.');
+await closeSheet(); assert.equal(await aboutOf('Recently Watched'), 'What you watched lately, newest first, each show once. From your Trakt history.'); await closeSheet();
+// The rows that start off (Up Next, New for you) have no Edit until they are on Home: under Not on Home each says the same line.
+await guest.locator('.off').evaluate(list => {list.open = true;});
+assert.equal(await guest.locator('.off li', {hasText: 'New for you'}).locator('.about-row').textContent(), 'From your Trakt: new episodes of shows you watch and watchlist movies now out to stream, newest first. A title leaves once you start it.');
+assert.equal(await guest.locator('.off li', {hasText: 'Up Next'}).locator('.about-row').textContent(), 'From your Trakt: shows with an episode you haven’t watched yet, the ones you watched most lately first.');
+if (shots) for (const [width, height] of [[390, 844], [1280, 900]]) {await guest.setViewportSize({width, height}); await guest.locator('.off').scrollIntoViewIfNeeded(); await guest.waitForTimeout(300); await guest.locator('.off').screenshot({path: `${shots}/real-sync-7b-not-on-home-about-${width < 600 ? 'phone' : 'wide'}.png`});} await guest.setViewportSize({width: 390, height: 844});
 await guest.getByRole('switch', {name: 'Show Recently Watched on Home'}).click(); await toast(guest).filter({hasText: '“Recently Watched” is off Home'}).waitFor();
 const followed = await guest.evaluate(async () => {for (let i = 0; i < 40; i++) {const me = (await (await fetch('/api/state')).json()).hub.people[0]; if (me.picks) return me; await new Promise(done => setTimeout(done, 250));} return null;});
 assert.equal(followed.rows, null, 'still following the group Home'); assert.deepEqual(followed.picks, {'recently-watched': false}); await shot(guest, '13d-recently-watched-off');
@@ -328,98 +356,67 @@ for (const where of ['/#/hub', '/#/group/family', '/#/person/ada/home']) {
   if (where === '/#/hub') await theirs.getByText(/more ready-made rows? reads? MDBList lists/).waitFor();
   await theirs.getByRole('button', {name: 'Close'}).click();
 } await guest.goto(BASE + '/#/me/accounts'); await trakt.getByText('Connected as adatrakt').waitFor();
-// With sync off, what differs from Trakt is offered inside the Trakt card on her own page (with sync on nothing is compared).
-// What the pair holds is put in the hub's six-hour keep here (no player setups run in this test, so nothing could be looked at);
-// copying across is tested in tests/aiom.test.mjs.
-const iso = days => new Date(Date.now() - days * 86400e3).toISOString(), keep = {};
-const play = (key, title, detail, days, cells, extra = {}) => ({key, title, detail, at: iso(days), here: 'none', trakt: 'none', lists: 'none', ...cells, ...extra});
-const holds = (pair, lines) => {keep[pair] = {at: Math.floor(Date.now() / 1000), look: {lines, more: false, unmatched: 0, already: 0}}; sqlLocal(`INSERT INTO drift (hub, person, day, here, here_at) SELECT id, 'ada', '', '${JSON.stringify(keep)}', 0 FROM hubs WHERE true ON CONFLICT (hub, person) DO UPDATE SET here = excluded.here`);};
-const differ = trakt.locator('.differ'), goes = () => differ.locator('.differ-line .to').allTextContents();
-// The hub's answer to a look at a pair, made to fail the first `times` asks as a busy service does (with `until`: Trakt said when
-// to ask again), then passed on as it is.
-const refuse = async (pair, times, message, until = 0) => {
-  let asked = 0; const at = new RegExp(`/api/people/ada/compare/${pair}(\\?|$)`), answer = route => ++asked <= times ? route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({message, ...(until ? {until} : {})})}) : route.continue();
-  await guest.route(at, answer); return {asked: () => asked, done: () => guest.unroute(at, answer)};
-};
-const BUSY = 'Trakt didn’t answer just now.';
-// Progress here, Trakt connected: what never reached Trakt, what was watched elsewhere, a spot Trakt holds. One line; each thing
-// only behind Show them, saying where it would go, and Add them only once they are shown.
-holds('here-trakt', [play('w:show/60574:5:2', 'Peaky Blinders', 'Season 5 · Episode 2', 0.5, {here: 'has', trakt: 'add'}), play('i:show/83867:2:4', 'Andor', 'Season 2 · Episode 4', 5, {here: 'add', trakt: 'has'}, {elsewhere: true}),
-  play('ip:movie/693134', 'Dune: Part Two', 'Movie', 8, {here: 'add', trakt: 'has'}, {elsewhere: true, pct: 42})]);
-await guest.reload(); await differ.getByText('1 thing you watched is missing from Trakt and 2 from this hub.').waitFor();
-assert.equal(await differ.locator('.differ-line').count(), 0, 'each one only behind Show them'); assert.equal(await differ.getByRole('button', {name: 'Add them'}).count(), 0); await both(guest, '13-differ-here-trakt', trakt);
-await differ.getByRole('button', {name: 'Show them'}).click(); assert.deepEqual(await goes(), ['add to Trakt', 'add to this hub', 'add to this hub']);
-await differ.getByText('· watched elsewhere').first().waitFor(); await differ.getByText('paused at 42%', {exact: false}).waitFor(); await differ.getByRole('button', {name: 'Add them'}).waitFor();
-const andor = differ.getByRole('button', {name: 'Add Andor S2E4'}); await andor.click(); assert.equal(await andor.getAttribute('aria-pressed'), 'false'); assert.deepEqual(await goes(), ['add to Trakt', 'left out', 'add to this hub']);
-await both(guest, '13a-differ-here-trakt-open', trakt); await andor.click();
-// A look that fails is asked once more by itself first: a busy moment passes unseen.
-let refused = await refuse('here-trakt', 1, BUSY);
-await guest.reload(); await differ.getByText('1 thing you watched is missing from Trakt and 2 from this hub.').waitFor(); assert.equal(refused.asked(), 2); assert.equal(await differ.getByText('couldn’t', {exact: false}).count(), 0); await refused.done();
-// Nothing differs: one line, with when. Failing twice on Check again, it stays, says why, and that her watching is still being saved.
-holds('here-trakt', []); await guest.reload(); await differ.getByText(/^Nothing differs\. Checked \d/).waitFor(); await both(guest, '13h-differ-nothing', trakt);
-refused = await refuse('here-trakt', 2, BUSY); await differ.getByRole('button', {name: 'Check again'}).click();
-await differ.getByText('Couldn’t check everything just now. Trakt didn’t answer just now, so we couldn’t compare. Your watching is still being saved.').waitFor(); assert.equal(refused.asked(), 2);
-await both(guest, '13j-differ-not-checked-again', trakt);
-await differ.getByRole('button', {name: 'Try again'}).click(); await differ.getByText('Couldn’t check').waitFor({state: 'detached'}); assert.equal(refused.asked(), 3); await refused.done();
-// Nothing kept, and Trakt asked the hub to wait: said with the time, asked once only, and no button until then.
-sqlLocal('UPDATE drift SET here = NULL'); refused = await refuse('here-trakt', 9, BUSY, Math.floor(Date.now() / 1000) + 1800); await guest.reload();
-await differ.getByText(/^Trakt asked us to wait until \d[^,]*, so we couldn’t compare\. Your watching is still being saved\.$/).waitFor(); await guest.waitForTimeout(2500); assert.equal(refused.asked(), 1);
-assert.equal(await differ.getByRole('button').count(), 0); assert.equal(await differ.getByText('Nothing differs').count(), 0); await both(guest, '13p-differ-told-to-wait', trakt); await refused.done();
-// Nothing kept, and Trakt not answering the hub (nothing does, in this test): said as such, never "nothing differs", with Try again.
-await guest.reload();
-await differ.getByText('Trakt didn’t answer just now, so we couldn’t compare. Your watching is still being saved.').waitFor(); assert.equal(await differ.getByText('Nothing differs').count(), 0);
-await differ.getByRole('button', {name: 'Try again'}).waitFor(); await both(guest, '13l-differ-failed', trakt);
-// Connecting MDBList saves the key; keeping her progress there is its one switch, off to start with, with where her progress is under it.
+// With sync off nothing is compared with Trakt or offered to add by hand: the card says it is off, and asks the hub nothing more.
+const looks = []; guest.on('request', request => {if (/\/(compare\/[a-z]+-trakt|drift|carry|matching\/pass)(\?|$)/.test(new URL(request.url()).pathname)) looks.push(new URL(request.url()).pathname.split('/').pop());});
+await guest.reload(); await trakt.getByText(OFF, {exact: false}).waitFor(); await guest.waitForTimeout(500);
+assert.equal(await trakt.locator('.differ').count(), 0); assert.equal(await trakt.getByRole('button', {name: /Add them|Show them|Check again/}).count(), 0); assert.deepEqual(looks, []);
+// Connecting MDBList saves the key and gives its rows; Sync is its one switch, off to start with, with how it stands under it.
 await mdb.getByRole('button', {name: 'Connect'}).click(); await guest.getByLabel('MDBList API key').fill('ada-mdblist-key');
 await guest.getByRole('button', {name: 'Save'}).click(); await toast(guest).filter({hasText: 'MDBList connected'}).waitFor();
-const keepIn = guest.getByRole('switch', {name: 'Keep my progress in MDBList'}); await keepIn.waitFor(); assert.equal(await keepIn.getAttribute('aria-checked'), 'false');
-await mdb.getByText('Needed for hiding what you’ve watched. Trakt sync follows it.').waitFor(); await mdb.getByText('Your progress is kept on this hub.', {exact: true}).waitFor();
+const keepIn = guest.getByRole('switch', {name: MDB_SYNC}); await keepIn.waitFor(); assert.equal(await keepIn.getAttribute('aria-checked'), 'false');
+assert.equal(await mdb.locator('.toggle-row strong').textContent(), 'Sync'); const MDB_OFF = 'Sync is off. Nothing is sent to MDBList and nothing comes back.';
+await mdb.getByText('What you watch goes to your MDBList, and what MDBList has comes back. Turning it off loses nothing.', {exact: true}).waitFor(); await mdb.getByText(MDB_OFF, {exact: true}).waitFor();
+// The three plain lines: hiding needs it (above, in what MDBList gives), turning it off loses nothing, and (below) catching up.
+assert.ok(!/progress|kept|this hub/i.test(await mdb.textContent()), 'where progress lives is not named');
 assert.equal((await mdb.locator('.gains p').allTextContents()).length, 3, 'the same three lines once connected');
-await both(guest, '12b-mdblist-connected', mdb);
+await both(guest, 'sync-4-mdblist-off', mdb);
 // With Trakt and MDBList both connected there is still one Watchlist, and it says it comes from both.
 await guest.goto(BASE + '/#/me/home'); await guest.locator('.rows li', {hasText: 'Watchlist'}).getByText('From Trakt and MDBList', {exact: true}).waitFor();
-assert.equal((await onHome.allTextContents()).filter(name => name.startsWith('Watchlist')).length, 1); assert.equal(await guest.locator('.off li', {hasText: 'Watchlist'}).count(), 0);
+assert.equal((await onHome.allTextContents()).filter(name => name.startsWith('Watchlist')).length, 1); assert.equal(await guest.locator('.off li', {has: guest.locator('h3', {hasText: /^Watchlist/})}).count(), 0);
 await both(guest, '12c-one-watchlist', guest.locator('.rows li', {hasText: 'Watchlist'}));
 await guest.goto(BASE + '/#/me/accounts');
-// Turning it on copies what was watched here that MDBList lacks, a pass at a time, saying how far it has got, then switches.
+// Turning it on copies what was watched here that MDBList lacks, a pass at a time, then switches; meanwhile one calm line.
 // (The first pass is answered here, and the next held a moment, so the line can be seen.)
 let release; const hold = new Promise(done => {release = done;}), passes = {n: 0}, moveTo = /\/api\/people\/ada\/compare\/here-mdblist$/;
 const copying = async route => {if (++passes.n === 1) return route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({added: 12, unmatched: 0, more: true, left: 28, switched: false})}); await hold; return route.continue();};
 await guest.route(moveTo, copying);
-await keepIn.click(); await mdb.getByText('Copying 12 of 40 to MDBList. You can keep watching.').waitFor(); assert.equal(await keepIn.getAttribute('aria-checked'), 'true');
+await keepIn.click(); await mdb.getByText('Catching up. You can keep watching.', {exact: true}).waitFor(); assert.equal(await keepIn.getAttribute('aria-checked'), 'true');
 assert.equal((await guest.evaluate(async () => (await (await fetch('/api/state')).json()).hub.people[0])).lists, false, 'not switched yet');
-await both(guest, '13e-mdblist-copying', mdb); release();
-await toast(guest).filter({hasText: 'Progress kept in MDBList'}).waitFor(); await guest.unroute(moveTo, copying);
-// Kept in MDBList now. Hiding what she watched takes a second switch, under Playback, and the line says so until it is on.
-await mdb.getByText('Your progress is kept in your MDBList. To hide what you’ve watched, turn on Hide what’s been watched under Playback.').waitFor(); assert.equal(await mdb.getByRole('link', {name: 'Playback'}).getAttribute('href'), '#/me/playback');
-await both(guest, '13f-mdblist-kept-hiding-off', mdb);
+await both(guest, 'sync-6-mdblist-catching-up', mdb); release();
+await toast(guest).filter({hasText: 'MDBList sync is on'}).waitFor(); await guest.unroute(moveTo, copying);
+// On now (underneath, her progress is kept there: the hub says so, the page does not). Hiding what she watched takes a second
+// switch, under Playback, and the line says so until it is on.
+assert.equal((await guest.evaluate(async () => (await (await fetch('/api/state')).json()).hub.people[0])).lists, true, 'switched underneath, as before');
+await mdb.getByText('Sync is on. To hide what you’ve watched, turn on Hide what’s been watched under Playback.').waitFor(); assert.equal(await mdb.getByRole('link', {name: 'Playback'}).getAttribute('href'), '#/me/playback');
+await both(guest, 'sync-5-mdblist-on', mdb);
 const hides = async route => {const response = await route.fetch(), body = await response.json(); body.hub.people[0].settings = {...body.hub.people[0].settings, hideWatched: true}; return route.fulfill({response, json: body});};
-await guest.route('**/api/state', hides); await guest.reload(); await mdb.getByText('Your progress is kept in your MDBList. Rows hide what you’ve watched.').waitFor();
+await guest.route('**/api/state', hides); await guest.reload(); await mdb.getByText('Sync is on. Rows hide what you’ve watched.', {exact: true}).waitFor();
 await both(guest, '13q-mdblist-kept-hiding-on', mdb); await guest.unroute('**/api/state', hides); await guest.reload(); await mdb.getByText('turn on Hide what’s been watched', {exact: false}).waitFor();
-// The Trakt card's status follows where her progress lives.
-await trakt.getByText('Sync is off.', {exact: false}).waitFor(); await syncIs(`matching = 1, good = ${time()}`); await trakt.getByText(/^Syncing with your MDBList\. Last checked \d/).waitFor(); await syncIs('matching = 0');
+// The Trakt card's line reads the same whichever account keeps her progress: it never says where.
+await trakt.getByText(OFF, {exact: false}).waitFor(); await syncIs(`matching = 1, good = ${time()}`); await trakt.getByText(/^Sync is on\. What you watch here or in other Trakt apps shows up in both\. Nothing is removed\. Last checked \d/).waitFor();
+assert.ok(!/MDBList|this hub/.test(await trakt.locator('.status-line').textContent())); await syncIs('matching = 0');
 // Turning it off copies back what only MDBList has, then switches back. MDBList not answering stops it and says why; Try again
 // carries on from there, saying how far it has got (the first pass is answered here and the next held a moment).
 mdblistDown = true; await keepIn.click();
-await mdb.getByText('Copying stopped: MDBList isn’t taking requests from your key right now. If this lasts a day, paste a new key.', {exact: false}).waitFor(); await both(guest, '13g-mdblist-stopped', mdb);
+await mdb.getByText('Catching up stopped: MDBList isn’t taking requests from your key right now. If this lasts a day, paste a new key.', {exact: false}).waitFor(); await both(guest, '13g-mdblist-stopped', mdb);
 let goBack; const waitBack = new Promise(done => {goBack = done;}), backs = {n: 0}, moveBack = /\/api\/people\/ada\/compare\/mdblist-here$/;
 const copyingBack = async route => {if (++backs.n === 1) return route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({added: 12, unmatched: 0, more: true, left: 28, switched: false})}); await waitBack; return route.continue();};
 await guest.route(moveBack, copyingBack);
 mdblistDown = false; await mdb.getByRole('button', {name: 'Try again'}).click();
-await mdb.getByText('Copying 12 of 40 back to this hub. You can keep watching.').waitFor(); await both(guest, '13r-mdblist-copying-back', mdb); goBack();
-await toast(guest).filter({hasText: 'Progress kept on this hub'}).waitFor(); await guest.unroute(moveBack, copyingBack); assert.equal(await keepIn.getAttribute('aria-checked'), 'false');
-await mdb.getByText('Your progress is kept on this hub.', {exact: true}).waitFor();
+await mdb.getByText('Catching up. You can keep watching.', {exact: true}).waitFor(); await both(guest, '13r-mdblist-copying-back', mdb); goBack();
+await toast(guest).filter({hasText: 'MDBList sync is off. Nothing was lost.'}).waitFor(); await guest.unroute(moveBack, copyingBack); assert.equal(await keepIn.getAttribute('aria-checked'), 'false');
+await mdb.getByText(MDB_OFF, {exact: true}).waitFor(); assert.equal((await guest.evaluate(async () => (await (await fetch('/api/state')).json()).hub.people[0])).lists, false, 'switched back underneath, as before');
 // The manager's view: the same cards about Ada, no comparison and nothing of what she watched. Sync stays hers: the manager sees
 // that only she can turn it on, has no button for it, and the hub refuses them whatever they send.
 await owner.goto(BASE + '/#/person/ada/accounts'); await owner.reload();
-await owner.getByText('Sync is off. Only Ada can turn it on, from their own page.').waitFor(); assert.equal(await owner.getByRole('button', {name: 'Turn on'}).count(), 0);
-await owner.getByText('What Ada watches here is added to Trakt as it plays.').waitFor(); await owner.getByText('Hide what they’ve watched in every row. Only progress kept in MDBList makes that possible.').waitFor();
-assert.equal(await owner.locator('.differ').count(), 0); assert.equal(await owner.getByRole('button', {name: 'What was synced'}).count(), 0); assert.equal(await owner.locator('.consent').count(), 0);
+await owner.getByText('Sync is off. Nothing is sent to Trakt and nothing comes back. Only Ada can turn it on, from their own page.').waitFor(); assert.equal(await owner.getByRole('button', {name: 'Turn on'}).count(), 0);
+await owner.getByText('With sync on, what Ada watches here and in other Trakt apps shows up in both.').waitFor(); await owner.getByText('Hide what they’ve watched in every row. That needs MDBList sync on.').waitFor();
+assert.equal(await owner.getByRole('button', {name: 'What was synced'}).count(), 0); assert.equal(await owner.locator('.consent').count(), 0);
 assert.deepEqual(await owner.evaluate(async () => {const out = []; for (const [method, path] of [['POST', ''], ['GET', ''], ['GET', '/synced'], ['POST', '/pass']]) out.push((await fetch(`/api/people/ada/matching${path}`, {method, headers: {'content-type': 'application/json'}, body: method === 'GET' ? undefined : JSON.stringify({on: true, earlier: true})})).status); return out;}), [403, 403, 403, 403]);
 assert.equal((await guest.evaluate(async () => (await (await fetch('/api/state')).json()).hub.people[0])).matching.on, false, 'still off');
 // The manager's switch goes the same way as hers: copied first, then switched; nothing to paste.
-await owner.getByText('Ada’s progress is kept on this hub.', {exact: true}).waitFor();
-await owner.getByRole('switch', {name: 'Keep Ada’s progress in MDBList'}).click(); await owner.getByText('Ada’s progress is kept in their MDBList. To hide what they’ve watched, turn on Hide what’s been watched under Playback.').waitFor();
+await owner.getByText(MDB_OFF, {exact: true}).waitFor();
+await owner.getByRole('switch', {name: 'Sync Ada’s watching with MDBList'}).click(); await owner.getByText('Sync is on. To hide what they’ve watched, turn on Hide what’s been watched under Playback.').waitFor();
 assert.equal(await owner.getByLabel('MDBList API key').count(), 0);
 assert.equal(await owner.getByText('It’s theirs', {exact: false}).count(), 0); assert.equal(await owner.locator('ul.accounts').count(), 1); await shot(owner, '14-accounts-manager-phone');
 await owner.setViewportSize({width: 1280, height: 900}); await shot(owner, '14-accounts-manager-wide'); await owner.setViewportSize({width: 390, height: 844});
@@ -432,32 +429,19 @@ assert.equal(await keyed.locator('.pick-section').last().locator('summary').coun
 await keyed.getByRole('button', {name: /^Star Wars/}).waitFor(); await keyed.getByText('Their own Trakt and MDBList lists stay private', {exact: false}).waitFor();
 await young.locator('summary').click(); assert.deepEqual(await young.locator('li strong').allTextContents(), ['Kids’ Movies, around 7', 'Kids’ Shows, around 7', 'Movies for 9 to 12', 'Kids’ Shows, up to 12']);
 await keyed.getByRole('button', {name: 'Close'}).click();
-// Progress in MDBList, Trakt connected, sync off: the daily look and paused spots, in one line in the Trakt card. What was watched
-// here and MDBList lacks is not compared any more (the hub sends it by itself once a day, tests/aiom.test.mjs).
-const looks = []; guest.on('request', request => {if (request.url().includes('/compare/')) looks.push(new URL(request.url()).pathname.split('/').pop());});
-holds('mdblist-trakt', [play('pt:movie/550', 'Fight Club', 'Movie', 1, {trakt: 'has', lists: 'add'}, {pct: 35})]);
-const drift = JSON.stringify({since: 0, trakt: 3, mdblist: 2, toMdblist: [{kind: 'show', tmdb: 1396, name: 'Breaking Bad', season: 1, episode: 2, at: 1763000000}], toTrakt: [{kind: 'movie', tmdb: 680, name: 'Pulp Fiction', at: 1762900000}]});
-sqlLocal(`UPDATE drift SET result = '${drift}', at = ${Math.floor(Date.now() / 1000)}, day = '2026-06-01'`);
-await guest.reload(); await differ.getByText('1 thing you watched is missing from Trakt and 2 from your MDBList.').waitFor(); assert.ok(looks.includes('mdblist-trakt') && !looks.includes('here-mdblist'), looks.join());
-await differ.getByRole('button', {name: 'Show them'}).click(); assert.deepEqual(await goes(), ['add to your MDBList', 'add to Trakt', 'add to your MDBList']);
-const pulpLine = differ.getByRole('button', {name: 'Add Pulp Fiction Movie'}); assert.equal(await pulpLine.getAttribute('aria-pressed'), 'true');
-await pulpLine.click(); assert.equal(await pulpLine.getAttribute('aria-pressed'), 'false');
-await both(guest, '13b-differ-mdblist-trakt-open', trakt);
-await pulpLine.press('Enter'); assert.equal(await pulpLine.getAttribute('aria-pressed'), 'true');
-// Nothing missing: one line.
-holds('mdblist-trakt', []); sqlLocal(`UPDATE drift SET result = '${JSON.stringify({since: 0, trakt: 3, mdblist: 3, toMdblist: [], toTrakt: []})}'`);
-await guest.reload(); await differ.getByText(/^Nothing differs\. Checked \d/).waitFor(); await both(guest, '13d-differ-mdblist-nothing', trakt);
+// MDBList sync on, Trakt connected, Trakt sync off: still nothing compared or offered.
+looks.length = 0; await guest.reload(); await trakt.getByText(OFF, {exact: false}).waitFor(); await guest.waitForTimeout(500); assert.deepEqual(looks.filter(look => look !== 'pass'), []);
 // With sync on, nothing is compared or offered: the status line, and What was synced.
-looks.length = 0; await syncIs(`matching = 1, good = ${time()}`); await trakt.getByText(/^Syncing with your MDBList\. Last checked \d/).waitFor(); await trakt.getByRole('button', {name: 'What was synced'}).waitFor();
+looks.length = 0; await syncIs(`matching = 1, good = ${time()}`); await trakt.getByText(/^Sync is on\. What you watch here or in other Trakt apps shows up in both\. Nothing is removed\. Last checked \d/).waitFor(); await trakt.getByRole('button', {name: 'What was synced'}).waitFor();
 assert.equal(await trakt.locator('.differ').count(), 0); assert.equal(await guest.getByText('Nothing differs').count(), 0); await guest.waitForTimeout(500); assert.deepEqual(looks, []);
 await guest.setViewportSize({width: 390, height: 844}); await shot(guest, '13n-accounts-syncing-phone'); await guest.setViewportSize({width: 1280, height: 900}); await shot(guest, '13n-accounts-syncing-wide'); await guest.setViewportSize({width: 390, height: 844});
 await trakt.getByRole('button', {name: 'What was synced'}).click(); await trakt.getByText('Nothing has needed syncing yet.').waitFor(); await syncIs('matching = 0'); await trakt.getByText('Sync is off.', {exact: false}).waitFor();
-// Disconnecting while MDBList keeps her progress brings it back here first, the same way. When MDBList won't answer, she can
+// Disconnecting while MDBList sync is on turns it off first, the same way (what only MDBList has is copied back). When MDBList won't answer, she can
 // disconnect anyway; then she connects it again.
 mdblistDown = true; await guest.reload(); await mdb.getByRole('button', {name: 'Disconnect'}).click(); await guest.getByRole('heading', {name: 'Disconnect MDBList?'}).waitFor();
 await guest.locator('dialog.sheet').getByRole('button', {name: 'Disconnect'}).click(); await guest.getByRole('heading', {name: 'Disconnect anyway?'}).waitFor(); await shot(guest, '13o-mdblist-disconnect-anyway');
 await guest.locator('dialog.sheet').getByRole('button', {name: 'Disconnect anyway'}).click(); await toast(guest).filter({hasText: 'MDBList disconnected'}).waitFor(); mdblistDown = false;
-await mdb.getByRole('button', {name: 'Connect', exact: true}).waitFor(); assert.equal(await guest.getByRole('switch', {name: 'Keep my progress in MDBList'}).count(), 0);
+await mdb.getByRole('button', {name: 'Connect', exact: true}).waitFor(); assert.equal(await guest.getByRole('switch', {name: MDB_SYNC}).count(), 0);
 sqlLocal('DELETE FROM drift');
 // The manager who is Ada too opens her link once she has joined: straight into her own view, as if she had signed in, with her
 // own things there. "Back to manager" returns to the manager's view, which was kept aside meanwhile.
@@ -474,7 +458,7 @@ await owner.goto(link); await owner.waitForURL(/#\/me/); await owner.getByText('
 await owner.getByRole('button', {name: 'Back to manager'}).click(); await owner.getByText('Add someone to Family').waitFor();
 // Her rows' posters stay on her page: the hub's Home shows only blanks where her Trakt rows would go.
 await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later').first().waitFor(); assert.equal(await owner.locator('.rows .row.later .posters span:not(.blank)').count(), 0);
-await owner.goto(BASE + '/#/hub/playback'); await owner.getByText('for anyone whose progress is kept in MDBList', {exact: false}).waitFor();
+await owner.goto(BASE + '/#/hub/playback'); await owner.getByText('for anyone with MDBList sync on', {exact: false}).waitFor();
 
 // Activity keeps where each play was reported from behind a small pin: folded until pressed, and absent when unknown.
 // (Plays made here directly in the local database, one sitting each: one with a made-up place, one without, one playing now with a
@@ -539,11 +523,15 @@ for (let i = 0; i < 40 && syncs < 2; i++) await owner.waitForTimeout(100);
 assert.equal(syncs, 2); letGo(); await apps.filter({hasText: 'Apps up to date'}).waitFor(); await shot(owner, '17-apps-up-to-date');
 assert.equal(await owner.getByRole('switch', {name: 'Arrange their Home'}).getAttribute('aria-checked'), 'false', 'the page kept the second change');
 assert.ok(await owner.getByRole('switch', {name: 'Add their own rows'}).isDisabled()); await owner.getByText('Turn on Arrange their Home first.').waitFor();
+// On her own page, without the permission to add rows: a quiet line where the button would be, instead of nothing.
+await guest.goto(BASE + '/#/me/home'); await guest.reload(); await guest.locator('.rows li').first().waitFor();
+assert.equal(await guest.getByRole('button', {name: '+ Add row'}).count(), 0); assert.equal(await guest.locator('.section-head .add-hint').textContent(), 'Adding rows is turned off for you. Your manager can turn it on.');
+if (shots) for (const [width, height] of [[390, 844], [1280, 900]]) {await guest.setViewportSize({width, height}); await guest.waitForTimeout(300); await guest.screenshot({path: `${shots}/real-sync-9-add-row-hint-${width < 600 ? 'phone' : 'wide'}.png`});} await guest.setViewportSize({width: 390, height: 844});
 // Someone saved with Add on and Arrange off before the two went together (made here in the local database) gets no Add row: the
-// hub would refuse what it adds.
+// hub would refuse what it adds. The line says it is changing Home that is off.
 sqlLocal(`UPDATE people SET data = json_set(data, '$.can.add', json('true')) WHERE id = 'ada'`);
 await guest.goto(BASE + '/#/me/home'); await guest.reload(); await guest.locator('.rows li').first().waitFor();
-assert.equal(await guest.getByRole('button', {name: '+ Add row'}).count(), 0, 'no Add row without Arrange');
+assert.equal(await guest.getByRole('button', {name: '+ Add row'}).count(), 0, 'no Add row without Arrange'); assert.equal(await guest.locator('.section-head .add-hint').textContent(), 'Changing Home is turned off for you. Your manager can turn it on.');
 answer = {state: 'error', message: 'AIOStreams did not answer. Your changes are saved here and will be sent on the next try.'};
 await toggle('Arrange their Home'); await toast(owner).filter({hasText: 'Saved'}).waitFor();
 for (let i = 0; i < 40 && syncs < 3; i++) await owner.waitForTimeout(100);
@@ -633,6 +621,7 @@ assert.equal(await story.locator('p').count(), 2, await story.textContent()); as
 if (shots) {await guest.locator('.sheet-body').evaluate(element => {element.scrollTop = 0;}); await guest.screenshot({path: `${shots}/real-18e-for-you-no-reason-phone.png`});}
 await placeSheet.getByRole('button', {name: 'Close'}).click(); forYouDetail.places['for-you-1'] = inception; await guest.reload();
 await rowOf('My Trakt lists').getByRole('button', {name: 'Edit'}).click(); await guest.getByRole('button', {name: 'Check my lists now'}).waitFor(); await shot(guest, '18c-check-lists');
+assert.equal(await guest.locator('dialog.sheet .about-row').textContent(), 'Your own Trakt lists, a tile for each. Opening a tile shows that list. Checked once a day.');
 await guest.getByRole('button', {name: 'Check my lists now'}).click(); await toast(guest).filter({hasText: 'Checking your lists. Your apps have them in a few minutes.'}).waitFor();
 assert.deepEqual(askedNow, [['/api/people/ada/foryou/for-you-1', {use: 'genres:18'}], ['/api/people/ada/foryou/for-you-1', {keep: true}], ['/api/people/ada/foryou/for-you-2', {never: true}], ['/api/people/ada/shelf', {}]]);
 await guest.unrouteAll({behavior: 'wait'}); await guest.reload(); await guest.locator('.rows li').first().waitFor(); assert.equal(await rowOf('My Trakt lists').count(), 0);

@@ -165,7 +165,7 @@ const Who = ({name}: {name: string}) => <p className="who" title={name || undefi
 function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {hub, live} = page, group = hub.groups.find(item => item.id === person.groupId)!;
   return <section>
-    <div className="section-head"><div><h2>Accounts</h2><p className="muted">{mine ? 'Connect your own accounts. Nobody else sees them. Both are optional: without them, your progress is kept on this hub.' : live ? <>{person.name} can connect their own from their page, or you can do it here with them.</> : <>Only {person.name} can connect these, from their own page. <a className="link" href={`#/person/${person.id}/settings`}>Get their link</a></>}</p></div></div>
+    <div className="section-head"><div><h2>Accounts</h2><p className="muted">{mine ? 'Connect your own accounts. Nobody else sees them. Both are optional, and nothing you watch is lost without them.' : live ? <>{person.name} can connect their own from their page, or you can do it here with them.</> : <>Only {person.name} can connect these, from their own page. <a className="link" href={`#/person/${person.id}/settings`}>Get their link</a></>}</p></div></div>
     <ul className="accounts">
       <li><div><h3>Streams</h3><p>Played through the shared {resolve(hub, group, person).values.debrid} account. Nothing to set up.</p></div><span className="pill ok">Shared</span></li>
       <Trakt page={page} person={person} mine={mine}/>
@@ -173,8 +173,8 @@ function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: 
     </ul>
   </section>;
 }
-/* Trakt: one connection, the hub's own. It keeps Trakt in step with what is watched here, and the hub fills the Trakt rows on Home
-   from it. Connecting is Trakt's own sign-in (OAuth with PKCE), done by this page with Trakt directly: Trakt turns away the
+/* Trakt: one connection, the hub's own. Connecting gives the Trakt rows on Home and nothing else; one Sync switch, off until the
+   person turns it on, moves watching both ways. Connecting is Trakt's own sign-in (OAuth with PKCE), done by this page with Trakt directly: Trakt turns away the
    shared addresses the hub calls from for a while at times, and a browser is not affected. The proof that finishes the sign-in
    stays in this tab; the hub only gets the finished login, to keep and renew. */
 const TRAKT_AUTH = 'https://auth.trakt.tv', TRAKT_API = 'https://api.trakt.tv', SIGNING = 'trakt-signing';
@@ -216,12 +216,15 @@ const things = (n: number) => `${n} ${n === 1 ? 'thing' : 'things'}`;
 const STUCK = 3 * 86400, AGAIN_PASS = 600, QUEUED = 600;
 /* What an account gives, as short lines: the same before and after connecting, so the reasons stay in sight. */
 const Gains = ({lines}: {lines: string[]}) => <div className="gains">{lines.map(line => <p key={line}>{line}</p>)}</div>;
-/* Trakt: one connection, the hub's own. Once connected, what is watched here is added to Trakt as it plays, and the hub fills the
-   Trakt rows on Home from it. Synced (sync.ts: plays and paused spots both ways, nothing removed) only once the person says so,
-   on their own page: right after their own sign-in, or later with Turn on; plays from before connecting have a tick of their own,
-   and can be looked at first. A manager is never offered it. One status line says how sync stands and where their progress
-   lives (this hub, or their MDBList): never as if all were well while Trakt has asked the hub to wait or is not answering.
-   With sync off, what differs is offered here to add by hand (Differences); with it on, What was synced lists what the hub did.
+/* Trakt, as one idea: Connect gives its rows, and one Sync switch moves watching in both directions.
+   - Connect: the hub fills the Trakt rows on Home from it (rows.ts) and writes nothing to Trakt.
+   - Sync (sync.ts), strictly off until the person turns it on, on their own page: on, what is watched here goes to Trakt as it
+     plays and what is watched in other Trakt apps comes back (plays and paused spots, nothing removed); off, nothing moves
+     either way. Asked once, right after their own sign-in, with turning it on as the suggested answer; later with Turn on or
+     Change. What they watched here before turning it on has a tick of its own (the one bulk write Trakt cannot undo in one
+     go), and can be looked at first. A manager is never offered any of it.
+   One status line says how sync stands: never as if all were well while Trakt has asked the hub to wait or is not answering.
+   Where their progress is kept is not said here. With sync on, What was synced lists what the hub did.
    Connecting is Trakt's own sign-in (OAuth with PKCE), done by this page with Trakt directly: Trakt turns away the shared
    addresses the hub calls from for a while at times, and a browser is not affected. The proof that finishes the sign-in stays in
    this tab; the hub only gets the finished login, to keep and renew. */
@@ -229,13 +232,13 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
   const {hub, update, toast, live} = page, at = `/api/people/${person.id}/scrobble`, link = person.history, matching = person.matching ?? null;
   const [phase, setPhase] = useState<'' | 'going' | 'connecting' | 'busy'>(''), busy = !!phase, [dropping, setDropping] = useState(false);
   const [older, setOlder] = useState(false);
-  // The consent: open after their own sign-in (the hub says so), or after Turn on or Change. `earlier`: the plays here from before
-  // connecting (how many, and each one behind Show them).
-  const [asking, setAsking] = useState(false), [keep, setKeep] = useState(true), [early, setEarly] = useState(false), [earlier, setEarlier] = useState<{n: number; plays: {title: string; detail: string; at: number}[]} | null>(null), [listing, setListing] = useState(false);
+  // The question: open after their own sign-in (the hub says so), or after Turn on or Change. `earlier`: the plays here from before
+  // sync was turned on (how many, and each one behind Show them); `early`: their tick for sending those too.
+  const [asking, setAsking] = useState(false), [early, setEarly] = useState(false), [earlier, setEarlier] = useState<{n: number; plays: {title: string; detail: string; at: number}[]} | null>(null), [listing, setListing] = useState(false);
   // A catch-up under way from this page: how many went to Trakt of about how many. One at a time (`running`); `planned`: how many
   // earlier plays were just agreed to, for the first count.
   const [catching, setCatching] = useState<{sent: number; total: number} | null>(null), running = useRef(false), planned = useRef(0);
-  const their = mine ? 'your' : 'their', client = hub.traktClient ?? '', home = person.lists ? `${their} MDBList` : 'this hub', saved = `${mine ? 'Your' : 'Their'} watching is still being saved.`;
+  const their = mine ? 'your' : 'their', client = hub.traktClient ?? '', saved = `${mine ? 'Your' : 'Their'} watching is still being saved.`;
   // The sign-in Trakt just sent back here, if it was for this person: the code is exchanged for the login, once.
   useEffect(() => {
     const back = returned, saved_ = signing();
@@ -260,14 +263,14 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
       .then(() => {toast(username ? `Trakt connected as ${username}` : 'Trakt connected'); live!.apps(); void live!.reload();}, fail(toast));
     setPhase('');
   };
-  // What Trakt does once connected (front.ts scrobbling, rows.ts, foryou.ts): three short lines, in the order people notice it.
+  // What Trakt gives: the first two with Connect alone (rows.ts, foryou.ts), the last only with sync on (it says so).
   const gains = [...(hub.front ? [mine ? 'For you knows your taste from your whole Trakt history.' : `For you knows ${person.name}’s taste from their whole Trakt history.`] : []),
-    `${mine ? 'Your' : 'Their'} watchlist, recommendations and recently watched appear on Home.`, mine ? 'What you watch here is added to Trakt as it plays.' : `What ${person.name} watches here is added to Trakt as it plays.`];
+    `${mine ? 'Your' : 'Their'} Trakt rows appear on Home: Watchlist, Recommended, Up Next, New for you and ${their} lists.`, mine ? 'With sync on, what you watch here and in other Trakt apps shows up in both.' : `With sync on, what ${person.name} watches here and in other Trakt apps shows up in both.`];
   const on = !!link && !link.again, consent = !!live && mine && on && !!matching && ((matching.ask && !matching.on) || asking);
-  // What they watched here before connecting, for the tick (only when the question is open).
+  // What they watched here before turning sync on, for the tick (only when the question is open).
   useEffect(() => {if (consent && earlier === null) void live!.call<{earlier: number; plays: {title: string; detail: string; at: number}[]}>('GET', `/api/people/${person.id}/matching`).then(got => setEarlier({n: got.earlier, plays: got.plays ?? []}), () => setEarlier({n: 0, plays: []}));}, [consent]);
-  // Passes of catching up, from this page, until there is no more: what was watched here that Trakt lacks, and what Trakt has that
-  // their progress lacks. `loud`: said when it fails (a press of Try again); otherwise the cron tries again by itself.
+  // Passes of catching up, from this page and only with sync on, until there is no more: what was watched here that Trakt lacks,
+  // and what Trakt has that is missing here. `loud`: said when it fails (a press of Try again); otherwise the cron tries again by itself.
   const catchUp = async (loud: boolean, total = 0) => {
     if (running.current) return;
     running.current = true;
@@ -286,12 +289,13 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
   useEffect(() => {if (live && mine && on && matching?.on && Date.now() / 1000 - matching.good > AGAIN_PASS && !((matching.until ?? 0) > Date.now() / 1000)) {const total = planned.current; planned.current = 0; void catchUp(false, total);}}, [person.id, matching?.on]);
   const answer = async (yes: boolean) => {
     // What was listed is asked for again the next time the question opens: some of it may have been sent by then.
-    const agreed = early ? earlier?.n ?? 0 : 0;
+    const agreed = yes && early ? earlier?.n ?? 0 : 0;
     setAsking(false); setListing(false); setEarlier(null);
     try {await live!.call('POST', `/api/people/${person.id}/matching`, {on: yes, earlier: yes && early});} catch (error) {return toast((error as Error).message);}
-    if (!yes) {toast('Sync is off. You can turn it on here any time.'); return void live!.reload();}
+    // Not now, at the question after connecting; or turned off from Change, which stops both directions at once.
+    if (!yes) {toast(matching?.on ? 'Trakt sync is off. Nothing is sent to Trakt and nothing comes back.' : 'Trakt sync is off. You can turn it on here any time.'); return void live!.reload();}
     // Caught up by the page-open round above, which starts as it turns on.
-    planned.current = agreed; toast('Trakt sync is on'); await live!.reload();
+    planned.current = agreed; toast(matching?.on ? 'Saved' : 'Trakt sync is on'); await live!.reload();
     // Already on (changed from Change): that round does not start again by itself.
     if (matching?.on) {const total = planned.current; planned.current = 0; await catchUp(false, total);}
   };
@@ -319,17 +323,19 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
   // Calls of theirs waiting for Trakt for a while (it keeps turning them away): not answering, though no look has failed.
   const queued = !!matching?.waiting && time - matching.waiting > QUEUED;
   const day = (s: number) => new Date(s * 1000).toLocaleDateString(undefined, {weekday: 'long'}), why = matching?.failing ? matching.why ?? '' : '';
-  const change = mine && <button type="button" className="link small" onClick={() => {setKeep(true); setEarly(!!matching?.earlier); setAsking(true);}}>Change</button>;
+  const change = mine && <button type="button" className="link small" onClick={() => {setEarly(!!matching?.earlier); setAsking(true);}}>Change</button>;
+  // What sync on means, said on every line that says it is on.
+  const both = `Sync is on. What ${mine ? 'you watch' : 'they watch'} here or in other Trakt apps shows up in both. Nothing is removed.`;
   const status: {dot: 'ok' | 'wait' | 'off'; text: ReactNode} | null = !on || !matching || consent ? null
-    : catching && (catching.total || catching.sent) ? {dot: 'wait', text: <>Adding {Math.min(catching.sent, catching.total || catching.sent)} of {catching.total || catching.sent} to Trakt. {mine ? 'You' : 'They'} can keep watching.</>}
-    : !matching.on ? {dot: 'wait', text: mine ? <>Sync is off. What you watch here still reaches Trakt. <button type="button" className="link small" onClick={() => setAsking(true)}>Turn on</button></> : <>Sync is off. Only {person.name} can turn it on, from their own page.</>}
-    : (matching.until ?? 0) > time ? {dot: 'wait', text: <>Syncing with {home}. {toldToWait(matching.until!)} {saved}</>}
+    : catching && (catching.total || catching.sent) ? {dot: 'wait', text: <>Catching up: {Math.min(catching.sent, catching.total || catching.sent)} of {catching.total || catching.sent} added to Trakt. {mine ? 'You' : 'They'} can keep watching.</>}
+    : !matching.on ? {dot: 'off', text: mine ? <>Sync is off. Nothing is sent to Trakt and nothing comes back. <button type="button" className="link small" onClick={() => {setEarly(false); setAsking(true);}}>Turn on</button></> : <>Sync is off. Nothing is sent to Trakt and nothing comes back. Only {person.name} can turn it on, from their own page.</>}
+    : (matching.until ?? 0) > time ? {dot: 'wait', text: <>Sync is on. {toldToWait(matching.until!)} {saved}</>}
     : why.startsWith('MDBList') ? {dot: 'off', text: <>MDBList isn’t taking requests from {their} key, so sync is paused. If this lasts a day, paste a new key. {change}</>}
     : stuck ? {dot: 'off', text: <>Trakt hasn’t taken updates since {day(since)}. {saved} {mine && <button type="button" className="link small" disabled={!!catching} onClick={() => void catchUp(true)}>Try again</button>} {change}</>}
     : why.startsWith('Trakt') || (queued && !why) ? {dot: 'wait', text: <>Trakt didn’t answer just now. The hub tries again within the hour. {saved} {change}</>}
     : why ? {dot: 'wait', text: <>{why} {saved} {change}</>}
-    : matching.good ? {dot: 'ok', text: <>Syncing with {home}. Last checked {whenOf(matching.good * 1000)}. {change}</>}
-    : {dot: 'wait', text: <>Syncing with {home}. First check in a few minutes. {change}</>};
+    : matching.good ? {dot: 'ok', text: <>{both} Last checked {whenOf(matching.good * 1000)}. {change}</>}
+    : {dot: 'wait', text: <>{both} First check in a few minutes. {change}</>};
   return <li className="stacked"><div className="account-row"><div><h3>Trakt <span className="free">Free</span></h3>{on && <Who name={link!.username}/>}</div>
     {!hub.scrobble || !client ? <span className="pill">Not on this site</span>
       : on ? <button type="button" className="ghost small" disabled={busy} onClick={() => setDropping(true)}>Disconnect</button>
@@ -339,15 +345,21 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
       : link?.again ? <p className="small status-line" role="status"><span className="dot off" aria-hidden="true"/><span>{mine ? `Trakt needs you to sign in again.${matching?.on ? ' Sync is paused until then.' : ''}` : `Trakt needs ${person.name} to sign in again.`}</span></p>
       : !on && !mine && hub.scrobble && client ? <p className="muted small">Trakt asks who’s signing in, so {person.name} can use their own Trakt account.</p> : null}
     {status && <p className="small status-line" role="status"><span className={`dot ${status.dot}`} aria-hidden="true"/><span>{status.text}</span></p>}
+    {/* The question. Off (just connected, or Turn on): turning it on is the suggested answer, the filled button. On (Change):
+        the tick can be changed, or sync turned off. Earlier plays are their own tick either way, never part of the main answer. */}
     {consent && <div className="consent">
-      <label className="tick"><input type="checkbox" checked={keep} onChange={event => setKeep(event.target.checked)}/><span><strong>Sync Trakt with {home}.</strong> From now on, what you watch in either ends up in both. Nothing is removed. What you watched on Trakt in the last 14 days is added to {home} too.{!person.lists && ' For each show you watched there in the last 120 days, the latest episode is ticked here as well, so Next Up carries on.'}</span></label>
-      {!!earlier?.n && <label className="tick"><input type="checkbox" checked={keep && early} disabled={!keep} onChange={event => setEarly(event.target.checked)}/><span>Also add the {things(earlier.n)} you watched here before connecting. Trakt can’t undo this in one go.</span></label>}
+      <p className="ask"><strong>{matching?.on ? 'Sync with Trakt is on.' : 'Sync your watching with Trakt?'}</strong> What you watch here goes to Trakt, and what you watch in other Trakt apps comes back here. Nothing is removed.</p>
+      {!matching?.on && <p className="muted small">To start, what you watched on Trakt in the last 14 days is added here.{!person.lists && ' For each show you watched there in the last 120 days, the latest episode is ticked too, so Next Up carries on.'}</p>}
+      {!!earlier?.n && <label className="tick"><input type="checkbox" checked={early} onChange={event => setEarly(event.target.checked)}/><span>Also add the {things(earlier.n)} you watched here before turning sync on. Trakt can’t undo this in one go.</span></label>}
       {!!earlier?.n && <div className="under-tick"><button type="button" className="link small" aria-expanded={listing} onClick={() => setListing(!listing)}>{listing ? 'Hide them' : 'Show them'}</button>
         {listing && <div className="listed">{earlier.plays.map((play, n) => <p key={n}><strong>{play.title}</strong> · {play.detail} · {dateOf(play.at * 1000)}</p>)}{earlier.n > earlier.plays.length && <p>and {earlier.n - earlier.plays.length} more</p>}</div>}</div>}
-      <div className="consent-actions"><button type="button" className="primary small" onClick={() => void answer(keep)}>Done</button>
-        <button type="button" className="link small" onClick={() => matching?.ask && !matching.on ? void answer(false) : (setAsking(false), setListing(false), setEarlier(null))}>Not now</button></div>
+      {/* Done with nothing changed only closes: no write, and no round of catching up. */}
+      {matching?.on ? <div className="consent-actions"><button type="button" className="primary small" onClick={() => early !== matching.earlier ? void answer(true) : (setAsking(false), setListing(false), setEarlier(null))}>Done</button>
+        <button type="button" className="link small" onClick={() => void answer(false)}>Turn off</button></div>
+        : <div className="consent-actions"><button type="button" className="primary small" onClick={() => void answer(true)}>Turn on</button>
+          <button type="button" className="link small" onClick={() => matching?.ask ? void answer(false) : (setAsking(false), setListing(false), setEarlier(null))}>Not now</button></div>}
+      {matching?.on && <p className="muted small">Turning it off stops both directions. Nothing already added is removed.</p>}
     </div>}
-    {mine && on && !!matching && !matching.on && !consent && <Differences page={page} person={person}/>}
     {mine && on && matching?.on && !consent && <Synced page={page} person={person}/>}
     {/* Favorites from the watchlist (worker/hearts.ts): theirs alone to turn on, and only offered when it can be had (the hub says). */}
     {!!live && mine && on && person.hearts && <div className="toggle-row"><div><strong>Show my Trakt watchlist as Favorites in the apps</strong>
@@ -358,10 +370,10 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     {person.aiomTrakt && <div className="quiet-note"><p className="muted small">{on ? 'An older Trakt link, made through AIOMetadata, is still there. Nothing uses it any more.' : 'Home’s Trakt rows come from an older link made through AIOMetadata for now. Connecting here takes over from it.'}</p>
       <button type="button" className="link small" disabled={busy} onClick={() => on ? work(live.call('DELETE', `/api/people/${person.id}/trakt`), 'Older Trakt link removed') : setOlder(true)}>Disconnect it</button></div>}
     {older && <Confirm title="Disconnect the older Trakt link?" body={`Home’s Trakt rows come from it for now, so they leave ${their} Home until Trakt is connected above. Nothing on Trakt itself changes.`} action="Disconnect" onYes={() => {setOlder(false); work(live.call('DELETE', `/api/people/${person.id}/trakt`), 'Older Trakt link removed');}} onClose={() => setOlder(false)}/>}
-    {dropping && <Confirm title="Disconnect Trakt?" body={`Trakt stops following along, sync stops, and ${their} Trakt rows leave Home. Plays still waiting to reach Trakt are dropped. Nothing on Trakt itself changes, and connecting again brings the rows back.`} action="Disconnect" onYes={() => {setDropping(false); work(live.call('DELETE', at), 'Trakt disconnected');}} onClose={() => setDropping(false)}/>}
+    {dropping && <Confirm title="Disconnect Trakt?" body={`${mine ? 'Your' : 'Their'} Trakt rows leave Home and sync stops. Anything still waiting to be sent to Trakt is dropped. Nothing on Trakt itself changes, and connecting again brings the rows back.`} action="Disconnect" onYes={() => {setDropping(false); work(live.call('DELETE', at), 'Trakt disconnected');}} onClose={() => setDropping(false)}/>}
   </li>;
 }
-/* What was synced: with sync on there is nothing to compare or add by hand, so the Trakt card offers one short list of what the hub
+/* What was synced: with sync on the Trakt card offers one short list of what the hub
    did for them lately (the `sent` ledger: what it is called, where it went, when), newest first; a paused spot that took the
    place of an earlier one reads as updated rather than added. Asked for only when opened, and
    only on their own page. */
@@ -375,36 +387,40 @@ function Synced({page, person}: {page: PageProps; person: Person}) {
     void live.call<{synced: Sync[]}>('GET', `/api/people/${person.id}/matching/synced`).then(found => {if (!gone) setGot({who: whose, list: found.synced, failed: false});}, () => {if (!gone) setGot({who: whose, list: null, failed: true});});
     return () => {gone = true;};
   }, [whose, open, person.matching?.good]);
-  const list = got.who === whose ? got.list : null, to = {trakt: 'Trakt', here: 'this hub', mdblist: 'your MDBList'};
+  const list = got.who === whose ? got.list : null, to = {trakt: ['to Trakt', 'on Trakt'], here: ['here', 'here'], mdblist: ['to your MDBList', 'in your MDBList']};
   return <div className="synced">
     <button type="button" className="link small" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Hide what was synced' : 'What was synced'}</button>
-    {open && (list ? list.length ? <div className="listed">{list.map((item, n) => <p key={n}><strong>{item.title}</strong> · {item.detail ? `${item.detail} · ` : ''}{item.spot ? 'paused spot ' : ''}{item.updated ? 'updated in' : 'added to'} {to[item.to]} · {dateOf(item.at * 1000)}</p>)}</div>
+    {open && (list ? list.length ? <div className="listed">{list.map((item, n) => <p key={n}><strong>{item.title}</strong> · {item.detail ? `${item.detail} · ` : ''}{item.spot ? 'paused spot ' : ''}{item.updated ? `updated ${to[item.to][1]}` : `added ${to[item.to][0]}`} · {dateOf(item.at * 1000)}</p>)}</div>
       : <p className="muted small">Nothing has needed syncing yet.</p> : <p className="muted small">{got.failed && got.who === whose ? 'Couldn’t load the list just now.' : 'Loading…'}</p>)}
   </div>;
 }
-/* MDBList, an account like Trakt: optional and free. The card leads with what it is for (hiding what's been watched in every row,
-   lists that update themselves, a copy of their progress in an account of their own), the same lines before and after connecting.
-   Connecting saves their own key (checked with MDBList, kept in the vault); it reads their lists from then on. One switch inside
-   keeps their progress there: turning it on copies what was watched here that MDBList lacks, then switches; turning it off copies
-   back what only MDBList has, then switches back (places.ts). The page drives the copying, a pass at a time, and picks it up again
-   if it was left part way. The line under the switch says where their progress is kept, and whether rows hide what they watched
-   (that takes this switch and Hide what's been watched, under Playback). The manager's switch, and Disconnect while progress is
-   kept there, go the same way. Another MDBList account is Disconnect, then Connect. */
+/* MDBList, the same idea as Trakt: Connect gives its rows, and one Sync switch moves watching both ways. Optional and free. The
+   card leads with what it is for (hiding what's been watched in every row, lists that update themselves, their watching in an
+   account of their own), the same lines before and after connecting.
+   Connecting saves their own key (checked with MDBList, kept in the vault); it reads their lists from then on and writes nothing.
+   Sync on: what they watch goes to their MDBList and what MDBList has comes back. Underneath, MDBList becomes where their
+   progress is kept and AIOMetadata tracks it there itself (worker/native.ts): turning it on copies what was watched here that
+   MDBList lacks, then switches; turning it off copies back what only MDBList has, then switches back (places.ts), so nothing is
+   lost either way. Where progress is kept is never said on the page. The page drives the copying, a pass at a time, and picks
+   it up again if it was left part way; while it runs, in either direction, the line reads "Catching up. You can keep watching."
+   The line under the switch says whether sync is on, and whether rows hide what they watched (that takes this switch and Hide
+   what's been watched, under Playback). The manager's switch, and Disconnect while sync is on, go the same way. Another MDBList
+   account is Disconnect, then Connect. */
 function MdbList({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {hub, update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
   const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [busy, setBusy] = useState(false), [dropping, setDropping] = useState(false);
   // A switch under way: which way, how many copied of about how many. Then why it stopped, if it did.
   const [copying, setCopying] = useState<{to: 'mdblist' | 'here'; done: number; total: number} | null>(null), [stopped, setStopped] = useState(''), [anyway, setAnyway] = useState(false);
   const their = mine ? 'your' : 'their', moving = person.moving ?? null, connected = person.lists || (!!live && (!!person.listsKept || !!moving));
-  const have = mine ? 'you’ve' : 'they’ve', whose = mine ? 'Your' : `${person.name}’s`;
-  const gains = [`Hide what ${have} watched in every row. Only progress kept in MDBList makes that possible.`, `Lists that update themselves, and ${their} MDBList watchlist on Home.`, `${mine ? 'Your' : 'Their'} own copy of ${their} progress, in an account ${mine ? 'you' : 'they'} control, not only on this hub.`];
+  const have = mine ? 'you’ve' : 'they’ve';
+  const gains = [`Hide what ${have} watched in every row. That needs MDBList sync on.`, `Lists that update themselves, and ${their} MDBList watchlist on Home.`, `With sync on, what ${mine ? 'you watch' : 'they watch'} is also in ${their} own MDBList account.`];
   const target = moving === 'mdblist' ? true : moving === 'here' ? false : person.lists;
   if (!live) {
     const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
     return <li className="stacked"><div className="account-row"><div><h3>MDBList <span className="free">Free</span></h3>{person.lists && <Who name=""/>}</div>
       {person.lists ? null : mine ? <button type="button" className="primary small" onClick={() => edit(target_ => {target_.lists = true;}, 'MDBList connected')}>Connect</button>
         : <span className="pill" title={`Send ${person.name} their link from the Settings tab`}>Waiting for {person.name}</span>}</div><Gains lines={gains}/>
-      {person.lists && <p className="small status-line" role="status"><span className="dot ok" aria-hidden="true"/><span>{whose} progress is kept in {their} MDBList.</span></p>}</li>;
+      {person.lists && <p className="small status-line" role="status"><span className="dot ok" aria-hidden="true"/><span>Sync is on.</span></p>}</li>;
   }
   const done = async (note: string) => {toast(note); live.apps(); await live.reload();};
   // Copies what the other side lacks, a pass at a time, and switches once it is all across. True when it switched.
@@ -420,7 +436,7 @@ function MdbList({page, person, mine}: {page: PageProps; person: Person; mine: b
         added += got.added; switched = got.switched; setCopying({to, done: added, total: added + (got.left ?? 0)});
         if (!got.more && !switched) break;
       }
-      if (switched) {await live.sync(); await done(to === 'mdblist' ? 'Progress kept in MDBList' : 'Progress kept on this hub');}
+      if (switched) {await live.sync(); await done(to === 'mdblist' ? 'MDBList sync is on' : 'MDBList sync is off. Nothing was lost.');}
       return switched;
     } catch (error) {setStopped((error as Error).message); await live.reload(); return false;} finally {setCopying(null);}
   };
@@ -429,8 +445,8 @@ function MdbList({page, person, mine}: {page: PageProps; person: Person; mine: b
   // The switch: on copies then switches; off while copying over undoes it at once (nothing switched yet).
   const flip = (on: boolean) => {
     if (copying || busy) return;
-    if (on && moving === 'here') {setBusy(true); void live.call('POST', `/api/people/${person.id}/moving`, {to: null}).then(() => {setStopped(''); return done('Progress stays in MDBList');}, fail(toast)).finally(() => setBusy(false)); return;}
-    if (!on && moving === 'mdblist') {setBusy(true); void live.call('DELETE', at).then(() => {setStopped(''); return done('Progress stays on this hub');}, fail(toast)).finally(() => setBusy(false)); return;}
+    if (on && moving === 'here') {setBusy(true); void live.call('POST', `/api/people/${person.id}/moving`, {to: null}).then(() => {setStopped(''); return done('MDBList sync stays on');}, fail(toast)).finally(() => setBusy(false)); return;}
+    if (!on && moving === 'mdblist') {setBusy(true); void live.call('DELETE', at).then(() => {setStopped(''); return done('MDBList sync stays off');}, fail(toast)).finally(() => setBusy(false)); return;}
     void move(on ? 'mdblist' : 'here');
   };
   const save = () => {
@@ -440,120 +456,32 @@ function MdbList({page, person, mine}: {page: PageProps; person: Person; mine: b
     }, fail(toast)).finally(() => setBusy(false));
   };
   const forget = () => {setAnyway(false); setBusy(true); void live.call('DELETE', `${at}/key`).then(() => {setStopped(''); return done('MDBList disconnected');}, fail(toast)).finally(() => setBusy(false));};
-  // Disconnect while progress is kept there: it comes back here first, the same way as the switch. If that can't be done (often
+  // Disconnect while sync is on: what only MDBList has comes back here first, the same way as the switch going off. If that can't be done (often
   // why someone disconnects: MDBList stopped taking their key), they can disconnect anyway.
   const drop = async () => {setDropping(false); if (person.lists || moving === 'here') {if (await move('here')) forget(); else setAnyway(true);} else forget();};
-  // Hiding takes two switches: progress kept in MDBList (here), and Hide what's been watched (under Playback).
+  // Hiding takes two switches: MDBList sync (here), and Hide what's been watched (under Playback).
   const hiding = resolve(hub, hub.groups.find(item => item.id === person.groupId), person).values.hideWatched, playback = mine ? '#/me/playback' : `#/person/${person.id}/playback`;
-  const line: ReactNode = copying ? `Copying ${copying.done} of ${Math.max(copying.total, copying.done)} ${copying.to === 'mdblist' ? 'to MDBList' : 'back to this hub'}. ${mine ? 'You' : 'They'} can keep watching.`
-    : !person.lists ? `${whose} progress is kept on this hub.`
-    : hiding ? `${whose} progress is kept in ${their} MDBList. Rows hide what ${have} watched.`
-    : <>{whose} progress is kept in {their} MDBList. To hide what {have} watched, turn on Hide what’s been watched under <a className="link" href={playback}>Playback</a>.</>;
+  // While the copy runs, either way, one calm line (how far it has got is not said: the counts are of plays, and mean little).
+  const line: ReactNode = copying ? `Catching up. ${mine ? 'You' : 'They'} can keep watching.`
+    : !person.lists ? 'Sync is off. Nothing is sent to MDBList and nothing comes back.'
+    : hiding ? `Sync is on. Rows hide what ${have} watched.`
+    : <>Sync is on. To hide what {have} watched, turn on Hide what’s been watched under <a className="link" href={playback}>Playback</a>.</>;
   return <li className="stacked"><div className="account-row"><div><h3>MDBList <span className="free">Free</span></h3>{connected && <Who name={person.listsName ?? ''}/>}</div>
     {connected ? <button type="button" className="ghost small" disabled={busy || !!copying} onClick={() => setDropping(true)}>Disconnect</button>
       : !keying && <button type="button" className="primary small" disabled={busy} onClick={() => setKeying(true)}>Connect</button>}</div>
     <Gains lines={gains}/>
-    {connected && <div className="toggle-row"><div><strong>Keep {mine ? 'my' : 'their'} progress in MDBList</strong><p className="muted small">Needed for hiding what {have} watched. Trakt sync follows it.</p></div>
-      <Switch checked={copying ? copying.to === 'mdblist' : target} disabled={busy} onChange={flip} label={`Keep ${mine ? 'my' : `${person.name}’s`} progress in MDBList`}/></div>}
-    {connected && (stopped && !copying ? <p className="small status-line" role="status"><span className="dot off" aria-hidden="true"/><span>Copying stopped: {stopped} <button type="button" className="link small" onClick={() => void move(moving === 'here' ? 'here' : 'mdblist')}>Try again</button></span></p>
-      : <p className="small status-line" role="status"><span className={`dot ${copying ? 'wait' : 'ok'}`} aria-hidden="true"/><span>{line}</span></p>)}
+    {connected && <div className="toggle-row"><div><strong>Sync</strong><p className="muted small">What {mine ? 'you watch' : 'they watch'} goes to {their} MDBList, and what MDBList has comes back. Turning it off loses nothing.</p></div>
+      <Switch checked={copying ? copying.to === 'mdblist' : target} disabled={busy} onChange={flip} label={`Sync ${mine ? 'my' : `${person.name}’s`} watching with MDBList`}/></div>}
+    {connected && (stopped && !copying ? <p className="small status-line" role="status"><span className="dot off" aria-hidden="true"/><span>Catching up stopped: {stopped} <button type="button" className="link small" onClick={() => void move(moving === 'here' ? 'here' : 'mdblist')}>Try again</button></span></p>
+      : <p className="small status-line" role="status"><span className={`dot ${copying ? 'wait' : person.lists ? 'ok' : 'off'}`} aria-hidden="true"/><span>{line}</span></p>)}
     {keying && <form className="stack link-back" onSubmit={event => {event.preventDefault(); save();}}>
       <p className="muted small">Paste {their} own MDBList API key. It is at <a className="link" href="https://mdblist.com/preferences/" target="_blank" rel="noreferrer">mdblist.com, Preferences, API Access</a>. One key per person: a shared key would mix everyone’s watching together.</p>
       <div className="field-row"><input type="password" aria-label="MDBList API key" placeholder="API key" autoComplete="off" value={own} onChange={event => setOwn(event.target.value)}/><button className="primary" disabled={busy || !own.trim()}>Save</button><button type="button" className="ghost" onClick={() => {setKeying(false); setOwn('');}}>Cancel</button></div>
     </form>}
-    {dropping && <Confirm title="Disconnect MDBList?" body={person.lists || moving === 'here' ? `${mine ? 'Your' : 'Their'} progress comes back to this hub first: what only MDBList has is copied here. Then ${their} MDBList lists stop showing. Nothing in ${their} MDBList account changes.` : `${mine ? 'Your' : 'Their'} MDBList lists stop showing here. Nothing in ${their} MDBList account changes.`} action="Disconnect" onYes={() => void drop()} onClose={() => setDropping(false)}/>}
-    {anyway && <Confirm title="Disconnect anyway?" body={`${mine ? 'Your' : 'Their'} progress couldn’t be copied back just now. Disconnecting anyway keeps it on this hub from now on; plays only in MDBList stay there.`} action="Disconnect anyway" onYes={forget} onClose={() => setAnyway(false)}/>}
+    {dropping && <Confirm title="Disconnect MDBList?" body={person.lists || moving === 'here' ? `Sync is turned off first: what only MDBList has is copied back here, so nothing is lost. Then ${their} MDBList lists stop showing. Nothing in ${their} MDBList account changes.` : `${mine ? 'Your' : 'Their'} MDBList lists stop showing here. Nothing in ${their} MDBList account changes.`} action="Disconnect" onYes={() => void drop()} onClose={() => setDropping(false)}/>}
+    {anyway && <Confirm title="Disconnect anyway?" body={`What only MDBList has couldn’t be copied back just now. Disconnecting anyway leaves those plays in MDBList. Everything else stays as it is.`} action="Disconnect anyway" onYes={forget} onClose={() => setAnyway(false)}/>}
   </li>;
 }
-type Cell = 'has' | 'add' | 'none';
-interface Line {key: string; title: string; detail: string; at?: string; pct?: number; here?: Cell; trakt?: Cell; lists?: Cell; elsewhere?: boolean}
-interface Look {lines: Line[]; more: boolean; unmatched: number; already: number; checked?: number}
-type Pair = 'here-trakt' | 'mdblist-trakt';
-const short = (detail: string) => detail.replace(/^Season (\d+) · Episode (\d+)$/, 'S$1E$2');
-const SHOWN = 8, AGAIN_IN = 2000;
-/* With sync off, inside the Trakt card on their own page: how their progress compares with Trakt (worker/places.ts, drift.ts).
-   With progress here, here and Trakt; in MDBList, MDBList and Trakt (the daily look and paused spots). One line says how many
-   things differ; Show them lists each with where it would go, every one included to start with, and tapping one leaves it out
-   (and out of later looks, and of sync if it is turned on). Add them copies the rest. Nothing is ever removed. A failed look is
-   asked once more by itself, then says why, keeping the last good one; it never reads as "nothing differs". With sync on none
-   of this is shown or asked for: the hub does it by itself (What was synced). What was watched here and MDBList lacks is not
-   compared here any more: the hub sends it once a day by itself (worker/sync.ts, leftovers). */
-function Differences({page, person}: {page: PageProps; person: Person}) {
-  const {toast, live, hub} = page, lists = person.lists;
-  const [looks, setLooks] = useState<Record<string, Look>>({}), [out, setOut] = useState<Set<string>>(new Set()), [busy, setBusy] = useState(''), [all, setAll] = useState(false), [open, setOpen] = useState(false);
-  // What the pair holds, kept with whose it is: a look at someone else never shows here.
-  const whose = `${hub.code}/${person.id}`, pair: Pair | null = person.moving ? null : lists ? 'mdblist-trakt' : 'here-trakt', at = `${whose}/${pair}/${person.v}`, between = looks[at];
-  // `again`: counted up when what was looked at has just changed (after Add them), so it is looked at anew.
-  const [checking, setChecking] = useState(false), [again, setAgain] = useState(0);
-  // Why the last look failed, kept apart from the last good look so that one stays on show. `wait`: the other side did not answer
-  // (or the hub could not be reached), so asking again may work; `until`: Trakt said when.
-  const [failed, setFailed] = useState<Record<string, {why: string; wait: boolean; until: number}>>({}), trouble = failed[at];
-  const lookAt = async (fresh = false) => {
-    const ask = () => live!.call<Look>('GET', `/api/people/${person.id}/compare/${pair}${fresh ? '?fresh=1' : ''}`);
-    const waits = (error: unknown) => {const status = (error as {status?: number}).status ?? 0; return !status || status === 429 || status >= 500;};
-    try {
-      // Trakt often turns a busy caller away for a moment: one quiet try more before saying so (not when it said how long to wait).
-      const got = await ask().catch(async error => {if (!waits(error) || (error as {until?: number}).until) throw error; await new Promise(done => setTimeout(done, AGAIN_IN)); return ask();});
-      setLooks(was => ({...was, [at]: got})); setFailed(({[at]: _, ...was}) => was);
-    } catch (error) {setFailed(was => ({...was, [at]: {why: (error as Error).message, wait: waits(error), until: (error as {until?: number}).until ?? 0}}));}
-  };
-  useEffect(() => {if (live && pair && !looks[at]) void lookAt();}, [at, again]);
-  if (!live || !pair) return null;
-  const recheck = (label: string) => checking ? <span className="muted small">Checking…</span> : <button type="button" className="link small" onClick={() => {setChecking(true); void lookAt(true).finally(() => setChecking(false));}}>{label}</button>;
-  const found = lists ? person.drift : null, there = lists ? 'your MDBList' : 'this hub', stamp = (ms: number) => dateOf(ms);
-  const lines: (Line & {to: string})[] = [
-    // The daily look at MDBList and Trakt.
-    ...(found?.toMdblist ?? []).map(miss => ({key: miss.key, title: miss.name || 'Untitled', detail: miss.season != null ? `S${miss.season}E${miss.episode}` : 'Movie', at: stamp(miss.at * 1000), to: there})),
-    ...(found?.toTrakt ?? []).map(miss => ({key: miss.key, title: miss.name || 'Untitled', detail: miss.season != null ? `S${miss.season}E${miss.episode}` : 'Movie', at: stamp(miss.at * 1000), to: 'Trakt'})),
-    ...(between ? between.lines.map(line => ({...line, detail: short(line.detail), at: line.pct == null && line.at ? stamp(Date.parse(line.at)) : undefined, to: line.trakt === 'add' ? 'Trakt' : there})) : []),
-  ];
-  const checkedAt = Math.max(between?.checked ?? 0, found?.checked ?? 0) * 1000, nothing = !between && !found;
-  // In the words the page uses for Trakt not answering; anything else as the hub said it.
-  const told = !!trouble && trouble.until > Date.now() / 1000;
-  const reason = trouble && (told ? `Trakt asked us to wait until ${clock(trouble.until * 1000)}, so we couldn’t compare.` : trouble.why.startsWith('Trakt didn’t answer') ? 'Trakt didn’t answer just now, so we couldn’t compare.' : trouble.why);
-  const why = trouble && <>{reason}{trouble.wait ? ' Your watching is still being saved.' : ''}{!told && <> {recheck('Try again')}</>}</>;
-  const kept = lines.filter(line => !out.has(line.key));
-  const toTrakt = lines.filter(line => line.to === 'Trakt').length, toHome = lines.length - toTrakt;
-  const show = <button type="button" className="link small" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Hide them' : 'Show them'}</button>;
-  const summary = !lines.length ? <>Nothing differs.{checkedAt ? ` Checked ${whenOf(checkedAt)}.` : ''} {!trouble && recheck('Check again')}</>
-    : toTrakt && toHome ? <>{things(toTrakt)} you watched {toTrakt === 1 ? 'is' : 'are'} missing from Trakt and {toHome} from {there}. {show}</>
-    : toTrakt ? <>{things(toTrakt)} you watched {toTrakt === 1 ? 'is' : 'are'} missing from Trakt. {show}</>
-    : <>{things(toHome)} you watched {toHome === 1 ? 'is' : 'are'} missing from {there}. {show}</>;
-  const flip = (key: string) => setOut(was => {const next = new Set(was); if (!next.delete(key)) next.add(key); return next;});
-  const after = async (note: string) => {setOut(new Set()); setLooks({}); setFailed({}); setOpen(false); await live.sync(); await live.reload(); setAgain(n => n + 1); toast(note);};
-  // One press: as many passes as it takes (each fits in what the hub may do per request), showing how far it has got.
-  const run = async () => {
-    setBusy('…'); let added = 0, unmatched = 0;
-    try {
-      const leave = [...out];
-      if (found?.toMdblist.length || found?.toTrakt.length) {const got = await live.call<{trakt: number; mdblist: number}>('POST', `/api/people/${person.id}/drift`, {leave}); added += got.trakt + got.mdblist;}
-      if (between?.lines.length) for (let pass = 0; pass < 30; pass++) {
-        const got = await live.call<{added: number; unmatched: number; more: boolean}>('POST', `/api/people/${person.id}/compare/${pair}`, {leave: pass ? [] : leave});
-        added += got.added; unmatched += got.unmatched; setBusy(` ${added} so far`);
-        if (!got.more) break;
-      }
-      const missed = unmatched ? ` ${things(unmatched)} couldn’t be found and ${unmatched === 1 ? 'was' : 'were'} left out.` : '';
-      await after(added ? `Added ${things(added)}.${missed}` : `Nothing needed adding.${missed}`);
-    } catch (error) {toast((error as Error).message); setLooks({}); setFailed({}); await live.reload(); setAgain(n => n + 1);} finally {setBusy('');}
-  };
-  const visible = all ? lines : lines.slice(0, SHOWN);
-  return <div className="differ">
-    {!between && !trouble && nothing ? <p className="small status-line" role="status"><span className="dot wait" aria-hidden="true"/><span>Comparing with Trakt…</span></p>
-      : trouble && nothing ? <p className="small status-line" role="status"><span className="dot off" aria-hidden="true"/><span>{why}</span></p>
-      : <p className="small status-line" role="status"><span className={`dot ${lines.length || trouble ? 'wait' : 'ok'}`} aria-hidden="true"/><span>{summary}{trouble && <> <span className="muted">Couldn’t check everything just now. {why}</span></>}</span></p>}
-    {open && !!lines.length && <>
-      <div className="differ-list">{visible.map(line => {const off = out.has(line.key); return <button key={line.key} type="button" className={`differ-line${off ? ' left' : ''}`} aria-pressed={!off} aria-label={`Add ${line.title} ${line.detail}`} onClick={() => flip(line.key)}>
-        <span className="mark" aria-hidden="true">{off ? '' : '✓'}</span>
-        <span className="what"><strong>{line.title}</strong><small>{line.detail}{line.at ? ` · ${line.at}` : ''}{line.pct != null ? ` · paused at ${line.pct}%` : ''}{line.elsewhere ? ' · watched elsewhere' : ''}</small></span>
-        <small className="to">{off ? 'left out' : `add to ${line.to}`}</small>
-      </button>;})}</div>
-      {lines.length > SHOWN && !all && <button type="button" className="link small more-plays" onClick={() => setAll(true)}>and {lines.length - SHOWN} more</button>}
-      <p className="muted small">Tap one to leave it out. Nothing is ever removed.</p>
-      <div className="consent-actions"><button type="button" className="primary small" disabled={!!busy || !kept.length} onClick={() => void run()}>{busy ? `Adding…${busy.trim() === '…' ? '' : busy}` : 'Add them'}</button></div>
-    </>}
-  </div>;
-}
-
 type Found = {id: string; title: string; kind: string; source: string};
 /* What only the person themselves sees in Add row on their own Home: their own Trakt and MDBList lists, and the suggestions their
    watching points to. Kept with whose they are, so a view of someone else never shows them. */
@@ -586,6 +514,8 @@ function PersonSections({page, person, tab, mine, base = `/person/${person.id}`}
     : row.source === 'What was watched' ? (mine ? 'From what you’ve watched' : 'From what they’ve watched') : row.source === 'Played here' ? (mine ? 'From what you’ve played here' : 'From what they’ve played here') : `From ${row.source}`;
   return <>
     {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} mine={mine} person={person.id} level="own" rows={rows} front={!!hub.front} canAdd={canAdd} canArrange={canArrange}
+      // Their own page, without the permission: said where the button would be, rather than nothing there.
+      addHint={!mine || canAdd ? undefined : person.can.add ? 'Changing Home is turned off for you. Your manager can turn it on.' : 'Adding rows is turned off for you. Your manager can turn it on.'}
       tag={row => row.origin === 'own' && !row.core ? (mine ? 'Yours' : 'Personal') : from(row)}
       needs={needs} accounts={`#${base}/accounts`}
       lists={page.live ? own.lists : ownLists(person)} listsHint={page.live ? undefined : 'Connect Trakt or MDBList under Accounts to pick from your own lists.'}
@@ -785,9 +715,10 @@ function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
     </>}
   </section>;
 }
-/* What the hub does on its own, one compact row per job, with how often it runs: the five-minute run (Trakt calls that waited,
-   players that went quiet), Trakt sync, the daily Trakt/MDBList check and the daily send of what MDBList lacks, which start with
-   the first run after 04:00 UTC. Times are the viewer's own. */
+/* What the hub does on its own, one compact row per job, with how often it runs: Trakt sync's two halves (sending what is watched
+   here: the five-minute run for calls that waited and players that went quiet; and bringing back what was watched in other
+   Trakt apps), the daily Trakt/MDBList check and the daily send of what MDBList lacks, which start with the first run after
+   04:00 UTC. Each says whose it runs for: only people with that sync on. Times are the viewer's own. */
 const FIVE = 300_000, DAY_MS = 86_400_000;
 /* For you: one person a five-minute run from its hour (UTC), then the hub's apps are brought in step. Someone just added, or
    whose places, kinds of pick or limit changed, is picked for at any hour, and one row of someone who just finished something. */
@@ -809,19 +740,19 @@ function Background({hub}: {hub: Hub}) {
   const rows = [
     // Each job says what starts it: its times run for everyone in the hub, one person at a time; a play, a change or a press runs
     // for that one person.
-    {name: 'Sending plays to Trakt', every: 'For everyone every 5 min; for one person as they play', last: `${ran(jobs.last)}${jobs.waiting ? ` · ${jobs.waiting} waiting to send` : ''}`, next: `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
-    {name: 'Trakt and MDBList check', every: `For everyone every day at ${time(start)}`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next run ${day(daily)}`},
+    {name: 'Trakt sync: here to Trakt', every: 'For everyone with Trakt sync on, every 5 min; for one person as they play', last: `${ran(jobs.last)}${jobs.waiting ? ` · ${jobs.waiting} waiting to send` : ''}`, next: `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
+    {name: 'Trakt and MDBList check', every: `For everyone with both Trakt and MDBList sync on, every day at ${time(start)}`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next run ${day(daily)}`},
     // Trakt sync (worker/sync.ts): in the same five-minute run, one person each run, so each is looked at about every 20 minutes,
     // or longer once more than four people sync (the hub says how long; never how many).
-    ...(hub.scrobble ? [{name: 'Trakt sync', every: `For everyone, one person each run, so each person about every ${jobs.syncEvery ?? 20} min; for one person at once when they turn it on`, last: jobs.matching ? `${ran(jobs.matched ?? null)} · ${jobs.matching} ${jobs.matching === 1 ? 'person' : 'people'}` : 'Nobody has it on yet',
+    ...(hub.scrobble ? [{name: 'Trakt sync: Trakt to here', every: `For everyone with Trakt sync on, one person each run, so each person about every ${jobs.syncEvery ?? 20} min; for one person at once when they turn it on`, last: jobs.matching ? `${ran(jobs.matched ?? null)} · ${jobs.matching} ${jobs.matching === 1 ? 'person' : 'people'}` : 'Nobody has it on yet',
       next: jobs.matching ? `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'once someone turns it on'}] : []),
     // Favorites from Trakt watchlists (worker/hearts.ts): in the same five-minute run, one person each run, a few titles at a time,
     // for whoever turned it on from their own page.
     ...(hub.scrobble && hub.front ? [{name: 'Favorites from Trakt watchlists', every: 'For everyone who turned it on, one person each run, a few titles at a time', last: jobs.hearting ? `${ran(jobs.hearted || null)} · ${jobs.hearting} ${jobs.hearting === 1 ? 'person' : 'people'}` : 'Nobody has it on yet',
       next: jobs.hearting ? `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'once someone turns it on'}] : []),
-    // What was watched here and a person's MDBList lacks (worker/sync.ts, leftovers): once a day each, for whoever keeps their
-    // progress in MDBList and played something since.
-    {name: 'Plays missing from MDBList', every: `For everyone who keeps progress in MDBList, every day from ${time(start)}`, last: jobs.listers ? ran(jobs.listed ?? null) : 'Nobody keeps progress in MDBList yet',
+    // What was watched here and a person's MDBList lacks (worker/sync.ts, leftovers): once a day each, for whoever has MDBList
+    // sync on and played something since.
+    {name: 'Plays missing from MDBList', every: `For everyone with MDBList sync on, every day from ${time(start)}`, last: jobs.listers ? ran(jobs.listed ?? null) : 'Nobody has MDBList sync on yet',
       next: jobs.listers ? `next run ${day(jobs.listed && new Date(jobs.listed * 1000).toISOString().slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? start + DAY_MS : Math.max(start, next))}` : 'once someone does'},
     ...(hub.front && jobs.forYouHour !== undefined ? [forYouJob(jobs, now, time, day, ran)] : []),
     // Each row of someone's Trakt lists (their own, the ones they liked): its lists and pictures looked at again a day after the last time (shelf.ts), one person a run, and
