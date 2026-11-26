@@ -9,6 +9,8 @@ import type {Env} from './util';
 import {blocked, failed, getSecret, guesses, newId, newToken, now, putSecret, same, sha, unseal} from './util';
 import type {Target} from './trakt';
 import {LINK, brief, deliver, history, progressOf, soon} from './trakt';
+import {heartKey, heartsOn, noteHeart} from './hearts';
+import {forgetWatchlist} from './rows';
 import {syncPlayers} from './native';
 import {finished} from './foryou';
 
@@ -329,19 +331,45 @@ async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'prog
 }
 /* What Trakt knows a title by, asked of the person's own server once and kept with the play ('' when there is nothing usable).
    A film by its own ids; an episode by its show's, with its season and number (AIOMetadata episodes carry no ids of their own). */
+const aboutOf = async (seat: Seat, id: string) => (await fetch(`${seat.base}/Users/${seat.upId}/Items?Ids=${encodeURIComponent(id)}&Fields=ProviderIds`, {headers: {accept: 'application/json', authorization: asPerson(seat)}})
+  .then(answer => answer.ok ? answer.json() : null).catch(() => null) as {Items?: {Type?: string; SeriesId?: string; ParentIndexNumber?: number; IndexNumber?: number; ProviderIds?: Record<string, string>}[]} | null);
+const traktIds = (provider: Record<string, string> = {}) => {const tmdb = Number(provider.Tmdb), imdb = /^tt\d+$/.test(provider.Imdb ?? '') ? provider.Imdb : ''; return {...(tmdb > 0 ? {tmdb} : {}), ...(imdb ? {imdb} : {})};};
 async function idsOf(env: Env, hub: string, seat: Seat, item: string): Promise<string | null> {
-  const ask = async (id: string) => (await fetch(`${seat.base}/Users/${seat.upId}/Items?Ids=${encodeURIComponent(id)}&Fields=ProviderIds`, {headers: {accept: 'application/json', authorization: asPerson(seat)}})
-    .then(answer => answer.ok ? answer.json() : null).catch(() => null) as {Items?: {Type?: string; SeriesId?: string; ParentIndexNumber?: number; IndexNumber?: number; ProviderIds?: Record<string, string>}[]} | null);
+  const ask = (id: string) => aboutOf(seat, id);
   const found = await ask(item);
   if (!found) return null;
   const it = found.Items?.[0], episode = it?.Type === 'Episode', show = episode && it.SeriesId ? await ask(it.SeriesId) : null;
   if (episode && !show) return null;
-  const provider = (episode ? show?.Items?.[0] : it)?.ProviderIds ?? {}, tmdb = Number(provider.Tmdb), imdb = /^tt\d+$/.test(provider.Imdb ?? '') ? provider.Imdb : '';
-  const ids = {...(tmdb > 0 ? {tmdb} : {}), ...(imdb ? {imdb} : {})};
-  const target: Target | null = !(tmdb > 0 || imdb) ? null : it?.Type === 'Movie' ? {movie: {ids}} : episode && it.ParentIndexNumber != null && it.IndexNumber != null ? {show: {ids}, episode: {season: it.ParentIndexNumber, number: it.IndexNumber}} : null;
+  const ids = traktIds((episode ? show?.Items?.[0] : it)?.ProviderIds);
+  const target: Target | null = !(ids.tmdb || ids.imdb) ? null : it?.Type === 'Movie' ? {movie: {ids}} : episode && it.ParentIndexNumber != null && it.IndexNumber != null ? {show: {ids}, episode: {season: it.ParentIndexNumber, number: it.IndexNumber}} : null;
   const kept = target ? JSON.stringify(target) : '';
   await env.DB.prepare('UPDATE plays SET ids = ? WHERE hub = ? AND person = ? AND item = ?').bind(kept, hub, seat.person, item).run();
   return kept;
+}
+/* Favorites, for a person who turned on "Show my Trakt watchlist as Favorites in the apps" (hearts.ts): a heart an app made on a
+   film or a show, once their own server took it, is passed on to Trakt as a watchlist add, and a heart an app took away as a
+   watchlist remove, through the outbox like any other call. THE ONLY PLACE the hub ever takes anything off someone's Trakt: in
+   answer to their own app's DELETE of a favourite passing through here, with the switch on. Never from comparing lists, the cron,
+   the hub's own un-hearting (which goes straight to their server, never through here), the switch going off, a disconnect or a
+   removal (tests/aiom.test.mjs holds each of those to no remove).
+   Whether it is on is asked of the database for each heart, never remembered (a seat is kept twenty seconds, and the switch may
+   have gone off, or an MDBList key of their own come, since). The title's ids are asked of their server as scrobbling asks
+   (idsOf); one with none Trakt can use, or anything but a film or a show, is left alone. What was sent is noted in the ledger:
+   'own' for an add, 'gone' for a remove, dated now, so the cron neither takes their heart away nor puts one back that they
+   removed. The kept Watchlist row goes, so it is read again with the change. */
+const FAVOURITE = /^\/(?:users\/[^/]+\/favoriteitems|userfavoriteitems)\/([\w-]{1,80})$/i;
+async function hearted(env: Env, hub: string, seat: Seat, item: string, off: boolean) {
+  if (!await heartsOn(env, hub, seat.person)) return;
+  const it = (await aboutOf(seat, item))?.Items?.[0], type = it?.Type === 'Movie' ? 'movie' as const : it?.Type === 'Series' ? 'series' as const : null;
+  const ids = traktIds(it?.ProviderIds), key = type ? heartKey(type, ids) : '';
+  if (!type || !key) return;
+  const body = {[type === 'movie' ? 'movies' : 'shows']: [{ids}]};
+  // Kept under the title's ledger key, never a play's id: a waiting start or pause of the same title is not ended by it.
+  const got = await deliver(env, hub, seat.person, `heart:${key}`, off ? {kind: 'unheart', path: '/sync/watchlist/remove', body} : {kind: 'heart', path: '/sync/watchlist', body});
+  if (got === 'off') return;
+  await env.DB.batch([noteHeart(env, hub, seat.person, key, item, off ? 'gone' : 'own', now()), forgetWatchlist(env, hub, seat.person)]);
+  // Kept to try again: once it has gone (or has been tried twice more), the Watchlist row is read afresh once more.
+  if (got === 'kept') {await soon(env, hub, seat.person); await forgetWatchlist(env, hub, seat.person).run();}
 }
 /* What a title is called, asked of the person's own server as them: its name (the show's, for an episode), which episode or
    "Movie", and the id its picture is under. null when the server does not say. */
@@ -493,6 +521,10 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
     if (kept && (!fresh || fresh.AccessToken === live.up)) fresh = await mint(env, hub, live.person, live.jf, kept, live.kind);
     if (fresh && fresh.AccessToken !== live.up) {live = {...live, up: fresh.AccessToken, upId: fresh.User.Id}; upstream = await send(live);}
   }
+  // A heart made or taken away in an app, once their own server took it (2xx): passed on to their Trakt watchlist if they
+  // turned that on (see hearted). Only ever from here, after the answer, for a request an app sent.
+  const heart = live && live.kind === VIA && live.scrobble && upstream.ok && (request.method === 'POST' || request.method === 'DELETE') ? FAVOURITE.exec(path) : null;
+  if (live && heart) ctx.waitUntil(hearted(env, hub, live, heart[1], request.method === 'DELETE').catch(() => {}));
   // A title's file handed over: noted, for the download lines on Activity (see fetched).
   const file = live && request.method === 'GET' && upstream.status < 400 ? FETCH.exec(lower) : null;
   if (live && file && (file[2] || [...url.searchParams].some(([name, value]) => name.toLowerCase() === 'static' && value.toLowerCase() === 'true'))) ctx.waitUntil(fetched(env, hub, live, path.split('/')[2], !!file[2], whenOf(request, env)).catch(() => {}));

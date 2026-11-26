@@ -105,8 +105,10 @@ const ITEMS: Record<Exclude<Kind, 'fresh' | 'mdb_watchlist' | 'mdb_history'>, (g
 const RETRY = 60, READS = 4;
 interface Held {at: number; items: Item[]}
 /* The first `want` titles of a row (the whole of a short one), from what was read lately; Trakt is asked for a page only when it is
-   needed and what was kept of it is older than the row's time. Each page is kept on its own: `watchlist`, `watchlist.2`, … */
-async function itemsOf(env: Env, hub: string, person: string, row: Served, want: number, key = ''): Promise<Item[]> {
+   needed and what was kept of it is older than the row's time. Each page is kept on its own: `watchlist`, `watchlist.2`, …
+   `told`, when given, hears whether what came back is the whole list (every page of it kept, up to the empty page that ends
+   it), and how many pages were asked for just now. */
+async function itemsOf(env: Env, hub: string, person: string, row: Served, want: number, key = '', told?: {whole: boolean; reads: number}): Promise<Item[]> {
   const base = row.cache ?? row.kind, most = PAGES[row.kind] ?? 1, kinds = Array.from({length: most}, (_, n) => n ? `${base}.${n + 1}` : base);
   const stored = await env.DB.prepare(`SELECT kind, at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind IN (${kinds.map(() => '?').join(', ')})`).bind(hub, person, ...kinds).all<{kind: string; at: number; items: string}>();
   const held = new Map(stored.results.map(page => [page.kind, {at: page.at, items: JSON.parse(page.items) as Item[]}])), out: Item[] = [], seen = new Set<string>();
@@ -116,12 +118,16 @@ async function itemsOf(env: Env, hub: string, person: string, row: Served, want:
     // An empty page after the first marks the end of the list. It stays until the page before it is read again.
     if (!page || (now() - page.at >= row.ttl && (!n || page.items.length))) {
       if (!reads--) break;
+      if (told) told.reads++;
       const got = await readPage(env, hub, person, row, n + 1, kinds, page, key);
       if (!got) break;
       page = got; failed = !got.ok; if (got.end) held.set(kinds[n + 1], {at: got.at, items: []});
     }
     for (const item of page.items) if (!seen.has(item.id)) {seen.add(item.id); out.push(item);}
     // Past an empty page, or one Trakt did not answer for just now, nothing more is asked this time.
+    // An empty page after the first is the list's end (an empty first page may be a read that failed: never taken as the whole).
+    // A list longer than every page kept is never whole either.
+    if (told && !failed && n > 0 && !page.items.length) told.whole = true;
     if (!page.items.length || failed) break;
   }
   return out;
@@ -202,16 +208,43 @@ export const upNextOf = (env: Env, hub: string, person: string) => fill(env, hub
 /* What is on their watchlist, read again where what was kept is older than its time (recs.ts leaves these out). */
 export const listedOf = (env: Env, hub: string, person: string) => fill(env, hub, person, SERVED.watchlist, 100);
 
+/* Their whole Trakt watchlist, newest added first, for Favorites (hearts.ts): the same kept pages the Watchlist row reads, through
+   the same reader. A page is read again here only once it is half an hour old (the row itself reads one again after ten minutes,
+   and a heart in an app clears them all), so the cron step asks Trakt for a page at most every half hour per person, and a long
+   list (four pages a run at most) is whole again within a few runs rather than never. While Trakt does not answer, the last it
+   gave stays. `whole` only when every page is kept up to the list's end and no read of it failed just now: anything less is
+   never taken as a title having left. `reads`: the pages asked for just now. */
+const HEARTS_TTL = 1800;
+export async function traktWatchlist(env: Env, hub: string, person: string): Promise<{items: Item[]; whole: boolean; reads: number}> {
+  const told = {whole: false, reads: 0}, items = await itemsOf(env, hub, person, {...SERVED.watchlist, ttl: HEARTS_TTL}, Infinity, '', told);
+  return {items, whole: told.whole && items.length > 0, reads: told.reads};
+}
+/* The kept Watchlist goes, so it is read again the next time it is asked for (a heart in an app just changed it). */
+export const forgetWatchlist = (env: Env, hub: string, person: string) => env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND (kind = 'watchlist' OR kind LIKE 'watchlist.%')").bind(hub, person);
+
 /* ---------- one Watchlist from two ---------- */
-/* Trakt's and MDBList's as one list, newest added first, a title on both once. Each service gives its own newest first. Where
-   every title says when it was added (Trakt's listed_at, MDBList's watchlist_at) they are put in order by that; where some do
-   not, each list keeps its own order and they take turns, which keeps the newest of both near the top. */
+/* Trakt's and MDBList's as one list, newest added first, a title on both once. Trakt is the one that knows when a title was
+   added: MDBList stamps a title with the moment it arrived there, so a watchlist copied over in one go has hundreds of titles
+   sharing one moment, later than anything on Trakt. So:
+   - a title on both is Trakt's entry, at Trakt's date (MDBList's copy is dropped before anything is ordered);
+   - Trakt's titles keep Trakt's own order;
+   - a title only MDBList has is placed among them by its own date (MDBList's watchlist_at), unless more than BULK of MDBList's
+     titles share that very date (a bulk import, which says nothing of when each was added): those go after everything dated, in
+     MDBList's own order.
+   Where some title has no date at all, each list keeps its own order and they take turns, which keeps the newest of both near
+   the top. */
+const BULK = 5;
 function merged(mine: Item[], theirs: Item[]): Item[] {
-  const all = [...mine, ...theirs].every(item => item.at) ? [...mine, ...theirs].sort((a, b) => b.at! - a.at!)
-    : Array.from({length: Math.max(mine.length, theirs.length)}, (_, n) => [mine[n], theirs[n]]).flat().filter(Boolean);
   // Trakt names a title by its IMDb id and MDBList sometimes only by TMDB's, so both count.
-  const seen = new Set<string>();
-  return all.filter(item => {const keys = keysOf(item); if (keys.some(key => seen.has(key))) return false; for (const key of keys) seen.add(key); return true;});
+  const held = new Set(mine.flatMap(keysOf)), only = theirs.filter(item => !keysOf(item).some(key => held.has(key)));
+  if (![...mine, ...only].every(item => item.at)) return Array.from({length: Math.max(mine.length, only.length)}, (_, n) => [mine[n], only[n]]).flat().filter(Boolean);
+  const sharing = new Map<number, number>();
+  for (const item of theirs) if (item.at) sharing.set(item.at, (sharing.get(item.at) ?? 0) + 1);
+  const bulk = (item: Item) => (sharing.get(item.at!) ?? 0) > BULK, dated = only.filter(item => !bulk(item)).sort((a, b) => b.at! - a.at!), out: Item[] = [];
+  // Each dated title of MDBList's goes in just ahead of the first of Trakt's that was added before it.
+  let next = 0;
+  for (const item of mine) {while (next < dated.length && dated[next].at! > item.at!) out.push(dated[next++]); out.push(item);}
+  return [...out, ...dated.slice(next), ...only.filter(bulk)];
 }
 const keysOf = (item: Item) => [item.id, ...(item.tmdb ? [`${item.type}:${item.tmdb}`] : [])];
 

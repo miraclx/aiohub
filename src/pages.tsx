@@ -349,6 +349,12 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     </div>}
     {mine && on && !!matching && !matching.on && !consent && <Differences page={page} person={person}/>}
     {mine && on && matching?.on && !consent && <Synced page={page} person={person}/>}
+    {/* Favorites from the watchlist (worker/hearts.ts): theirs alone to turn on, and only offered when it can be had (the hub says). */}
+    {!!live && mine && on && person.hearts && <div className="toggle-row"><div><strong>Show my Trakt watchlist as Favorites in the apps</strong>
+      <p className="muted small">A heart in an app adds to the watchlist, and removing a heart removes it from the watchlist.</p>
+      <p className="muted small">Hearts you already have stay as hearts and are not added to Trakt. If you turn this off, hearts stay where they are, and nothing is removed from Trakt or the apps.</p></div>
+      <Switch checked={person.hearts.on} disabled={busy} label="Show my Trakt watchlist as Favorites in the apps" onChange={value => {setPhase('going');
+        void live.call('POST', `/api/people/${person.id}/favorites`, {on: value}).then(() => {toast(value ? 'Your Trakt watchlist will show as Favorites' : 'Favorites no longer follow your Trakt watchlist'); return live.reload();}, fail(toast)).finally(() => setPhase(''));}}/></div>}
     {person.aiomTrakt && <div className="quiet-note"><p className="muted small">{on ? 'An older Trakt link, made through AIOMetadata, is still there. Nothing uses it any more.' : 'Home’s Trakt rows come from an older link made through AIOMetadata for now. Connecting here takes over from it.'}</p>
       <button type="button" className="link small" disabled={busy} onClick={() => on ? work(live.call('DELETE', `/api/people/${person.id}/trakt`), 'Older Trakt link removed') : setOlder(true)}>Disconnect it</button></div>}
     {older && <Confirm title="Disconnect the older Trakt link?" body={`Home’s Trakt rows come from it for now, so they leave ${their} Home until Trakt is connected above. Nothing on Trakt itself changes.`} action="Disconnect" onYes={() => {setOlder(false); work(live.call('DELETE', `/api/people/${person.id}/trakt`), 'Older Trakt link removed');}} onClose={() => setOlder(false)}/>}
@@ -809,6 +815,10 @@ function Background({hub}: {hub: Hub}) {
     // or longer once more than four people sync (the hub says how long; never how many).
     ...(hub.scrobble ? [{name: 'Trakt sync', every: `For everyone, one person each run, so each person about every ${jobs.syncEvery ?? 20} min; for one person at once when they turn it on`, last: jobs.matching ? `${ran(jobs.matched ?? null)} · ${jobs.matching} ${jobs.matching === 1 ? 'person' : 'people'}` : 'Nobody has it on yet',
       next: jobs.matching ? `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'once someone turns it on'}] : []),
+    // Favorites from Trakt watchlists (worker/hearts.ts): in the same five-minute run, one person each run, a few titles at a time,
+    // for whoever turned it on from their own page.
+    ...(hub.scrobble && hub.front ? [{name: 'Favorites from Trakt watchlists', every: 'For everyone who turned it on, one person each run, a few titles at a time', last: jobs.hearting ? `${ran(jobs.hearted || null)} · ${jobs.hearting} ${jobs.hearting === 1 ? 'person' : 'people'}` : 'Nobody has it on yet',
+      next: jobs.hearting ? `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'once someone turns it on'}] : []),
     // What was watched here and a person's MDBList lacks (worker/sync.ts, leftovers): once a day each, for whoever keeps their
     // progress in MDBList and played something since.
     {name: 'Plays missing from MDBList', every: `For everyone who keeps progress in MDBList, every day from ${time(start)}`, last: jobs.listers ? ran(jobs.listed ?? null) : 'Nobody keeps progress in MDBList yet',

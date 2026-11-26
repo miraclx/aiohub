@@ -15,6 +15,7 @@ function client() {
 }
 // Stand-ins: AIOStreams (setups, its server id) and AIOMetadata (setups by uuid, each also a Jellyfin server once it has an app password).
 // `slow`: how long AIOMetadata takes over reading or writing a setup; `most`: the most it was asked to at once; `catalogs`: rows asked for.
+// `favs`: the titles hearted on each setup's server (favourites), by setup; `hearts`: every heart made or taken away there, in order.
 // TMDB as For you reads it: recommendations, a film's series and director, a show's newest episode, and searches.
 const films = (from, count, vote = 7.5) => Array.from({length: count}, (_, n) => ({id: from + n, title: `Title ${from + n}`, vote_average: vote, release_date: '2020-01-01'}));
 const NOLAN = [{id: 27205, title: 'Inception', vote_average: 8.4}, {id: 155, title: 'The Dark Knight', vote_average: 8.5}, {id: 157336, title: 'Interstellar', vote_average: 8.4}, {id: 1124, title: 'The Prestige', vote_average: 8.2}, {id: 77, title: 'Memento', vote_average: 8.2}, {id: 49026, title: 'The Dark Knight Rises', vote_average: 7.8}];
@@ -45,7 +46,7 @@ const TMDB = {
   'movie/9001/release_dates': {results: [{iso_3166_1: 'US', release_dates: [{certification: 'G'}]}]}, 'movie/9002/release_dates': {results: [{iso_3166_1: 'US', release_dates: [{certification: 'R'}]}]},
   'collection/2344': {name: 'The Matrix Collection', parts: [{id: 603, title: 'The Matrix', release_date: '1999-03-30', vote_average: 8.2}, {id: 604, title: 'The Matrix Reloaded', release_date: '2003-05-15', vote_average: 7.0}]},
 };
-const fake = {tmdb: [], flix: [], configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: [], ticks: [], positions: [], slow: 0, busy: 0, most: 0, catalogs: []};
+const fake = {favs: new Map(), hearts: [], tmdb: [], flix: [], configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: [], ticks: [], positions: [], slow: 0, busy: 0, most: 0, catalogs: []};
 const uuidOf = n => `${String(n).padStart(8, '0')}-0000-4000-8000-0000000000aa`, ITEM = 'a1110100-0000-eaf7-78ff-ffffff010000';
 // What Ada's own server holds: a film she watched, an episode she is partway through, one MDBList already has, and their show.
 const FILM = 'a1110100-0000-eaf7-78ff-ffffff050000', LEFT = 'a1110100-0000-eaf7-78ff-ffffff060000', EP3 = 'a1110100-0000-eaf7-78ff-ffffff070000';
@@ -154,6 +155,19 @@ function traktAnswer(request, path, body, send, answer) {
   }
   if (trakt.refuse > 0) {trakt.refuse--; trakt.refused.push({path, body}); if (!trakt.retryAfter) return send(429, {}); answer.writeHead(429, {'content-type': 'application/json', 'retry-after': String(trakt.retryAfter)}); return answer.end('{}');}
   trakt.calls.push({path, body, auth});
+  // Her watchlist, added to and removed from as Trakt's docs give the two calls: movies and shows by their ids; 201 with what was
+  // added (listed now) or was there already, 200 with what was deleted. Only once a test has given her a watchlist of its own.
+  if (path === '/sync/watchlist' || path === '/sync/watchlist/remove') {
+    const sent = [...(body.movies ?? []).map(movie => ['movie', movie]), ...(body.shows ?? []).map(show => ['show', show])], list = trakt.watchlist ?? [];
+    const same = ([type, media]) => entry => entry.type === type && ((media.ids?.imdb && entry[type].ids.imdb === media.ids.imdb) || (media.ids?.tmdb && entry[type].ids.tmdb === media.ids.tmdb));
+    const there = sent.filter(item => list.some(same(item))), count = items => ({movies: items.filter(([type]) => type === 'movie').length, shows: items.filter(([type]) => type === 'show').length});
+    if (path === '/sync/watchlist') {
+      if (trakt.watchlist) for (const [type, media] of sent.filter(item => !there.includes(item))) trakt.watchlist.unshift({type, [type]: {title: 'Hearted', ids: media.ids}, listed_at: new Date().toISOString()});
+      return send(201, {added: count(sent.filter(item => !there.includes(item))), existing: count(there), not_found: {movies: [], shows: []}});
+    }
+    if (trakt.watchlist) trakt.watchlist = list.filter(entry => !sent.some(item => same(item)(entry)));
+    return send(200, {deleted: count(there), not_found: {movies: [], shows: []}});
+  }
   return send(path === '/scrobble/stop' ? trakt.stop : 201, {});
 }
 http.createServer(async (request, answer) => {
@@ -233,6 +247,14 @@ http.createServer(async (request, answer) => {
     if (rest === '/Users') return send(200, [{Id: uuid, Name: home.config.jellyfinUserName}]);
     if (rest.startsWith('/Sessions/Playing')) return send(204, {});
     if (rest.startsWith('/UserViews')) return send(200, {Items: [{Id: VIEW, Name: 'Trending Movies', CollectionType: 'movies'}]});
+    // A heart made or taken away (a favourite), by either address apps use, as the live probes of AIOMetadata 4.1.0 found them:
+    // only for a title the server has; kept by setup, and read back as UserData.IsFavorite on the title (below).
+    const fav = /^\/(?:Users\/[^/]+\/FavoriteItems|UserFavoriteItems)\/([^/?]+)/.exec(rest), favs = fake.favs.get(uuid) ?? fake.favs.set(uuid, new Set()).get(uuid);
+    if (fav && (request.method === 'POST' || request.method === 'DELETE')) {
+      const id = decodeURIComponent(fav[1]); if (!HELD[id]) return send(404, {});
+      if (request.method === 'POST') favs.add(id); else favs.delete(id);
+      fake.hearts.push({uuid, id, on: request.method === 'POST'}); return send(200, {IsFavorite: favs.has(id)});
+    }
     // Ticking and keeping a spot, as AIOMetadata takes them, each read back after (the card's writes into Here).
     const own = /^\/Users\/[^/]+\/(PlayedItems|Items)\/([^/?]+)(\/UserData)?/.exec(rest), held = own && HELD[decodeURIComponent(own[2])];
     // A tick keeps the date it came with (DatePlayed) exactly, as AIOMetadata does; now when none came.
@@ -242,7 +264,7 @@ http.createServer(async (request, answer) => {
     if (own && own[3] && request.method === 'POST') {if (held) {held.UserData = {...held.UserData, PlaybackPositionTicks: body.PlaybackPositionTicks, LastPlayedDate: new Date(Math.min(Date.parse(body.LastPlayedDate ?? '') || Date.now(), Date.now())).toISOString()}; fake.positions.push({id: held.Id, ticks: body.PlaybackPositionTicks, at: body.LastPlayedDate});} return held ? send(200, {}) : send(400, {});}
     if (own && own[3]) return held ? send(200, held.UserData ?? {}) : send(404, {});
     if (rest.startsWith('/Shows/')) {const series = decodeURIComponent(rest.split('/')[2]); return send(200, {Items: Object.values(HELD).filter(item => item.SeriesId === series && item.Listed !== false)});}
-    if (rest.startsWith(`/Users/${uuid}/Items?Ids=`)) return send(200, {Items: decodeURIComponent(rest.split('Ids=')[1].split('&')[0]).split(',').map(id => HELD[id]).filter(Boolean)});
+    if (rest.startsWith(`/Users/${uuid}/Items?Ids=`)) return send(200, {Items: decodeURIComponent(rest.split('Ids=')[1].split('&')[0]).split(',').map(id => HELD[id]).filter(Boolean).map(item => favs.has(item.Id) ? {...item, UserData: {...item.UserData, IsFavorite: true}} : item)});
     if (rest.startsWith(`/Users/${uuid}/Items/`)) {const id = rest.split('/').pop().split('?')[0], {UserData, ...held} = HELD[id] ?? {}; return send(200, {Id: ITEM, Name: 'Meta Movie', ...held, RunTimeTicks: 6000e7, ServerId: uuid, UserData: {Key: uuid}, Poster: `${UP}/jellyfin/${uuid}/Items/${ITEM}/Images/Primary`});}
     return send(200, {Seen: rest});
   }
@@ -875,12 +897,22 @@ test('the rows address answers with IMDb ids from her Trakt, page by page, renew
   assert.deepEqual(await at20(220), Array.from({length: 10}, (_, n) => `tt${9000320 + n}`)); assert.deepEqual(pages(), ['1', '2', '3']);
   assert.deepEqual(await at20(240), []); assert.deepEqual(await at20(400), []); assert.deepEqual(pages(), ['1', '2', '3']);
   trakt.watchlist = null; sql("DELETE FROM rows_cache WHERE kind LIKE 'watchlist%'");
-  // One Watchlist from both: her Trakt's and her MDBList's as one list, newest added first by when each was added, a title on
-  // both once (MDBList knows this one only by its TMDB id).
+  // One Watchlist from both: her Trakt's and her MDBList's as one list, newest added first. A title on both is there once, as
+  // Trakt has it and where Trakt puts it (MDBList knows this one only by its TMDB id, and says it was added later).
   const both = async () => {sql("DELETE FROM rows_cache WHERE kind LIKE '%watchlist%'"); return (await get(served[0].sourceUrl)).body.metas.map(item => item.id);};
   trakt.watchlist = [{type: 'movie', listed_at: ago(1), movie: MOVIE.inception}, {type: 'show', listed_at: ago(5), show: BB}, {type: 'movie', listed_at: ago(9), movie: MOVIE.pulp}];
   lists.watchlist = [{id: 1396, mediatype: 'show', imdb_id: null, title: 'Breaking Bad', ids: {imdb: null, tmdb: 1396}, watchlist_at: ago(2)}, {id: 13, mediatype: 'movie', imdb_id: 'tt0109830', title: 'Forrest Gump', watchlist_at: ago(7)}];
-  assert.deepEqual(await both(), ['tt1375666', 'tmdb:1396', 'tt0109830', 'tt0110912']);
+  assert.deepEqual(await both(), ['tt1375666', 'tt0903747', 'tt0109830', 'tt0110912']);
+  // A title only MDBList has, added there after everything on Trakt, leads. Titles MDBList stamped with one shared moment (a
+  // watchlist copied over in one go: more than five alike) say nothing of when each was added, however late the stamp: they
+  // come last, in MDBList's own order, and the one of them Trakt has too stays where Trakt puts it.
+  const stamp = ago(0.2), copied = n => ({id: 9100 + n, mediatype: 'movie', imdb_id: `tt${9100000 + n}`, title: `Copied ${n}`, watchlist_at: stamp}), earlier = lists.watchlist;
+  lists.watchlist = [{id: 680, mediatype: 'movie', imdb_id: 'tt0110912', title: 'Pulp Fiction', watchlist_at: stamp}, ...[1, 2, 3, 4, 5].map(copied), {id: 949, mediatype: 'movie', imdb_id: 'tt0113277', title: 'Heat', watchlist_at: ago(0.5)}, ...earlier];
+  assert.deepEqual(await both(), ['tt0113277', 'tt1375666', 'tt0903747', 'tt0109830', 'tt0110912', 'tt9100001', 'tt9100002', 'tt9100003', 'tt9100004', 'tt9100005']);
+  // Five alike are a handful, not a copy: placed by their date like any other.
+  lists.watchlist = lists.watchlist.filter(item => item.id !== 680);
+  assert.deepEqual((await both()).slice(0, 7), ['tt9100001', 'tt9100002', 'tt9100003', 'tt9100004', 'tt9100005', 'tt0113277', 'tt1375666']);
+  lists.watchlist = earlier;
   // Where MDBList does not say when a title was added, each list keeps its own order and they take turns.
   lists.watchlist = [lists.watchlist[1], lists.watchlist[0]].map(({watchlist_at: _, ...item}) => item);
   assert.deepEqual(await both(), ['tt1375666', 'tt0109830', 'tt0903747', 'tt0110912']);
@@ -2058,6 +2090,167 @@ test('Recommended rows without Trakt: worked out once a day from what was watche
   await setPerson('ada', me => {const {limit: _, ...settings} = me.settings; return {settings};}); assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200);
   assert.equal((await owner('DELETE', '/api/people/cy')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(sql("SELECT kind FROM rows_cache WHERE person = 'cy'"), []);
 });
+/* Favorites from the Trakt watchlist (worker/hearts.ts, and the hook in worker/front.ts). Six titles her server has, one it does not. */
+const FAV = Object.fromEntries([['one', 'tt7000001', 71], ['two', 'tt7000002', 72], ['three', 'tt7000003', 73], ['four', 'tt7000004', 74], ['five', 'tt7000005', 75], ['mine', 'tt7000006', 76]].map(([name, imdb, tmdb]) => [name, {id: pack('movie', imdb), imdb, tmdb}]));
+const FAV_SHOW = {id: pack('series', 'tt7000010'), imdb: 'tt7000010', tmdb: 80}, FAV_EP = pack('episode', 'tt7000010', 1, 1);
+const listedFilm = (title, days) => ({type: 'movie', movie: {title: title.imdb, ids: {imdb: title.imdb, tmdb: title.tmdb}}, listed_at: ago(days)});
+// Her hearts on her own server, the hearts the hub or an app made there since `from`, and what reached Trakt's watchlist calls.
+const hearted = () => [...(fake.favs.get(uuid) ?? [])].sort(), heartWrites = from => fake.hearts.slice(from).map(write => `${write.on ? '+' : '-'}${Object.entries(FAV).find(([, title]) => title.id === write.id)?.[0] ?? write.id}`);
+const listCalls = () => trakt.calls.filter(call => call.path.startsWith('/sync/watchlist')).map(({path, body}) => ({path, body})), removes = () => trakt.calls.filter(call => call.path === '/sync/watchlist/remove').length;
+const ledgerOf = () => Object.fromEntries(sql("SELECT key, state FROM hearts WHERE person = 'ada' ORDER BY key").map(row => [row.key, row.state]));
+// Her turn comes again at once, with the Watchlist read afresh, as if twenty minutes had passed.
+const heartsTurn = async () => {sql("UPDATE favs SET checked = 0; DELETE FROM rows_cache WHERE kind LIKE 'watchlist%'"); await cron();};
+const favorites = (who, on) => who('POST', '/api/people/ada/favorites', {on});
+const heartsOf = async who => (await who('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').hearts;
+let keptInLists = false;
+const tap = (id, method, other = false) => raw(other ? `/UserFavoriteItems/${id}?userId=${jf}` : `/Users/${jf}/FavoriteItems/${id}`, token, {method});
+test('Favorites from the Trakt watchlist is offered only to someone with Trakt on the hub and hearts kept on their server; someone with their own MDBList key cannot turn it on', async () => {
+  for (const title of [...Object.values(FAV), FAV_SHOW]) HELD[title.id] = {Id: title.id, Type: title === FAV_SHOW ? 'Series' : 'Movie', Name: title.imdb, ProviderIds: {Tmdb: String(title.tmdb), Imdb: title.imdb}};
+  HELD[FAV_EP] = {Id: FAV_EP, Type: 'Episode', Name: 'One', SeriesId: FAV_SHOW.id, ParentIndexNumber: 1, IndexNumber: 1, ProviderIds: {}};
+  // Her MDBList key is kept and Trakt is not connected: not offered, and refused.
+  keptInLists = (await adaSite('GET', '/api/state')).body.hub.people[0].lists;
+  assert.equal(sql("SELECT count(*) AS n FROM secrets WHERE owner = 'ada' AND kind = 'mdblist'")[0].n, 1); assert.equal(await heartsOf(adaSite), null);
+  assert.equal((await favorites(adaSite, true)).status, 409);
+  trakt.calls.length = 0; fake.hearts.length = 0; trakt.watchlist = [listedFilm(FAV.one, 1), listedFilm(FAV.two, 2)]; await connect();
+  // Trakt connected, but with a key of her own her app Favorites are her MDBList watchlist: still not offered, still refused,
+  // and with the row forced in behind the API the hook and the cron do nothing for her.
+  assert.equal(await heartsOf(adaSite), null);
+  const refused = await favorites(adaSite, true); assert.equal(refused.status, 409); assert.equal(refused.body.message, 'Favorites in your apps already follow your MDBList watchlist.');
+  assert.deepEqual(sql('SELECT person FROM favs'), []);
+  sql("INSERT INTO favs (hub, person) SELECT id, 'ada' FROM hubs");
+  assert.equal((await tap(FAV.one.id, 'POST')).status, 200); assert.equal((await tap(FAV.one.id, 'DELETE')).status, 200); await cron(); await pause(700);
+  assert.deepEqual(listCalls(), []); assert.deepEqual(heartWrites(0), ['+one', '-one'], 'only her own app’s two'); assert.deepEqual(ledgerOf(), {});
+  sql('DELETE FROM favs');
+  // The key gone, and her setup brought in step: offered, on her own page only, and off to start with.
+  assert.equal((await owner('DELETE', '/api/people/ada/mdblist/key')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(playerOf('Ada')[1].config.jellyfinWatchlistServices, ['server']);
+  assert.deepEqual(await heartsOf(adaSite), {on: false}); assert.equal(await heartsOf(owner), null);
+});
+test('a manager cannot turn Favorites from the watchlist on for someone', async () => {
+  const got = await favorites(owner, true); assert.equal(got.status, 403); assert.equal(got.body.message, 'Only they can do this, from their own page');
+  assert.equal((await favorites(owner, false)).status, 403); assert.deepEqual(sql('SELECT person FROM favs'), []); assert.deepEqual(await heartsOf(adaSite), {on: false});
+});
+test('with the switch off (as it starts) the hook does nothing and the cron step does nothing', async () => {
+  const before = fake.hearts.length, signIns = fake.signIns, reads = trakt.reads.length;
+  assert.equal((await tap(FAV.mine.id, 'POST')).status, 200); assert.equal((await tap(FAV_SHOW.id, 'POST', true)).status, 200); assert.equal((await tap(FAV_SHOW.id, 'DELETE', true)).status, 200);
+  await cron(); await cron(); await pause(700);
+  // Her own heart is on her server and nowhere else; the hub hearted nothing, read nothing of Trakt's and signed in nowhere.
+  assert.deepEqual(listCalls(), []); assert.deepEqual(heartWrites(before), ['+mine', `+${FAV_SHOW.id}`, `-${FAV_SHOW.id}`]); assert.deepEqual(hearted(), [FAV.mine.id]);
+  assert.equal(fake.signIns, signIns); assert.equal(trakt.reads.length, reads); assert.deepEqual(ledgerOf(), {});
+});
+test('switched on, her Trakt watchlist is hearted on her own server, newest first, a few a run, each once; a heart of her own is left hers; none of it is echoed to Trakt', async () => {
+  // Newest first: one … five, with a title her server does not have and the one she hearted herself in between.
+  const GHOST = {imdb: 'tt7999999', tmdb: 7999};
+  trakt.watchlist = [listedFilm(FAV.one, 1), listedFilm(GHOST, 1.5), listedFilm(FAV.two, 2), listedFilm(FAV.mine, 2.5), listedFilm(FAV.three, 3), listedFilm(FAV.four, 4), listedFilm(FAV.five, 5)];
+  assert.equal((await favorites(adaSite, true)).status, 200); assert.deepEqual(await heartsOf(adaSite), {on: true}); assert.equal(await heartsOf(owner), null);
+  // The Background work row on the Hub page has it, by a count only.
+  const jobs = (await owner('GET', '/api/state')).body.hub.jobs; assert.equal(jobs.hearting, 1); assert.equal(jobs.hearted, 0);
+  // Her setup not yet saying hearts stay on the server (as before its next save): nothing is written.
+  const from = fake.hearts.length, config = playerOf('Ada')[1].config; config.jellyfinWatchlistServices = ['mdblist'];
+  await heartsTurn(); assert.deepEqual(heartWrites(from), []); config.jellyfinWatchlistServices = ['server'];
+  // Four a run, newest first; the next run takes the rest by itself, and the one after has nothing to do.
+  await heartsTurn(); assert.deepEqual(heartWrites(from), ['+one', '+two', '+three', '+four']);
+  await cron(); assert.deepEqual(heartWrites(from), ['+one', '+two', '+three', '+four', '+five']);
+  await heartsTurn(); await heartsTurn(); assert.deepEqual(heartWrites(from).length, 5);
+  assert.deepEqual(hearted(), Object.values(FAV).map(title => title.id).sort());
+  assert.deepEqual(ledgerOf(), {'movie:tt7000001': 'hub', 'movie:tt7000002': 'hub', 'movie:tt7000003': 'hub', 'movie:tt7000004': 'hub', 'movie:tt7000005': 'hub', 'movie:tt7000006': 'own', 'movie:tt7999999': 'miss'});
+  assert.equal(sql("SELECT listed FROM hearts WHERE key = 'movie:tt7000001'")[0].listed, Math.floor(Date.parse(trakt.watchlist[0].listed_at) / 1000));
+  assert.ok((await owner('GET', '/api/state')).body.hub.jobs.hearted > 0);
+  // The hub's own hearts went straight to her server, never through the hook: Trakt heard of no watchlist change.
+  assert.deepEqual(listCalls(), []);
+  // Her server takes a heart away by itself (as it may once the title is watched): not put back, run after run, until Trakt
+  // lists the title anew, and then once.
+  fake.favs.get(uuid).delete(FAV.two.id); await heartsTurn(); await heartsTurn(); assert.deepEqual(heartWrites(from).length, 5); assert.ok(!hearted().includes(FAV.two.id));
+  trakt.watchlist = trakt.watchlist.map(entry => entry.movie.ids.imdb === FAV.two.imdb ? listedFilm(FAV.two, 0.01) : entry);
+  await heartsTurn(); await heartsTurn(); assert.deepEqual(heartWrites(from).slice(5), ['+two']); assert.deepEqual(listCalls(), []);
+});
+test('every heart on her server gone at once (a setup made again): nothing is removed from Trakt, and nothing is hearted again in a loop', async () => {
+  const from = fake.hearts.length, listed = trakt.watchlist.length;
+  fake.favs.get(uuid).clear();
+  for (let n = 0; n < 3; n++) await heartsTurn();
+  await pause(700);
+  assert.equal(removes(), 0); assert.deepEqual(listCalls(), []); assert.equal(trakt.watchlist.length, listed); assert.deepEqual(heartWrites(from), []);
+  // Put back as they were, for what follows.
+  for (const title of Object.values(FAV)) fake.favs.get(uuid).add(title.id);
+});
+test('a Trakt removal is only ever sent from the hook that hears an app’s own DELETE: no other file can', async () => {
+  const {readFileSync, readdirSync} = await import('node:fs'), dir = new URL('../worker/', import.meta.url);
+  const naming = readdirSync(dir).filter(name => readFileSync(new URL(name, dir), 'utf8').includes('watchlist/remove'));
+  assert.deepEqual(naming, ['front.ts']);
+  const source = readFileSync(new URL('front.ts', dir), 'utf8'); assert.equal(source.split("'/sync/watchlist/remove'").length, 2, 'built in one place');
+  assert.ok(!/from '\.\/trakt'/.test(readFileSync(new URL('hearts.ts', dir), 'utf8').replace("import {LINK} from './trakt';", '')), 'the cron step imports nothing that sends to Trakt');
+});
+test('a title that left the Trakt watchlist loses its heart only if the hub made it; a list Trakt did not give, or an empty one, is never read as everything having left', async () => {
+  const from = fake.hearts.length, all = trakt.watchlist;
+  // Trakt not answering, with nothing kept; then a watchlist that reads as empty: no heart is touched.
+  trakt.refuseReads = true; await heartsTurn(); trakt.refuseReads = false; waited();
+  trakt.watchlist = []; await heartsTurn(); await heartsTurn();
+  assert.deepEqual(heartWrites(from), []); assert.equal(hearted().length, 6);
+  // One the hub hearted and the one she hearted herself both leave her watchlist: only the hub's own heart goes.
+  trakt.watchlist = all.filter(entry => ![FAV.three.imdb, FAV.mine.imdb].includes(entry.movie.ids.imdb));
+  await heartsTurn(); await heartsTurn();
+  assert.deepEqual(heartWrites(from), ['-three']); assert.ok(hearted().includes(FAV.mine.id)); assert.ok(!hearted().includes(FAV.three.id));
+  assert.equal(ledgerOf()['movie:tt7000003'], 'left'); assert.equal(ledgerOf()['movie:tt7000006'], 'own');
+  // None of that reached Trakt.
+  await pause(500); assert.deepEqual(listCalls(), []);
+});
+test('a heart made in an app adds the title to her Trakt watchlist, and one taken away in an app removes it: films and shows only, by their ids, once the server took it', async () => {
+  const from = fake.hearts.length;
+  // Kept, so its going shows.
+  await heartsTurn(); assert.ok(sql("SELECT kind FROM rows_cache WHERE person = 'ada' AND kind = 'watchlist'").length);
+  // A film she takes the heart off (one the hub made), by one address; a show she hearts, by the other.
+  assert.equal((await tap(FAV.four.id, 'DELETE')).status, 200);
+  for (let n = 0; n < 50 && listCalls().length < 1; n++) await pause(100);
+  assert.deepEqual(listCalls(), [{path: '/sync/watchlist/remove', body: {movies: [{ids: {tmdb: 74, imdb: 'tt7000004'}}]}}]);
+  assert.equal((await tap(FAV_SHOW.id, 'POST', true)).status, 200);
+  for (let n = 0; n < 50 && listCalls().length < 2; n++) await pause(100);
+  assert.deepEqual(listCalls()[1], {path: '/sync/watchlist', body: {shows: [{ids: {tmdb: 80, imdb: 'tt7000010'}}]}});
+  await pause(400);
+  assert.equal(ledgerOf()['movie:tt7000004'], 'gone'); assert.equal(ledgerOf()['series:tt7000010'], 'own');
+  assert.deepEqual(sql("SELECT kind FROM rows_cache WHERE person = 'ada' AND kind LIKE 'watchlist%'"), [], 'her kept Watchlist row is read again');
+  assert.ok(!trakt.watchlist.some(entry => entry.movie?.ids.imdb === FAV.four.imdb)); assert.ok(trakt.watchlist.some(entry => entry.show?.ids.imdb === FAV_SHOW.imdb));
+  // An episode, a title with no ids Trakt could use, and a heart her server refused (a title it does not have): nothing is sent.
+  assert.equal((await tap(FAV_EP, 'POST')).status, 200); assert.equal((await tap(OTHER, 'POST')).status, 200); assert.equal((await tap(pack('movie', 'tt7999999'), 'DELETE')).status, 404);
+  await pause(800); assert.equal(listCalls().length, 2);
+  // The cron after: her own heart on the show stays hers, the film she un-hearted is not hearted again though Trakt lists it
+  // still (as while its remove waits), and nothing more reaches Trakt.
+  trakt.watchlist.push(listedFilm(FAV.four, 4));
+  const writes = fake.hearts.length; await heartsTurn(); await heartsTurn(); assert.deepEqual(heartWrites(writes), []);
+  assert.ok(hearted().includes(FAV_SHOW.id)); assert.ok(!hearted().includes(FAV.four.id)); await pause(400); assert.equal(listCalls().length, 2);
+  // A call Trakt turns away waits in the outbox like any other, and goes through after.
+  trakt.refuse = 1; assert.equal((await tap(FAV.five.id, 'DELETE')).status, 200);
+  for (let n = 0; n < 100 && listCalls().length < 3; n++) await pause(100);
+  assert.deepEqual(listCalls()[2], {path: '/sync/watchlist/remove', body: {movies: [{ids: {tmdb: 75, imdb: 'tt7000005'}}]}}); await pause(500); assert.deepEqual(waiting(), []);
+  assert.ok(from < fake.hearts.length);
+});
+test('turned off, or with an MDBList key of her own saved, nothing more is sent and no heart moves; disconnecting Trakt turns it off and clears the ledger without touching hearts or Trakt', async () => {
+  // The film she un-hearted is off her Trakt watchlist by now (its remove went through).
+  trakt.watchlist = trakt.watchlist.filter(entry => entry.movie?.ids.imdb !== FAV.four.imdb);
+  const calls = () => listCalls().length, sent = calls(), had = hearted(), listed = trakt.watchlist.length;
+  // Off: an app's DELETE and POST pass through to her server and go no further; the cron leaves her alone.
+  assert.equal((await favorites(adaSite, false)).status, 200); assert.deepEqual(await heartsOf(adaSite), {on: false});
+  assert.equal((await tap(FAV.one.id, 'DELETE')).status, 200); assert.equal((await tap(FAV.one.id, 'POST')).status, 200);
+  const writes = fake.hearts.length; await cron(); await cron(); await pause(700);
+  assert.equal(calls(), sent); assert.deepEqual(heartWrites(writes), []); assert.deepEqual(hearted(), had); assert.equal(trakt.watchlist.length, listed);
+  assert.ok(Object.keys(ledgerOf()).length > 5, 'the ledger stays for when it is turned on again');
+  // On again, then an MDBList key of her own is saved: the switch goes off by itself, and an app's DELETE sends nothing.
+  assert.equal((await favorites(adaSite, true)).status, 200);
+  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key', keep: true})).body, {username: 'adalists'});
+  assert.deepEqual(sql('SELECT person FROM favs'), []); assert.deepEqual(sql('SELECT key FROM hearts'), []); assert.equal(await heartsOf(adaSite), null);
+  assert.equal((await tap(FAV.one.id, 'DELETE')).status, 200); await cron(); await pause(700); assert.equal(calls(), sent); assert.equal(trakt.watchlist.length, listed);
+  assert.equal((await tap(FAV.one.id, 'POST')).status, 200); await pause(500); assert.equal(calls(), sent);
+  // The key gone again and the switch on: the hub finds the hearts there already and counts them hers. Then Trakt is disconnected.
+  assert.equal((await owner('DELETE', '/api/people/ada/mdblist/key')).status, 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.equal((await favorites(adaSite, true)).status, 200); await heartsTurn(); assert.ok(Object.values(ledgerOf()).includes('own'));
+  const before = fake.hearts.length; assert.equal((await owner('DELETE', '/api/people/ada/scrobble')).status, 200);
+  assert.deepEqual(sql('SELECT person FROM favs'), []); assert.deepEqual(sql('SELECT key FROM hearts'), []);
+  await cron(); assert.equal((await tap(FAV.one.id, 'DELETE')).status, 200); assert.equal((await tap(FAV.one.id, 'POST')).status, 200); await pause(700);
+  assert.equal(calls(), sent); assert.equal(removes(), 2, 'only the two her own app asked for, earlier'); assert.equal(trakt.watchlist.length, listed);
+  assert.deepEqual(heartWrites(before), ['-one', '+one'], 'only her own app’s'); assert.deepEqual(hearted(), had);
+  assert.equal((await favorites(adaSite, true)).status, 409); assert.equal(await heartsOf(adaSite), null);
+  // As it was before these tests: her MDBList key kept, Trakt not connected.
+  assert.deepEqual((await owner('POST', '/api/people/ada/mdblist', {key: 'ada-mdblist-key', ...(keptInLists ? {} : {keep: true})})).body, {username: 'adalists'}); assert.deepEqual(await syncAll(), {state: 'ok'}); trakt.watchlist = null;
+});
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);
   for (const token_ of ['', token]) {
@@ -2068,7 +2261,12 @@ test('pictures go to the hub’s own Home setup, never to a person’s', async (
 test('signing out and removing a person', async () => {
   assert.equal((await raw('/Sessions/Logout', token, {method: 'POST'})).status, 204);
   assert.equal((await raw('/System/Info', token)).status, 401);
+  // Removed with Favorites from his watchlist on and hearts in its ledger (put there directly): both go with him, and nothing
+  // is taken off anyone's Trakt.
+  sql("INSERT INTO favs (hub, person) SELECT id, 'ben' FROM hubs; INSERT INTO hearts (hub, person, key, item, state, listed, at) SELECT id, 'ben', 'movie:tt7000001', 'x', 'hub', 1, 1 FROM hubs");
+  const removesBefore = removes();
   assert.equal((await owner('DELETE', '/api/people/ben')).status, 200);
+  await cron(); await pause(500); assert.deepEqual(sql('SELECT person FROM favs'), []); assert.deepEqual(sql('SELECT person FROM hearts'), []); assert.equal(removes(), removesBefore);
   assert.deepEqual(await syncAll(), {state: 'ok'});
   assert.equal(playerOf('Ben'), undefined); assert.equal(fake.homes.size, 2);
   assert.ok(!players().variants.some(item => item.id === 'hub-c-ben'));

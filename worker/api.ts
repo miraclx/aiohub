@@ -10,6 +10,7 @@ import {forgetHub, forgetSeats} from './front';
 import {LINK, answered, brief, disconnect, forgetTrakt, keepLink, links, read, traktWait} from './trakt';
 import type {Link} from './trakt';
 import {pass, turnEvery} from './sync';
+import {forgetHearts, mayHeart, turnHearts} from './hearts';
 import {rows} from './rows';
 import {PAIRS, copy, forgetShown, moving, shown} from './places';
 import {because} from './suggest';
@@ -112,8 +113,10 @@ const groupDto = (row: GroupRow) => ({id: row.id, name: row.name, ...(JSON.parse
 // Trakt (`waiting`), and until when Trakt asked the hub to wait, for reads or for writes (`until`, left out when it did not). Times
 // only; nothing of what they watched.
 type Matching = {on: boolean; earlier: boolean; ask: boolean; good: number; failing: number | null; why: string | null; waiting: number | null; until?: number};
-const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null, aiomTrakt: boolean, listsName = '', drift: ReturnType<typeof looked> = null, moving: string | null = null, listsKept = false, played = false, matching: Matching | null = null) => ({
-  ready, history, listsName, drift, moving, listsKept, played, matching,
+// hearts: "Show my Trakt watchlist as Favorites in the apps" (hearts.ts), and whether it is on. Only on their own page, and only
+// for someone who may have it (Trakt connected to the hub, a setup of their own, no MDBList key of theirs): null for anyone else.
+const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null, aiomTrakt: boolean, listsName = '', drift: ReturnType<typeof looked> = null, moving: string | null = null, listsKept = false, played = false, matching: Matching | null = null, hearts: {on: boolean} | null = null) => ({
+  ready, history, listsName, drift, moving, listsKept, played, matching, hearts,
   id: row.id, name: row.name, groupId: row.grp, joined: !!row.joined, paused: !!row.paused, ...(JSON.parse(row.data) as PersonData), v: row.version,
   // AIOMetadata's own Trakt connection (a Token ID). Once Trakt is connected to the hub it is no longer used and can go.
   aiomTrakt,
@@ -162,12 +165,12 @@ async function newSession(env: Env, subject: {account: string} | {hub: string; p
 const jobsOf = ({syncAll, ...rest}: Record<string, unknown>, forYouHour: number) => ({...rest, syncEvery: turnEvery(Number(syncAll) || 0), forYouHour}) as unknown as Hub['jobs'];
 async function state(env: Env, who: Who) {
   const hub = who.hub, data = JSON.parse(hub.data) as HubData, mine = who.person;
-  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, drifts, jobs, plays, picked, shelves, syncs, waits, tolds] = await env.DB.batch([
+  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, drifts, jobs, plays, picked, shelves, syncs, waits, tolds, favs] = await env.DB.batch([
     env.DB.prepare('SELECT id, name, data, version FROM groups WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? AND id = ?').bind(hub.id, mine) : env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? AND person = ? ORDER BY seen DESC').bind(hub.id, mine) : env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? ORDER BY seen DESC').bind(hub.id),
     env.DB.prepare('SELECT name FROM accounts WHERE id = ?').bind(hub.owner),
-    env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind IN ('upstream', 'upstream-aiom')").bind(hub.id),
+    env.DB.prepare("SELECT owner, kind FROM secrets WHERE hub = ? AND kind IN ('upstream', 'upstream-aiom')").bind(hub.id),
     env.DB.prepare("SELECT kind FROM secrets WHERE hub = ? AND owner = ? AND kind IN ('key:tmdb', 'key:mdblist', 'key:posters')").bind(hub.id, HUB_OWNER),
     env.DB.prepare('SELECT substr(id, 1, 16) AS id, name, created FROM passkeys WHERE account = ? ORDER BY created').bind(who.account?.id ?? ''),
     env.DB.prepare('SELECT owner, value FROM secrets WHERE hub = ? AND kind = ? AND owner = coalesce(?, owner)').bind(hub.id, LINK, mine ?? null),
@@ -180,7 +183,7 @@ async function state(env: Env, who: Who) {
     env.DB.prepare(`SELECT (SELECT at FROM runs WHERE job = 'cron') AS last, (SELECT count FROM runs WHERE job = 'cron') AS runs, (SELECT since FROM runs WHERE job = 'cron') AS since,
       (SELECT max(at) FROM drift WHERE hub = ?1 AND work IS NULL AND result IS NOT NULL) AS ran, (SELECT count(*) FROM trakt_outbox WHERE hub = ?1) AS waiting,
       (SELECT max(day) FROM drift WHERE hub = ?1 AND work IS NULL) AS checked, (SELECT count(*) FROM drift WHERE hub = ?1 AND day = (SELECT max(day) FROM drift WHERE hub = ?1) AND work IS NULL) AS people, (SELECT count(*) FROM drift WHERE hub = ?1 AND work IS NOT NULL) AS checking,
-      (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing, (SELECT max(json_extract(items, '$.ran')) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recsAt, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recs, (SELECT min(at) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recsDue, (SELECT max(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelved, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelves, (SELECT max(good) FROM sync WHERE hub = ?1 AND matching = 1) AS matched, (SELECT count(*) FROM sync WHERE hub = ?1 AND matching = 1) AS matching, (SELECT count(*) FROM sync y JOIN secrets s ON s.hub = y.hub AND s.owner = y.person AND s.kind = ?3 WHERE y.matching = 1) AS syncAll, (SELECT max(lists_at) FROM drift WHERE hub = ?1) AS listed, (SELECT count(*) FROM people p JOIN secrets s ON s.hub = p.hub AND s.owner = p.id AND s.kind = 'mdblist' WHERE p.hub = ?1 AND json_extract(p.data, '$.lists') = 1) AS listers, (SELECT min(c.at) FROM rows_cache c JOIN people p ON p.hub = c.hub AND p.id = c.person WHERE c.hub = ?1 AND c.kind = 'shelf' AND EXISTS (SELECT 1 FROM json_each(p.data, '$.rows') r WHERE json_extract(r.value, '$.id') IN ('trakt-lists', 'trakt-liked-lists') AND json_extract(r.value, '$.on') = 1)) AS shelfDue`).bind(hub.id, new Date().toISOString().slice(0, 10), LINK),
+      (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing, (SELECT max(json_extract(items, '$.ran')) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recsAt, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recs, (SELECT min(at) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recsDue, (SELECT max(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelved, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelves, (SELECT max(good) FROM sync WHERE hub = ?1 AND matching = 1) AS matched, (SELECT count(*) FROM sync WHERE hub = ?1 AND matching = 1) AS matching, (SELECT max(good) FROM favs WHERE hub = ?1) AS hearted, (SELECT count(*) FROM favs WHERE hub = ?1) AS hearting, (SELECT count(*) FROM sync y JOIN secrets s ON s.hub = y.hub AND s.owner = y.person AND s.kind = ?3 WHERE y.matching = 1) AS syncAll, (SELECT max(lists_at) FROM drift WHERE hub = ?1) AS listed, (SELECT count(*) FROM people p JOIN secrets s ON s.hub = p.hub AND s.owner = p.id AND s.kind = 'mdblist' WHERE p.hub = ?1 AND json_extract(p.data, '$.lists') = 1) AS listers, (SELECT min(c.at) FROM rows_cache c JOIN people p ON p.hub = c.hub AND p.id = c.person WHERE c.hub = ?1 AND c.kind = 'shelf' AND EXISTS (SELECT 1 FROM json_each(p.data, '$.rows') r WHERE json_extract(r.value, '$.id') IN ('trakt-lists', 'trakt-liked-lists') AND json_extract(r.value, '$.on') = 1)) AS shelfDue`).bind(hub.id, new Date().toISOString().slice(0, 10), LINK),
     // Who has played something here: their Recently Watched has something in it even without Trakt or MDBList.
     env.DB.prepare('SELECT DISTINCT person FROM plays WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
     // What each For you place holds today, by name and what it came from (the manager sees them on that person's Home tab), the
@@ -195,14 +198,17 @@ async function state(env: Env, who: Who) {
     env.DB.prepare('SELECT person, min(made) AS since FROM trakt_outbox WHERE hub = ? AND person = coalesce(?, person) GROUP BY person').bind(hub.id, mine ?? null),
     // Until when Trakt asked the hub to wait before reading or sending more of theirs (trakt.ts), so the page can say the time.
     env.DB.prepare("SELECT person, max(at) AS at FROM rows_cache WHERE hub = ? AND kind IN ('trakt-wait', 'trakt-wait-send') AND at > ? AND person = coalesce(?, person) GROUP BY person").bind(hub.id, now(), mine ?? null),
+    // Whether their Trakt watchlist shows as Favorites in the apps (hearts.ts): their own choice, shown only to them.
+    env.DB.prepare('SELECT person FROM favs WHERE hub = ? AND person = ?').bind(hub.id, mine ?? ''),
   ]);
   const forYou = new Map((picked.results as {person: string; picks: string; pool: string; never: string; at: number}[]).map(row => [row.person, {names: namesOf(row.picks), kinds: kindsOf(row.picks), at: row.at, detail: detailOf(row.picks, row.pool, row.never)}]));
   const shelfAt = new Map((shelves.results as {person: string; at: number}[]).map(row => [row.person, row.at]));
   const shelfTiles = new Map((shelves.results as {person: string; items: string}[]).map(row => [row.person, shelfFrom(row.items).filter(list => list.cover).map(list => ({title: list.title, image: list.cover, ...(list.id.startsWith('trakt-liked.') ? {liked: true} : {})}))]));
   // Which MDBList account each person's progress goes to (the name only; the key never leaves the vault).
   const listsName: Record<string, string> = {};
-  const moves: Record<string, string> = {}, keyed = new Set<string>();
-  for (const row of listKeys.results as {owner: string; value: string}[]) {const kept = await unseal<{key?: string; username?: string; moving?: string}>(env, `${hub.id}/${row.owner}/mdblist`, row.value); if (kept?.key) keyed.add(row.owner); if (kept?.username) listsName[row.owner] = kept.username; if (kept?.moving) moves[row.owner] = kept.moving;}
+  // `listed`: anything of MDBList's kept for them at all, which is what rules Favorites from the watchlist out (hearts.ts, MAY).
+  const moves: Record<string, string> = {}, keyed = new Set<string>(), listed = new Set<string>();
+  for (const row of listKeys.results as {owner: string; value: string}[]) {listed.add(row.owner); const kept = await unseal<{key?: string; username?: string; moving?: string}>(env, `${hub.id}/${row.owner}/mdblist`, row.value); if (kept?.key) keyed.add(row.owner); if (kept?.username) listsName[row.owner] = kept.username; if (kept?.moving) moves[row.owner] = kept.moving;}
   const aiomTrakt = new Set((oldTrakt.results as {owner: string}[]).map(row => row.owner));
   const traktOf = env.TRAKT_CLIENT_ID ? await links(env, hub.id, traktLinks.results as {owner: string; value: string}[]) : {};
   const history = Object.fromEntries(Object.entries(traktOf).map(([id, link]) => [id, {username: link.username, again: link.again}]));
@@ -215,6 +221,8 @@ async function state(env: Env, who: Who) {
     const row = syncOf.get(id);
     return {on: !!row?.matching, earlier: !!row?.earlier, ask: traktOf[id].ask && !row, good: row?.good ?? 0, failing: row?.failing ?? null, why: row?.why ?? null, waiting: waitOf.get(id) ?? null, ...(toldOf.has(id) ? {until: toldOf.get(id)} : {})};
   };
+  const own = new Set((ready.results as {owner: string; kind: string}[]).filter(row => row.kind === 'upstream-aiom').map(row => row.owner)), heartsOn = new Set((favs.results as {person: string}[]).map(row => row.person));
+  const heartsOf = (id: string) => mine === id && traktOf[id] && !traktOf[id].again && own.has(id) && !listed.has(id) ? {on: heartsOn.has(id)} : null;
   const linked = new Set((ready.results as {owner: string}[]).map(row => row.owner)), playedHere = new Set((plays.results as {person: string}[]).map(row => row.person));
   const persons = people.results as unknown as PersonRow[];
   if (mine && !persons.length) return null;
@@ -228,7 +236,7 @@ async function state(env: Env, who: Who) {
       ...(mine ? {manager: !!who.manager} : {jobs: jobsOf(jobs.results[0] as Record<string, unknown>, pickHour(env))}),
       // The UTC hour the day's For you picking starts, so a Home can say when the next picks come.
       forYouHour: pickHour(env),
-      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? looked(drifts.results[0] as {result: string | null; skipped: string | null; at: number} | undefined) : null, moves[row.id] ?? null, keyed.has(row.id), playedHere.has(row.id), matchingOf(row.id))).map(person => {const picked = forYou.get(person.id), shelved = shelfAt.get(person.id);
+      groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? looked(drifts.results[0] as {result: string | null; skipped: string | null; at: number} | undefined) : null, moves[row.id] ?? null, keyed.has(row.id), playedHere.has(row.id), matchingOf(row.id), heartsOf(row.id))).map(person => {const picked = forYou.get(person.id), shelved = shelfAt.get(person.id);
         return {...person, ...(picked ? {forYou: {...STAND_INS, ...picked.names}, forYouKinds: picked.kinds, pickedAt: picked.at, forYouDetail: picked.detail} : {}), ...(shelved !== undefined ? {shelfAt: shelved, shelfTiles: shelfTiles.get(person.id) ?? []} : {})};}),
       me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
     },
@@ -395,7 +403,9 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       // already on MDBList, takes effect at once.
       // `keep`: connecting MDBList on the MDBList card only saves the key; keeping progress there is its own switch.
       const moving = body.moving === true && !data.lists, keep = body.keep === true && !data.lists;
-      await env.DB.batch([await putSecret(env, hub, id, 'mdblist', {key, username, ...(moving ? {moving: 'mdblist'} : {})}), save(!moving && !keep),env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND (kind = 'lists' OR kind LIKE 'mdb_%')").bind(hub, id)]);
+      // With a key of their own their app Favorites are their MDBList watchlist (native.ts): Favorites from the Trakt watchlist goes off
+      // (hearts.ts). Rows here only: no heart and nothing on Trakt is touched.
+      await env.DB.batch([await putSecret(env, hub, id, 'mdblist', {key, username, ...(moving ? {moving: 'mdblist'} : {})}), save(!moving && !keep), ...forgetHearts(env, hub, id), env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND (kind = 'lists' OR kind LIKE 'mdb_%')").bind(hub, id)]);
       return {username};
     }
     // Removing the key itself: nothing of MDBList is kept or read for them any more.
@@ -413,7 +423,8 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       // Whether it is synced is theirs to say, on their own page, and asked anew for each connection: a person who signed in
       // themselves is asked there at once; one connected by their manager sees "Turn on" there.
       await keepLink(env, hub, id, {access, refresh, expires: Math.floor(Number(body.created) || now()) + Math.floor(Number(body.lasts) || 7 * 86400), username: text(body.username ?? '', 80, 'Name').trim(), ...(redirect ? {redirect} : {}), ...(who.person === id ? {ask: true} : {})});
-      await env.DB.prepare('DELETE FROM sync WHERE hub = ? AND person = ?').bind(hub, id).run();
+      // Favorites from the watchlist too (hearts.ts): off for a new connection, which may be another Trakt account, and its ledger with it.
+      await env.DB.batch([env.DB.prepare('DELETE FROM sync WHERE hub = ? AND person = ?').bind(hub, id), ...forgetHearts(env, hub, id)]);
       forgetSeats(hub, id);
       // What was watched here before is worked out again against Trakt too, the next time their card looks.
       await env.DB.batch([env.DB.prepare('UPDATE drift SET here = NULL, here_at = NULL WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'lists'").bind(hub, id)]);
@@ -455,6 +466,17 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       await answered(env, hub, id);
       return {};
     }
+  }
+  if (action === 'favorites' && request.method === 'POST') {
+    // "Show my Trakt watchlist as Favorites in the apps" (hearts.ts): with it on, a heart taken away in an app takes the title off
+    // their Trakt watchlist, so it is theirs alone to turn on, from their own page. A manager is refused whatever they send. So is
+    // anyone it is not for: Trakt not connected to the hub, no setup of their own, or an MDBList key of theirs kept (their app
+    // Favorites are their MDBList watchlist then). Off only takes the switch away: no heart moves and nothing leaves Trakt.
+    if (who.person !== id) bad(403, 'Only they can do this, from their own page');
+    const on = flag(body.on);
+    if (on && !(await tracked(env, hub, id) && await mayHeart(env, hub, id))) bad(409, await hasSecret(env, hub, id, 'mdblist') ? 'Favorites in your apps already follow your MDBList watchlist.' : 'Connect Trakt first.');
+    await turnHearts(env, hub, id, on).run();
+    return {};
   }
   if (action === 'drift' && request.method === 'POST') {
     // "Add what's missing", from their own page: the plays they left out are kept out for good, then each side gets what it lacks
@@ -891,7 +913,7 @@ async function removeHub(request: Request, env: Env, who: Who, body: Body) {
   if (!await checkPassword(String(body.password ?? ''), stored!.pass)) {await failed(env, key); bad(403, 'That is not your password');}
   if (!await removePlayers(env, who.hub)) bad(502, 'The streaming server did not confirm the removal, so nothing was deleted. Try again in a moment.');
   const hub = who.hub.id;
-  await env.DB.batch([...['devices', 'plays', 'sittings', 'starts', 'fetches', 'heard_fields', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'sync', 'sent', 'foryou', 'foryou_sync', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
+  await env.DB.batch([...['devices', 'plays', 'sittings', 'starts', 'fetches', 'heard_fields', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'sync', 'favs', 'hearts', 'sent', 'foryou', 'foryou_sync', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
     env.DB.prepare('DELETE FROM hubs WHERE id = ?').bind(hub), env.DB.prepare('DELETE FROM passkeys WHERE account = ?').bind(who.account!.id), env.DB.prepare('DELETE FROM accounts WHERE id = ?').bind(who.account!.id)]);
   // Player apps stop reaching it at once, not when this copy of the Worker next looks the hub up.
   forgetHub(who.hub.code);

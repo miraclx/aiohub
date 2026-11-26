@@ -6,7 +6,7 @@
    An episode is packed under its show's id. A tick is taken with the date it happened (PlayedItems?DatePlayed=), and always answered
    as taken, so each one is read back before it counts. */
 export interface Via {user: string; pass: string; base: string}
-export interface Item {Id: string; Type?: string; Name?: string; SeriesId?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; ProviderIds?: Record<string, string>; UserData?: {Played?: boolean; PlayedPercentage?: number; LastPlayedDate?: string; PlaybackPositionTicks?: number}}
+export interface Item {Id: string; Type?: string; Name?: string; SeriesId?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; ProviderIds?: Record<string, string>; UserData?: {Played?: boolean; PlayedPercentage?: number; LastPlayedDate?: string; PlaybackPositionTicks?: number; IsFavorite?: boolean}}
 export interface Ids {tmdb?: number; imdb?: string}
 
 const KIND = {movie: 1, series: 2, episode: 4} as const;
@@ -72,6 +72,18 @@ export async function server(via: Via) {
     position: async (id: string, ticks: number, at?: string) => {
       if (!await ask(`/Users/${user}/Items/${encodeURIComponent(id)}/UserData`, {method: 'POST', body: JSON.stringify({PlaybackPositionTicks: Math.round(ticks), ...(Date.parse(at ?? '') ? {LastPlayedDate: new Date(at!).toISOString()} : {})})})) return false;
       return Math.abs(Number((await ask<Item['UserData']>(`/Users/${user}/Items/${encodeURIComponent(id)}/UserData`))?.PlaybackPositionTicks) - ticks) < 60e7;
+    },
+    /* Hearts a title (a favourite) or takes the heart away, then reads it back. 'done' only when the server now says so; 'no'
+       when it refused or does not hold it after all (it does not have the title); 'down' when it did not answer, so nothing is
+       concluded. Asked of the server itself, never through the hub's own address (front.ts), which would pass it on to Trakt. */
+    heart: async (id: string, on: boolean): Promise<'done' | 'no' | 'down'> => {
+      counter.calls++;
+      const answer = await fetch(`${via.base}/Users/${user}/FavoriteItems/${encodeURIComponent(id)}`, {method: on ? 'POST' : 'DELETE', headers: head(token)}).catch(() => null);
+      await answer?.body?.cancel().catch(() => null);
+      if (!answer || answer.status >= 500) return 'down';
+      if (!answer.ok) return 'no';
+      const held = await ask<{Items?: Item[]}>(`/Users/${user}/Items?Ids=${encodeURIComponent(id)}`);
+      return !held ? 'down' : held.Items?.length && !!held.Items[0].UserData?.IsFavorite === on ? 'done' : 'no';
     },
     done: () => fetch(`${via.base}/Sessions/Logout`, {method: 'POST', headers: head(token)}).catch(() => null),
   };

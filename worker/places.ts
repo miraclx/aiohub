@@ -170,12 +170,16 @@ export async function look(env: Env, hub: string, person: string, pair: Pair, sk
   return {lines: lines.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)), more, unmatched, already, incoming};
 }
 
+/* A person's own setup as AIOMetadata holds it right now, or null when it has none or AIOMetadata did not answer. */
+export async function setupOf(env: Env, hub: string, person: string) {
+  const made = await getSecret<{uuid: string; password: string; at?: string}>(env, hub, person, 'aiom');
+  if (!made) return null;
+  const read = await fetch(`${made.at ?? env.AIOM_ORIGIN}/api/config/load/${made.uuid}`, {method: 'POST', headers: {'content-type': 'application/json', accept: 'application/json', 'user-agent': 'AIOHub/1.0'}, body: JSON.stringify({password: made.password})}).catch(() => null);
+  return read?.status === 200 ? ((await read.json().catch(() => null)) as {config?: Record<string, unknown>} | null)?.config ?? null : null;
+}
 /* The person's own server passes nothing on to a tracker right now: ticking Here cannot echo anywhere. */
 export async function quiet(env: Env, hub: string, person: string) {
-  const made = await getSecret<{uuid: string; password: string; at?: string}>(env, hub, person, 'aiom');
-  if (!made) return false;
-  const read = await fetch(`${made.at ?? env.AIOM_ORIGIN}/api/config/load/${made.uuid}`, {method: 'POST', headers: {'content-type': 'application/json', accept: 'application/json', 'user-agent': 'AIOHub/1.0'}, body: JSON.stringify({password: made.password})}).catch(() => null);
-  const config = read?.status === 200 ? ((await read.json().catch(() => null)) as {config?: Record<string, unknown>} | null)?.config : null;
+  const config = await setupOf(env, hub, person);
   return !!config && config.playbackReporting !== true && config.mdblistWatchTracking !== true;
 }
 /* Ticks plays Here, as many as fit in one pass. Episodes go by the show's own numbering on this server: one it does not have under

@@ -255,6 +255,24 @@ await syncIs('matching = 0, failing = NULL, why = NULL'); await trakt.getByText(
 await trakt.getByRole('button', {name: 'Turn on'}).click(); await consent.getByText(SYNC).waitFor(); await consent.getByRole('button', {name: 'Not now'}).click(); await trakt.getByText('Sync is off. What you watch here still reaches Trakt.', {exact: false}).waitFor();
 const [asked] = signins; assert.equal(asked.response_type, 'code'); assert.equal(asked.code_challenge_method, 'S256'); assert.equal(asked.prompt, undefined);
 assert.equal(asked.redirect_uri, `${BASE}/api/trakt/callback`); assert.equal(await guest.evaluate(() => sessionStorage.length), 0);
+// Favorites from her Trakt watchlist (worker/hearts.ts): not favOffered here, where nobody has a setup of their own. As the hub
+// offers it to someone who may have it (the answer is changed on its way to the page, as above): one switch, off, saying what a
+// heart does, what happens to hearts she has and what turning it off does; turning it on asks the hub, which says so.
+const FAVS = 'Show my Trakt watchlist as Favorites in the apps', favs = trakt.getByRole('switch', {name: FAVS});
+assert.equal(await favs.count(), 0);
+let favsOn = false; const favAsked = [];
+const favOffered = async route => {const response = await route.fetch(), body = await response.json(); body.hub.people[0].hearts = {on: favsOn}; return route.fulfill({response, json: body});};
+const favTurning = route => {favAsked.push(route.request().postDataJSON()); favsOn = favAsked.at(-1).on; return route.fulfill({status: 200, contentType: 'application/json', body: '{}'});};
+await guest.route('**/api/state', favOffered); await guest.route('**/api/people/ada/favorites', favTurning); await guest.reload();
+await favs.waitFor(); assert.equal(await favs.getAttribute('aria-checked'), 'false');
+await trakt.getByText('A heart in an app adds to the watchlist, and removing a heart removes it from the watchlist.', {exact: true}).waitFor();
+await trakt.getByText('Hearts you already have stay as hearts and are not added to Trakt. If you turn this off, hearts stay where they are, and nothing is removed from Trakt or the apps.', {exact: true}).waitFor();
+assert.ok(!(await trakt.locator('.toggle-row').textContent()).includes('—'));
+await both(guest, '12o-trakt-favorites-off', trakt);
+await favs.click(); await toast(guest).filter({hasText: 'Your Trakt watchlist will show as Favorites'}).waitFor(); assert.deepEqual(favAsked, [{on: true}]);
+await trakt.getByRole('switch', {name: FAVS, checked: true}).waitFor(); await both(guest, '12p-trakt-favorites-on', trakt);
+await favs.click(); await toast(guest).filter({hasText: 'Favorites no longer follow your Trakt watchlist'}).waitFor(); assert.deepEqual(favAsked.at(-1), {on: false});
+await guest.unroute('**/api/state', favOffered); await guest.unroute('**/api/people/ada/favorites', favTurning); await guest.reload(); await trakt.getByText('Sync is off. What you watch here still reaches Trakt.', {exact: false}).waitFor(); assert.equal(await favs.count(), 0);
 // An older Trakt link made through AIOMetadata shows as a quiet note she can remove (made here directly in the local database).
 execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', "INSERT INTO secrets (hub, owner, kind, value) SELECT id, 'ada', 'trakt', 'x' FROM hubs"], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
 await guest.reload(); await trakt.getByText('Nothing uses it any more').waitFor(); await shot(guest, '13-accounts-connected');

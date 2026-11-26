@@ -46,8 +46,10 @@ export async function disconnect(env: Env, hub: string, person: string) {
   await env.DB.batch([drop(env, hub, person, LINK), drop(env, hub, person, PENDING), ...forgetTrakt(env, hub, person), env.DB.prepare("UPDATE plays SET scrobbled = NULL WHERE hub = ? AND person = ? AND scrobbled IN ('playing', 'paused', 'held')").bind(hub, person)]);
 }
 /* What waits for or came from a person's Trakt, and whether it is synced: gone with the connection, the person, or the hub.
-   What was sent where (`sent`) stays while the person does, so connecting again sends nothing twice. */
-export const forgetTrakt = (env: Env, hub: string, person: string) => ['trakt_outbox', 'rows_cache', 'drift', 'sync'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ? AND person = ?`).bind(hub, person));
+   What was sent where (`sent`) stays while the person does, so connecting again sends nothing twice. Favorites from the
+   watchlist go off and its ledger goes too (`favs`, `hearts`: hearts.ts): only rows here, never a heart on their server or a
+   title on Trakt. */
+export const forgetTrakt = (env: Env, hub: string, person: string) => ['trakt_outbox', 'rows_cache', 'drift', 'sync', 'favs', 'hearts'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ? AND person = ?`).bind(hub, person));
 /* What the page shows: connected as whom, or that Trakt wants connecting again. */
 export async function links(env: Env, hub: string, rows: {owner: string; value: string}[]) {
   const out: Record<string, {username: string; again: boolean; ask: boolean}> = {};
@@ -169,7 +171,9 @@ export const progressOf = (position: number, duration: number) => Math.min(100, 
    pointless); stops and ticks are kept until Trakt has them. A start still waiting after a few minutes is let go: by then it
    would say something is playing that likely is not. Trakt takes one write a second per person, so a person's calls go one at
    a time, in order. */
-export interface Call {kind: 'start' | 'pause' | 'stop' | 'mark'; path: string; body: Record<string, unknown>}
+// 'heart' and 'unheart': a watchlist add or remove for a heart made or taken away in an app (front.ts, hearted), kept and tried
+// like a tick. Their `item` is the title's ledger key, never a play's id, so nothing here mistakes one for a start or pause.
+export interface Call {kind: 'start' | 'pause' | 'stop' | 'mark' | 'heart' | 'unheart'; path: string; body: Record<string, unknown>}
 interface Waiting {id: number; hub: string; person: string; kind: Call['kind']; path: string; body: string; made: number; tries: number; next: number; doubt: number}
 const STALE = 300, WEEK = 7 * DAY, SOON = [2, 5], LATER = 240, BATCH = 8;
 const wait = (tries: number, after: number) => Math.max(SOON[tries] ?? LATER, after);

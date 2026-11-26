@@ -188,6 +188,7 @@ Newest first. Dates are the commit dates on `main`.
 
 ### 2026-11-26
 
+- Favorites: an opt-in switch on the Trakt card shows your Trakt watchlist as Favorites in the apps, and a heart added or removed in an app adds or removes the title on your watchlist.
 - New for you: a row of new episodes of shows you watch, and watchlist movies that are now out to stream (needs Trakt).
 - Recommended Movies and Recommended Shows work without Trakt, worked out from what you watched.
 - One Watchlist row, from Trakt, MDBList or both merged.
