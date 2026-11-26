@@ -17,7 +17,7 @@ When a person connects Trakt, the hub:
 
 - reads their history, watchlist, lists and recommendations, their calendar of new episodes and releases, and the shows they dropped or hid, to fill their rows and to pick For you rows for them;
 - adds to their history what they watch in their apps, as it plays. Trakt is told nothing about something opened and closed again within a couple of minutes;
-- once they turn sync on, syncs their Trakt with their progress from then on: plays and paused spots missing on either side are added, and nothing is removed. Coming from Trakt, that covers what they watched there in the last 14 days and everything after;
+- once they turn sync on, syncs their Trakt with their progress from then on: plays and paused spots missing on either side are added, a paused spot gives way to a later one from Trakt, and nothing is removed. Coming from Trakt, that covers what they watched there in the last 14 days and everything after;
 - adds what they watched here before connecting only if they agree, after showing them the list.
 
 It never posts comments or ratings, never touches other people's accounts, and never shares the sign-in with anyone else. Disconnecting Trakt deletes the stored sign-in; it can also be revoked any time at trakt.tv under Settings, Connected apps.

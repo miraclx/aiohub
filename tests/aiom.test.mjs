@@ -218,7 +218,9 @@ http.createServer(async (request, answer) => {
     // Ticking and keeping a spot, as AIOMetadata takes them, each read back after (the card's writes into Here).
     const own = /^\/Users\/[^/]+\/(PlayedItems|Items)\/([^/?]+)(\/UserData)?/.exec(rest), held = own && HELD[decodeURIComponent(own[2])];
     if (own && own[1] === 'PlayedItems' && request.method === 'POST') {if (held) {held.UserData = {...held.UserData, Played: true}; fake.ticks.push({id: held.Id, at: new URLSearchParams(rest.split('?')[1]).get('DatePlayed')});} return send(200, {Played: true});}
-    if (own && own[3] && request.method === 'POST') {if (held) {held.UserData = {...held.UserData, PlaybackPositionTicks: body.PlaybackPositionTicks}; fake.positions.push({id: held.Id, ticks: body.PlaybackPositionTicks});} return held ? send(200, {}) : send(400, {});}
+    // A spot replaces the one held, with the date last played it came with (never later than now; now when none came), and
+    // leaves watched alone.
+    if (own && own[3] && request.method === 'POST') {if (held) {held.UserData = {...held.UserData, PlaybackPositionTicks: body.PlaybackPositionTicks, LastPlayedDate: new Date(Math.min(Date.parse(body.LastPlayedDate ?? '') || Date.now(), Date.now())).toISOString()}; fake.positions.push({id: held.Id, ticks: body.PlaybackPositionTicks, at: body.LastPlayedDate});} return held ? send(200, {}) : send(400, {});}
     if (own && own[3]) return held ? send(200, held.UserData ?? {}) : send(404, {});
     if (rest.startsWith('/Shows/')) {const series = decodeURIComponent(rest.split('/')[2]); return send(200, {Items: Object.values(HELD).filter(item => item.SeriesId === series && item.Listed !== false)});}
     if (rest.startsWith(`/Users/${uuid}/Items?Ids=`)) return send(200, {Items: decodeURIComponent(rest.split('Ids=')[1].split('&')[0]).split(',').map(id => HELD[id]).filter(Boolean)});
@@ -296,6 +298,8 @@ test('a change at the hub reaches everyone who has not changed it for themselves
   const [, ada] = playerOf('Ada'), [, ben] = playerOf('Ben');
   assert.equal(ada.config.apiKeys.mdblist, 'ada-mdblist-key'); assert.equal(ada.config.mdblistWatchTracking, true); assert.equal(ada.config.playbackReporting, true);
   assert.equal(ben.config.apiKeys.mdblist, undefined); assert.equal(ben.config.mdblistWatchTracking, false);
+  // Hearts in an app go to a person's own MDBList, never to a key that is not theirs.
+  assert.deepEqual([ada.config.jellyfinWatchlistServices, ben.config.jellyfinWatchlistServices], [['mdblist'], ['server']]);
 });
 let token, jf, uuid;
 test('an app signs in through the hub and never sees the setup, its address or its private routes', async () => {
@@ -1138,7 +1142,8 @@ test('the card compares two places and copies across: paused points both ways, a
   const before = {trakt: trakt.calls.length, watched: fake.watched.length, pauses: fake.pauses.length}, ticked = fake.ticks.length, kept = fake.positions.length;
   assert.deepEqual((await compare('POST', 'mdblist-here', {switch: true})).body, {added: 3, unmatched: 1, more: false, left: 0, switched: true});
   assert.deepEqual(fake.ticks.slice(ticked).map(tick => [HELD[tick.id].Name ?? `S${HELD[tick.id].ParentIndexNumber}E${HELD[tick.id].IndexNumber}`, tick.at]).sort(), [['Fight Club', T], ['S1E3', T]]);
-  assert.deepEqual(fake.positions.slice(kept).map(point => [HELD[point.id].Name, point.ticks]), [['Inception', 3000e7]]);
+  // A spot her server had none of: kept with when it was left there, so Continue Watching orders it truthfully.
+  assert.deepEqual(fake.positions.slice(kept).map(point => [HELD[point.id].Name, point.ticks, point.at]), [['Inception', 3000e7, T]]);
   await pause(500); assert.deepEqual({trakt: trakt.calls.length, watched: fake.watched.length, pauses: fake.pauses.length}, before, 'nothing echoed to a tracker');
   const me = (await adaSite('GET', '/api/state')).body.hub.people[0]; assert.equal(me.lists, false); assert.equal(me.moving, null);
   // Her key stays saved, unused for progress: her setup records, reports and hides nothing, and only reads her lists with it.
@@ -1233,7 +1238,9 @@ test('Trakt sync: hers to turn on, asked after her own sign-in with what she wat
   await pause(300); assert.deepEqual(trakt.calls, [], 'nothing from before connecting');
   // What was synced, on her own page: each with its name, where it went, and whether it was a paused spot.
   const did = (await adaSite('GET', '/api/people/ada/matching/synced')).body.synced;
-  assert.deepEqual(did.slice(0, 2).map(item => [item.title, item.detail, item.to, item.spot]).sort(), [['Forrest Gump', 'Movie', 'here', true], ['Heat', 'Movie', 'here', false]]); assert.ok(did[0].at > Date.now() / 1000 - 60);
+  // The spot took the place of an earlier one of hers, so it reads as updated; the film was added.
+  assert.deepEqual(did.slice(0, 2).map(item => [item.title, item.detail, item.to, item.spot, !!item.updated]).sort(), [['Forrest Gump', 'Movie', 'here', true, true], ['Heat', 'Movie', 'here', false, false]]); assert.ok(did[0].at > Date.now() / 1000 - 60);
+  assert.equal(HELD[GUMP].UserData.LastPlayedDate, trakt.playback[0].paused_at, 'dated when it was left on Trakt');
   // Ticking her earlier plays too: they go to Trakt through the outbox (here Trakt turns the first try away, so it waits there).
   trakt.refuse = 1;
   assert.equal((await adaSite('POST', '/api/people/ada/matching', {on: true, earlier: true})).status, 200);
@@ -1291,6 +1298,34 @@ test('the cron keeps her in sync: one cheap look a turn, real work only when Tra
   HELD[HEAT].UserData = {PlaybackPositionTicks: 900e7, LastPlayedDate: ago(0.01)}; trakt.playback = [{type: 'movie', progress: 40, paused_at: ago(0.5), movie: MOVIE.heat}];
   sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'playback'"); stamp(ago(0.001), ago(0.5)); due(); await cron();
   assert.equal(fake.positions.length, spots, 'an older spot does not replace hers'); assert.equal(HELD[ALIEN].UserData.Played, true);
+  // She carries on with it in another Trakt app: the later spot takes the place of hers, dated when she left it there (so Continue
+  // Watching, newest first, has it in the right place), and What was synced says it was updated. Nothing is ticked.
+  const moved = () => fake.positions.slice(spots).map(spot => [HELD[spot.id].Name, spot.ticks, spot.at]), point = (movie, progress, paused_at) => ({type: 'movie', progress, paused_at, movie}), ticked = fake.ticks.length;
+  // Every spot Trakt holds is looked at again (as when its stamp moved for another title), so only the rules decide.
+  const again = async list => {trakt.playback = list; sql("UPDATE sync SET stamps = json_set(stamps, '$.p', 1), checked = 0 WHERE person = 'ada'"); await cron();};
+  const LATER = ago(0.001); HELD[HEAT].UserData = {PlaybackPositionTicks: 900e7, LastPlayedDate: ago(0.1)};
+  trakt.playback = [point(MOVIE.heat, 60, LATER)]; stamp(trakt.activity.movies.watched_at, LATER); due(); await cron();
+  assert.deepEqual(moved(), [['Heat', 3600e7, LATER]]); assert.deepEqual(HELD[HEAT].UserData, {PlaybackPositionTicks: 3600e7, LastPlayedDate: LATER}); assert.equal(fake.ticks.length, ticked);
+  const listed = (await adaSite('GET', '/api/people/ada/matching/synced')).body.synced[0]; assert.deepEqual([listed.title, listed.detail, listed.to, listed.spot, listed.updated], ['Heat', 'Movie', 'here', true, true]);
+  assert.deepEqual(sql("SELECT play FROM sent WHERE person = 'ada' AND place = 'here' AND title = 'Heat' AND play LIKE 'ir:%'"), [{play: `ir:movie/949@${LATER}`}]);
+  // That spot came once: she goes back to an earlier one here, and it is not put over hers again. Nor is anything else:
+  // a film her server has as watched keeps no spot (watched beats part-watched); spots she left out on her page stay out, under
+  // either key a page gives one; and a spot the hub itself sent to Trakt as she paused here is not brought back as if it were new.
+  HELD[HEAT].UserData = {PlaybackPositionTicks: 900e7, LastPlayedDate: ago(0.1)}; HELD[KNIGHT].UserData = {PlaybackPositionTicks: 300e7, LastPlayedDate: ago(0.1)};
+  HELD[SEVEN].UserData = {PlaybackPositionTicks: 300e7, LastPlayedDate: ago(0.1)};
+  const INCEPTION = pack('movie', 'tt1375666'), was = HELD[INCEPTION].UserData; HELD[INCEPTION].UserData = {PlaybackPositionTicks: 600e7, LastPlayedDate: ago(0.1)};
+  for (const key of ['ip:movie/155', 'pt:movie/807']) assert.equal((await adaSite('POST', '/api/people/ada/drift', {skip: key})).status, 200);
+  sql(`UPDATE plays SET scrobbled_at = unixepoch() - 30 WHERE person = 'ada' AND item = '${FILM}'`);
+  const all = [point(MOVIE.heat, 60, LATER), point({title: 'Alien', ids: {imdb: 'tt0078748', tmdb: 348}}, 30, ago(0.0005)), point(MOVIE.knight, 50, ago(0.0005)), point({title: 'Se7en', ids: {imdb: 'tt0114369', tmdb: 807}}, 50, ago(0.0005)), point(MOVIE.inception, 45, ago(0.0003))];
+  await again(all); assert.equal(moved().length, 1, JSON.stringify(moved()));
+  assert.deepEqual(HELD[ALIEN].UserData.PlaybackPositionTicks, undefined, 'a watched film keeps no spot'); assert.equal(HELD[ALIEN].UserData.Played, true);
+  assert.deepEqual([HEAT, KNIGHT, SEVEN, INCEPTION].map(id => HELD[id].UserData.PlaybackPositionTicks), [900e7, 300e7, 300e7, 600e7]);
+  // The same spot on Trakt with nothing of the hub's sent near it is one she left in another app: it takes the place of hers.
+  sql(`UPDATE plays SET scrobbled_at = unixepoch() - 7200 WHERE person = 'ada' AND item = '${FILM}'`); await again(all);
+  assert.deepEqual(moved().slice(1), [['Inception', 2700e7, all[4].paused_at]]);
+  // A spot within 1% of where hers is stays as it is, however much later (nothing to gain by writing it).
+  HELD[HEAT].UserData = {PlaybackPositionTicks: 3030e7, LastPlayedDate: ago(0.1)}; await again([point(MOVIE.heat, 50, ago(0.0001))]); assert.equal(moved().length, 2);
+  HELD[INCEPTION].UserData = was; HELD[KNIGHT].UserData = {}; HELD[SEVEN].UserData = {}; trakt.playback = [];
   // Trakt not answering: tried again later, quietly; only after three days does her page say so.
   trakt.refuseReads = true; due(); await cron(); trakt.refuseReads = false;
   const row = sql("SELECT failing, why, checked FROM sync WHERE person = 'ada'")[0]; assert.ok(row.failing > 0); assert.equal(row.why, 'Trakt didn’t answer just now.'); assert.ok(row.checked + 1200 > Date.now() / 1000, 'asked again when Trakt says, not before'); waited();

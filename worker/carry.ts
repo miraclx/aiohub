@@ -62,7 +62,8 @@ export const pauseOf = (entry: {kind: 'movie' | 'show'; ids: Ids; season?: numbe
    still count. Read once per pass; written in one batch. */
 export type Place = 'trakt' | 'here' | 'mdblist';
 export async function ledger(env: Env, hub: string, person: string, place: Place): Promise<Set<string>> {
-  const rows = (await env.DB.prepare('SELECT play FROM sent WHERE hub = ? AND person = ? AND place = ?').bind(hub, person, place).all<{play: string}>()).results.map(row => row.play);
+  // A spot that took the place of one held there is kept as ir: (places.ts, sentKey), and counts as that spot sent (ip:) too.
+  const rows = (await env.DB.prepare('SELECT play FROM sent WHERE hub = ? AND person = ? AND place = ?').bind(hub, person, place).all<{play: string}>()).results.flatMap(row => row.play.startsWith('ir:') ? [row.play, `ip:${row.play.slice(3)}`] : [row.play]);
   if (place === 'here') return new Set(rows);
   const old = await getSecret<string[]>(env, hub, person, 'carried') ?? [];
   return new Set([...rows, ...old.filter(key => key.startsWith('t:') === (place === 'trakt')).map(key => place === 'trakt' ? key.slice(2) : key)]);
@@ -76,10 +77,11 @@ export const remember = (env: Env, hub: string, person: string, place: Place, pl
   return env.DB.prepare('INSERT INTO sent (hub, person, place, play, at, title, detail, item) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').bind(hub, person, place, key.slice(0, 200), now(), title, detail, typeof play === 'string' ? null : play.item?.slice(0, 200) ?? null);
 });
 /* What the hub synced for a person lately, newest first, as their own page lists it: what it is called, where it went, and when.
-   `spot`: a paused spot rather than a finished watch (by how its key starts). */
+   `spot`: a paused spot rather than a finished watch (by how its key starts). `updated`: a spot that took the place of an
+   earlier one held there, rather than one added where there was none. */
 export async function synced(env: Env, hub: string, person: string) {
   const rows = (await env.DB.prepare('SELECT place, play, at, title, detail FROM sent WHERE hub = ? AND person = ? AND title IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 30').bind(hub, person).all<{place: Place; play: string; at: number; title: string; detail: string | null}>()).results;
-  return rows.map(row => ({title: row.title, detail: row.detail ?? '', to: row.place, spot: /^(p|ip|pm|pt):/.test(row.play), at: row.at}));
+  return rows.map(row => ({title: row.title, detail: row.detail ?? '', to: row.place, spot: /^(p|ip|ir|pm|pt):/.test(row.play), ...(row.play.startsWith('ir:') ? {updated: true} : {}), at: row.at}));
 }
 /* What they watched here before connecting Trakt, newest first, as the consent box lists it: from the plays kept here (title and
    date), with no call to their server or to Trakt. The same plays a pass looks at (the newest 500, `plan`), less what was played

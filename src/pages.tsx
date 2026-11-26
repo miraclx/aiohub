@@ -356,9 +356,10 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
   </li>;
 }
 /* What was synced: with sync on there is nothing to compare or add by hand, so the Trakt card offers one short list of what the hub
-   did for them lately (the `sent` ledger: what it is called, where it went, when), newest first. Asked for only when opened, and
+   did for them lately (the `sent` ledger: what it is called, where it went, when), newest first; a paused spot that took the
+   place of an earlier one reads as updated rather than added. Asked for only when opened, and
    only on their own page. */
-interface Sync {title: string; detail: string; to: 'trakt' | 'here' | 'mdblist'; spot: boolean; at: number}
+interface Sync {title: string; detail: string; to: 'trakt' | 'here' | 'mdblist'; spot: boolean; updated?: boolean; at: number}
 function Synced({page, person}: {page: PageProps; person: Person}) {
   const {live, hub} = page, whose = `${hub.code}/${person.id}`;
   const [open, setOpen] = useState(false), [got, setGot] = useState<{who: string; list: Sync[] | null; failed: boolean}>({who: '', list: null, failed: false});
@@ -371,7 +372,7 @@ function Synced({page, person}: {page: PageProps; person: Person}) {
   const list = got.who === whose ? got.list : null, to = {trakt: 'Trakt', here: 'this hub', mdblist: 'your MDBList'};
   return <div className="synced">
     <button type="button" className="link small" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Hide what was synced' : 'What was synced'}</button>
-    {open && (list ? list.length ? <div className="listed">{list.map((item, n) => <p key={n}><strong>{item.title}</strong> · {item.detail ? `${item.detail} · ` : ''}{item.spot ? 'paused spot ' : ''}added to {to[item.to]} · {dateOf(item.at * 1000)}</p>)}</div>
+    {open && (list ? list.length ? <div className="listed">{list.map((item, n) => <p key={n}><strong>{item.title}</strong> · {item.detail ? `${item.detail} · ` : ''}{item.spot ? 'paused spot ' : ''}{item.updated ? 'updated in' : 'added to'} {to[item.to]} · {dateOf(item.at * 1000)}</p>)}</div>
       : <p className="muted small">Nothing has needed syncing yet.</p> : <p className="muted small">{got.failed && got.who === whose ? 'Couldn’t load the list just now.' : 'Loading…'}</p>)}
   </div>;
 }

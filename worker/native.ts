@@ -393,6 +393,10 @@ const art = (settings: Settings, pattern: string = settings.ageBadge ? BETTER.re
 // without it nothing is recorded anywhere (the hub's shared key is one account, so it is never used for that).
 // `$reads` is their MDBList key kept while progress is Here: it only reads their lists, and records and hides nothing.
 const wantedOf = (want: Want, keys: Keys, limit: Limit = 'all'): Wanted => ({...homeOf(want.rows, !!(keys.mdblist || want.lists || want.reads), !!want.trakt, want.served ?? null, limit, want.picks, want.settings.forYouOff, want.shelf), ...looks(want.settings), ...art(want.settings), hideWatchedTrakt: !!want.trakt && want.settings.hideWatched, $trakt: want.trakt ?? null,
+  // A heart (favourite) in an app is, to AIOMetadata, a watchlist add on every account its setup holds a key for, and its
+  // Favorites list is read from there. With only the hub's shared MDBList key in the setup, that would be the hub's account for
+  // everyone: so hearts stay on the server unless the key is the person's own.
+  jellyfinWatchlistServices: want.lists || want.reads ? ['mdblist'] : ['server'],
   playbackReporting: !!want.lists, mdblistWatchTracking: !!want.lists, hideWatchedMdblist: !!want.lists && want.settings.hideWatched, $lists: want.lists ?? null, ...(want.reads ? {$reads: want.reads} : {})});
 const LATER = 'AIOMetadata did not answer, so Home rows in the player apps were not updated. It will be tried again on your next change.';
 

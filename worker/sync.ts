@@ -11,7 +11,8 @@
      and their MDBList lacks (`leftovers`). Their setup tells MDBList of each play itself; this is for any that never got there.
    Only adds: nothing is ever unwatched or removed, since a play missing on one side cannot be told from one deleted there. Each
    play goes to a place once (the `sent` ledger, carry.ts), so one deleted there stays deleted. A paused spot replaces the one in
-   the home only when it is later and not the hub's own (places.ts, lacking). Every Trakt write goes through the outbox.
+   the home only when it is later and not the hub's own (places.ts, lacking), and is noted as updated rather than added; on their
+   own server it is dated when it was left on Trakt. Every Trakt write goes through the outbox.
    Workers Free allows about fifty outside calls per run, so a cron pass writes a few titles and leaves the rest for the next. */
 import type {Env} from './util';
 import {getSecret, now} from './util';
@@ -101,7 +102,7 @@ export async function toHome(env: Env, hub: string, person: string, since: {w: n
   }
   const key = (await getSecret<{key: string}>(env, hub, person, 'mdblist'))?.key;
   if (!key) return {added: 0, more: false, calls};
-  const ask = mdblist(env, key), sent: Noted[] = [], send: Omit<Incoming, 'id'>[] = [], said = (play: Omit<Incoming, 'id'>): Noted => ({key: sentKey(play), title: play.title, detail: detail(play.season, play.episode)});
+  const ask = mdblist(env, key), sent: Noted[] = [], send: Omit<Incoming, 'id'>[] = [], said = (play: Omit<Incoming, 'id'>, over = false): Noted => ({key: sentKey({...play, over}), title: play.title, detail: detail(play.season, play.episode)});
   let added = 0;
   const finished = todo.filter(play => play.pct == null), points = todo.filter(play => play.pct != null);
   // Finished plays: MDBList is asked about each title (a few a pass), so one it already has within twelve hours is not added twice.
@@ -116,7 +117,7 @@ export async function toHome(env: Env, hub: string, person: string, since: {w: n
   if (send.length) {
     calls++;
     if ((await ask('/sync/watched', history(send))).status !== 200) return {...NO_ANSWER.mdblist, calls};
-    added += send.length; sent.push(...send.map(said));
+    added += send.length; sent.push(...send.map(play => said(play)));
   }
   // Spots: Trakt's replaces MDBList's only when later (by more than a send takes) and somewhere else.
   if (points.length) {
@@ -127,7 +128,7 @@ export async function toHome(env: Env, hub: string, person: string, since: {w: n
       const there = held.get(play.key.slice(3));
       if (there && (secs(play.at) <= secs(there.paused_at) + NEAR || Math.abs(Number(there.progress) - play.pct!) <= 1)) continue;
       const answer = await ask('/scrobble/pause', listsPause(play)); calls++;
-      if (answer.status === 200 || answer.status === 201) {added++; sent.push(said(play));}
+      if (answer.status === 200 || answer.status === 201) {added++; sent.push(said(play, !!there));}
     }
     more ||= points.length > TITLES;
   }

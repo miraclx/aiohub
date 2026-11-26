@@ -219,9 +219,12 @@ await syncIs(`good = ${time()}`); await trakt.getByText(/^Syncing with this hub\
 // as never to be sent again has no title and is not listed.
 sqlLocal(`INSERT INTO sent (hub, person, place, play, at, title, detail) SELECT id, 'ada', 'trakt', 'w:movie/438631', unixepoch() - 86400, 'Dune', 'Movie' FROM hubs;
   INSERT INTO sent (hub, person, place, play, at, title, detail) SELECT id, 'ada', 'here', 'ip:show/83867:2:4@2026-01-01T00:00:00.000Z', unixepoch() - 3600, 'Andor', 'Season 2 · Episode 4' FROM hubs;
+  INSERT INTO sent (hub, person, place, play, at, title, detail) SELECT id, 'ada', 'here', 'ir:movie/949@2026-01-02T00:00:00.000Z', unixepoch() - 90000, 'Heat', 'Movie' FROM hubs;
   INSERT INTO sent (hub, person, place, play, at) SELECT id, 'ada', 'here', 'i:movie/1', unixepoch() FROM hubs`);
 await trakt.getByRole('button', {name: 'What was synced'}).click(); await trakt.locator('.synced .listed p').first().waitFor(); const synced = await trakt.locator('.synced .listed p').allTextContents();
-assert.equal(synced.length, 2); assert.match(synced[0], /^Andor · Season 2 · Episode 4 · paused spot added to this hub · \S/); assert.match(synced[1], /^Dune · Movie · added to Trakt · \S/);
+assert.equal(synced.length, 3); assert.match(synced[0], /^Andor · Season 2 · Episode 4 · paused spot added to this hub · \S/); assert.match(synced[1], /^Dune · Movie · added to Trakt · \S/);
+// A spot that took the place of an earlier one says so.
+assert.match(synced[2], /^Heat · Movie · paused spot updated in this hub · \S/);
 await both(guest, '12i-trakt-what-was-synced', trakt); await trakt.getByRole('button', {name: 'Hide what was synced'}).click(); sqlLocal('DELETE FROM sent');
 // Trakt asked the hub to wait: said with the time, never green, and no button until then.
 sqlLocal(`INSERT INTO rows_cache (hub, person, kind, at, items) SELECT id, 'ada', 'trakt-wait', unixepoch() + 1800, '' FROM hubs`); await guest.reload();

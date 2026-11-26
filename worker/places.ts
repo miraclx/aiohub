@@ -8,7 +8,8 @@
    - mdblist-here: what MDBList has that Here lacks, ticked Here: the move back.
    - mdblist-trakt: paused points (part-watched titles) one of MDBList and Trakt has and the other lacks. Their finished plays are
      compared by the daily look (drift.ts).
-   Part-watched titles travel as paused points under 80%: Trakt and MDBList date one when it is sent; Here keeps the position.
+   Part-watched titles travel as paused points under 80%: Trakt and MDBList date one when it is sent; Here keeps the position,
+   dated when it was left in the other place, and a later spot from there takes the place of an earlier one Here (lacking).
    Ticking Here never reaches a tracker: it goes straight to the person's own server, and only while that server passes nothing on
    (playbackReporting off: someone on Here, or someone moving back from MDBList, whose setup is switched first). */
 import type {Env} from './util';
@@ -27,8 +28,9 @@ export type Pair = 'here-trakt' | 'here-mdblist' | 'mdblist-here' | 'mdblist-tra
 export const PAIRS: Pair[] = ['here-trakt', 'here-mdblist', 'mdblist-here', 'mdblist-trakt'];
 export interface Line {key: string; title: string; detail: string; at: string; pct?: number; here: Cell; trakt: Cell; lists: Cell; elsewhere?: boolean}
 export interface Look {lines: Line[]; more: boolean; unmatched: number; already: number; checked?: number}
-/* A play another place has that Here lacks, with the id Here knows it by. */
-export interface Incoming {key: string; kind: 'movie' | 'show'; ids: Ids; title: string; season?: number; episode?: number; at: string; pct?: number; id: string; runtime?: number}
+/* A play another place has that Here lacks, with the id Here knows it by. `over`: a spot that takes the place of an earlier one
+   Here holds. */
+export interface Incoming {key: string; kind: 'movie' | 'show'; ids: Ids; title: string; season?: number; episode?: number; at: string; pct?: number; id: string; runtime?: number; over?: boolean}
 
 // Trakt plays from this far back are offered to Here; MDBList is read whole when moving back, the newest this many at a time.
 // A pass ticks Here until its own calls reach BUDGET, leaving room in the Worker's ~50 for the rest of the pass.
@@ -39,11 +41,14 @@ const same = (a: string, b: string) => a.replace(/-/g, '').toLowerCase() === b.r
 export const where = (kind: string, tmdb: number | undefined, season?: number, episode?: number) => `${kind}/${tmdb}${season != null ? `:${season}:${episode}` : ''}`;
 
 /* How a play brought here is noted as sent (carry.ts, ledger): a finished one by title or episode; a spot with when it was left
-   there too, so a later spot from the same place can still come. */
-export const sentKey = (play: {key: string; at: string; pct?: number}) => play.pct != null ? `${play.key}@${play.at}` : play.key;
+   there too, so a later spot from the same place can still come. A spot that took the place of an earlier one (`over`) is kept
+   as ir: rather than ip:, so their page can say it was updated; the ledger reads it as that spot sent either way. */
+export const sentKey = (play: {key: string; at: string; pct?: number; over?: boolean}) => play.pct != null ? `${play.over && play.key.startsWith('ip:') ? `ir:${play.key.slice(3)}` : play.key}@${play.at}` : play.key;
 /* What Here holds of these plays: each one Here lacks (with its id there), how many it has, how many it does not know.
-   Watched beats part-watched. A spot here gives way to another place's only when that one is later by more than a send can take
-   (Trakt and MDBList date a spot when it reaches them, so the hub's own would otherwise look newer) and not where Here already is. */
+   Watched beats part-watched: a title Here has as watched never gets a spot. A spot here gives way to another place's only when
+   that one is later (by its date last played Here) by more than a send can take, NEAR (Trakt and MDBList date a spot when it
+   reaches them, so the hub's own would otherwise look newer), and more than 1% of the running time from where Here already is
+   (`over`). One read for all of them: the titles by id, a hundred a call, which is where Here's spot and its date come from. */
 export async function lacking(own: Server, plays: Omit<Incoming, 'id'>[]) {
   const withId = plays.map(play => ({...play, id: packed(play.kind === 'movie' ? 'movie' : 'episode', play.ids, play.season, play.episode) ?? ''})).filter(play => play.id);
   const found = await own.items(withId.map(play => play.id)), out: Incoming[] = [];
@@ -55,7 +60,7 @@ export async function lacking(own: Server, plays: Omit<Incoming, 'id'>[]) {
     const ticks = Number(item.UserData?.PlaybackPositionTicks) || 0, last = Date.parse(item.UserData?.LastPlayedDate ?? '') || 0;
     // With no date for Here's spot there is no telling which is later: Here's stays.
     if (play.pct != null && ticks > 0 && (!last || Date.parse(play.at) <= last + NEAR * 1000 || (item.RunTimeTicks && Math.abs(ticks / item.RunTimeTicks * 100 - play.pct) <= 1))) {has++; continue;}
-    out.push({...play, runtime: item.RunTimeTicks});
+    out.push({...play, runtime: item.RunTimeTicks, ...(play.pct != null && ticks > 0 ? {over: true} : {})});
   }
   return {out, has, unknown};
 }
@@ -191,7 +196,8 @@ export async function tickHere(own: Server, plays: Incoming[], budget = BUDGET) 
       id = numbered?.get(`${play.season}:${play.episode}`) ?? '';
       if (!id) {unmatched++; if (numbered) missed.push(sentKey(play)); continue;}
     }
-    const taken = play.pct != null ? (play.runtime ? await own.position(id, play.runtime * play.pct / 100) : false) : await own.mark(id, play.at);
+    // A spot goes with when it was left there, so Continue Watching (newest first) orders it truthfully.
+    const taken = play.pct != null ? (play.runtime ? await own.position(id, play.runtime * play.pct / 100, play.at) : false) : await own.mark(id, play.at);
     if (taken) {added++; done.push({key: sentKey(play), title: play.title, detail: detail(play.season, play.episode)});} else unmatched++;
   }
   return {added, unmatched, left, done, missed};

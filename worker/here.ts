@@ -65,10 +65,12 @@ export async function server(via: Via) {
       if (!await ask(`/Users/${user}/PlayedItems/${encodeURIComponent(id)}?DatePlayed=${encodeURIComponent(at)}`, {method: 'POST'})) return false;
       return !!(await ask<Item['UserData']>(`/Users/${user}/Items/${encodeURIComponent(id)}/UserData`))?.Played;
     },
-    /* Keeps the spot in a title watched partway (ticks of 100 ns), then reads it back: it counts only when the server now holds
-       this spot (within a minute), since one it held before would read back as well. */
-    position: async (id: string, ticks: number) => {
-      if (!await ask(`/Users/${user}/Items/${encodeURIComponent(id)}/UserData`, {method: 'POST', body: JSON.stringify({PlaybackPositionTicks: Math.round(ticks)})})) return false;
+    /* Keeps the spot in a title watched partway (ticks of 100 ns), in place of any it held, then reads it back: it counts only
+       when the server now holds this spot (within a minute), since one it held before would read back as well. `at`: when it
+       was left there, sent as the date last played (the server would say now), so Continue Watching, newest first, puts it
+       where it belongs. Only the spot and that date change: watched and the play count stay as they were. */
+    position: async (id: string, ticks: number, at?: string) => {
+      if (!await ask(`/Users/${user}/Items/${encodeURIComponent(id)}/UserData`, {method: 'POST', body: JSON.stringify({PlaybackPositionTicks: Math.round(ticks), ...(Date.parse(at ?? '') ? {LastPlayedDate: new Date(at!).toISOString()} : {})})})) return false;
       return Math.abs(Number((await ask<Item['UserData']>(`/Users/${user}/Items/${encodeURIComponent(id)}/UserData`))?.PlaybackPositionTicks) - ticks) < 60e7;
     },
     done: () => fetch(`${via.base}/Sessions/Logout`, {method: 'POST', headers: head(token)}).catch(() => null),
