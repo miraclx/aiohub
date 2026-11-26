@@ -20,6 +20,21 @@ export const enc = new TextEncoder(), dec = new TextDecoder();
 /* The same settings, pointed at the servers this hub uses. A hub that has not chosen its own uses the site's. */
 export const hosted = (env: Env, data: {hostUrl?: string; metaUrl?: string}): Env => ({...env, UP_ORIGIN: data.hostUrl || env.UP_ORIGIN, AIOM_ORIGIN: data.metaUrl || env.AIOM_ORIGIN});
 export const now = () => Math.floor(Date.now() / 1000);
+/* A title whose file runs longer than its listing (a cartoon episode listed at 11 minutes whose file holds two segments). The
+   listed length comes from the server once (front.ts, note); a report whose position passes it by more than 30 seconds, or 5% of
+   it for anything longer than ten minutes, says the listing is wrong for this title: plays.over then keeps the furthest second
+   any report reached (per hub, person and title), and parts are no longer cut off at the listed length.
+   Such a title is finished by where earlier sittings got to, never by its share of the listed length: a sitting counts as
+   finished from 95% of the furthest point reached before it began (sittings.reached), or when an app ticked it as watched.
+   The limits, plainly: the hub only learns a file is longer once someone plays past the listed end, so before that a stop between
+   90% and 100% of the listed length still reads as finished; the first sitting to pass the listed length cannot know where the
+   end is, so it reads as stopped; and the furthest point reached is not always the end, so a sitting that gets as far as an
+   earlier one that was given up partway reads as finished too. */
+export const pastListed = (length: number, at: number) => length > 0 && at > length + Math.max(30, length * 0.05);
+export const NEAR_END = 0.95;
+/* Whether a title (a row of `plays`, by that name) was finished, in SQL: played to 90% or more of its listed length, or, for one
+   that runs longer than listed, a sitting of it that got to within 5% of where earlier ones had. */
+export const FINISHED = `((plays.over = 0 AND plays.duration > 0 AND plays.position >= plays.duration * 0.9) OR (plays.over > 0 AND EXISTS (SELECT 1 FROM sittings z WHERE z.hub = plays.hub AND z.person = plays.person AND z.item = plays.item AND z.reached > 0 AND z.position >= z.reached * ${NEAR_END})))`;
 export const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 export const unb64 = (text: string) => Uint8Array.from(atob(text.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 export const hex = (bytes: Uint8Array) => [...bytes].map(n => n.toString(16).padStart(2, '0')).join('');

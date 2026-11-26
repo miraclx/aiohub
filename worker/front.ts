@@ -6,7 +6,7 @@
 // Taking a token away (sign-out, pause) reaches every running copy of the Worker within about twenty seconds.
 import {slug} from '../src/data';
 import type {Env} from './util';
-import {blocked, failed, getSecret, guesses, newId, newToken, now, putSecret, same, sha, unseal} from './util';
+import {FINISHED, NEAR_END, blocked, failed, getSecret, guesses, newId, newToken, now, pastListed, putSecret, same, sha, unseal} from './util';
 import type {Target} from './trakt';
 import {LINK, brief, deliver, history, progressOf, soon} from './trakt';
 import {history as historyOf} from './carry';
@@ -152,26 +152,37 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   const stamp = Math.floor(when / 1000);
   let firstHere = false;
   // The title as last noted, and this device's latest sitting with it, in one trip.
-  const [found, sat] = await env.DB.batch([env.DB.prepare('SELECT art, duration, position, playing, paused, since, updated, parts, pauses, idle FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item),
-    env.DB.prepare('SELECT started, position, playing, paused, since, updated, parts, pauses, idle FROM sittings WHERE hub = ? AND person = ? AND item = ? AND device = ? ORDER BY started DESC LIMIT 1').bind(hub, seat.person, item, seat.on)]);
-  const known = (found.results[0] ?? null) as Noted | null, latest = (sat.results[0] ?? null) as (Noted & {started: number}) | null;
-  const position = kind === 'mark' ? known?.duration ?? 0 : Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' || kind === 'mark' ? 0 : 1;
+  const [found, sat] = await env.DB.batch([env.DB.prepare('SELECT art, duration, position, playing, paused, since, updated, parts, pauses, idle, over FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item),
+    env.DB.prepare('SELECT started, position, playing, paused, since, updated, parts, pauses, idle, reached FROM sittings WHERE hub = ? AND person = ? AND item = ? AND device = ? ORDER BY started DESC LIMIT 1').bind(hub, seat.person, item, seat.on)]);
+  const known = (found.results[0] ?? null) as Noted | null, latest = (sat.results[0] ?? null) as (Noted & {started: number; reached: number}) | null;
+  // A tick leaves a title at its end: the listed one, or the furthest point reached for a file that runs longer than listed.
+  const position = kind === 'mark' ? (known?.over || known?.duration) ?? 0 : Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' || kind === 'mark' ? 0 : 1;
+  // A file that runs longer than its listing (util.ts, pastListed): a report past the listed length by more than the margin says
+  // so, and from then on the furthest second any report reached is kept (plays.over) and moved on as later ones go further. The
+  // listed length itself stays as stored. `had`: how far it was known to run before this report. A tick is not a position.
+  const had = known?.over ?? 0, far = (length: number, at: number) => kind === 'mark' ? had : had || pastListed(length, at) ? Math.max(had, at) : 0;
+  // The sitting this report carries on (see sitting, below), and how far the title had been reached before that sitting began:
+  // for a new one, as far as it is known to run now.
+  const goes = latest && stamp - latest.updated <= APART ? latest : null, reached = goes ? goes.reached : had;
   // Played to 90% or more (as Activity says finished), a title can bring new For you picks: by its show for an episode (its art).
-  // A tick without playing is not a watch here.
-  const done = (length: number, at: number, art: string) => kind !== 'start' && kind !== 'mark' && length > 0 && at >= length * 0.9 ? art || item : '';
+  // A tick without playing is not a watch here. One that runs longer than listed (`over`) is never finished by its share of the
+  // listed length, or a file twice as long would be finished halfway: only from 95% of where earlier sittings got to, and so
+  // not at all in the first sitting to pass the listed length, which cannot know where the end is.
+  // The hub only learns a file is longer once someone plays past the listed end: until then, a stop between 90% and 100% of the
+  // listed length still counts as finished.
+  const done = (length: number, at: number, art: string, over: number) => kind !== 'start' && kind !== 'mark' && (over ? reached > 0 && at >= reached * NEAR_END : length > 0 && at >= length * 0.9) ? art || item : '';
   let ended = '';
   // Since when it has been as it is now: kept while a paused (or playing) title stays so, started again on any change.
   const pausedNow = kind === 'progress' && paused ? 1 : 0, since = known && kind === 'progress' && known.paused === pausedNow && known.since ? known.since : stamp;
-  const {parts, pauses, idle} = watched(known, kind, position, pausedNow, stamp, before && kind !== 'start' ? before : undefined);
+  const {parts, pauses, idle} = watched(known && {...known, over: far(known.duration, position)}, kind, position, pausedNow, stamp, before && kind !== 'start' ? before : undefined);
   // Activity shows each sitting as its own play: watched last night, again today and again tonight is three. A report carries on
   // this device's latest sitting with the title while that was heard from in the last half hour, whatever came between: jumps
   // around, a stop and a start again a minute later, a start sent twice. A paused player that keeps reporting is heard every ten
   // minutes, so it stays one sitting; one that goes quiet while paused and carries on hours later starts another. Another device
   // has its own. (Apps make a new PlaySessionId each time the player opens, so it says nothing about a sitting.)
-  const sitting = (length: number, at: number) => {
-    const goes = latest && stamp - latest.updated <= APART ? latest : null;
+  const sitting = (length: number, at: number, over: number) => {
     if (goes) {
-      const got = watched({...goes, duration: length, art: ''}, kind, at, pausedNow, stamp, before && kind !== 'start' ? before : undefined, true), from = kind === 'progress' && goes.paused === pausedNow && goes.since ? goes.since : stamp;
+      const got = watched({...goes, duration: length, art: '', over}, kind, at, pausedNow, stamp, before && kind !== 'start' ? before : undefined, true), from = kind === 'progress' && goes.paused === pausedNow && goes.since ? goes.since : stamp;
       return [env.DB.prepare('UPDATE sittings SET position = ?, playing = ?, paused = ?, since = ?, updated = ?, place = ?, net = ?, parts = ?, pauses = ?, idle = ? WHERE hub = ? AND person = ? AND item = ? AND started = ?').bind(at, playing, pausedNow, from, stamp, where.place, where.net, kind === 'mark' ? `${got.parts.replace(/ ?marked/g, '')} marked`.trim() : got.parts, got.pauses, got.idle, hub, seat.person, item, goes.started)];
     }
     // A stop with no sitting under way opens none: nothing was watched just then. A tick as watched is a line of its own
@@ -179,23 +190,26 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
     if (kind === 'stop') return [];
     // A new sitting holds the empty part where it began (see watched). Not if another report opened one since this one looked:
     // two can arrive at once.
-    return [env.DB.prepare('INSERT OR IGNORE INTO sittings (hub, person, item, started, device, position, playing, paused, since, updated, place, net, parts) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?4, ?4, ?9, ?10, ?11 WHERE NOT EXISTS (SELECT 1 FROM sittings WHERE hub = ?1 AND person = ?2 AND item = ?3 AND device = ?5 AND started > ?12)')
-      .bind(hub, seat.person, item, stamp, seat.on, at, playing, pausedNow, where.place, where.net, kind === 'mark' ? 'marked' : `${at}-${at}`, latest?.started ?? -1)];
+    // It keeps how far the title had been reached before it began (`reached`), which is what says whether it got to the end.
+    return [env.DB.prepare('INSERT OR IGNORE INTO sittings (hub, person, item, started, device, position, playing, paused, since, updated, place, net, parts, reached) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?4, ?4, ?9, ?10, ?11, ?13 WHERE NOT EXISTS (SELECT 1 FROM sittings WHERE hub = ?1 AND person = ?2 AND item = ?3 AND device = ?5 AND started > ?12)')
+      .bind(hub, seat.person, item, stamp, seat.on, at, playing, pausedNow, where.place, where.net, kind === 'mark' ? 'marked' : `${at}-${at}`, latest?.started ?? -1, had)];
   };
   // Sittings not heard from in 180 days go, now and then (and what is left of the starts once kept, migration 0010).
   const tidy = Math.random() < 0.02 ? [env.DB.prepare('DELETE FROM sittings WHERE hub = ? AND updated < ?').bind(hub, stamp - 180 * 86400), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND at < ?').bind(hub, stamp - 180 * 86400), env.DB.prepare('DELETE FROM fetches WHERE hub = ? AND last < ?').bind(hub, stamp - 180 * 86400)] : [];
   // Rows from before pictures were kept are looked up once more, on their next start.
-  if (known && (known.art || kind !== 'start')) {await env.DB.batch([env.DB.prepare('UPDATE plays SET position = ?, playing = ?, paused = ?, since = ?, device = ?, updated = ?, place = ?, net = ?, parts = ?, pauses = ?, idle = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, pausedNow, since, seat.on, stamp, where.place, where.net, parts, pauses, idle, hub, seat.person, item), ...sitting(known.duration, position), ...tidy]); ended = done(known.duration, position, known.art);}
+  // (`over` only ever grows, whichever of two reports that arrive at once is written last.)
+  if (known && (known.art || kind !== 'start')) {const over = far(known.duration, position); await env.DB.batch([env.DB.prepare('UPDATE plays SET position = ?, playing = ?, paused = ?, since = ?, device = ?, updated = ?, place = ?, net = ?, parts = ?, pauses = ?, idle = ?, over = max(over, ?) WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, pausedNow, since, seat.on, stamp, where.place, where.net, parts, pauses, idle, over, hub, seat.person, item), ...sitting(known.duration, position, over), ...tidy]); ended = done(known.duration, position, known.art, over);}
   else {
     // First report for this title: ask AIOStreams what it is called, as this person.
     const called = asked ?? await calledBy(seat, item);
     if (!called) return;
     const {about, title, detail, art} = called;
     const first = !await env.DB.prepare('SELECT 1 FROM plays WHERE hub = ? AND person = ? LIMIT 1').bind(hub, seat.person).first();
-    const length = Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), at = kind === 'mark' ? length : position;
-    await env.DB.batch([env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net, paused, since, parts, pauses, idle) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, paused = excluded.paused, since = excluded.since, device = excluded.device, updated = excluded.updated, art = excluded.art, place = excluded.place, net = excluded.net, parts = excluded.parts, pauses = excluded.pauses, idle = excluded.idle')
-      .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), at, length, seat.on, playing, stamp, art, where.place, where.net, pausedNow, stamp, parts, pauses, idle), ...sitting(length, at), ...tidy]);
-    firstHere = first; ended = done(length, at, art);
+    // (A row kept from before pictures were is not new: its listed length stays, and so does how far it is known to run.)
+    const length = Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), at = kind === 'mark' ? length : position, over = far(known?.duration ?? length, at);
+    await env.DB.batch([env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net, paused, since, parts, pauses, idle, over) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, paused = excluded.paused, since = excluded.since, device = excluded.device, updated = excluded.updated, art = excluded.art, place = excluded.place, net = excluded.net, parts = excluded.parts, pauses = excluded.pauses, idle = excluded.idle, over = max(plays.over, excluded.over)')
+      .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), at, length, seat.on, playing, stamp, art, where.place, where.net, pausedNow, stamp, parts, pauses, idle, over), ...sitting(length, at, over), ...tidy]);
+    firstHere = first; ended = done(length, at, art, over);
   }
   // A tick that comes while a sitting is under way (heard in the last minute) is the app's own, as it moves on to the next.
   if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused, jumped, !!latest && stamp - latest.updated <= 60);
@@ -211,16 +225,19 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
    running copy saw it, is a step in between, so a jump loses at most the seconds between two reports, not a minute.
    On the title's own row (plays), a rewatch starts over: a start near the beginning of a title last left at 90% or more, or of one
    not heard from in a week. A sitting (`own`) never does: watching again is a sitting of its own. A start sent again mid-play, as
-   some apps do, keeps what is there. */
-interface Noted {art: string; duration: number; position: number; playing: number; paused: number; since: number; updated: number; parts: string; pauses: number; idle: number}
+   some apps do, keeps what is there.
+   A part ends at the listed length at the latest, except for a title known to run longer than listed (`over`, see note): its
+   parts go as far as the reports did, and its rewatch is one started near the beginning after it was left within 5% of the
+   furthest point reached. */
+interface Noted {art: string; duration: number; position: number; playing: number; paused: number; since: number; updated: number; parts: string; pauses: number; idle: number; over?: number}
 const MOST_PARTS = 24, WEEK = 7 * 86400;
 function watched(row: Noted | null, kind: string, position: number, pausedNow: number, at: number, before?: {pos: number; at: number; paused: boolean}, own = false) {
   // A title just started holds an empty part where it began ("2290-2290"), so the site knows parts are kept for it before the
   // first one is played; anything played replaces it.
   const begun = `${Math.round(position)}-${Math.round(position)}`;
   if (!row) return {parts: begun, pauses: pausedNow, idle: 0};
-  const length = row.duration;
-  if (!own && kind === 'start' && ((length > 0 && row.position >= length * 0.9 && position < length * 0.1) || at - row.updated > WEEK)) return {parts: begun, pauses: 0, idle: 0};
+  const length = row.over ? 0 : row.duration, whole = row.over || row.duration;
+  if (!own && kind === 'start' && ((whole > 0 && row.position >= whole * (row.over ? NEAR_END : 0.9) && position < whole * 0.1) || at - row.updated > WEEK)) return {parts: begun, pauses: 0, idle: 0};
   // A title noted before parts were kept gets its start mark the next time it is started.
   if (kind === 'start' && !row.parts) return {parts: begun, pauses: row.pauses, idle: row.idle};
   let parts = row.parts.split(' ').map(part => part.split('-').map(Number)).filter(([a, b]) => b > a) as [number, number][];
@@ -296,7 +313,7 @@ const told = new Map<string, string>();
 async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', item: string, position: number, paused: boolean, jumped = false, during = false) {
   const key = `${hub}/${seat.person}/${item}`, want = kind === 'start' ? 'playing' : kind === 'progress' ? (paused ? 'paused' : 'playing') : 'stopped';
   if (told.size > 5000) told.clear(); told.set(key, want);
-  const row = await env.DB.prepare('SELECT duration, ids, scrobbled, scrobbled_at, (SELECT matching FROM sync WHERE hub = ?1 AND person = ?2) AS synced FROM plays WHERE hub = ?1 AND person = ?2 AND item = ?3').bind(hub, seat.person, item).first<{duration: number; ids: string | null; scrobbled: string | null; scrobbled_at: number | null; synced: number | null}>();
+  const row = await env.DB.prepare('SELECT duration, over, ids, scrobbled, scrobbled_at, (SELECT matching FROM sync WHERE hub = ?1 AND person = ?2) AS synced FROM plays WHERE hub = ?1 AND person = ?2 AND item = ?3').bind(hub, seat.person, item).first<{duration: number; over: number; ids: string | null; scrobbled: string | null; scrobbled_at: number | null; synced: number | null}>();
   if (!row?.synced) return;
   // A pause or carrying on only counts inside a play Trakt was told about; a report that arrives after stop starts nothing.
   // A skip while playing is told as a fresh start from the new place.
@@ -327,8 +344,13 @@ async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'prog
   if (kind === 'mark' && (row.scrobbled === 'watched' || row.scrobbled === 'held-watched') && now() - (row.scrobbled_at ?? 0) < 12 * 3600) return;
   // Without a length there is no telling how far in; and under 1% there is nothing for Trakt to keep.
   if (kind !== 'mark' && !row.duration) return;
+  // Trakt's episode is the listed one, so how far in is always against the listed length, 100 at most. For a title that runs
+  // longer than listed (`over`) that is left as it is for a start and a stop: a stop past the listed length says 100, and Trakt
+  // counts the listed episode as watched. Only its pause is held under 80% (as carry.ts does for a paused point), where Trakt
+  // would take it for a watch: paused partway through a longer file is not one.
+  const said = want === 'paused' && row.over ? Math.min(79.99, progress) : progress;
   const call = kind === 'mark' ? {kind, path: '/sync/history', body: history(target, new Date().toISOString())}
-    : kind !== 'stop' || progress >= 1 ? {kind: want === 'playing' ? 'start' as const : want === 'paused' ? 'pause' as const : 'stop' as const, path: `/scrobble/${want === 'playing' ? 'start' : want === 'paused' ? 'pause' : 'stop'}`, body: {...target, progress}} : null;
+    : kind !== 'stop' || progress >= 1 ? {kind: want === 'playing' ? 'start' as const : want === 'paused' ? 'pause' as const : 'stop' as const, path: `/scrobble/${want === 'playing' ? 'start' : want === 'paused' ? 'pause' : 'stop'}`, body: {...target, progress: said}} : null;
   const got = call ? await deliver(env, hub, seat.person, item, call) : 'sent';
   if (got === 'off') return;
   // A stop at 80% or more is a watch on Trakt's side, as is a tick: remembered as such, so a tick straight after adds nothing.
@@ -405,13 +427,13 @@ async function marked(env: Env, hub: string, seat: Seat, item: string, where: {p
   // Only how many is noted, never whose or what.
   if (!episodes.length || episodes.length > MARK_MOST) {if (episodes.length) console.error('mark', 'too many episodes', episodes.length); return;}
   const stamp = Math.floor(when / 1000), title = String((type === 'Series' ? about.Name : about.SeriesName) || episodes[0].SeriesName || about.Name || '').slice(0, 200), ids_ = JSON.stringify(episodes.map(episode => episode.Id));
-  const [had, any] = await env.DB.batch([env.DB.prepare('SELECT item, position, duration, scrobbled FROM plays WHERE hub = ?1 AND person = ?2 AND item IN (SELECT value FROM json_each(?3))').bind(hub, seat.person, ids_),
+  const [had, any] = await env.DB.batch([env.DB.prepare(`SELECT item, ${FINISHED} AS done, scrobbled FROM plays WHERE hub = ?1 AND person = ?2 AND item IN (SELECT value FROM json_each(?3))`).bind(hub, seat.person, ids_),
     env.DB.prepare('SELECT 1 AS yes FROM plays WHERE hub = ? AND person = ? LIMIT 1').bind(hub, seat.person)]);
-  const known = new Map((had.results as {item: string; position: number; duration: number; scrobbled: string | null}[]).map(row => [row.item, row]));
+  const known = new Map((had.results as {item: string; done: number; scrobbled: string | null}[]).map(row => [row.item, row]));
   // Their Trakt, only with sync on (the seat says so, and deliver asks again): the show's ids, and what the hub ticked from Trakt.
   const ids = seat.scrobble ? traktIds((await aboutOf(seat, series))?.Items?.[0]?.ProviderIds) : {}, usable = !!(ids.tmdb || ids.imdb);
   const ticked = usable && ids.tmdb ? new Set((await env.DB.prepare("SELECT play FROM sent WHERE hub = ? AND person = ? AND place = 'here' AND play LIKE ?").bind(hub, seat.person, `i:show/${ids.tmdb}:%`).all<{play: string}>()).results.map(row => row.play)) : new Set<string>();
-  const todo = episodes.filter(episode => {const row = known.get(episode.Id!); return !(row && row.duration > 0 && row.position >= row.duration * 0.9) && !ticked.has(`i:show/${ids.tmdb}:${episode.ParentIndexNumber}:${episode.IndexNumber}`);});
+  const todo = episodes.filter(episode => {const row = known.get(episode.Id!); return !row?.done && !ticked.has(`i:show/${ids.tmdb}:${episode.ParentIndexNumber}:${episode.IndexNumber}`);});
   if (!todo.length) return;
   // One history add for every episode Trakt was not told of before, dated now, as a single tick is.
   const fresh = usable ? todo.filter(episode => !['watched', 'held-watched'].includes(known.get(episode.Id!)?.scrobbled ?? '')) : [], at = new Date().toISOString();
@@ -423,7 +445,7 @@ async function marked(env: Env, hub: string, seat: Seat, item: string, where: {p
   await env.DB.batch([env.DB.prepare(`INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net, paused, since, parts, pauses, idle, ids, scrobbled, scrobbled_at)
       SELECT ?1, ?2, json_extract(e.value, '$.item'), ?3, json_extract(e.value, '$.detail'), json_extract(e.value, '$.length'), json_extract(e.value, '$.length'), ?4, 0, ?5, ?6, ?7, ?8, 0, ?5, '0-0', 0, 0,
         json_extract(e.value, '$.ids'), CASE WHEN json_extract(e.value, '$.told') = 1 THEN 'watched' END, CASE WHEN json_extract(e.value, '$.told') = 1 THEN ?5 END FROM json_each(?9) e WHERE true
-      ON CONFLICT (hub, person, item) DO UPDATE SET position = CASE WHEN plays.duration > 0 THEN plays.duration ELSE excluded.position END, playing = 0, paused = 0, since = excluded.since, device = excluded.device, updated = excluded.updated, place = excluded.place, net = excluded.net,
+      ON CONFLICT (hub, person, item) DO UPDATE SET position = CASE WHEN plays.over > 0 THEN plays.over WHEN plays.duration > 0 THEN plays.duration ELSE excluded.position END, playing = 0, paused = 0, since = excluded.since, device = excluded.device, updated = excluded.updated, place = excluded.place, net = excluded.net,
         ids = coalesce(excluded.ids, plays.ids), scrobbled = coalesce(excluded.scrobbled, plays.scrobbled), scrobbled_at = coalesce(excluded.scrobbled_at, plays.scrobbled_at)`).bind(hub, seat.person, title, seat.on, stamp, art, where.place, where.net, rows),
     env.DB.prepare(`INSERT OR IGNORE INTO sittings (hub, person, item, started, device, position, playing, paused, since, updated, place, net, parts)
       SELECT ?1, ?2, json_extract(e.value, '$.item'), ?3, ?4, json_extract(e.value, '$.length'), 0, 0, ?3, ?3, ?5, ?6, 'marked' FROM json_each(?7) e`).bind(hub, seat.person, stamp, seat.on, where.place, where.net, rows)]);

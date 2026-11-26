@@ -12,7 +12,7 @@
    The Watchlist is one row too: Trakt's, MDBList's, or both as one list. Recommended is Trakt's, or else worked out ahead from
    what they watched (recs.ts). */
 import type {Env} from './util';
-import {getSecret, newToken, now, putSecret, sha} from './util';
+import {FINISHED, getSecret, newToken, now, putSecret, sha} from './util';
 import {LINK, read, syncOn} from './trakt';
 import {mdblist} from './carry';
 import {unpacked} from './here';
@@ -185,8 +185,8 @@ async function fromMdblist(env: Env, key: string, kind: 'mdb_watchlist' | 'mdb_h
 /* Newest first, a show once. A title is known by what Trakt was told it is, or else by its id on their own server, which carries
    its IMDb or TMDB id (here.ts); a play on any other server that Trakt was never told about is left out. */
 export async function played(env: Env, hub: string, person: string, done = false): Promise<Item[]> {
-  // `done`: only what was finished (played to 90% or more, as Activity says finished) or ticked as watched in an app.
-  const got = await env.DB.prepare(`SELECT item, ids, title, updated FROM plays WHERE hub = ?1 AND person = ?2${done ? ` AND ((duration > 0 AND position >= duration * 0.9)
+  // `done`: only what was finished (played to 90% or more, as Activity says finished; util.ts, FINISHED, for a file that runs longer than listed) or ticked as watched in an app.
+  const got = await env.DB.prepare(`SELECT item, ids, title, updated FROM plays WHERE hub = ?1 AND person = ?2${done ? ` AND (${FINISHED}
     OR EXISTS (SELECT 1 FROM sittings s WHERE s.hub = plays.hub AND s.person = plays.person AND s.item = plays.item AND s.parts LIKE '%marked%'))` : ''} ORDER BY updated DESC LIMIT 300`).bind(hub, person).all<{item: string; ids: string | null; title: string; updated: number}>();
   return once(got.results.map(play => {
     let target: {movie?: Media; show?: Media} | null = null;

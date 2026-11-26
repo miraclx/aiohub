@@ -673,6 +673,29 @@ test('Trakt hears nothing of a sitting until enough of it has played: a brief op
   // Blade Runner is taken away again, for the tests after.
   sql(`DELETE FROM plays WHERE item = '${BLADE}'; DELETE FROM sittings WHERE item = '${BLADE}'`);
 });
+test('a file that runs longer than listed: Trakt gets the listed episode as watched from a stop past its end, and a pause there stays a pause', async () => {
+  // Listed at 6000 seconds, as every title here; the file runs on. A report past the listed length by more than the margin (5%
+  // here) flags it (front.ts, note). How far in is still told against the listed length, 100 at most: a start and a stop go as
+  // they always did, so the stop counts as a watch of the listed title. Only the pause is held under 80%, where Trakt keeps a spot.
+  const LONG = pack('movie', 'tt0071562'), film = {movie: {ids: {tmdb: 240, imdb: 'tt0071562'}}}, state = () => sql(`SELECT scrobbled, over FROM plays WHERE item = '${LONG}'`)[0];
+  HELD[LONG] = {Id: LONG, Type: 'Movie', Name: 'The Long Cut', ProviderIds: {Tmdb: '240', Imdb: 'tt0071562'}, UserData: {}};
+  trakt.calls = [];
+  await say('/Sessions/Playing', {ItemId: LONG, PositionTicks: 0}, 700); await pause(600);
+  await say('/Sessions/Playing/Progress', {ItemId: LONG, PositionTicks: 150e7, IsPaused: false}, 550); await heard(1); assert.equal(state().over, 0);
+  // Skipped to past the listed end, paused there, carried on, stopped.
+  await say('/Sessions/Playing/Progress', {ItemId: LONG, PositionTicks: 6400e7, IsPaused: false}, 100); await heard(2); assert.equal(state().over, 6400);
+  await say('/Sessions/Playing/Progress', {ItemId: LONG, PositionTicks: 6400e7, IsPaused: true}); await heard(3); assert.equal(state().scrobbled, 'paused');
+  await say('/Sessions/Playing/Progress', {ItemId: LONG, PositionTicks: 6400e7, IsPaused: false}); await heard(4);
+  await say('/Sessions/Playing/Stopped', {ItemId: LONG, PositionTicks: 6400e7});
+  assert.deepEqual(await heard(5), [
+    {path: '/scrobble/start', body: {...film, progress: 2.5}}, {path: '/scrobble/start', body: {...film, progress: 100}},
+    {path: '/scrobble/pause', body: {...film, progress: 79.99}}, {path: '/scrobble/start', body: {...film, progress: 100}},
+    {path: '/scrobble/stop', body: {...film, progress: 100}},
+  ]);
+  assert.deepEqual(state(), {scrobbled: 'watched', over: 6400}); assert.deepEqual(waiting(), []);
+  // Taken away again, for the tests after.
+  sql(`DELETE FROM plays WHERE item = '${LONG}'; DELETE FROM sittings WHERE item = '${LONG}'`); trakt.calls = [];
+});
 test('ticking a title as watched adds it to Trakt history', async () => {
   trakt.calls = []; sql(`UPDATE sittings SET updated = updated - 120 WHERE item = '${ITEM}'`); // its brief play earlier is over: this tick is from the list
   assert.equal((await say(`/Users/${jf}/PlayedItems/${ITEM}`, {})).status, 200);
@@ -2157,6 +2180,17 @@ test('a finished watch picks one row again within minutes, with what was just wa
   const capped = picksOf('ada'); await picking(day + 105 * MIN);
   assert.deepEqual(picksOf('ada'), capped); assert.equal(fresh().due, 0); assert.deepEqual(sql('SELECT hub FROM foryou_sync'), []);
   assert.equal((await place_('for-you-3', {keep: false})).status, 200);
+  // A file that runs longer than listed (6000 seconds listed) is not finished by its share of the listed length. The sitting that
+  // first plays past the listed end cannot know where the end is: no finish. The next one, left at 95% of the listed length, is
+  // well short of where the first got to: no finish either. One that gets to within 5% of that point is.
+  const LONGER = 'a1110100-0000-eaf7-78ff-ffffff090000', keptFresh = sql("SELECT fresh FROM foryou WHERE person = 'ada'")[0].fresh, calls = trakt.calls.length;
+  const sit = async to => {sql(`UPDATE sittings SET started = started - 7200, updated = updated - 7200 WHERE item = '${LONGER}'`); await say('/Sessions/Playing', {ItemId: LONGER, PositionTicks: 0}, 700); await pause(400); await say('/Sessions/Playing/Stopped', {ItemId: LONGER, PositionTicks: to * 1e7}); await pause(800);};
+  await sit(6500); assert.deepEqual(sql(`SELECT over FROM plays WHERE item = '${LONGER}'`), [{over: 6500}]); assert.ok(!fresh().seen?.includes(LONGER) && !fresh().due, JSON.stringify(fresh()));
+  await sit(5700); assert.ok(!fresh().seen?.includes(LONGER) && !fresh().due, JSON.stringify(fresh()));
+  await sit(6400); assert.ok(await dueNow()); assert.ok(fresh().seen.includes(LONGER));
+  assert.deepEqual(sql(`SELECT position, reached FROM sittings WHERE item = '${LONGER}' ORDER BY started`), [{position: 6500, reached: 0}, {position: 5700, reached: 6500}, {position: 6400, reached: 6500}]);
+  // Taken away again, with the finish it noted, for the tests after.
+  sql(`DELETE FROM plays WHERE item = '${LONGER}'; DELETE FROM sittings WHERE item = '${LONGER}'; UPDATE foryou SET fresh = '${keptFresh.replace(/'/g, "''")}' WHERE person = 'ada'`); trakt.calls.length = calls;
   await setPerson('ada', me => {const {forYouOff: _, ...settings} = me.settings; return {settings};}); await settle(day + 110 * MIN);
 });
 test('Recommended rows without Trakt: worked out once a day from what was watched, less what was watched or is on a watchlist; under a content limit only what is rated for it, Trakt’s own included', async () => {

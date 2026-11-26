@@ -1013,7 +1013,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     }
     if (first === 'activity' && method === 'GET') {
       // The manager sees everyone; an invited person sees only themselves. Each sitting of the last week (front.ts), with its title.
-      const rows = await env.DB.prepare(`SELECT s.person, s.item, s.started, p.title, p.detail, s.position, p.duration, s.device, s.playing, s.paused, s.since, s.updated, p.art, s.place, s.net, s.parts, s.pauses, s.idle FROM sittings s JOIN plays p ON p.hub = s.hub AND p.person = s.person AND p.item = s.item WHERE s.hub = ?1 AND s.updated > ?2 ${who.person ? 'AND s.person = ?3' : ''} ORDER BY s.updated DESC LIMIT 1000`).bind(...(who.person ? [who.hub.id, now() - 7 * 86400, who.person] : [who.hub.id, now() - 7 * 86400])).all();
+      const rows = await env.DB.prepare(`SELECT s.person, s.item, s.started, p.title, p.detail, s.position, p.duration, s.device, s.playing, s.paused, s.since, s.updated, p.art, s.place, s.net, s.parts, s.pauses, s.idle, p.over, s.reached FROM sittings s JOIN plays p ON p.hub = s.hub AND p.person = s.person AND p.item = s.item WHERE s.hub = ?1 AND s.updated > ?2 ${who.person ? 'AND s.person = ?3' : ''} ORDER BY s.updated DESC LIMIT 1000`).bind(...(who.person ? [who.hub.id, now() - 7 * 86400, who.person] : [who.hub.id, now() - 7 * 86400])).all();
       // One with too little played is left out once it is over (see brief); while it may still be playing, it shows.
       const time = now(), kept = (rows.results as {playing: number; updated: number; parts: string | null; started: number; duration: number}[]).filter(row => (row.playing && time - row.updated < 900) || !brief(row, row.duration));
       // A title's file fetched with no sitting to go with it was a download (front.ts, fetched): no sitting of theirs with that title,
@@ -1022,7 +1022,10 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
       const downs = await env.DB.prepare(`SELECT f.person, f.item, f.at, f.title, f.detail, f.art, f.device FROM fetches f WHERE f.hub = ?1 AND f.at > ?2 AND f.title IS NOT NULL ${who.person ? 'AND f.person = ?4' : ''}
         AND (f.asked = 1 OR (f.at < ?3 AND NOT EXISTS (SELECT 1 FROM sittings s WHERE s.hub = f.hub AND s.person = f.person AND replace(lower(s.item), '-', '') = f.item AND s.started <= f.last + 600 AND s.updated >= f.at - 600))) ORDER BY f.at DESC LIMIT 200`)
         .bind(...(who.person ? [who.hub.id, time - 7 * 86400, time - 300, who.person] : [who.hub.id, time - 7 * 86400, time - 300])).all();
-      return reply({now: time, sittings: kept, downloads: downs.results});
+      // `over` and `reached` go only with a title known to run longer than listed (front.ts, note): how far any report of it got,
+      // and how far it had been reached before this sitting began. The page draws and words such a sitting by those.
+      const sittings = kept.map(row => {const {over, reached, ...rest} = row as typeof row & {over: number; reached: number}; return over ? {...rest, over, reached} : rest;});
+      return reply({now: time, sittings, downloads: downs.results});
     }
     if (first === 'state' && method === 'GET') return reply(await state(env, who) ?? bad(401, 'Sign in first'));
     if (first === 'people' && second && third) return reply(await personAction(request, env, who, second, third, fourth, body, url.origin));

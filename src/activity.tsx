@@ -6,7 +6,15 @@ import {Avatar, Posters, Segments, Sheet} from './ui';
 
 /* What the hub noted as players reported it, put into the words the screen uses: one entry each time someone sat down to watch a
    title (a sitting, front.ts). Times are shown in this device's own time zone. */
-interface Noted {art?: string; person: string; item: string; started: number; title: string; detail: string; position: number; duration: number; device: string; playing: number; paused?: number; since?: number; updated: number; place?: string | null; net?: string | null; parts?: string; pauses?: number; idle?: number}
+interface Noted {art?: string; person: string; item: string; started: number; title: string; detail: string; position: number; duration: number; device: string; playing: number; paused?: number; since?: number; updated: number; place?: string | null; net?: string | null; parts?: string; pauses?: number; idle?: number; over?: number; reached?: number}
+/* A title whose file runs longer than its listing (`over`: the furthest second any report of it reached; worker/util.ts): its
+   listed length says nothing about how far in a sitting is. Its bar is drawn against the furthest point reached, where it is is
+   said as a time, never a share, and it is finished only when an app ticked it as watched during the sitting, or the sitting got
+   to within 5% of where earlier sittings of it had (`reached`). The first sitting to pass the listed length cannot know where the
+   end is: it reads as stopped. Until someone plays past the listed end, nothing here knows: a stop between 90% and 100% of the
+   listed length reads as finished. */
+const NEAR_END = 0.95, ticked = (row: Noted) => !!row.parts?.split(' ').includes('marked');
+const finishedLong = (row: Noted) => (ticked(row) && partsOf(row).length > 0) || (!!row.reached && row.position >= row.reached * NEAR_END);
 function told(row: Noted, now: number, code: string): Play | null {
   const at = new Date(row.updated * 1000), today = new Date(now * 1000), days = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() - new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime()) / 86400000);
   if (days > 6) return null;
@@ -15,11 +23,12 @@ function told(row: Noted, now: number, code: string): Play | null {
   // paused is said only when there is no bar of parts played to show it (its mark, and the times on hover); since when, only
   // when that was a while before it was last heard (otherwise Last heard says it).
   // A paused player is noted once in ten minutes (front.ts), so it counts as heard for fifteen.
-  const heard = !!row.playing && now - row.updated < (row.paused ? 900 : 180), live = heard && !row.paused, share = row.duration ? Math.min(100, Math.round(row.position / row.duration * 100)) : 0;
+  const heard = !!row.playing && now - row.updated < (row.paused ? 900 : 180), live = heard && !row.paused, whole = row.over || row.duration, share = whole ? Math.min(100, Math.round(row.position / whole * 100)) : 0;
   const quiet = !!row.playing && !heard, last = new Date(row.updated * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'});
-  const end = live ? '' : row.paused && row.playing ? ` · paused${partsOf(row).length ? '' : ` at ${clock(row.position)}`}${row.since ? heard ? ` for ${span(now - row.since)}` : row.updated - row.since < 300 ? '' : ` since ${new Date(row.since * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}` : ''}` : row.parts?.split(' ').includes('marked') && Math.max(0, ...partsOf(row).map(([, b]) => b)) < row.duration * 0.9 ? ' · marked as watched' : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
-  const parts = joined(partsOf(row)), seen = row.duration && row.parts ? parts.map(([a, b]) => [a / row.duration * 100, (b - a) / row.duration * 100] as [number, number]) : undefined;
-  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}/${row.started}`, stamp: row.updated, personId: row.person, title: row.title, detail: row.detail + end, parts: seen, mark: row.duration ? Math.min(100, row.position / row.duration * 100) : undefined, ranges: parts.map(([a, b], n) => `${parts.length > 1 && row.started >= ORDERED ? `${nth(n + 1)} · ` : ''}${clock(a)}–${clock(b)}`), line: lineOf(row, parts), progress: heard || (share && share < 90) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
+  const end = live ? '' : row.paused && row.playing ? ` · paused${partsOf(row).length && !row.over ? '' : ` at ${clock(row.position)}`}${row.since ? heard ? ` for ${span(now - row.since)}` : row.updated - row.since < 300 ? '' : ` since ${new Date(row.since * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}` : ''}` : row.over ? (ticked(row) && !partsOf(row).length ? ' · marked as watched' : finishedLong(row) ? ' · finished' : row.position ? ` · stopped at ${clock(row.position)}` : '')
+    : ticked(row) && Math.max(0, ...partsOf(row).map(([, b]) => b)) < row.duration * 0.9 ? ' · marked as watched' : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
+  const parts = joined(partsOf(row)), seen = whole && row.parts ? parts.map(([a, b]) => [a / whole * 100, (b - a) / whole * 100] as [number, number]) : undefined;
+  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}/${row.started}`, stamp: row.updated, personId: row.person, title: row.title, detail: row.detail + end, parts: seen, mark: whole ? Math.min(100, row.position / whole * 100) : undefined, ranges: parts.map(([a, b], n) => `${parts.length > 1 && row.started >= ORDERED ? `${nth(n + 1)} · ` : ''}${clock(a)}–${clock(b)}`), line: lineOf(row, parts), longer: row.over ? `Runs longer than listed (${minutes(row.duration)} min)` : undefined, clock: row.over ? clock(row.position) : undefined, progress: heard || (share && (row.over ? !finishedLong(row) : share < 90)) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
     when: heard ? 'Now' : quiet && days === 0 ? `Last heard ${last}` : days > 1 ? at.toLocaleDateString(undefined, {weekday: 'long'}) : at.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'}), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
 }
 /* A title's file fetched by an app with no play to go with it (api.ts): shown as its own entry, as a download. */
@@ -56,7 +65,8 @@ const minutes = (seconds: number) => Math.max(1, Math.round(seconds / 60));
 function lineOf(row: Noted, parts: [number, number][]) {
   const along = [...parts].sort((x, y) => x[0] - y[0]), skipped = along.slice(1).reduce((sum, [a], i) => sum + (a <= row.position ? Math.max(0, a - along[i][1]) : 0), 0);
   if (skipped < 60) return undefined;
-  return `Watched ${minutes(played(parts))}${row.duration ? ` of ${minutes(row.duration)}` : ''} min · skipped ${minutes(skipped)} min`;
+  // (Out of how long is left unsaid for a title that runs longer than listed: the listed length is not it.)
+  return `Watched ${minutes(played(parts))}${row.duration && !row.over ? ` of ${minutes(row.duration)}` : ''} min · skipped ${minutes(skipped)} min`;
 }
 /* 33:28, or 1:02:05 for an hour or more in; and how long something has lasted, roughly. */
 const clock = (seconds: number) => {const s = Math.max(0, Math.round(seconds)), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, rest = String(s % 60).padStart(2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${rest}` : `${m}:${rest}`;};
@@ -106,16 +116,16 @@ function weeks(rows: Noted[], now: number): Week[] {
   for (const row of rows) if (now - row.updated < 7 * 86400) by.set(row.person, [...(by.get(row.person) ?? []), row]);
   return [...by].map(([person, list]) => {
     const count = new Map<string, number>(); for (const row of list) count.set(row.device || 'A player app', (count.get(row.device || 'A player app') ?? 0) + 1);
-    const done = (row: Noted) => row.duration > 0 && row.position / row.duration >= 0.9;
+    const done = (row: Noted) => row.over ? finishedLong(row) : row.duration > 0 && row.position / row.duration >= 0.9;
     return {person, plays: list.length, when: partOf(list.map(row => row.started)), streak: inARow(list, now), titles: new Set(list.map(row => row.item)).size, finished: new Set(list.filter(done).map(row => row.item)).size, devices: count.size, mostly: [...count].sort((a, b) => b[1] - a[1])[0][0], last: Math.max(...list.map(row => row.updated)),
-      seconds: list.reduce((sum, row) => sum + (row.parts ? played(partsOf(row)) : done(row) ? row.duration : row.duration ? Math.min(row.position, row.duration) : row.position), 0)};
+      seconds: list.reduce((sum, row) => sum + (row.parts ? played(partsOf(row)) : done(row) ? row.over || row.duration : row.duration && !row.over ? Math.min(row.position, row.duration) : row.position), 0)};
   }).sort((a, b) => b.seconds - a.seconds);
 }
 const hours = (seconds: number) => seconds < 3600 ? `${Math.max(1, Math.round(seconds / 60))} min` : `about ${Math.round(seconds / 3600)} h`;
 /* How far in, or, once parts are kept, only the parts played, with a mark where it was left. Shown for past plays too. */
 function Bar({play}: {play: Play}) {
   // Each part played names its times in a small tooltip, when pointed at or tapped (a tap focuses it on a phone).
-  return <span className="bar" role="progressbar" aria-valuenow={play.progress} aria-valuemin={0} aria-valuemax={100} aria-label={play.parts ? `${Math.round(play.parts.reduce((sum, [, width]) => sum + width, 0))}% watched, now at ${play.progress}%` : `${play.progress}% watched`}>
+  return <span className="bar" role="progressbar" aria-valuenow={play.progress} aria-valuemin={0} aria-valuemax={100} aria-label={play.clock ? `Now at ${play.clock}` : play.parts ? `${Math.round(play.parts.reduce((sum, [, width]) => sum + width, 0))}% watched, now at ${play.progress}%` : `${play.progress}% watched`}>
     {play.parts ? <>{play.parts.map(([left, width], index) => <i key={left} className="part" tabIndex={play.ranges?.[index] ? 0 : undefined} data-time={play.ranges?.[index]} style={{left: `${left}%`, width: `${width}%`}}/>)}{play.mark !== undefined && <b style={{left: `${play.mark}%`}}/>}</> : <i style={{width: `${play.progress}%`}}/>}</span>;
 }
 /* The title's own picture, as the player apps show it. */
@@ -149,18 +159,18 @@ export function Activity({hub, personId, groupId, pick, toast, live}: {hub: Hub;
         <div><strong>{name(week.person)}</strong><small>{week.titles} {week.titles === 1 ? 'title' : 'titles'} · {hours(week.seconds)}{week.finished ? ` · ${week.finished} finished` : ''}{week.plays > 1 ? ` · pressed play ${week.plays} times` : ''}{week.when ? `, mostly ${week.when}` : ''}</small>{week.streak && <small>{week.streak}</small>}<small className="on-device">Mostly on {week.mostly}{week.devices > 1 ? ` · ${week.devices} devices` : ''}</small></div></li>)}</ul></>;
     })()}
     {!!now.length && <><h2 className="sub">Watching now</h2><ul className="now">{now.map(play => <li key={play.id}>{play.art ? <Picture url={play.art}/> : <Posters seed={play.title}/>}<div className="now-text">
-      <button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small>{play.line && <small>{play.line}</small>}<small className="on-device">{play.on}<Where where={play.where}/>{atOnce(play.personId) > 1 ? ` · watching on ${atOnce(play.personId)} devices` : ''}</small>
+      <button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small>{play.line && <small>{play.line}</small>}{play.longer && <small>{play.longer}</small>}<small className="on-device">{play.on}<Where where={play.where}/>{atOnce(play.personId) > 1 ? ` · watching on ${atOnce(play.personId)} devices` : ''}</small>
       <Bar play={play}/></div></li>)}</ul></>}
     {days.map(day => {
       const items = plays.filter(play => play.day === day && play.when !== 'Now');
       return items.length ? <div key={day}><h2 className="sub">{day}</h2><ul className="feed plays">{items.map(play => <li key={play.id}>
         {/* The title's picture everywhere; whose it is is in the line (text, above). */}<span className="thumb">{play.art ? <Picture url={play.art}/> : <Posters seed={play.title}/>}</span>
-        <div><button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small>{play.line && <small>{play.line}</small>}<small className="on-device">{play.on}<Where where={play.where}/></small></div><time>{play.when}</time>{play.parts && <Bar play={play}/>}</li>)}</ul></div> : null;
+        <div><button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small>{play.line && <small>{play.line}</small>}{play.longer && <small>{play.longer}</small>}<small className="on-device">{play.on}<Where where={play.where}/></small></div><time>{play.when}</time>{play.parts && <Bar play={play}/>}</li>)}</ul></div> : null;
     })}
     <p className="muted small foot">Each time a title is watched, it gets its own entry, with the parts played. Carrying on after half an hour away counts as another time.{plays.some(play => play.down) ? ' A title saved to a device to watch later shows as downloaded.' : ''}</p>
     {title && <Sheet title={title} onClose={() => setTitle(null)}>
       <p className="muted sheet-lead">Who watched it</p>
-      <ul className="feed">{all.filter(play => play.title === title).map(play => <li key={play.id}><Avatar name={name(play.personId)} size={36}/><div><strong>{name(play.personId)}</strong><small>{play.when === 'Now' ? `${play.detail} · watching now, ${play.progress}% in` : play.detail}</small><small className="on-device">{play.on}</small></div><time>{play.when === 'Now' || play.when.startsWith('Last heard') ? play.when : `${play.day === 'Earlier this week' ? '' : play.day + ' '}${play.when}`}</time></li>)}</ul>
+      <ul className="feed">{all.filter(play => play.title === title).map(play => <li key={play.id}><Avatar name={name(play.personId)} size={36}/><div><strong>{name(play.personId)}</strong><small>{play.when === 'Now' ? `${play.detail} · watching now, ${play.clock ? `at ${play.clock}` : `${play.progress}% in`}` : play.detail}</small><small className="on-device">{play.on}</small></div><time>{play.when === 'Now' || play.when.startsWith('Last heard') ? play.when : `${play.day === 'Earlier this week' ? '' : play.day + ' '}${play.when}`}</time></li>)}</ul>
     </Sheet>}
   </section>;
 }

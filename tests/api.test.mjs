@@ -59,6 +59,8 @@ http.createServer(async (request, answer) => {
   if (fake.refuseAll || token !== fake.valid) return send(401, {});
   if (request.url.includes('/Items/film-9')) return send(200, {Name: 'Paper Kites', Type: 'Movie', RunTimeTicks: 3000 * 1e7});
   if (request.url.includes('/Items/ep-7')) return send(200, {Name: 'The One With The Test', Type: 'Episode', SeriesName: 'Harbor Lights', SeriesId: 'show-3', ParentIndexNumber: 2, IndexNumber: 4, RunTimeTicks: 3000 * 1e7});
+  // Listed at 11 minutes; its file holds more (two segments), as the reports for it below show.
+  if (request.url.includes('/Items/ep-short')) return send(200, {Name: 'Two Shorts', Type: 'Episode', SeriesName: 'Tiny Tales', SeriesId: 'show-4', ParentIndexNumber: 1, IndexNumber: 2, RunTimeTicks: 660 * 1e7});
   if (request.url.startsWith('/jellyfin/Sessions/Playing')) return send(204, {});
   send(200, {Id: 'upstream-user-id', Name: 'x', Via: 'http://127.0.0.1:8798/jellyfin/thing'});
 }).listen(8798, '127.0.0.1').unref();
@@ -430,6 +432,50 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   await stranger('POST', `${at}/Sessions/Playing`, {ItemId: 'film-9', PositionTicks: 0}, {authorization: `${tv.authorization}, Token="${onTv.body.AccessToken}"`});
   let elsewhere; for (let i = 0; i < 30 && (elsewhere = await sittings()).length < 4; i++) await new Promise(done => setTimeout(done, 100));
   assert.deepEqual([elsewhere.length, elsewhere[0].device, elsewhere[0].parts], [4, 'TV App · Living room', '0-0']);
+  // A file that runs longer than its listing: an episode listed at 660 seconds. A report past the listed length by more than the
+  // margin (30 seconds, or 5% of it if that is more: 33 here) says so. From then on the furthest second any report reached is
+  // kept with the title (`over`), parts are no longer cut off at the listed length, and each new sitting keeps how far the title
+  // had been reached before it began (`reached`). The listed length stays as it was.
+  const short = () => sql("SELECT * FROM sittings WHERE item = 'ep-short' ORDER BY updated DESC"), title = () => sql("SELECT position, duration, parts, over FROM plays WHERE item = 'ep-short'")[0];
+  const longOnes = async () => (await owner('GET', '/api/activity')).body.sittings.filter(row => row.item === 'ep-short');
+  const runs = async (path, body, seconds) => {
+    const sent = Math.floor(Date.now() / 1000); await ago(path, {ItemId: 'ep-short', ...body}, seconds);
+    for (let i = 0; i < 30; i++) {const row = short()[0]; if (row && row.updated >= sent - seconds - 1) return row; await new Promise(done => setTimeout(done, 100));}
+    assert.fail(`a report from ${seconds} s ago was not noted`);
+  };
+  // What the page goes by for such a title (src/activity.tsx): finished only from 95% of where earlier sittings got to.
+  const finished = row => row.reached > 0 && row.position >= row.reached * 0.95;
+  await runs('/Sessions/Playing', {PositionTicks: 0}, 9000); await runs('/Sessions/Playing/Progress', {PositionTicks: 600e7}, 8400);
+  // Half a minute past the listed end is within the margin: the listing still stands, and the part ends where it does.
+  assert.equal((await runs('/Sessions/Playing/Progress', {PositionTicks: 690e7}, 8310)).parts, '0-660'); assert.deepEqual(title(), {position: 690, duration: 660, parts: '0-660', over: 0});
+  assert.ok((await longOnes()).every(row => !('over' in row) && !('reached' in row)), 'nothing more is sent for it until then');
+  // Past the margin: flagged, and what is played from here on is kept whole. (What was cut off before it was known stays so.)
+  assert.equal((await runs('/Sessions/Playing/Progress', {PositionTicks: 755e7}, 8245)).parts, '0-660 690-755'); assert.deepEqual(title(), {position: 755, duration: 660, parts: '0-660 690-755', over: 755});
+  // Paused there. Activity gets what it needs to draw it against the furthest point reached and say where it is as a time; the
+  // first sitting to pass the listed length cannot know where the end is, so it never reads as finished, paused or stopped.
+  await runs('/Sessions/Playing/Progress', {PositionTicks: 755e7, IsPaused: true}, 8240);
+  const [paused] = await longOnes();
+  assert.deepEqual({...paused, started: 0, updated: 0, since: 0}, {person: 'ada', item: 'ep-short', started: 0, title: 'Tiny Tales', detail: 'Season 1 · Episode 2', position: 755, duration: 660, device: 'Test · Living room', playing: 1, paused: 1, since: 0, updated: 0, art: 'show-4', place: '', net: '', parts: '0-660 690-755', pauses: 0, idle: 0, over: 755, reached: 0});
+  const opened = await runs('/Sessions/Playing/Stopped', {PositionTicks: 755e7}, 8200);
+  assert.deepEqual([opened.position, opened.reached, finished(opened)], [755, 0, false]);
+  // Watched again later and left halfway: not finished (against the listed length, 400 of 660 was not either; 600 would have been).
+  // The title's own parts start over, as for any rewatch of something left at its end.
+  await runs('/Sessions/Playing', {PositionTicks: 0}, 6000); await runs('/Sessions/Playing/Progress', {PositionTicks: 400e7}, 5600);
+  const half = await runs('/Sessions/Playing/Stopped', {PositionTicks: 400e7}, 5590);
+  assert.deepEqual([half.parts, half.reached, finished(half)], ['0-400', 755, false]); assert.notEqual(half.started, opened.started); assert.deepEqual(title(), {position: 400, duration: 660, parts: '0-400', over: 755});
+  // Carried on another time and stopped near the furthest point an earlier sitting reached: finished. Past the listed end, whole.
+  await runs('/Sessions/Playing', {PositionTicks: 400e7}, 3000); await runs('/Sessions/Playing/Progress', {PositionTicks: 740e7}, 2660);
+  const whole = await runs('/Sessions/Playing/Stopped', {PositionTicks: 745e7}, 2650);
+  assert.deepEqual([whole.parts, whole.reached, finished(whole), title().over], ['400-745', 755, true, 755]);
+  // A later sitting goes further still (the second segment): the furthest point moves on with it, and the sittings before keep
+  // what was known when they began. It got past where earlier ones had, so it reads as finished.
+  await runs('/Sessions/Playing', {PositionTicks: 700e7}, 600); await runs('/Sessions/Playing/Progress', {PositionTicks: 1041e7}, 200);
+  const further = await runs('/Sessions/Playing/Stopped', {PositionTicks: 1041e7}, 190);
+  assert.deepEqual([further.parts, further.reached, finished(further)], ['700-1041', 755, true]); assert.deepEqual(title(), {position: 1041, duration: 660, parts: '0-1041', over: 1041});
+  assert.deepEqual((await longOnes()).map(row => [row.position, row.over, row.reached, row.duration]), [[1041, 1041, 755, 660], [745, 1041, 755, 660], [400, 1041, 755, 660], [755, 1041, 0, 660]]);
+  // Only for the person who played it, and nothing changes for a title that never passed its listed length.
+  assert.deepEqual(sql('SELECT item, over FROM plays WHERE over > 0'), [{item: 'ep-short', over: 1041}]); assert.equal(sql("SELECT count(*) AS n FROM sittings WHERE item != 'ep-short' AND reached != 0")[0].n, 0);
+  assert.ok((await owner('GET', '/api/activity')).body.sittings.filter(row => row.item !== 'ep-short').every(row => !('over' in row) && !('reached' in row)));
   // A title's file fetched with no play to go with it shows on Activity as a download; one that goes with a sitting, however short, does not.
   const pull = (path, ago = 0) => stranger('GET', `${at}${path}`, undefined, {...app(first.body.AccessToken), 'x-test-ago': String(ago)});
   const downs = async () => (await owner('GET', '/api/activity')).body.downloads, rows = n => {for (let i = 0; i < 30 && sql('SELECT count(*) AS n FROM fetches WHERE title IS NOT NULL')[0].n < n; i++) execFileSync('sleep', ['0.1']);};

@@ -550,6 +550,33 @@ await owner.goto(BASE + '/#/activity'); await where(owner); await owner.getByRol
 // The same on a wide screen, folded and unfolded.
 await owner.setViewportSize({width: 1280, height: 800}); await owner.reload(); await owner.mouse.move(0, 0); await where(owner);
 assert.equal((await lineUp(owner)).wrapped, false, 'on a wide screen the place stays on the device line'); await owner.getByRole('button', {name: 'Where'}).click(); await owner.mouse.move(0, 0); await shot(owner, '16b-activity-where-wide');
+// A title whose file runs longer than its listing (11 minutes listed, reports up to 17:21): four sittings, made in the local database
+// as above. The first got past the listed end, so nothing said where the end was: stopped. Of the later ones (which began knowing
+// the furthest point reached), one got near it (finished), one stopped halfway (stopped), and one sits paused now. Each bar is
+// drawn against the furthest point reached, where it is is a time, and one quiet line says the listing is short.
+const weekOf = async page => {const line = await page.locator('.feed li', {hasText: 'Ada'}).first().textContent(); return {titles: Number(/(\d+) titles?/.exec(line)?.[1] ?? 0), finished: Number(/(\d+) finished/.exec(line)?.[1] ?? 0)};};
+const weekBefore = await weekOf(owner), T = "CAST(strftime('%s', 'now') AS INTEGER)";
+execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', `INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, paused, since, updated, art, parts, over) SELECT id, 'ada', 'long-1', 'Tiny Tales', 'Season 1 · Episode 2', 755, 660, 'Strand · iPad', 1, 1, ${T} - 120, ${T}, '', '0-1041', 1041 FROM hubs;
+  INSERT INTO sittings (hub, person, item, started, device, position, playing, paused, since, updated, parts, reached) SELECT id, 'ada', 'long-1', ${T} - 13000, 'Strand · iPad', 1041, 0, 0, ${T} - 11900, ${T} - 11900, '0-1041', 0 FROM hubs;
+  INSERT INTO sittings (hub, person, item, started, device, position, playing, paused, since, updated, parts, reached) SELECT id, 'ada', 'long-1', ${T} - 9000, 'Strand · iPad', 1030, 0, 0, ${T} - 8200, ${T} - 8200, '300-1030', 1041 FROM hubs;
+  INSERT INTO sittings (hub, person, item, started, device, position, playing, paused, since, updated, parts, reached) SELECT id, 'ada', 'long-1', ${T} - 5000, 'Strand · iPad', 520, 0, 0, ${T} - 4400, ${T} - 4400, '0-520', 1041 FROM hubs;
+  INSERT INTO sittings (hub, person, item, started, device, position, playing, paused, since, updated, parts, reached) SELECT id, 'ada', 'long-1', ${T} - 900, 'Strand · iPad', 755, 1, 1, ${T} - 120, ${T}, '0-755', 1041 FROM hubs`], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
+await owner.reload(); await owner.mouse.move(0, 0); await owner.getByText('Tiny Tales').first().waitFor();
+const long = owner.locator('li', {hasText: 'Tiny Tales'}), pausedLong = owner.locator('ul.now li', {hasText: 'Tiny Tales'});
+assert.equal(await long.count(), 4, 'each sitting is its own entry'); assert.equal(await long.getByText('Runs longer than listed (11 min)').count(), 4);
+assert.match(await pausedLong.textContent(), /Season 1 · Episode 2 · paused at 12:35 for \d+ min/); assert.doesNotMatch(await pausedLong.textContent(), /%|finished/);
+// Paused at 12:35 of the 17:21 reached so far: the bar is filled to there and no further, with its mark at the same place.
+const drawn = await pausedLong.locator('.bar').evaluate(bar => {const all = bar.getBoundingClientRect(), part = bar.querySelector('.part').getBoundingClientRect(), mark = bar.querySelector('b').getBoundingClientRect(); return {filled: part.width / all.width, mark: (mark.left + mark.width / 2 - all.left) / all.width, label: bar.getAttribute('aria-label')};});
+assert.ok(Math.abs(drawn.filled - 755 / 1041) < 0.01 && Math.abs(drawn.mark - 755 / 1041) < 0.01, JSON.stringify(drawn)); assert.equal(drawn.label, 'Now at 12:35');
+const past = await owner.locator('ul.plays li', {hasText: 'Tiny Tales'}).evaluateAll(items => items.map(item => item.querySelector('small').textContent.replace(/^.*Episode 2/, '')));
+assert.deepEqual(past, [' · stopped at 8:40', ' · finished', ' · stopped at 17:21'], 'newest first: halfway, near the furthest point an earlier sitting reached, and the first to pass the listed end');
+// This week counts it once as a title, and as finished once (by the sitting that got near the end, not by 90% of the listed length).
+assert.deepEqual(await weekOf(owner), {titles: weekBefore.titles + 1, finished: weekBefore.finished + 1});
+if (shots) {
+  await pausedLong.scrollIntoViewIfNeeded(); await pausedLong.screenshot({path: `${shots}/real-16d-activity-longer-paused-wide.png`}); await shot(owner, '16d-activity-longer-page-wide');
+  await owner.setViewportSize({width: 390, height: 844}); await owner.waitForTimeout(300); await pausedLong.scrollIntoViewIfNeeded(); await pausedLong.screenshot({path: `${shots}/real-16d-activity-longer-paused-phone.png`}); await shot(owner, '16d-activity-longer-page-phone');
+  await owner.setViewportSize({width: 1280, height: 800});
+}
 await credit(owner); assert.equal(await owner.getByText('Test build').count(), 0, 'no test-build banner');
 await owner.goto(BASE + '/#/hub/general'); await owner.getByRole('heading', {name: 'Background work'}).waitFor(); await shot(owner, '16c-general-wide'); await owner.setViewportSize({width: 390, height: 844});
 
