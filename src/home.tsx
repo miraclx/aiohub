@@ -35,7 +35,7 @@ function nextOf(times?: Times) {
 /* A place's line on a person's own Home, under "For you": today's pick, then when it changes, that it is kept, or why a stand-in. */
 function pickOf(name: string, kind: string, times?: Times, kept?: boolean) {
   const next = nextOf(times);
-  return `Today: ${name} · ${kept ? 'kept' : kind === 'popular' ? 'until there’s more to go on' : next === undefined ? 'picks again each day' : next ? `picks again ${dayOf(next)}` : 'picks again soon'}`;
+  return `Today: ${name} · ${kept ? 'kept' : kind === 'popular' ? 'until there’s more to go on' : next === undefined ? 'picks again each day' : next ? `picks again ${atOf(next)}` : 'picks again soon'}`;
 }
 /* The same in the row's sheet, in a sentence. */
 function againOf(times?: Times) {

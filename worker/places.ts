@@ -110,8 +110,10 @@ async function pointsBoth(env: Env, hub: string, person: string): Promise<{lines
   if (!Array.isArray(trakt)) return NO_ANSWER.trakt;
   const onLists = new Map((theirs.body as TraktPoint[]).map(point => [pointKey(point), point])), onTrakt = new Map(trakt.map(point => [pointKey(point), point]));
   const points: (Omit<Incoming, 'id'> & {to: 'trakt' | 'lists'})[] = [];
+  // A spot already sent to Trakt is not offered again: Trakt's list is kept a few minutes, and its copy goes through the outbox.
+  const sentTrakt = await ledger(env, hub, person, 'trakt');
   let same = 0;
-  for (const [key, point] of onLists) {if (!key) continue; if (onTrakt.has(key)) {same++; continue;} const play = fromPoint(point); if (play) points.push({...play, key: `pm:${key}`, to: 'trakt'});}
+  for (const [key, point] of onLists) {if (!key) continue; if (onTrakt.has(key)) {same++; continue;} const play = fromPoint(point); if (play && sentTrakt.has(`pm:${key}@${play.at}`)) same++; else if (play) points.push({...play, key: `pm:${key}`, to: 'trakt'});}
   for (const [key, point] of onTrakt) {if (!key || onLists.has(key)) continue; const play = fromPoint(point); if (play) points.push({...play, key: `pt:${key}`, to: 'lists'});}
   return {points, same, lines: points.map(point => ({key: point.key, title: point.title, detail: detail(point.season, point.episode), at: point.at, pct: point.pct, here: 'none', trakt: point.to === 'trakt' ? 'add' : 'has', lists: point.to === 'lists' ? 'add' : 'has'}))};
 }

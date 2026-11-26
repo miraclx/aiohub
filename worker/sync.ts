@@ -13,9 +13,9 @@
    Workers Free allows about fifty outside calls per run, so a cron pass writes a few titles and leaves the rest for the next. */
 import type {Env} from './util';
 import {getSecret, now} from './util';
-import {LINK, read} from './trakt';
+import {LINK, read, traktWait} from './trakt';
 import type {Link, Target} from './trakt';
-import {NO_ANSWER, NO_SETUP, carry, history, ledger, mdblist, pointKey, remember} from './carry';
+import {NO_ANSWER, NO_SETUP, carry, history, ledger, mdblist, pointKey, remember, traktPoints} from './carry';
 import type {Failed, TraktPoint} from './carry';
 import {SAME, mdblistPlays, skippedOf, traktPlays} from './drift';
 import {BUDGET, NEAR, SPAN, fromPoint, lacking, listsPause, quiet, sentKey, tickHere, where} from './places';
@@ -49,7 +49,7 @@ async function ownSends(env: Env, hub: string, person: string, from: number) {
 type Into = {added: number; more: boolean; calls: number};
 /* Trakt's plays and paused spots since these times (null: that kind did not move) into the person's home, less what the hub sent
    and what was sent there before. `budget`: how many calls their server may take. */
-export async function toHome(env: Env, hub: string, person: string, since: {w: number | null; p: number | null}, lists: boolean, budget: number): Promise<Into | (Failed & {calls: number})> {
+export async function toHome(env: Env, hub: string, person: string, since: {w: number | null; p: number | null}, lists: boolean, budget: number, moved = 0): Promise<Into | (Failed & {calls: number})> {
   let calls = 0, more = false;
   const titles: Parameters<typeof traktPlays>[6] = {}, plays: Omit<Incoming, 'id'>[] = [];
   const own = await ownSends(env, hub, person, Math.min(since.w ?? Infinity, since.p ?? Infinity) - SAME), ours = (key: string, at: number, slack: number) => (own.get(key) ?? []).some(sent => Math.abs(sent - at) <= slack);
@@ -67,7 +67,7 @@ export async function toHome(env: Env, hub: string, person: string, since: {w: n
     }
   }
   if (since.p != null) {
-    const got = await read<TraktPoint[]>(env, hub, person, '/sync/playback'); calls++;
+    const got = await traktPoints(env, hub, person, moved); calls++;
     if (!Array.isArray(got)) return {...NO_ANSWER.trakt, calls};
     for (const point of got) {
       const at = secs(point.paused_at), key = pointKey(point), play = fromPoint(point);
@@ -161,7 +161,7 @@ export async function match(env: Env, time: number): Promise<boolean> {
   if (!activity || typeof activity !== 'object') {
     // Trakt turned the hub away, or their login lapsed: asked again in an hour, and nobody else this run.
     const link = await getSecret<Link>(env, hub, person, LINK);
-    await failed(!link || link.again ? NOT_SIGNED_IN : NO_ANSWER.trakt.error, at + WAIT - EVERY);
+    await failed(!link || link.again ? NOT_SIGNED_IN : NO_ANSWER.trakt.error, (await traktWait(env, hub, person) || at + WAIT) - EVERY);
     return false;
   }
   const current = stampsOf(activity), kept = who.stamps ? JSON.parse(who.stamps) as Stamps : null;
@@ -179,7 +179,7 @@ export async function match(env: Env, time: number): Promise<boolean> {
   // Nothing moved since the last good look: nothing else is read.
   const span = at - SPAN, since = {w: !kept ? span : current.w > kept.w ? kept.w : null, p: !kept ? span : current.p > kept.p ? kept.p : null};
   if (since.w == null && since.p == null) {await good(current); return false;}
-  const got = await toHome(env, hub, person, since, !!who.lists, WRITES);
+  const got = await toHome(env, hub, person, since, !!who.lists, WRITES, current.p);
   if ('error' in got) {await failed(got.error); return got.calls > CHEAP;}
   // More than a pass holds: they are due again next run, from the same stamps (what was sent is not sent twice).
   if (got.more) await set('good = ?, checked = ?, failing = NULL, why = NULL', at, at - EVERY);

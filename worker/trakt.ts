@@ -99,15 +99,34 @@ async function attempt(env: Env, hub: string, person: string, path: string, body
   return {status: answer?.status ?? 0, after: Math.min(3600, Number(answer?.headers.get('retry-after')) || 0)};
 }
 export const send = async (env: Env, hub: string, person: string, path: string, body: unknown) => (await attempt(env, hub, person, path, body)).status;
+/* Until when Trakt asked the hub to wait before reading anything more of this person's (its 429 and Retry-After, kept by hub and
+   person), or 0 when it did not. Every read honours it, so one refusal is not followed by more from the cron, a row or an open page. */
+const WAITING = 'trakt-wait', clear = new Map<string, number>(), CLEAR = 5;
+export async function traktWait(env: Env, hub: string, person: string): Promise<number> {
+  // "Not waiting" is remembered for a few seconds, so a run of reads (a person's lists, one after another) asks the database once:
+  // a Worker may make only so many queries a run.
+  const who = `${hub}/${person}`, time = now();
+  if (time - (clear.get(who) ?? 0) < CLEAR) return 0;
+  const row = await env.DB.prepare('SELECT at FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, person, WAITING).first<{at: number}>();
+  if (row && row.at > time) return row.at;
+  if (clear.size > 500) clear.clear();
+  clear.set(who, time);
+  return 0;
+}
 /* One read as this person, renewed and retried like `send`. null when not connected, Trakt wants connecting again, or it did not answer.
    `paging`, when given, is told how many pages Trakt says the list has. */
 export async function read<T>(env: Env, hub: string, person: string, path: string, paging?: {pages: number}): Promise<T | null> {
+  if (await traktWait(env, hub, person)) return null;
   let token = await access(env, hub, person);
   if (!token) return null;
   const get = (access: string) => fetch(api(env) + path, {headers: head(env, access)}).catch(() => null);
   let answer = await get(token);
   if (answer?.status === 401) {token = await access(env, hub, person, token); if (!token) return null; answer = await get(token);}
   if (!answer?.ok) console.error('trakt read', path.split('?')[0], answer?.status ?? 0, answer?.headers.get('x-ratelimit') ?? '', answer?.headers.get('retry-after') ?? '');
+  // Told to wait: nothing of theirs is read again before then, whoever asks.
+  if (answer?.status === 429) clear.delete(`${hub}/${person}`);
+  if (answer?.status === 429) await env.DB.prepare("INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, ?, '') ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at")
+    .bind(hub, person, WAITING, now() + Math.min(3600, Math.max(30, Number(answer.headers.get('retry-after')) || 120))).run();
   if (paging && answer?.ok) paging.pages = Number(answer.headers.get('x-pagination-page-count')) || 0;
   return answer?.ok ? await answer.json().catch(() => null) as T | null : null;
 }

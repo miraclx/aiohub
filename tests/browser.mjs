@@ -87,7 +87,7 @@ const job = name => work.locator('.job', {has: owner.getByRole('heading', {name,
 await job('Trakt sync').getByText('For everyone every 5 min; for one person as they play', {exact: true}).waitFor();
 await job('Trakt sync').getByText(/^Ran today at \d/).waitFor(); await job('Trakt sync').getByText(/^next run in \d min$/).waitFor();
 await job('Trakt matching').getByText('For everyone, each person every 20 min; for one person at once when they turn it on', {exact: true}).waitFor(); await job('Trakt matching').getByText('Nobody has it on yet').waitFor(); await job('Trakt matching').getByText('once someone turns it on').waitFor();
-await job('Trakt and MDBList check').getByText(/^For everyone every day at \d.+; for one person when they press Check again$/).waitFor(); await job('Trakt and MDBList check').getByText('Not run yet').waitFor(); await job('Trakt and MDBList check').getByText(/^next run (today|tomorrow)$/).waitFor();
+await job('Trakt and MDBList check').getByText(/^For everyone every day at \d[^;]+$/).waitFor(); await job('Trakt and MDBList check').getByText('Not run yet').waitFor(); await job('Trakt and MDBList check').getByText(/^next run (today|tomorrow)$/).waitFor();
 await work.scrollIntoViewIfNeeded(); await shot(owner, '5b-background');
 // Advanced: behind the password again, then one line a setup, grouped, its keys folded away until asked for.
 const advanced = owner.locator('section', {has: owner.getByRole('heading', {name: 'Advanced'})});
@@ -495,7 +495,7 @@ for (const path of ['**/api/people/ada/foryou/*', '**/api/people/ada/shelf']) aw
 await guest.reload(); const rowOf = title => guest.locator('.rows .row', {has: guest.locator('h3, p', {hasText: new RegExp(`^(Today: )?${title}`)})});
 await rowOf('My Trakt lists').getByText(/^Trakt · Lists checked (yesterday )?at .+ · next check (today|tomorrow)$/).waitFor();
 // A For you row is headed For you; its line says what it holds today and when it picks again, or that it is kept.
-await rowOf('Because you watched Inception').getByText(/^Today: Because you watched Inception · picks again (today|tomorrow|soon)$/).waitFor();
+await rowOf('Because you watched Inception').getByText(/^Today: Because you watched Inception · picks again (at \d.+|tomorrow at \d.+|soon)$/).waitFor();
 await rowOf('Next in The Dark Knight').getByText('Today: Next in The Dark Knight · kept', {exact: true}).waitFor();
 await rowOf('Popular movies lately').getByText('Today: Popular movies lately · until there’s more to go on', {exact: true}).waitFor();
 assert.deepEqual(await guest.locator('.rows .row', {has: guest.locator('p', {hasText: /^Today: /})}).locator('h3').allTextContents(), ['For you', 'For you', 'For you']);

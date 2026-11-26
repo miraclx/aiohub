@@ -61,6 +61,9 @@ const HELD = {
 // writes away with a 429, as Trakt's Cloudflare does to the shared addresses Workers call from; `refuseReads` does it to reads.
 // `activity`: what Trakt's /sync/last_activities says changed last (sync.ts reads it first).
 const trakt = {activity: {movies: {watched_at: '2020-01-01T00:00:00.000Z', paused_at: '2020-01-01T00:00:00.000Z'}, episodes: {watched_at: '2020-01-01T00:00:00.000Z', paused_at: '2020-01-01T00:00:00.000Z'}}, history: [], playback: null, watchlist: null, calls: [], reads: [], issued: 0, valid: new Set(), refresh: '', expiresIn: 7 * 86400, refreshed: [], revoked: [], stop: 201, refuse: 0, refused: [], refuseReads: false};
+// The hub keeps Trakt's paused list a few minutes: a test that changes the list has the kept one forgotten, as if time had passed.
+let paused = null;
+Object.defineProperty(trakt, 'playback', {get: () => paused, set: value => {paused = value; try {sql("DELETE FROM rows_cache WHERE kind = 'playback'");} catch { /* before the database is there */ }}});
 // What Ada's Trakt holds, for the rows the hub serves: a watchlist with a film, a show (twice: once by an episode) and a film known
 // only by its TMDB id; 45 recommended films; one show with an episode to watch.
 const film = n => ({title: `Film ${n}`, year: 2000, ids: {trakt: n, imdb: `tt${String(9000000 + n)}`, tmdb: 9000 + n}});
@@ -346,6 +349,8 @@ const connect = async () => {
   const got = issue(), linked = await owner('POST', '/api/people/ada/scrobble/link', {access: got.access_token, refresh: got.refresh_token, lasts: got.expires_in, created: got.created_at, username: 'adatrakt', redirect: `${BASE}/api/trakt/callback`});
   assert.equal(linked.status, 200, JSON.stringify(linked.body)); assert.deepEqual(linked.body, {state: 'connected'});
 };
+// Trakt's asking the hub to wait (kept by hub and person after a refused read) is over.
+const waited = () => sql("DELETE FROM rows_cache WHERE kind = 'trakt-wait'");
 const sql = command => JSON.parse(execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--json', '--command', command], {cwd: new URL('..', import.meta.url), encoding: 'utf8', env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: ['ignore', 'pipe', 'ignore']}))[0].results;
 const waiting = () => sql('SELECT kind, path FROM trakt_outbox ORDER BY id');
 // At 03:00 UTC unless told otherwise: before the day's Trakt and MDBList look, which the drift tests run on purpose.
@@ -648,7 +653,7 @@ test('the rows address answers with IMDb ids from her Trakt, page by page, renew
   sql('UPDATE rows_cache SET at = at - 3600'); trakt.refuseReads = true;
   assert.deepEqual((await get(served[0].sourceUrl)).body.metas.map(item => item.id), ['tt0133093', 'tt0944947', 'tmdb:550']); assert.equal(trakt.reads.length, reads + 1);
   assert.equal((await get(served[0].sourceUrl)).body.metas.length, 3); assert.equal(trakt.reads.length, reads + 1);
-  trakt.refuseReads = false;
+  trakt.refuseReads = false; waited();
   // Recently Watched: newest first, films and shows together, a show once however many of its episodes were watched.
   trakt.history = [{watched_at: ago(1), type: 'episode', episode: {season: 1, number: 3}, show: BB}, {watched_at: ago(2), type: 'movie', movie: MOVIE.inception},
     {watched_at: ago(3), type: 'episode', episode: {season: 1, number: 2}, show: BB}, {watched_at: ago(5), type: 'movie', movie: MOVIE.fight}];
@@ -827,7 +832,7 @@ test('her own lists and what her watching suggests are hers alone, from her own 
   await adaSite('GET', '/api/people/ada/lists'); assert.equal(shelfAt(), checked);
   // Trakt not answering is no change.
   sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'lists'"); trakt.refuseReads = true;
-  await adaSite('GET', '/api/people/ada/lists'); trakt.refuseReads = false; assert.equal(shelfAt(), checked);
+  await adaSite('GET', '/api/people/ada/lists'); trakt.refuseReads = false; waited(); assert.equal(shelfAt(), checked);
   // A list renamed on Trakt since: her next visit, with no call of its own to Trakt, has the row worked out again on the next run.
   const mineLists = READS['/users/me/lists']; READS['/users/me/lists'] = [{...mineLists[0], name: 'Heist nights, extended'}];
   sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'lists'"); trakt.reads = [];
@@ -875,6 +880,13 @@ test('the card compares two places and copies across: paused points both ways, a
   const failing = async pair => {forget(); const got = await compare('GET', pair); return [got.status, got.body.message];};
   sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'playback'"); trakt.refuseReads = true;
   assert.deepEqual(await failing('mdblist-trakt'), [503, 'Trakt is busy right now.']); trakt.refuseReads = false;
+  // Trakt said to wait: the answer says until when, her page's state too, and until then nothing of hers is read from Trakt,
+  // whoever asks, even though Trakt would answer again.
+  forget(); const told = await compare('GET', 'mdblist-trakt'), asked = trakt.reads.length;
+  assert.equal(told.status, 503); assert.ok(told.body.until > Date.now() / 1000 && told.body.until < Date.now() / 1000 + 3601, 'until when');
+  forget(); assert.equal((await compare('GET', 'mdblist-trakt')).body.until, told.body.until); assert.equal(trakt.reads.length, asked, 'not asked meanwhile');
+  waited(); forget(); assert.equal((await compare('GET', 'mdblist-trakt')).status, 200, 'and read again once the wait is over');
+  sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'playback'");
   lists.refuse = true; assert.deepEqual(await failing('mdblist-here'), [503, 'MDBList isn’t taking requests from your key right now. If this lasts a day, paste a new key.']); lists.refuse = false;
   // No player setup made for her yet: said as it is, not as if she had watched nothing.
   sql("UPDATE secrets SET kind = 'aside' WHERE owner = 'ada' AND kind = 'upstream-aiom'");
@@ -889,6 +901,8 @@ test('the card compares two places and copies across: paused points both ways, a
   const pauses = fake.pauses.length; assert.deepEqual((await compare('POST', 'mdblist-trakt', {})).body, {added: 2, unmatched: 0, more: false, left: 0, switched: false});
   assert.deepEqual((await heard(1)).map(call => [call.path, call.body]), [['/scrobble/pause', {movie: {ids: MOVIE.inception.ids}, progress: 50}]]);
   assert.deepEqual(fake.pauses.slice(pauses), [{movie: {ids: MOVIE.gump.ids}, progress: 31}]);
+  // Looked at again at once, with both sides still answering as before: what was just sent is not offered again.
+  assert.deepEqual((await compare('GET', 'mdblist-trakt')).body.lines.map(line => line.title), ['Forrest Gump']);
 
   // Moving back Here. Not before she starts it, and not while her setup still passes ticks on to MDBList.
   lists.playback = [{type: 'movie', progress: 50, paused_at: T, movie: MOVIE.inception}]; trakt.playback = [];
@@ -1037,7 +1051,7 @@ test('the cron keeps her matching: one cheap look a turn, real work only when Tr
   assert.equal(fake.positions.length, spots, 'an older spot does not replace hers'); assert.equal(HELD[ALIEN].UserData.Played, true);
   // Trakt not answering: tried again later, quietly; only after three days does her page say so.
   trakt.refuseReads = true; due(); await cron(); trakt.refuseReads = false;
-  const row = sql("SELECT failing, why, checked FROM sync WHERE person = 'ada'")[0]; assert.ok(row.failing > 0); assert.equal(row.why, 'Trakt is busy right now.'); assert.ok(row.checked > Date.now() / 1000, 'asked again in an hour');
+  const row = sql("SELECT failing, why, checked FROM sync WHERE person = 'ada'")[0]; assert.ok(row.failing > 0); assert.equal(row.why, 'Trakt is busy right now.'); assert.ok(row.checked + 1200 > Date.now() / 1000, 'asked again when Trakt says, not before'); waited();
   due(); await cron(); assert.equal(sql("SELECT failing FROM sync WHERE person = 'ada'")[0].failing, null, 'a good look clears it');
 });
 test('with progress in MDBList and matching on, what the daily look finds goes across by itself, through the outbox, once', async () => {

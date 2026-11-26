@@ -205,6 +205,8 @@ async function patiently(ask: () => Promise<Response>, waiting: () => void): Pro
 }
 /* When something was last done, as the page says it: "today at 4:10", or the date. */
 const whenOf = (ms: number) => {const date = new Date(ms), today = new Date().toDateString() === date.toDateString(); return `${today ? 'today' : date.toLocaleDateString(undefined, {day: 'numeric', month: 'short'})} at ${date.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;};
+/* What the page says while Trakt has asked the hub to wait (it says for how long; the hub reads nothing of theirs until then). */
+const toldToWait = (until: number) => `Trakt asked us to wait until ${new Date(until * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}.`;
 const things = (n: number) => `${n} ${n === 1 ? 'thing' : 'things'}`;
 // Three days without a good pass (or a call waiting that long for Trakt) is when matching says it is stuck; a page-open pass runs
 // when the last good one is older than AGAIN_PASS.
@@ -268,10 +270,10 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
         if (!got.more) break;
       }
       if (loud) toast(sent ? `Added ${things(sent)} to Trakt` : 'Trakt and your progress match');
-    } catch (error) {if (loud) toast((error as Error).message);} finally {running.current = false; setCatching(null); await live!.reload();}
+    } catch (error) {const until = (error as {until?: number}).until ?? 0; if (loud) toast(until ? toldToWait(until) : (error as Error).message);} finally {running.current = false; setCatching(null); await live!.reload();}
   };
   // On their own page, with matching on: one round of catching up when the page opens or it is turned on, unless one just ran.
-  useEffect(() => {if (live && mine && on && matching?.on && Date.now() / 1000 - matching.good > AGAIN_PASS) {const total = planned.current; planned.current = 0; void catchUp(false, total);}}, [person.id, matching?.on]);
+  useEffect(() => {if (live && mine && on && matching?.on && Date.now() / 1000 - matching.good > AGAIN_PASS && !((matching.until ?? 0) > Date.now() / 1000)) {const total = planned.current; planned.current = 0; void catchUp(false, total);}}, [person.id, matching?.on]);
   const answer = async (yes: boolean) => {
     setAsking(false);
     try {await live!.call('POST', `/api/people/${person.id}/matching`, {on: yes, earlier: yes && early});} catch (error) {return toast((error as Error).message);}
@@ -304,6 +306,7 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
   const day = (s: number) => new Date(s * 1000).toLocaleDateString(undefined, {weekday: 'long'});
   const status = !on || !matching || consent ? null
     : catching && (catching.total || catching.sent) ? <>Adding {Math.min(catching.sent, catching.total || catching.sent)} of {catching.total || catching.sent} to Trakt. You can keep watching.</>
+    : matching.on && (matching.until ?? 0) > time ? <>{toldToWait(matching.until!)} {mine ? 'Your' : 'Their'} watching is still being saved here.</>
     : matching.on && stuck ? <>{matching.why?.startsWith('MDBList') ? matching.why : `Trakt hasn’t taken updates since ${day(since)}.`} {matching.why && matching.why !== SIGN_IN && !matching.why.startsWith('Trakt is busy') && !matching.why.startsWith('MDBList') ? `${matching.why} ` : ''}{mine ? 'Your' : 'Their'} watching is still being saved here. {mine && <button type="button" className="link small" disabled={!!catching} onClick={() => void catchUp(true)}>Try again</button>}</>
     : matching.on ? <>Matching. {matching.good ? `Last checked ${whenOf(matching.good * 1000)}.` : catching ? 'Catching up now.' : 'First check in a few minutes.'} {mine && <button type="button" className="link small" onClick={() => {setKeep(true); setEarly(matching.earlier); setAsking(true);}}>Change</button>}</>
     : mine ? <>Trakt can stay matched by itself. <button type="button" className="link small" onClick={() => setAsking(true)}>Turn on</button></>
@@ -440,15 +443,15 @@ function Differences({page, person}: {page: PageProps; person: Person}) {
   const [checking, setChecking] = useState(false), shown = !auto || open;
   // Why the last look at a pair failed, kept apart from the last good look so that one stays on show. `wait`: the other side did not
   // answer (or the hub could not be reached), so asking again may work; otherwise something has to change first.
-  const [failed, setFailed] = useState<Record<string, {why: string; wait: boolean}>>({}), failOf = (pair: Pair) => failed[`${whose}/${pair}/${person.v}`];
+  const [failed, setFailed] = useState<Record<string, {why: string; wait: boolean; until: number}>>({}), failOf = (pair: Pair) => failed[`${whose}/${pair}/${person.v}`];
   const lookAt = async (pair: Pair, fresh = false) => {
     const at = `${whose}/${pair}/${person.v}`, ask = () => live!.call<Look>('GET', `/api/people/${person.id}/compare/${pair}${fresh ? '?fresh=1' : ''}`);
     const waits = (error: unknown) => {const status = (error as {status?: number}).status ?? 0; return !status || status === 429 || status >= 500;};
     try {
       // Trakt often turns a busy caller away for a moment: one quiet try more before saying so.
-      const got = await ask().catch(async error => {if (!waits(error)) throw error; await new Promise(done => setTimeout(done, AGAIN_IN)); return ask();});
+      const got = await ask().catch(async error => {if (!waits(error) || (error as {until?: number}).until) throw error; await new Promise(done => setTimeout(done, AGAIN_IN)); return ask();});
       setLooks(was => ({...was, [at]: got})); setFailed(({[at]: _, ...was}) => was);
-    } catch (error) {setFailed(was => ({...was, [at]: {why: (error as Error).message, wait: waits(error)}}));}
+    } catch (error) {setFailed(was => ({...was, [at]: {why: (error as Error).message, wait: waits(error), until: (error as {until?: number}).until ?? 0}}));}
   };
   useEffect(() => {
     if (!live || !shown) return;
@@ -472,8 +475,9 @@ function Differences({page, person}: {page: PageProps; person: Person}) {
   const waiting = want.some(pair => !lookOf(pair) && !failOf(pair));
   const trouble = want.map(failOf).find(Boolean), nothing = want.every(pair => !lookOf(pair)) && !(lists && trakt && found);
   // In the words the page uses for each side not answering; anything else as the hub said it.
-  const reason = trouble && (trouble.why.startsWith('Trakt is busy') ? 'Trakt is busy, so we couldn’t compare just now.' : trouble.why);
-  const why = trouble && <>{reason}{trouble.wait ? ' Your watching is still being saved.' : ''} {recheck('Try again')}</>;
+  const told = !!trouble && trouble.until > Date.now() / 1000;
+  const reason = trouble && (told ? toldToWait(trouble.until) : trouble.why.startsWith('Trakt is busy') ? 'Trakt is busy, so we couldn’t compare just now.' : trouble.why);
+  const why = trouble && <>{reason}{trouble.wait ? ' Your watching is still being saved.' : ''} {!told && recheck('Try again')}</>;
   const kept = lines.filter(line => !out.has(line.key));
   const toTrakt = lines.filter(line => line.trakt === 'add').length, toHome = lines.length - toTrakt, there = lists ? 'your MDBList' : 'this hub';
   const summary = !lines.length ? <>Everything matches.{checkedAt ? ` Checked ${whenOf(checkedAt)}.` : ''} {!trouble && recheck('Check again')}</>
@@ -770,7 +774,7 @@ function Background({hub}: {hub: Hub}) {
     // Each job says what starts it: its times run for everyone in the hub, one person at a time; a play, a change or a press runs
     // for that one person.
     {name: 'Trakt sync', every: 'For everyone every 5 min; for one person as they play', last: `${ran(jobs.last)}${jobs.waiting ? ` · ${jobs.waiting} waiting to send` : ''}`, next: `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
-    {name: 'Trakt and MDBList check', every: `For everyone every day at ${time(start)}; for one person when they press Check again`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next run ${day(daily)}`},
+    {name: 'Trakt and MDBList check', every: `For everyone every day at ${time(start)}`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next run ${day(daily)}`},
     // Trakt matching (worker/sync.ts): in the same five-minute run, one person at a time, each looked at about every 20 minutes.
     ...(hub.scrobble ? [{name: 'Trakt matching', every: 'For everyone, each person every 20 min; for one person at once when they turn it on', last: jobs.matching ? `${ran(jobs.matched ?? null)} · ${jobs.matching} ${jobs.matching === 1 ? 'person' : 'people'}` : 'Nobody has it on yet',
       next: jobs.matching ? `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'once someone turns it on'}] : []),

@@ -1,13 +1,13 @@
 // The site's own API: managers' accounts, the hub they run, and what an invited person may change about themselves.
 // What reaches the streaming server goes through ./native.
-import {carry, mdblist, plan} from './carry';
+import {NO_ANSWER, carry, mdblist, plan} from './carry';
 import {fix, looked, skip, skippedOf} from './drift';
 import {FOR_YOU_KINDS, PICKABLE, defaultAddons, defaultRows, defaultSettings, isPlace, pickable, slug, traktRows} from '../src/data';
 import type {Addon, Hub, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './native';
 import {forgetHub, forgetSeats} from './front';
-import {LINK, answered, brief, disconnect, forgetTrakt, keepLink, links, read} from './trakt';
+import {LINK, answered, brief, disconnect, forgetTrakt, keepLink, links, read, traktWait} from './trakt';
 import type {Link} from './trakt';
 import {pass} from './sync';
 import {rows} from './rows';
@@ -19,7 +19,11 @@ import type {Env} from './util';
 import {blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp, unseal} from './util';
 
 const TAKEN = 'Someone in this hub already has that name';
-class Bad extends Error {constructor(public status: number, message: string) {super(message);}}
+class Bad extends Error {constructor(public status: number, message: string, public until = 0) {super(message);}}
+/* Says why something of a person's could not be done; when Trakt asked the hub to wait, until when, so the page can say the time. */
+const refuse = async (env: Env, hub: string, person: string, got: {error: string; status?: number}): Promise<never> => {
+  throw new Bad(got.status ?? 409, got.error, got.error === NO_ANSWER.trakt.error ? await traktWait(env, hub, person) : 0);
+};
 const bad = (status: number, message: string): never => {throw new Bad(status, message);};
 const reply = (body: unknown, status = 200, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), {status, headers: {'content-type': 'application/json', 'cache-control': 'no-store', ...headers}});
 // AS + person id: a person's session that their manager opened from that person's link, held beside the manager's own (COOKIE), so
@@ -104,8 +108,8 @@ const groupDto = (row: GroupRow) => ({id: row.id, name: row.name, ...(JSON.parse
 // listsKept: they have an MDBList key saved. With progress kept Here it is kept but not used for progress, only to read their lists.
 // matching: whether their Trakt is kept matching their progress (sync.ts), and how that stands: `ask` while they have yet to answer
 // (they connected it themselves), the last good pass, since when it has been failing and why, and since when a call has waited for
-// Trakt (`waiting`). Times only; nothing of what they watched.
-type Matching = {on: boolean; earlier: boolean; ask: boolean; good: number; failing: number | null; why: string | null; waiting: number | null};
+// Trakt (`waiting`), and until when Trakt asked the hub to wait (`until`, 0 when it did not). Times only; nothing of what they watched.
+type Matching = {on: boolean; earlier: boolean; ask: boolean; good: number; failing: number | null; why: string | null; waiting: number | null; until?: number};
 const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null, aiomTrakt: boolean, listsName = '', drift: ReturnType<typeof looked> = null, moving: string | null = null, listsKept = false, played = false, matching: Matching | null = null) => ({
   ready, history, listsName, drift, moving, listsKept, played, matching,
   id: row.id, name: row.name, groupId: row.grp, joined: !!row.joined, paused: !!row.paused, ...(JSON.parse(row.data) as PersonData), v: row.version,
@@ -153,7 +157,7 @@ async function newSession(env: Env, subject: {account: string} | {hub: string; p
 /* ---------- what a page loads ---------- */
 async function state(env: Env, who: Who) {
   const hub = who.hub, data = JSON.parse(hub.data) as HubData, mine = who.person;
-  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, drifts, jobs, plays, picked, shelves, syncs, waits] = await env.DB.batch([
+  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, drifts, jobs, plays, picked, shelves, syncs, waits, tolds] = await env.DB.batch([
     env.DB.prepare('SELECT id, name, data, version FROM groups WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? AND id = ?').bind(hub.id, mine) : env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? AND person = ? ORDER BY seen DESC').bind(hub.id, mine) : env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? ORDER BY seen DESC').bind(hub.id),
@@ -184,6 +188,8 @@ async function state(env: Env, who: Who) {
     // The daily look's own failing counts too (drift.ts): whichever has failed longer is said.
     env.DB.prepare('SELECT y.person, y.matching, y.earlier, y.good, y.failing, y.why, d.failing AS stale, d.why AS staleWhy FROM sync y LEFT JOIN drift d ON d.hub = y.hub AND d.person = y.person WHERE y.hub = ? AND y.person = coalesce(?, y.person)').bind(hub.id, mine ?? null),
     env.DB.prepare('SELECT person, min(made) AS since FROM trakt_outbox WHERE hub = ? AND person = coalesce(?, person) GROUP BY person').bind(hub.id, mine ?? null),
+    // Until when Trakt asked the hub to wait before reading more of theirs (trakt.ts), so the page can say the time.
+    env.DB.prepare("SELECT person, at FROM rows_cache WHERE hub = ? AND kind = 'trakt-wait' AND at > ? AND person = coalesce(?, person)").bind(hub.id, now(), mine ?? null),
   ]);
   const forYou = new Map((picked.results as {person: string; picks: string; pool: string; never: string; at: number}[]).map(row => [row.person, {names: namesOf(row.picks), kinds: kindsOf(row.picks), at: row.at, detail: detailOf(row.picks, row.pool, row.never)}]));
   const shelfAt = new Map((shelves.results as {person: string; at: number}[]).map(row => [row.person, row.at]));
@@ -198,10 +204,11 @@ async function state(env: Env, who: Who) {
   const syncOf = new Map((syncs.results as {person: string; matching: number; earlier: number; good: number; failing: number | null; why: string | null; stale: number | null; staleWhy: string | null}[])
     .map(row => [row.person, row.stale && (!row.failing || row.stale < row.failing) ? {...row, failing: row.stale, why: row.staleWhy} : row]));
   const waitOf = new Map((waits.results as {person: string; since: number}[]).map(row => [row.person, row.since]));
+  const toldOf = new Map((tolds.results as {person: string; at: number}[]).map(row => [row.person, row.at]));
   const matchingOf = (id: string): Matching | null => {
     if (!traktOf[id]) return null;
     const row = syncOf.get(id);
-    return {on: !!row?.matching, earlier: !!row?.earlier, ask: traktOf[id].ask && !row, good: row?.good ?? 0, failing: row?.failing ?? null, why: row?.why ?? null, waiting: waitOf.get(id) ?? null};
+    return {on: !!row?.matching, earlier: !!row?.earlier, ask: traktOf[id].ask && !row, good: row?.good ?? 0, failing: row?.failing ?? null, why: row?.why ?? null, waiting: waitOf.get(id) ?? null, ...(toldOf.has(id) ? {until: toldOf.get(id)} : {})};
   };
   const linked = new Set((ready.results as {owner: string}[]).map(row => row.owner)), playedHere = new Set((plays.results as {person: string}[]).map(row => row.person));
   const persons = people.results as unknown as PersonRow[];
@@ -423,9 +430,9 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     if (request.method === 'GET') return {earlier: link!.since ? (await env.DB.prepare('SELECT count(*) AS n FROM plays WHERE hub = ? AND person = ? AND updated < ?').bind(hub, id, link!.since).first<{n: number}>())?.n ?? 0 : 0};
     if (request.method === 'POST' && rest === 'pass') {
       const got = await pass(env, hub, id, (JSON.parse(row.data) as PersonData).lists);
-      // Read again next time: what was just sent is on the other side now.
-      await env.DB.batch([forgetShown(env, hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'playback'").bind(hub, id)]);
-      return 'error' in got ? bad(got.status ?? 409, got.error) : got;
+      // Looked at again next time: what was just sent is on the other side now.
+      await forgetShown(env, hub, id).run();
+      return 'error' in got ? refuse(env, hub, id, got) : got;
     }
     if (request.method === 'POST' && !rest) {
       // Turned on afresh, the next look goes back two weeks (no stamps kept). `earlier` only goes with it on.
@@ -490,7 +497,7 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     // switch, and only counts come back.
     const pair = oneOf(rest, PAIRS, 'Pair'), moves = request.method === 'POST' && body.switch === true && (pair === 'here-mdblist' || pair === 'mdblist-here');
     if (who.person !== id && !moves) bad(403, 'Only they can do this, from their own page');
-    if (request.method === 'GET') {const got = await shown(env, hub, id, pair, await skippedOf(env, hub, id), new URL(request.url).searchParams.get('fresh') === '1'); return 'error' in got ? bad(got.status ?? 409, got.error) : got;}
+    if (request.method === 'GET') {const got = await shown(env, hub, id, pair, await skippedOf(env, hub, id), new URL(request.url).searchParams.get('fresh') === '1'); return 'error' in got ? refuse(env, hub, id, got) : got;}
     if (request.method !== 'POST') bad(404, 'Not found');
     const leave = who.person === id && Array.isArray(body.leave) ? body.leave.slice(0, 500).map(key => text(key, 200, 'Play')) : [];
     await skip(env, hub, id, leave);
@@ -499,9 +506,9 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     if (switching && !((pair === 'here-mdblist' && kept?.moving === 'mdblist') || (pair === 'mdblist-here' && kept?.moving === 'here'))) bad(409, 'That move isn’t under way. The page has been refreshed.');
     if (pair === 'mdblist-here' && kept?.moving !== 'here') bad(409, 'That move isn’t under way. The page has been refreshed.');
     const got = await copy(env, hub, id, pair, await skippedOf(env, hub, id));
-    // Read again next time: what was just sent is on the other side now.
-    await env.DB.batch([forgetShown(env, hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'playback'").bind(hub, id)]);
-    if ('error' in got) return bad(got.status ?? 409, got.error);
+    // Looked at again next time: what was just sent is on the other side now.
+    await forgetShown(env, hub, id).run();
+    if ('error' in got) return refuse(env, hub, id, got);
     if (!switching || got.more) return {...got, switched: false};
     // Everything is across: the switch itself. Then the page syncs, which turns MDBList's reporting on (or leaves it off).
     const data = await personData(env, hub, id);
@@ -958,7 +965,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     if (first === 'account') return reply(await account(request, env, who, second, third, body, url.origin));
     return reply({message: 'Not found'}, 404);
   } catch (error) {
-    if (error instanceof Bad) return reply({message: error.message}, error.status);
+    if (error instanceof Bad) return reply({message: error.message, ...(error.until ? {until: error.until} : {})}, error.status);
     console.error('api', url.pathname, (error as Error).message);
     return reply({message: 'Something went wrong on our side'}, 500);
   }

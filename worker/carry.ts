@@ -39,12 +39,13 @@ const where = (entry: Entry) => `${entry.kind}/${entry.ids.tmdb}${entry.season !
 export interface TraktPoint {type?: string; progress?: number; paused_at?: string; movie?: {title?: string; ids?: {tmdb?: number | null; imdb?: string | null}}; show?: {title?: string; ids?: {tmdb?: number | null; imdb?: string | null}}; episode?: {season?: number; number?: number}}
 export const pointKey = (point: TraktPoint) => point.type === 'movie' && point.movie?.ids?.tmdb ? `movie/${point.movie.ids.tmdb}` : point.type === 'episode' && point.show?.ids?.tmdb ? `show/${point.show.ids.tmdb}:${point.episode?.season}:${point.episode?.number}` : '';
 /* A person's paused points on Trakt: read at most every ten minutes and kept by hub and person (Trakt often turns away the shared
-   addresses Workers call from, and this list is asked for by every look). When Trakt does not answer, the last one read, if any. */
-export async function traktPoints(env: Env, hub: string, person: string): Promise<TraktPoint[] | null> {
+   addresses Workers call from, and this list is asked for by every look). When Trakt does not answer, the last one read, if any.
+   `after`: when Trakt says the points last changed; a list read before then is not used. */
+export async function traktPoints(env: Env, hub: string, person: string, after = 0): Promise<TraktPoint[] | null> {
   const kept = await env.DB.prepare("SELECT at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind = 'playback'").bind(hub, person).first<{at: number; items: string}>();
-  if (kept && now() - kept.at < 600) return JSON.parse(kept.items) as TraktPoint[];
+  if (kept && now() - kept.at < 600 && kept.at > after) return JSON.parse(kept.items) as TraktPoint[];
   const got = await read<TraktPoint[]>(env, hub, person, '/sync/playback');
-  if (!Array.isArray(got)) return kept ? JSON.parse(kept.items) as TraktPoint[] : null;
+  if (!Array.isArray(got)) return kept && kept.at > after ? JSON.parse(kept.items) as TraktPoint[] : null;
   const slim = got.map(({type, progress, paused_at, movie, show, episode}) => ({type, progress, paused_at, ...(movie ? {movie: {title: movie.title, ids: {tmdb: movie.ids?.tmdb, imdb: movie.ids?.imdb}}} : {}), ...(show ? {show: {title: show.title, ids: {tmdb: show.ids?.tmdb, imdb: show.ids?.imdb}}} : {}), ...(episode ? {episode: {season: episode.season, number: episode.number}} : {})}));
   await env.DB.prepare("INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, 'playback', ?, ?) ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at, items = excluded.items").bind(hub, person, now(), JSON.stringify(slim)).run();
   return slim;

@@ -13,7 +13,7 @@ export interface Live {
   /** Waits until everything on screen has been saved. */
   settled: () => Promise<void>;
 }
-export class Refused extends Error {constructor(public status: number, message: string) {super(message);}}
+export class Refused extends Error {constructor(public status: number, message: string, public until = 0) {super(message);}}
 /* A tab its manager opened a person's link in shows that person's view; other tabs stay the manager's. Kept per tab. */
 const AS_TAB = 'aiohub-as';
 export const asWho = () => {try {return sessionStorage.getItem(AS_TAB) ?? '';} catch {return '';}};
@@ -22,10 +22,10 @@ export const leaveAs = () => {try {sessionStorage.removeItem(AS_TAB);} catch { /
 export async function call<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<T> {
   const as = asWho(), headers: Record<string, string> = {...(body === undefined ? {} : {'content-type': 'application/json'}), ...(as ? {'x-as': as} : {})};
   const answer = await fetch(path, {method, credentials: 'same-origin', headers, body: body === undefined ? undefined : JSON.stringify(body)}).catch(() => {throw new Refused(0, 'Could not reach the hub. Check your connection.');});
-  const data = await answer.json().catch(() => ({})) as T & {message?: string};
+  const data = await answer.json().catch(() => ({})) as T & {message?: string; until?: number};
   // Their view was signed out (here or in another tab): this tab goes back to the manager's own.
   if (as && answer.status === 401) {leaveAs(); location.hash = '#/'; location.reload();}
-  if (!answer.ok) throw new Refused(answer.status, data.message ?? 'That did not work');
+  if (!answer.ok) throw new Refused(answer.status, data.message ?? 'That did not work', Number(data.until) || 0);
   return data;
 }
 
