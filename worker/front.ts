@@ -178,15 +178,14 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
       .bind(hub, seat.person, item, stamp, seat.on, at, playing, pausedNow, where.place, where.net, kind === 'mark' ? 'marked' : `${at}-${at}`, latest?.started ?? -1)];
   };
   // Sittings not heard from in 180 days go, now and then (and what is left of the starts once kept, migration 0010).
-  const tidy = Math.random() < 0.02 ? [env.DB.prepare('DELETE FROM sittings WHERE hub = ? AND updated < ?').bind(hub, stamp - 180 * 86400), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND at < ?').bind(hub, stamp - 180 * 86400)] : [];
+  const tidy = Math.random() < 0.02 ? [env.DB.prepare('DELETE FROM sittings WHERE hub = ? AND updated < ?').bind(hub, stamp - 180 * 86400), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND at < ?').bind(hub, stamp - 180 * 86400), env.DB.prepare('DELETE FROM fetches WHERE hub = ? AND last < ?').bind(hub, stamp - 180 * 86400)] : [];
   // Rows from before pictures were kept are looked up once more, on their next start.
   if (known && (known.art || kind !== 'start')) {await env.DB.batch([env.DB.prepare('UPDATE plays SET position = ?, playing = ?, paused = ?, since = ?, device = ?, updated = ?, place = ?, net = ?, parts = ?, pauses = ?, idle = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, pausedNow, since, seat.on, stamp, where.place, where.net, parts, pauses, idle, hub, seat.person, item), ...sitting(known.duration, position), ...tidy]); ended = done(known.duration, position, known.art);}
   else {
     // First report for this title: ask AIOStreams what it is called, as this person.
-    const about = await fetch(`${seat.base}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: asPerson(seat)}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string} | null;
-    if (!about?.Name) return;
-    const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
-    const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
+    const called = await calledBy(seat, item);
+    if (!called) return;
+    const {about, title, detail, art} = called;
     const first = !await env.DB.prepare('SELECT 1 FROM plays WHERE hub = ? AND person = ? LIMIT 1').bind(hub, seat.person).first();
     const length = Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), at = kind === 'mark' ? length : position;
     await env.DB.batch([env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net, paused, since, parts, pauses, idle) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, paused = excluded.paused, since = excluded.since, device = excluded.device, updated = excluded.updated, art = excluded.art, place = excluded.place, net = excluded.net, parts = excluded.parts, pauses = excluded.pauses, idle = excluded.idle')
@@ -344,6 +343,31 @@ async function idsOf(env: Env, hub: string, seat: Seat, item: string): Promise<s
   await env.DB.prepare('UPDATE plays SET ids = ? WHERE hub = ? AND person = ? AND item = ?').bind(kept, hub, seat.person, item).run();
   return kept;
 }
+/* What a title is called, asked of the person's own server as them: its name (the show's, for an episode), which episode or
+   "Movie", and the id its picture is under. null when the server does not say. */
+async function calledBy(seat: Seat, item: string) {
+  const about = await fetch(`${seat.base}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: asPerson(seat)}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string} | null;
+  if (!about?.Name) return null;
+  const episode = about.Type === 'Episode', title = (episode ? about.SeriesName : '') || about.Name, pictured = String((episode && about.SeriesId) || item), art = /^[\w-]{1,80}$/.test(pictured) ? pictured : '';
+  const detail = episode ? [about.ParentIndexNumber != null ? `Season ${about.ParentIndexNumber}` : '', about.IndexNumber != null ? `Episode ${about.IndexNumber}` : about.Name].filter(Boolean).join(' · ') : 'Movie';
+  return {about, title, detail, art};
+}
+/* A title's file asked for by an app (migration 0028): noted per person, title and device, in the background. Every play asks for
+   the file as well; which fetches were downloads is worked out when Activity is read (api.ts), from whether a sitting goes with
+   it. `asked`: the app used the download address itself. Asked again within ten minutes by the same running copy is not noted
+   twice; the title's name is asked for once. */
+const FETCH = /^\/(?:videos\/([\w-]{1,80})\/stream(?:\.\w{1,8})?|items\/([\w-]{1,80})\/(?:download|file))$/, fetchedAt = new Map<string, number>(), SAME_FETCH = 1800;
+async function fetched(env: Env, hub: string, seat: Seat, id: string, asked: boolean, when: number) {
+  const item = id.toLowerCase().replace(/-/g, ''), key = `${hub}/${seat.person}/${item}/${seat.on}/${asked ? 1 : 0}`, stamp = Math.floor(when / 1000);
+  if (Math.abs(stamp - (fetchedAt.get(key) ?? 0)) < 600) return;
+  if (fetchedAt.size > 5000) fetchedAt.clear(); fetchedAt.set(key, stamp);
+  const row = await env.DB.prepare(`INSERT INTO fetches (hub, person, item, device, at, last, asked) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6) ON CONFLICT (hub, person, item, device) DO UPDATE SET
+    at = CASE WHEN excluded.at - fetches.last > ${SAME_FETCH} THEN excluded.at ELSE fetches.at END, asked = CASE WHEN excluded.at - fetches.last > ${SAME_FETCH} THEN excluded.asked ELSE max(fetches.asked, excluded.asked) END, last = max(fetches.last, excluded.last) RETURNING title`)
+    .bind(hub, seat.person, item, seat.on, stamp, asked ? 1 : 0).first<{title: string | null}>();
+  if (row?.title) return;
+  const called = await calledBy(seat, id);
+  if (called) await env.DB.prepare('UPDATE fetches SET title = ?, detail = ?, art = ? WHERE hub = ? AND person = ? AND item = ? AND device = ?').bind(called.title.slice(0, 200), called.detail.slice(0, 120), called.art, hub, seat.person, item, seat.on).run();
+}
 /* Paused: browsing works, playing does not. */
 const PLAYS = /\/playbackinfo|\/mediasources|\/download|^\/(videos|audio)\//;
 const noSources = (value: unknown): unknown => Array.isArray(value) ? value.map(noSources) : value && typeof value === 'object'
@@ -469,6 +493,9 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
     if (kept && (!fresh || fresh.AccessToken === live.up)) fresh = await mint(env, hub, live.person, live.jf, kept, live.kind);
     if (fresh && fresh.AccessToken !== live.up) {live = {...live, up: fresh.AccessToken, upId: fresh.User.Id}; upstream = await send(live);}
   }
+  // A title's file handed over: noted, for the download lines on Activity (see fetched).
+  const file = live && request.method === 'GET' && upstream.status < 400 ? FETCH.exec(lower) : null;
+  if (live && file && (file[2] || [...url.searchParams].some(([name, value]) => name.toLowerCase() === 'static' && value.toLowerCase() === 'true'))) ctx.waitUntil(fetched(env, hub, live, path.split('/')[2], !!file[2], whenOf(request, env)).catch(() => {}));
   const out = new Headers(CORS), type = upstream.headers.get('content-type') ?? '';
   if (type) out.set('content-type', type);
   for (const name of ['cache-control', 'etag', 'last-modified', 'content-range', 'accept-ranges']) {const value = upstream.headers.get(name); if (value) out.set(name, value);}

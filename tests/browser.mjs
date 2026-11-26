@@ -5,6 +5,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
+// A stand-in answer for a request the page gave up on (a reload, or the stand-in taken away mid-request) has nowhere to go: not a failure.
+process.on('unhandledRejection', error => {if (!/Route is already handled/.test(String(error?.message))) throw error;});
 const BASE = process.env.BASE ?? 'http://localhost:8799', shots = process.argv[3];
 const browser = await chromium.launch({executablePath: process.argv[2]}), errors = [];
 const open = async () => {const context = await browser.newContext({viewport: {width: 390, height: 844}}), page = await context.newPage(); page.on('pageerror', error => errors.push(error.message)); return page;};

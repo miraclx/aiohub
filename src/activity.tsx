@@ -19,8 +19,16 @@ function told(row: Noted, now: number, code: string): Play | null {
   const quiet = !!row.playing && !heard, last = new Date(row.updated * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'});
   const end = live ? '' : row.paused && row.playing ? ` · paused${partsOf(row).length ? '' : ` at ${clock(row.position)}`}${row.since ? heard ? ` for ${span(now - row.since)}` : row.updated - row.since < 300 ? '' : ` since ${new Date(row.since * 1000).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}` : ''}` : row.parts?.split(' ').includes('marked') && Math.max(0, ...partsOf(row).map(([, b]) => b)) < row.duration * 0.9 ? ' · marked as watched' : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
   const parts = joined(partsOf(row)), seen = row.duration && row.parts ? parts.map(([a, b]) => [a / row.duration * 100, (b - a) / row.duration * 100] as [number, number]) : undefined;
-  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}/${row.started}`, personId: row.person, title: row.title, detail: row.detail + end, parts: seen, mark: row.duration ? Math.min(100, row.position / row.duration * 100) : undefined, ranges: parts.map(([a, b], n) => `${parts.length > 1 && row.started >= ORDERED ? `${nth(n + 1)} · ` : ''}${clock(a)}–${clock(b)}`), line: lineOf(row, parts), progress: heard || (share && share < 90) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
+  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}/${row.started}`, stamp: row.updated, personId: row.person, title: row.title, detail: row.detail + end, parts: seen, mark: row.duration ? Math.min(100, row.position / row.duration * 100) : undefined, ranges: parts.map(([a, b], n) => `${parts.length > 1 && row.started >= ORDERED ? `${nth(n + 1)} · ` : ''}${clock(a)}–${clock(b)}`), line: lineOf(row, parts), progress: heard || (share && share < 90) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
     when: heard ? 'Now' : quiet && days === 0 ? `Last heard ${last}` : days > 1 ? at.toLocaleDateString(undefined, {weekday: 'long'}) : at.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'}), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
+}
+/* A title's file fetched by an app with no play to go with it (api.ts): shown as its own entry, as a download. */
+interface Fetched {person: string; item: string; at: number; title: string; detail: string; art?: string | null; device: string}
+function downloaded(row: Fetched, now: number, code: string): Play | null {
+  const at = new Date(row.at * 1000), today = new Date(now * 1000), days = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() - new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime()) / 86400000);
+  if (days > 6) return null;
+  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `down/${row.person}/${row.item}/${row.device}/${row.at}`, personId: row.person, title: row.title, detail: `${row.detail} · downloaded`, on: row.device || 'A player app', down: true, stamp: row.at,
+    when: days > 1 ? at.toLocaleDateString(undefined, {weekday: 'long'}) : at.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'}), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
 }
 /* Parts are kept in the order they were first played since this deploy (front.ts); earlier sittings kept them in the order they
    sit in the title, so they are not numbered. A part played on from later keeps its first number. */
@@ -116,7 +124,7 @@ export function Activity({hub, personId, groupId, pick, toast, live}: {hub: Hub;
   const [filter, setFilter] = useState('all'), [title, setTitle] = useState<string | null>(null), [real, setReal] = useState<Play[]>([]), [turn, setTurn] = useState(0), [noted, setNoted] = useState<{now: number; sittings: Noted[]}>({now: 0, sittings: []});
   useEffect(() => {
     if (!live) return; let on = true;
-    void live.call<{now: number; sittings: Noted[]}>('GET', '/api/activity').then(found => {if (on) {setNoted(found); setReal(found.sittings.map(row => told(row, found.now, hub.code)).filter((play): play is Play => !!play)); if (turn) toast('Up to date');}}, (error: Error) => toast(error.message));
+    void live.call<{now: number; sittings: Noted[]; downloads?: Fetched[]}>('GET', '/api/activity').then(found => {if (on) {setNoted(found); setReal([...found.sittings.map(row => told(row, found.now, hub.code)), ...(found.downloads ?? []).map(row => downloaded(row, found.now, hub.code))].filter((play): play is Play => !!play).sort((a, b) => (b.stamp ?? 0) - (a.stamp ?? 0))); if (turn) toast('Up to date');}}, (error: Error) => toast(error.message));
     return () => {on = false;};
   }, [live, turn]);
   const scope = groupId ?? (filter === 'all' ? undefined : filter);
@@ -149,7 +157,7 @@ export function Activity({hub, personId, groupId, pick, toast, live}: {hub: Hub;
         {/* The title's picture everywhere; whose it is is in the line (text, above). */}<span className="thumb">{play.art ? <Picture url={play.art}/> : <Posters seed={play.title}/>}</span>
         <div><button type="button" className="title" onClick={() => setTitle(play.title)}>{play.title}</button><small>{text(play)}</small>{play.line && <small>{play.line}</small>}<small className="on-device">{play.on}<Where where={play.where}/></small></div><time>{play.when}</time>{play.parts && <Bar play={play}/>}</li>)}</ul></div> : null;
     })}
-    <p className="muted small foot">Each time a title is watched, it gets its own entry, with the parts played. Carrying on after half an hour away counts as another time.</p>
+    <p className="muted small foot">Each time a title is watched, it gets its own entry, with the parts played. Carrying on after half an hour away counts as another time.{plays.some(play => play.down) ? ' A title saved to a device to watch later shows as downloaded.' : ''}</p>
     {title && <Sheet title={title} onClose={() => setTitle(null)}>
       <p className="muted sheet-lead">Who watched it</p>
       <ul className="feed">{all.filter(play => play.title === title).map(play => <li key={play.id}><Avatar name={name(play.personId)} size={36}/><div><strong>{name(play.personId)}</strong><small>{play.when === 'Now' ? `${play.detail} · watching now, ${play.progress}% in` : play.detail}</small><small className="on-device">{play.on}</small></div><time>{play.when === 'Now' || play.when.startsWith('Last heard') ? play.when : `${play.day === 'Earlier this week' ? '' : play.day + ' '}${play.when}`}</time></li>)}</ul>

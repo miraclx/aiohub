@@ -430,6 +430,24 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   await stranger('POST', `${at}/Sessions/Playing`, {ItemId: 'film-9', PositionTicks: 0}, {authorization: `${tv.authorization}, Token="${onTv.body.AccessToken}"`});
   let elsewhere; for (let i = 0; i < 30 && (elsewhere = await sittings()).length < 4; i++) await new Promise(done => setTimeout(done, 100));
   assert.deepEqual([elsewhere.length, elsewhere[0].device, elsewhere[0].parts], [4, 'TV App · Living room', '0-0']);
+  // A title's file fetched with no play to go with it shows on Activity as a download; one that goes with a sitting, however short, does not.
+  const pull = (path, ago = 0) => stranger('GET', `${at}${path}`, undefined, {...app(first.body.AccessToken), 'x-test-ago': String(ago)});
+  const downs = async () => (await owner('GET', '/api/activity')).body.downloads, rows = n => {for (let i = 0; i < 30 && sql('SELECT count(*) AS n FROM fetches WHERE title IS NOT NULL')[0].n < n; i++) execFileSync('sleep', ['0.1']);};
+  assert.equal((await pull('/Videos/saved-1/stream.mkv?static=true&mediaSourceId=x', 8000)).status, 200);
+  await pull('/Videos/saved-1/stream.mkv?static=true', 3000); await pull('/Videos/SAVED-1/stream.mkv?Static=True', 2990); // asked again later, and once more: still one
+  await pull('/Videos/saved-2/stream.mkv?static=true', 0); // just now: not said yet
+  await pull('/Videos/saved-3/stream.mkv?static=true', 900); await say('/Sessions/Playing', {ItemId: 'saved-3', PositionTicks: 0}, 'Ibadan', 895); await say('/Sessions/Playing/Stopped', {ItemId: 'saved-3', PositionTicks: 10e7}, 'Ibadan', 880); // opened and closed
+  await pull('/Videos/saved-4/master.m3u8?static=true', 900); await pull('/Videos/saved-4/stream.mkv', 900); // not a file handed over whole
+  await pull('/Videos/ep-7/stream.mkv?static=true', 700); // played
+  rows(4);
+  for (let i = 0; i < 30 && !sql("SELECT count(*) AS n FROM sittings WHERE item = 'saved-3'")[0].n; i++) await new Promise(done => setTimeout(done, 100));
+  assert.deepEqual((await downs()).map(row => [row.item, row.title, row.detail, row.device, row.person]), [['saved1', 'x', 'Movie', 'Test · Living room', 'ada']]);
+  assert.equal(sql("SELECT last - at AS gap FROM fetches WHERE item = 'saved1'")[0].gap, 0, 'a later fetch is a new one'); assert.equal(sql('SELECT count(*) AS n FROM fetches')[0].n, 4);
+  // The download address itself always counts, played or not.
+  await pull('/Items/ep-7/Download', 690);
+  for (let i = 0; i < 30 && (await downs()).length < 2; i++) await new Promise(done => setTimeout(done, 100));
+  assert.deepEqual((await downs()).map(row => [row.item, row.title, row.detail]), [['ep7', 'Harbor Lights', 'Season 2 · Episode 4'], ['saved1', 'x', 'Movie']]);
+  assert.equal((await guest('GET', '/api/activity')).body.downloads.length, 2, 'their own');
   // AIOStreams stops accepting the kept sign-in: the hub renews it once and the app never notices.
   fake.valid = 'rotated-away';
   assert.equal((await stranger('GET', `${at}/Users/Me`, undefined, app(first.body.AccessToken))).status, 200); assert.equal(fake.signIns, 2);
@@ -613,7 +631,7 @@ test('staging: a person served by their own AIOMetadata config never sees its id
   d1(`DELETE FROM secrets WHERE hub = '${hubId}' AND owner = 'ben' AND kind = 'upstream-aiom'`);
 });
 test('removing a person removes their sign-in', async () => {
-  const theirs = () => sql("SELECT count(*) AS n FROM sittings WHERE person = 'ada'")[0].n;
+  const theirs = () => sql("SELECT (SELECT count(*) FROM sittings WHERE person = 'ada') + (SELECT count(*) FROM fetches WHERE person = 'ada') AS n")[0].n;
   assert.ok(theirs() > 0); assert.equal((await owner('DELETE', '/api/people/ada')).status, 200); assert.equal(theirs(), 0, 'and what they watched');
   assert.equal((await guest('GET', '/api/state')).status, 401);
   assert.deepEqual((await client()('POST', '/api/join', {token: link})).body, {gone: true});
