@@ -19,7 +19,8 @@ import {syncPlayers} from './native';
 import {refreshShelf} from './shelf';
 import type {Synced} from './native';
 
-const DAY = 86400, HOUR = 5, CALLS = 22, DEEP = 60, TMDB_OWNER = '#tmdb', HUB = '#hub', SYNC_TRIES = 12, SYNC_BUDGET = 16;
+export const TMDB_OWNER = '#tmdb';
+const DAY = 86400, HOUR = 5, CALLS = 22, DEEP = 60, HUB = '#hub', SYNC_TRIES = 12, SYNC_BUDGET = 16;
 const TODAY = '__tmdb_date__:today:to';
 export interface Pick {
   kind: string; key: string; name: string; type: 'movie' | 'series';
@@ -79,7 +80,7 @@ export function placePick(place: string, picks: Record<string, Pick> | undefined
 
 /* ---------- TMDB, kept a day per hub ---------- */
 type Held = Map<string, {at: number; body: string}>;
-interface Ask {env: Env; hub: string; key: string; held: Held; calls: {left: number}; writes: D1PreparedStatement[]}
+export interface Ask {env: Env; hub: string; key: string; held: Held; calls: {left: number}; writes: D1PreparedStatement[]}
 const tmdbBase = (env: Env) => env.TMDB_API ?? 'https://api.themoviedb.org/3';
 const FLIX = (env: Env) => env.FLIXPATROL_API ?? 'https://raw.githubusercontent.com/0xConstant1/fp-crawler/main/catalogs';
 /* An answer, from what was kept today, else asked for (when the run has calls left) and kept trimmed by `trim`. A kept answer
@@ -96,11 +97,11 @@ async function cached<T>(ask: Ask, kind: string, url: () => string, trim: (body:
   ask.writes.push(ask.env.DB.prepare('INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, ?, ?) ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at, items = excluded.items').bind(ask.hub, TMDB_OWNER, kind, at, kept));
   return JSON.parse(kept) as T;
 }
-const tmdb = <T>(ask: Ask, path: string, trim: (body: unknown) => T) => cached(ask, `tmdb:${path}`, () => `${tmdbBase(ask.env)}/${path}${path.includes('?') ? '&' : '?'}api_key=${encodeURIComponent(ask.key)}`, trim);
-interface Title {id: number; t: string; v: number; d: string}
-const listed = (body: unknown): Title[] => ((body as {results?: {id?: number; title?: string; name?: string; vote_average?: number; release_date?: string; first_air_date?: string}[]}).results ?? [])
-  .filter(item => Number(item.id) > 0).slice(0, 20).map(item => ({id: Number(item.id), t: String(item.title ?? item.name ?? '').slice(0, 120), v: Number(item.vote_average) || 0, d: String(item.release_date ?? item.first_air_date ?? '')}));
-const recommended = (ask: Ask, type: 'movie' | 'series', id: number) => tmdb(ask, `${type === 'movie' ? 'movie' : 'tv'}/${id}/recommendations?page=1`, listed);
+export const tmdb = <T>(ask: Ask, path: string, trim: (body: unknown) => T) => cached(ask, `tmdb:${path}`, () => `${tmdbBase(ask.env)}/${path}${path.includes('?') ? '&' : '?'}api_key=${encodeURIComponent(ask.key)}`, trim);
+export interface Title {id: number; t: string; v: number; d: string}
+const listed = (body: unknown): Title[] => ((body as {results?: {id?: number; adult?: boolean; title?: string; name?: string; vote_average?: number; release_date?: string; first_air_date?: string}[]}).results ?? [])
+  .filter(item => Number(item.id) > 0 && !item.adult).slice(0, 20).map(item => ({id: Number(item.id), t: String(item.title ?? item.name ?? '').slice(0, 120), v: Number(item.vote_average) || 0, d: String(item.release_date ?? item.first_air_date ?? '')}));
+export const recommended = (ask: Ask, type: 'movie' | 'series', id: number) => tmdb(ask, `${type === 'movie' ? 'movie' : 'tv'}/${id}/recommendations?page=1`, listed);
 // A film's series, genres and directors, in one call (its credits come with it).
 interface Film {c: [number, string] | null; g: number[]; d: [number, string][]}
 const film = (ask: Ask, id: number) => tmdb<Film>(ask, `movie/${id}?append_to_response=credits`, body => {
@@ -117,17 +118,21 @@ const concrete = (params: Record<string, string>, day: string) => Object.fromEnt
 const discover = (ask: Ask, type: 'movie' | 'series', params: Record<string, string>, day: string) => tmdb(ask, `discover/${type === 'movie' ? 'movie' : 'tv'}?${new URLSearchParams(concrete(params, day)).toString()}`, listed);
 
 /* ---------- serving a pick the hub fills (rows.ts) ---------- */
+/* A person's content limit as it stands now: their own, else their group's, else the hub's. null when they are gone. */
+export async function limitOf(env: Env, hub: string, person: string): Promise<Limit | null> {
+  const who = await env.DB.prepare('SELECT p.data AS mine, g.data AS theirs, h.data AS top FROM people p JOIN groups g ON g.hub = p.hub AND g.id = p.grp JOIN hubs h ON h.id = p.hub WHERE p.hub = ? AND p.id = ?').bind(hub, person).first<{mine: string; theirs: string; top: string}>();
+  if (!who) return null;
+  const settings = (text: string, at: string) => (JSON.parse(text) as Record<string, {limit?: Limit}>)[at] ?? {};
+  return settings(who.mine, 'settings').limit ?? settings(who.theirs, 'settings').limit ?? settings(who.top, 'defaults').limit ?? 'all';
+}
 type Watched = Set<string>;
-const seenSet = (items: Item[]): Watched => new Set(items.flatMap(item => [item.id, ...(item.tmdb ? [`${item.type}:${item.tmdb}`] : [])]));
-const unseen = (titles: Title[], type: 'movie' | 'series', seen: Watched) => titles.filter(title => !seen.has(`${type}:${title.id}`));
+export const seenSet = (items: Item[]): Watched => new Set(items.flatMap(item => [item.id, ...(item.tmdb ? [`${item.type}:${item.tmdb}`] : [])]));
+export const unseen = (titles: Title[], type: 'movie' | 'series', seen: Watched) => titles.filter(title => !seen.has(`${type}:${title.id}`));
 const asItems = (titles: Title[], type: 'movie' | 'series'): Item[] => titles.map(title => ({id: `tmdb:${title.id}`, type, name: title.t}));
 /* The titles of a For you row the hub serves, from its catalog id alone, less what the person watched. Under a content limit
    nothing: these are not rated, and the sync never sends one there (allowed). */
 export async function served(env: Env, hub: string, person: string, id: string, type: 'movie' | 'series'): Promise<Item[]> {
-  const who = await env.DB.prepare('SELECT p.data AS mine, g.data AS theirs, h.data AS top FROM people p JOIN groups g ON g.hub = p.hub AND g.id = p.grp JOIN hubs h ON h.id = p.hub WHERE p.hub = ? AND p.id = ?').bind(hub, person).first<{mine: string; theirs: string; top: string}>();
-  if (!who) return [];
-  const settings = (text: string, at: string) => (JSON.parse(text) as Record<string, {limit?: Limit}>)[at] ?? {};
-  if ((settings(who.mine, 'settings').limit ?? settings(who.theirs, 'settings').limit ?? settings(who.top, 'defaults').limit ?? 'all') !== 'all') return [];
+  if (await limitOf(env, hub, person) !== 'all') return [];
   const key = await getSecret<string>(env, hub, HUB, 'key:tmdb');
   if (!key) return [];
   const [, kind, rest] = /^foryou_([a-z]+)_(.+)$/.exec(id)!;
@@ -168,7 +173,7 @@ interface Candidate {pick: Pick; seed?: number; old?: boolean; titles: number; q
 const mean = (titles: Title[]) => titles.length ? titles.slice(0, 10).reduce((sum, title) => sum + title.v, 0) / Math.min(10, titles.length) / 10 : 0;
 // How good a pick is against others of its kind: how lately its title was watched, how much it holds, and how well rated.
 const scoreOf = (item: Candidate, at: number) => (item.old ? OLD_CREDIT : item.seed ? Math.exp(-Math.max(0, at - item.seed) / DAY / 14) : 0) + Math.min(1, item.titles / 20) + item.quality;
-const tagOf = (item: Item) => `${item.type === 'movie' ? 'm' : 's'}${item.tmdb}`;
+export const tagOf = (item: {type: 'movie' | 'series'; tmdb?: number}) => `${item.type === 'movie' ? 'm' : 's'}${item.tmdb}`;
 /* Everything that could fill this person's places today, in the order they are worked out (the most personal first, so a run
    short of calls still has those), and why each kind with nothing has nothing (Pool). `never`: titles they left out for good,
    which seed nothing. `any`: because-you-watched from any time, two newest titles and four older instead of four and two. */

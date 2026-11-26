@@ -1,6 +1,7 @@
-/* All of a person's Trakt lists as one Home row (SHELF_ROW, "My Trakt lists"): a collection with a wide tile for each list, their
-   own and the ones they liked, pictured by the backdrop (TMDB) of its best-known title: the one most people rated on Trakt, of its
-   first hundred. Opening a tile shows the list, served by
+/* A person's Trakt lists as Home rows: their own as one (SHELF_ROW, "My Trakt lists") and the ones they liked as another
+   (LIKED_ROW, "Trakt lists I liked"). Each is a collection with a wide tile for each list, pictured by the backdrop (TMDB) of its
+   best-known title: the one most people rated on Trakt, of its first hundred. Both are worked out together and kept as one
+   (`shelf`); a row holds the lists of its kind. Opening a tile shows the list, served by
    the hub as any of their own lists is (rows.ts). Which lists there are, and their pictures, are worked out ahead by the cron
    (refreshShelf, run from foryou.ts) and kept per hub and person, so a sync only reads what was kept and every sync writes the
    same. Worked out again once a day; a list whose best-known title is unchanged keeps its picture without asking TMDB again. */
@@ -8,10 +9,19 @@ import type {Env} from './util';
 import {getSecret, now} from './util';
 import {read} from './trakt';
 
-export const SHELF_ROW = 'trakt-lists', SHELF = 'shelf';
-// At most this many lists, so one run's calls (two for the lists, one for each list's titles, one for each new picture)
-// stay well inside what a Worker may make.
+export const SHELF_ROW = 'trakt-lists', LIKED_ROW = 'trakt-liked-lists', SHELF = 'shelf';
+// At most this many lists between the two rows, so one run's calls (two for the lists, one for each list's titles, one for each
+// new picture) stay well inside what a Worker may make.
 export const MOST = 16;
+/* Which of their lists the two rows hold, from all of them in Trakt's order (ids as `trakt-mine.<id>` and `trakt-liked.<id>`):
+   their own first, with up to half of MOST kept for the ones they liked, so many of one kind never leave the other row empty. */
+export function shelved<T extends {id: string}>(lists: T[]): T[] {
+  const mine = lists.filter(list => list.id.startsWith('trakt-mine.')), liked = lists.filter(list => list.id.startsWith('trakt-liked.'));
+  const others = Math.min(liked.length, Math.max(MOST - mine.length, MOST / 2));
+  return [...mine.slice(0, MOST - others), ...liked.slice(0, others)];
+}
+/* The lists a row holds, of those kept. */
+export const shelfOn = (row: string, shelf: Shelf[]) => shelf.filter(list => list.id.startsWith(row === LIKED_ROW ? 'trakt-liked.' : 'trakt-mine.'));
 const DAY = 86400, RETRY = 3600, HUB = '#hub';
 export interface Shelf {id: string; title: string; first: string; cover: string}
 type TraktList = {name?: string; ids?: {trakt?: number}};
@@ -22,8 +32,8 @@ type Listed = {movie?: Media; show?: Media};
 export function shelfFrom(items: string | null | undefined): Shelf[] {
   try {return items ? JSON.parse(items) as Shelf[] : [];} catch {return [];}
 }
-/* Whether someone's own Home has the row on. */
-export const wantsShelf = (rows: {id: string; on: boolean}[] | null | undefined) => !!rows?.some(row => row.id === SHELF_ROW && row.on);
+/* Whether someone's own Home has either row on. */
+export const wantsShelf = (rows: {id: string; on: boolean}[] | null | undefined) => !!rows?.some(row => (row.id === SHELF_ROW || row.id === LIKED_ROW) && row.on);
 
 /* Their lists and pictures, worked out again. null when Trakt did not answer, so what was kept stays. */
 export async function shelfOf(env: Env, hub: string, person: string, before: Shelf[]): Promise<Shelf[] | null> {
@@ -36,7 +46,7 @@ export async function shelfOf(env: Env, hub: string, person: string, before: She
     if (Number.isInteger(id) && !lists.some(list => list.id.endsWith(`.${id}`))) lists.push({id: `trakt-liked.${id}`, title: name(like.list!.name), ask: `/lists/${id}/items?limit=100&extended=full`});
   }
   const key = await getSecret<string>(env, hub, HUB, 'key:tmdb'), had = new Map(before.map(item => [item.id, item])), out: Shelf[] = [];
-  for (const list of lists.slice(0, MOST)) {
+  for (const list of shelved(lists)) {
     // Its best-known film or show (a person on a list has no picture; the earlier of two as well known); a list Trakt did not
     // answer for keeps what it had.
     const items = await read<Listed[]>(env, hub, person, list.ask), kept = had.get(list.id);
@@ -59,7 +69,7 @@ async function backdrop(env: Env, key: string, path: string) {
   return body?.backdrop_path && /^\/[\w.-]{1,80}$/.test(body.backdrop_path) ? `https://image.tmdb.org/t/p/w780${body.backdrop_path}` : '';
 }
 
-/* A cron step: one person whose row is on and whose lists were not worked out in the last day (or ever, just added) has them
+/* A cron step: one person with either row on whose lists were not worked out in the last day (or ever, just added) has them
    worked out and kept; their hub's setups are flagged to be brought in step when anything changed. true when there was one.
    When Trakt does not answer it is tried again in an hour. */
 export async function refreshShelf(env: Env, people: {hub: string; id: string; data: string}[], flag: (hub: string) => D1PreparedStatement): Promise<boolean> {

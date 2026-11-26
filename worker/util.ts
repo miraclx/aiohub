@@ -10,6 +10,8 @@ export interface Env {
   SITE_ORIGIN?: string;
   // The hour (UTC) the daily For you picking starts (foryou.ts). Unset: five.
   FORYOU_HOUR?: string;
+  // The UTC hour from which the day's Recommended rows are worked out (recs.ts); 4 when unset.
+  RECS_HOUR?: string;
   // Only the local test run sets this: where a request came from, and when a playback report was made, are then read from test
   // headers (see whereOf and whenOf in front.ts).
   TEST_WHERE?: string;

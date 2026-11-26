@@ -94,6 +94,8 @@ await job('Trakt sync').getByText('For everyone, one person each run, so each pe
 await job('Plays missing from MDBList').getByText(/^For everyone who keeps progress in MDBList, every day from \d[^;]+$/).waitFor(); await job('Plays missing from MDBList').getByText('Nobody keeps progress in MDBList yet').waitFor(); await job('Plays missing from MDBList').getByText('once someone does').waitFor();
 assert.equal(await work.getByText(/matching/i).count(), 0);
 await job('Trakt and MDBList check').getByText(/^For everyone every day at \d[^;]+$/).waitFor(); await job('Trakt and MDBList check').getByText('Not run yet').waitFor(); await job('Trakt and MDBList check').getByText(/^next run (today|tomorrow)$/).waitFor();
+// Recommended rows the hub works out itself: from four (UTC), so this run before then left it be.
+await job('Recommended rows').getByText(/^For everyone with a Recommended row on Home, every day from \d[^;]+$/).waitFor(); await job('Recommended rows').getByText('Not run yet').waitFor(); await job('Recommended rows').getByText(/^next run in \d min$/).waitFor();
 await work.scrollIntoViewIfNeeded(); await shot(owner, '5b-background');
 // Advanced: behind the password again, then one line a setup, grouped, its keys folded away until asked for.
 const advanced = owner.locator('section', {has: owner.getByRole('heading', {name: 'Advanced'})});
@@ -101,14 +103,15 @@ await advanced.getByRole('button', {name: 'Show'}).click(); await advanced.getBy
 await advanced.getByRole('heading', {name: 'Shared'}).waitFor(); assert.equal(await advanced.locator('.creds code').count(), 0, 'keys start folded');
 if (await advanced.getByRole('button', {name: 'Keys'}).count()) {await advanced.getByRole('button', {name: 'Keys'}).first().click(); await advanced.locator('.creds code').first().waitFor();}
 await advanced.scrollIntoViewIfNeeded(); await shot(owner, '5e-advanced');
-// The hub's Home keeps a place for each of a person's own rows, each saying what fills it: Trakt, MDBList, or for Recently Watched
-// whichever the person has. Both watchlists are on, so their names tell them apart.
-await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later', {hasText: 'Watchlist · Trakt'}).getByText('Trakt · Appears once someone connects Trakt').waitFor();
-await owner.locator('.rows .row.later', {hasText: 'Watchlist · MDBList'}).getByText('MDBList · Appears once someone connects MDBList. With Trakt too, it starts off').waitFor();
+// The hub's Home keeps a place for each of a person's own rows, each saying what fills it: one Watchlist from Trakt, MDBList or
+// both, Recommended from Trakt or their watching, and Recently Watched from whichever the person has.
+await owner.goto(BASE + '/#/hub'); await owner.locator('.rows .row.later', {hasText: 'Watchlist'}).getByText('Appears once someone connects Trakt or MDBList. With both, it is one list').waitFor();
+await owner.locator('.rows .row.later', {hasText: 'Recommended Movies'}).getByText('Fills for each person from Trakt, or from what they watch').waitFor();
 await owner.locator('.rows .row.later', {hasText: 'Recently Watched'}).getByText('Fills for each person from Trakt, MDBList or what they play here').waitFor();
-// All seven, Recently Watched among those on Home (it is on by default); the Not on Home ones keep Show at the right edge.
-assert.deepEqual(await owner.locator('.rows .row.later h3').allTextContents(), ['Watchlist · Trakt', 'Watchlist · MDBList', 'Recommended Movies', 'Recommended Shows', 'Recently Watched']);
-assert.deepEqual(await owner.locator('.off li.later h3').allTextContents(), ['Up Next', 'Recently Aired for You']);
+// All six, Recently Watched among those on Home (it is on by default); the Not on Home ones keep Show at the right edge.
+assert.deepEqual(await owner.locator('.rows .row.later h3').allTextContents(), ['Watchlist', 'Recommended Movies', 'Recommended Shows', 'Recently Watched']);
+assert.deepEqual(await owner.locator('.off li.later h3').allTextContents(), ['Up Next', 'New for you']);
+await owner.locator('.off li.later', {hasText: 'New for you'}).getByText('Trakt · Appears once someone connects Trakt').waitFor();
 // Any row can be renamed from its Edit sheet: only the name changes, and it can be put back.
 const rename = async (from, to) => {
   await owner.locator('.rows .row', {has: owner.locator('h3', {hasText: new RegExp(`^${from}$`)})}).getByRole('button', {name: 'Edit'}).click();
@@ -137,6 +140,15 @@ await guest.goto(link); await guest.getByRole('heading', {name: 'Hi Ada'}).waitF
 await guest.getByLabel('Password').fill('my own password'); await guest.getByRole('button', {name: 'Continue'}).click();
 await guest.getByRole('tab', {name: 'Playback'}).or(guest.getByRole('link', {name: 'Playback'})).first().waitFor(); await shot(guest, '8-own-page');
 assert.equal(await guest.getByRole('link', {name: 'People'}).count(), 0);
+// Add row on her own Home, with no account connected yet: the rows an account would add are there greyed, each saying what it
+// needs, with a Connect that goes to her Accounts tab. They are not buttons: nothing is added by them.
+await guest.goto(BASE + '/#/me/home'); await guest.getByRole('button', {name: '+ Add row'}).click();
+const wanting = guest.getByRole('dialog', {name: 'Add a row'}); await wanting.getByRole('heading', {name: 'With an account'}).waitFor();
+assert.deepEqual(await wanting.locator('li.needs').evaluateAll(lines => lines.map(line => [line.querySelector('strong').textContent, line.querySelector('small').textContent, line.querySelector('a').textContent, line.querySelector('a').getAttribute('href')])),
+  [['Watchlist', 'Needs Trakt or MDBList.', 'Connect', '#/me/accounts'], ['Up Next', 'Needs Trakt.', 'Connect', '#/me/accounts'], ['New for you', 'Needs Trakt.', 'Connect', '#/me/accounts']]);
+assert.equal(await wanting.locator('li.needs button').count(), 0); assert.ok(Number(await wanting.locator('li.needs > span').first().evaluate(node => getComputedStyle(node).opacity)) < 1, 'greyed');
+if (shots) {await wanting.locator('li.needs').first().scrollIntoViewIfNeeded(); await guest.waitForTimeout(300); await guest.screenshot({path: `${shots}/real-6e-add-row-needs-phone.png`}); await guest.setViewportSize({width: 1280, height: 900}); await guest.waitForTimeout(300); await guest.screenshot({path: `${shots}/real-6e-add-row-needs-wide.png`}); await guest.setViewportSize({width: 390, height: 844});}
+await wanting.locator('li.needs', {hasText: 'Up Next'}).getByRole('link', {name: 'Connect Trakt, for Up Next'}).click(); await guest.getByRole('heading', {name: 'Trakt Free', exact: true}).waitFor();
 await guest.goto(BASE + '/#/me/playback'); await guest.getByText('Set for you by whoever runs the hub.').waitFor();
 await guest.goto(BASE + '/#/me/devices'); await guest.locator('.creds code').filter({hasText: /^Ada$/}).waitFor(); await guest.getByRole('button', {name: 'Show'}).click();
 await guest.getByLabel('Password', {exact: true}).filter({hasText: password}).waitFor(); // the player password, not the one just chosen
@@ -249,7 +261,10 @@ await trakt.getByText('Nothing uses it any more').waitFor({state: 'detached'}); 
 await trakt.getByRole('button', {name: 'Disconnect', exact: true}).click(); await guest.getByRole('heading', {name: 'Disconnect Trakt?'}).waitFor(); await guest.getByRole('button', {name: 'Cancel'}).click(); await trakt.getByText('Connected as adatrakt').waitFor();
 // With Trakt connected, Recently Watched is on Home right after Watchlist. Switching it off keeps her following her group's Home.
 await guest.goto(BASE + '/#/me/home'); const onHome = guest.locator('.rows li h3');
-assert.deepEqual((await onHome.allTextContents()).slice(0, 4), ['Watchlist', 'Recommended Movies', 'Recommended Shows', 'Recently Watched']);
+// Each says where it comes from in a small tag, and its line says only what it holds.
+assert.deepEqual((await onHome.allTextContents()).slice(0, 4), ['WatchlistFrom Trakt', 'Recommended MoviesFrom Trakt', 'Recommended ShowsFrom Trakt', 'Recently WatchedFrom Trakt']);
+assert.equal(await guest.locator('.rows li', {hasText: 'Recommended Movies'}).locator('.row-head p').textContent(), 'Movies');
+await both(guest, '13e-home-own-rows', guest.locator('.rows'));
 await guest.getByRole('switch', {name: 'Show Recently Watched on Home'}).click(); await toast(guest).filter({hasText: '“Recently Watched” is off Home'}).waitFor();
 const followed = await guest.evaluate(async () => {for (let i = 0; i < 40; i++) {const me = (await (await fetch('/api/state')).json()).hub.people[0]; if (me.picks) return me; await new Promise(done => setTimeout(done, 250));} return null;});
 assert.equal(followed.rows, null, 'still following the group Home'); assert.deepEqual(followed.picks, {'recently-watched': false}); await shot(guest, '13d-recently-watched-off');
@@ -261,6 +276,8 @@ const adding = async (page, name, phone = true) => {
   return sheet;
 };
 let sheet = await adding(guest, '6a-add-row-own');
+// With Trakt connected nothing waits for an account any more (MDBList alone adds no row of its own now).
+assert.equal(await sheet.getByRole('heading', {name: 'With an account'}).count(), 0);
 await sheet.getByRole('heading', {name: 'Your lists'}).waitFor(); await sheet.getByText('Heist nights').waitFor(); await sheet.getByText('Trakt · 12 titles').waitFor();
 assert.equal(await sheet.getByText('Sunday westerns').count(), 0, 'past the first five');
 await sheet.getByRole('button', {name: 'Show all 7'}).click(); await sheet.getByText('Sunday westerns').waitFor(); assert.equal(await sheet.getByRole('button', {name: /^Show all/}).count(), 0);
@@ -338,18 +355,10 @@ const keepIn = guest.getByRole('switch', {name: 'Keep my progress in MDBList'});
 await mdb.getByText('Needed for hiding what you’ve watched. Trakt sync follows it.').waitFor(); await mdb.getByText('Your progress is kept on this hub.', {exact: true}).waitFor();
 assert.equal((await mdb.locator('.gains p').allTextContents()).length, 3, 'the same three lines once connected');
 await both(guest, '12b-mdblist-connected', mdb);
-// With Trakt and MDBList both connected, on the Home of her own: MDBList's watchlist comes in after Trakt's, off, and each is plainly
-// "Watchlist" while only one is on. Turning MDBList's on names both; turning it off again keeps it there, off.
-await guest.goto(BASE + '/#/me/home'); await guest.locator('.off').evaluate(list => {list.open = true;});
-await guest.locator('.off li', {hasText: 'MDBList'}).getByRole('heading', {name: 'Watchlist', exact: true}).waitFor();
-assert.ok((await onHome.allTextContents()).includes('Watchlist')); assert.ok(!(await onHome.allTextContents()).some(name => name.includes('·')));
-await guest.locator('.off li', {hasText: 'MDBList'}).getByRole('button', {name: 'Show'}).click(); await toast(guest).filter({hasText: 'is on Home'}).waitFor();
-await guest.locator('.rows li h3', {hasText: 'Watchlist · MDBList'}).waitFor(); assert.ok((await onHome.allTextContents()).includes('Watchlist · Trakt'));
-await shot(guest, '12c-both-watchlists-phone'); await guest.setViewportSize({width: 1280, height: 900}); await shot(guest, '12c-both-watchlists-wide'); await guest.setViewportSize({width: 390, height: 844});
-await guest.getByRole('switch', {name: 'Show Watchlist · MDBList on Home'}).click(); await toast(guest).filter({hasText: 'is off Home'}).waitFor();
-await guest.locator('.rows li h3', {hasText: /^Watchlist$/}).waitFor();
-const kept = await guest.evaluate(async () => {for (let i = 0; i < 40; i++) {const me = (await (await fetch('/api/state')).json()).hub.people[0]; const row = me.rows?.find(item => item.id === 'mdblist-watchlist'); if (row && !row.on) return me.rows.map(item => [item.id, item.on]); await new Promise(done => setTimeout(done, 250));} return null;});
-assert.ok(kept, 'saved off'); assert.equal(kept.findIndex(([id]) => id === 'mdblist-watchlist'), kept.findIndex(([id]) => id === 'watchlist') + 1, 'right after Trakt’s watchlist');
+// With Trakt and MDBList both connected there is still one Watchlist, and it says it comes from both.
+await guest.goto(BASE + '/#/me/home'); await guest.locator('.rows li', {hasText: 'Watchlist'}).getByText('From Trakt and MDBList', {exact: true}).waitFor();
+assert.equal((await onHome.allTextContents()).filter(name => name.startsWith('Watchlist')).length, 1); assert.equal(await guest.locator('.off li', {hasText: 'Watchlist'}).count(), 0);
+await both(guest, '12c-one-watchlist', guest.locator('.rows li', {hasText: 'Watchlist'}));
 await guest.goto(BASE + '/#/me/accounts');
 // Turning it on copies what was watched here that MDBList lacks, a pass at a time, saying how far it has got, then switches.
 // (The first pass is answered here, and the next held a moment, so the line can be seen.)
@@ -541,7 +550,9 @@ assert.deepEqual(await can(), was);
 // On her own Home the rows that change on their own say when (times made here, an hour ago, as this hub picks nothing): For you
 // places when they change next, or that they are kept; My Trakt lists when it was checked; rows always current say nothing.
 // Each one's Edit sheet asks the hub for something now, answered here too. Nothing is saved while these made-up rows are shown.
-const hourAgo = Math.floor(Date.now() / 1000) - 3600, seen = Math.floor(Date.now() / 1000) - 2 * 86400, shelfRow = {id: 'trakt-lists', title: 'My Trakt lists', kind: 'Collection · 2 lists', source: 'Trakt · all your lists', origin: 'own', on: true};
+const hourAgo = Math.floor(Date.now() / 1000) - 3600, seen = Math.floor(Date.now() / 1000) - 2 * 86400, shelfRow = {id: 'trakt-lists', title: 'My Trakt lists', kind: 'Collection · 2 lists', source: 'Trakt · your lists', origin: 'own', on: true};
+// The lists she liked have a row of their own; each row shows its own lists' pictures. New for you is switched on here too.
+const likedRow = {id: 'trakt-liked-lists', title: 'Trakt lists I liked', kind: 'Collection · 1 list', source: 'Trakt · lists you liked', origin: 'own', on: true}, shelfTiles = [{title: 'Heist nights', image: '/covers/00.jpg'}, {title: 'Rainy days', image: '/covers/01.jpg'}, {title: 'Sunday westerns', image: '/covers/02.jpg', liked: true}];
 // Her For you today, as the hub tells it: each place's pick and what it came from, six other options, two kinds with nothing.
 const forYouDetail = {places: {'for-you-1': {key: 'because:m27205', kind: 'because', name: 'Because you watched Inception', why: {title: 'Inception', seen}, seed: 'm27205'},
     'for-you-2': {key: 'series:263', kind: 'series', name: 'Next in The Dark Knight', why: {title: 'The Dark Knight', seen, more: 2}, seed: 'm155', keep: true}, 'for-you-3': {key: 'popular:movie', kind: 'popular', name: 'Popular movies lately'}},
@@ -550,7 +561,7 @@ const forYouDetail = {places: {'for-you-1': {key: 'because:m27205', kind: 'becau
     {key: 'because:s1396', kind: 'because', name: 'Because you watched Breaking Bad', why: {title: 'Breaking Bad', seen: seen - 3 * 86400}, seed: 's1396'}, {key: 'because:m550', kind: 'because', name: 'Because you watched Fight Club', why: {title: 'Fight Club', seen: seen - 9 * 86400}, seed: 'm550'}],
   none: {pickup: 'none', seasonal: 'off'}, never: [{seed: 'm680', title: 'Pulp Fiction'}]};
 const forYouState = shelf => async route => {const response = await route.fetch(), body = await response.json(), me = body.hub.people[0]; body.hub.front = true; body.hub.forYouHour = 5;
-  Object.assign(me, {...(shelf ? {rows: [shelfRow, ...me.rows], shelfAt: hourAgo} : {}), pickedAt: hourAgo, forYouDetail, forYou: Object.fromEntries(Object.entries(forYouDetail.places).map(([place, pick]) => [place, pick.name])), forYouKinds: Object.fromEntries(Object.entries(forYouDetail.places).map(([place, pick]) => [place, pick.kind]))});
+  Object.assign(me, {...(shelf ? {rows: [shelfRow, likedRow, ...me.rows.map(row => row.id === 'new-for-you' ? {...row, on: true} : row)], shelfAt: hourAgo, shelfTiles} : {}), pickedAt: hourAgo, forYouDetail, forYou: Object.fromEntries(Object.entries(forYouDetail.places).map(([place, pick]) => [place, pick.name])), forYouKinds: Object.fromEntries(Object.entries(forYouDetail.places).map(([place, pick]) => [place, pick.kind]))});
   await route.fulfill({response, json: body}).catch(() => {});};
 await guest.route('**/api/state', forYouState(true));
 const askedNow = [];
@@ -558,6 +569,10 @@ for (const path of ['**/api/people/ada/foryou/*', '**/api/people/ada/shelf']) aw
 // A row by its name, or a For you row by what it holds today.
 await guest.reload(); const rowOf = title => guest.locator('.rows .row', {has: guest.locator('h3, p', {hasText: new RegExp(`^(Today: )?${title}`)})});
 await rowOf('My Trakt lists').getByText(/^Trakt · Lists checked (yesterday )?at .+ · next check (today|tomorrow)$/).waitFor();
+await rowOf('Trakt lists I liked').getByText(/^Trakt · Lists checked /).waitFor();
+assert.deepEqual([await rowOf('My Trakt lists').locator('.covers span').count(), await rowOf('Trakt lists I liked').locator('.covers span').count()], [2, 1], 'each row shows its own lists');
+await rowOf('New for you').getByText('Movies & shows, newest first · Trakt', {exact: true}).waitFor();
+await both(guest, '18f-home-new-rows', rowOf('New for you'));
 // A For you row is headed For you; its line says what it holds today and when it picks again, or that it is kept.
 await rowOf('Because you watched Inception').getByText(/^Today: Because you watched Inception · picks again (at \d.+|tomorrow at \d.+|soon)$/).waitFor();
 await rowOf('Next in The Dark Knight').getByText('Today: Next in The Dark Knight · kept', {exact: true}).waitFor();
@@ -643,10 +658,10 @@ await guest.locator('.setting', {hasText: 'Not picked from'}).getByRole('button'
 assert.deepEqual(askedNow, [['/api/people/ada/foryou/never', {seed: 'm680'}]]);
 await kindsCard.getByRole('button', {name: /^Reset Kinds of pick/}).click(); await saved(got => !('forYouOrder' in got) && !('forYouOff' in got) && !('forYouBecause' in got), 'reset');
 await guest.unrouteAll({behavior: 'wait'}); await guest.reload(); await guest.locator('.rows li').first().waitFor();
-// The manager's Background work: a My Trakt lists row asked for again (0) is under way, never "next run 1 Jan 1970". (Going to the
+// The manager's Background work: a Trakt lists row asked for again (0) is under way, never "next run 1 Jan 1970". (Going to the
 // page and reloading cancels the first read, whose answer is then left unsent.)
 await owner.route('**/api/state', async route => {const response = await route.fetch(), body = await response.json(); body.hub.front = true; Object.assign(body.hub.jobs, {shelfDue: 0, shelves: 1, shelved: hourAgo}); await route.fulfill({response, json: body}).catch(() => {});});
-await owner.goto(BASE + '/#/hub/general'); await owner.reload(); const listsJob = owner.locator('.jobs li', {hasText: 'My Trakt lists rows'});
+await owner.goto(BASE + '/#/hub/general'); await owner.reload(); const listsJob = owner.locator('.jobs li', {hasText: 'Trakt lists rows'});
 await listsJob.getByText('under way').waitFor(); await listsJob.getByText('For everyone every day; for one person when their lists change or they press Check now', {exact: true}).waitFor();
 await owner.locator('.jobs li', {hasText: 'For you picks'}).getByText(/^For everyone every day at .+; for one person when they change their rows or kinds, or finish something$/).waitFor(); await listsJob.scrollIntoViewIfNeeded(); await shot(owner, '16d-background-under-way');
 await owner.unroute('**/api/state');

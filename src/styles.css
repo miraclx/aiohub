@@ -287,6 +287,9 @@ button.from.own:hover { text-decoration: underline; }
 .row-head h3 { display: flex; align-items: center; flex-wrap: wrap; }
 .sheet-lead { margin-bottom: 16px; }
 .picks button:disabled { opacity: .55; cursor: default; background: var(--surface); }
+/* A row that waits for an account: greyed like one that cannot be picked, with the way to connect beside it. */
+.picks li.needs { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--surface); border-radius: 14px; padding: 10px 14px; }
+.picks li.needs > span { opacity: .55; }
 .folders { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .folders li { display: flex; align-items: center; gap: 10px; background: var(--surface); border-radius: 12px; padding: 8px 12px 8px 2px; min-height: 56px; }
 .folders li.dragging { opacity: .6; }

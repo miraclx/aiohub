@@ -13,15 +13,17 @@ export function Grip({handleRef, label}: {handleRef: (element: Element | null) =
 // On a hub or group Home, a person's own row is a place kept for it: it fills for each person from their own accounts.
 const LATER: Record<string, string> = {
   'recently-watched': 'Fills for each person from Trakt, MDBList or what they play here',
-  'mdblist-watchlist': 'MDBList · Appears once someone connects MDBList. With Trakt too, it starts off',
+  'watchlist': 'Appears once someone connects Trakt or MDBList. With both, it is one list',
+  'recommended-movies': 'Fills for each person from Trakt, or from what they watch', 'recommended-series': 'Fills for each person from Trakt, or from what they watch',
 };
 const laterOf = (row: Row) => isPlace(row.id) ? 'For you · Picked daily for each person, from what they watch' : LATER[row.id] ?? `${row.source} · Appears once someone connects Trakt`;
 // On a hub or group Home a For you place is kept for each person too: what fills it is picked for them every day.
 /* On a real person's Home, when their rows that change on their own last did and next will: the UTC hour the day's For you
    picking starts, when they were last picked for, and when their My Trakt lists row was last worked out (0 while it waits to be
    again). Unix seconds. */
-export interface Times {hour: number; pickedAt?: number; shelfAt?: number; tiles?: {title: string; image: string}[]}
-const DAY_MS = 86_400_000, SHELF_ROW = 'trakt-lists';
+export interface Times {hour: number; pickedAt?: number; shelfAt?: number; tiles?: {title: string; image: string; liked?: boolean}[]}
+// The two rows of a person's Trakt lists: their own, and the ones they liked (shelf.ts on the Worker).
+const DAY_MS = 86_400_000, LIKED_ROW = 'trakt-liked-lists', isShelf = (id: string) => id === 'trakt-lists' || id === LIKED_ROW;
 // A day in the viewer's own words, and a time with its day when that is not today ("yesterday at 6:04 AM").
 const dayOf = (ms: number) => {const days = Math.round((new Date(ms).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / DAY_MS); return days === 0 ? 'today' : days === 1 ? 'tomorrow' : days === -1 ? 'yesterday' : new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'});};
 const atOf = (ms: number) => `${dayOf(ms) === 'today' ? '' : `${dayOf(ms)} `}at ${new Date(ms).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;
@@ -74,7 +76,7 @@ function noneOf(kind: string, code: string, limit: Limit, mine: boolean) {
   return {because: `Nothing new to suggest from ${mine ? 'your' : 'their'} latest watching`, series: 'No movie series with more to watch', pickup: 'Nothing left partway in the last year', crew: 'No director with enough left to watch',
     genres: 'No genre stands out yet', different: 'Nothing left to suggest today', seasonal: 'No season right now', top10: 'Too little left to watch in the Top 10'}[kind] ?? 'Nothing today';
 }
-/* My Trakt lists: worked out once a day, and again soon after it is asked for (at 0) or when a day has gone by. */
+/* My Trakt lists and Trakt lists I liked: worked out once a day, and again soon after it is asked for (at 0) or when a day has gone by. */
 const listsOf = (at = 0) => !at || Date.now() - at * 1000 >= DAY_MS ? 'Trakt · Updating now' : `Trakt · Lists checked ${atOf(at * 1000)} · next check ${dayOf(at * 1000 + DAY_MS)}`;
 // A suggestion's kind as it reads now: rows saved earlier said "tabs" where it says "folders".
 const kindOf = (row: Row) => suggestionOf(row.id)?.kind ?? row.kind;
@@ -84,13 +86,14 @@ function RowCard({row, index, tag, locked, later, person, limit = 'all', times, 
   const covers = row.covers?.filter(cover => folderFits(row.id, cover.image, limit)), none = !!row.covers?.length && !covers?.length;
   // A suggested collection of tabs has no one catalog to show posters from: its folders' own art instead, as the apps show them.
   // Small copies kept on this site (public/covers/kids), by the art's file name: the apps' own are full size.
-  // My Trakt lists shows its lists' own pictures (shelf.ts), wide as in the apps.
-  const shelf = row.id === SHELF_ROW && times?.tiles?.length ? times.tiles : undefined;
+  // A row of their Trakt lists shows its lists' own pictures (shelf.ts), wide as in the apps.
+  const mine = isShelf(row.id) ? times?.tiles?.filter(tile => !!tile.liked === (row.id === LIKED_ROW)) : undefined, shelf = mine?.length ? mine : undefined;
   const tiles = shelf ?? (!row.covers ? suggestionOf(row.id)?.parts.flatMap(({title, cover}) => cover ? [{title, image: `/covers/kids/${decodeURIComponent(cover.split('/').pop()!).replace(/\.jpg$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.jpg`}] : []) : undefined);
   const sortable = useSortable({id: row.id, index, disabled: locked});
   // Rows that are always current (the watchlist, lists, Recently Watched) say nothing of times.
   // A For you place is headed "For you", as on a hub's Home, and says what it holds today: the pick is today's, not the row's.
-  const line = row.pick ? pickOf(row.title, row.pick, times, kept) : times && isPlace(row.id) && !times.pickedAt ? 'For you · Picked soon' : times && row.id === SHELF_ROW ? listsOf(times.shelfAt) : `${kindOf(row)} · ${sourceShown(row, limit)}`;
+  // A row whose tag says where it comes from ("From Trakt") does not say it twice.
+  const line = row.pick ? pickOf(row.title, row.pick, times, kept) : times && isPlace(row.id) && !times.pickedAt ? 'For you · Picked soon' : times && isShelf(row.id) ? listsOf(times.shelfAt) : tag?.startsWith('From ') ? kindOf(row) : `${kindOf(row)} · ${sourceShown(row, limit)}`;
   return <li ref={sortable.ref} className={`row${sortable.isDragging ? ' dragging' : ''}${locked ? ' locked' : ''}${later ? ' later' : ''}`}>
     {!locked && <Grip handleRef={sortable.handleRef} label={`Move ${row.title}`}/>}
     <div className="row-main">
@@ -117,6 +120,9 @@ export function moved<T>(list: T[], from: number, to: number) {const next = [...
 export interface HomeProps {
   rows: Row[]; level: Level; onChange: (rows: Row[], note: string) => void;
   tag: (row: Row) => string | undefined; lists?: Pick[]; listsHint?: string;
+  /* On a person's own Home: the rows that wait for an account they have not connected, each with what it needs ("Trakt"), and
+     the address of their Accounts tab. Add row lists them greyed, with the way to connect. */
+  needs?: {id: string; title: string; needs: string}[]; accounts?: string;
   followLabel?: string; onFollow?: () => void; canAdd?: boolean; canArrange?: boolean; mine?: boolean;
   /* Whose Home this is, when it is a person's: their own rows' posters show only here. */
   person?: string;
@@ -133,7 +139,7 @@ export interface HomeProps {
   onMute?: (kind: string) => void; onLess?: (kind: string) => void; order?: string[];
   times?: Times; forYou?: ForYouDetail; onPlace?: (place: string, asked: {use?: string; keep?: boolean; never?: boolean}, note: string) => void; onCheckLists?: () => void;
 }
-export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, followLabel, onFollow, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute, onLess, order = [], times, forYou, onPlace, onCheckLists}: HomeProps) {
+export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, needs = [], accounts, followLabel, onFollow, canAdd = true, canArrange = true, mine = false, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute, onLess, order = [], times, forYou, onPlace, onCheckLists}: HomeProps) {
   const [adding, setAdding] = useState(false), [allLists, setAllLists] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
   // A For you row switched off is listed under Not on Home only for someone without Add row, who could not bring one back otherwise;
   // with Add row, "Another For you row" does that, and the For you rows already on Home say there are some.
@@ -200,6 +206,9 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
         {theirs.length ? <><ul className="picks compact">{(allLists ? theirs : theirs.slice(0, 5)).map(item => choice(item, `${item.source.split(' · ')[0]} · ${item.kind.replace(/^List · /, '')}`))}</ul>
           {theirs.length > 5 && !allLists && <button type="button" className="link more" onClick={() => setAllLists(true)}>Show all {theirs.length}</button>}</>
           : <p className="muted small">{listsHint}</p>}</>}
+      {/* Rows an account would add: not to be picked yet, so greyed, each saying what it needs and where to connect it. */}
+      {!!needs.length && accounts && <><h3 className="sheet-sub">With an account</h3>
+        <ul className="picks compact">{needs.map(item => <li key={item.id} className="needs"><span><strong>{item.title}</strong><small>Needs {item.needs}.</small></span><a className="link" href={accounts} aria-label={`Connect ${item.needs}, for ${item.title}`}>Connect</a></li>)}</ul></>}
       {!!sections.length && <h3 className="sheet-sub">Ready-made rows</h3>}
       {sections.map(section => {
         const items = <ul className="picks compact">{section.items.map(item => choice(item, because[item.id] && level === 'own' ? `Because you watched ${because[item.id]}` : item.kind === 'Series' ? 'Shows' : item.kind.replace(/^Collection · /, '')))}</ul>;
@@ -220,7 +229,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
       {/* The name shown on Home and in the apps; what fills the row stays the same. */}
       <h3 className="sheet-sub first">Name</h3><NameField label="Name of this row" value={folder.title} onSave={title => set(folder.id, {title}, `Renamed to “${title}”`)}/>
       {/* Checked once a day; a list added or renamed since can be brought in at once. */}
-      {folder.id === SHELF_ROW && onCheckLists && <><h3 className="sheet-sub">Lists</h3><p className="sheet-lead">Checked once a day for lists added, removed or renamed on Trakt.</p>
+      {isShelf(folder.id) && onCheckLists && <><h3 className="sheet-sub">Lists</h3><p className="sheet-lead">Checked once a day for lists added, removed or renamed on Trakt.</p>
         <button type="button" className="ghost" onClick={() => {setArranging(null); onCheckLists();}}>{mine ? 'Check my lists now' : 'Check their lists now'}</button></>}
       {!find && <><h3 className="sheet-sub">Titles already watched</h3>
       <Segments label="Titles already watched" value={folder.watched ?? 'follow'} onChange={value => set(folder.id, {watched: value === 'follow' ? undefined : value}, 'Saved')} options={[{value: 'follow', label: 'Default'}, {value: 'hide', label: 'Hide here'}, {value: 'show', label: 'Show here'}]}/>

@@ -1,7 +1,7 @@
 import {Fragment, useEffect, useRef, useState} from 'react';
 import type {ReactNode} from 'react';
 import {QRCodeSVG} from 'qrcode.react';
-import {FOR_YOU_KINDS, SAMPLE, isPlace, orderOf, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, resolve, samplePassword, samplePin, slug, traktRows} from './data';
+import {FOR_YOU_KINDS, SAMPLE, isPlace, orderOf, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, currentPicks, linkedOf, needOf, resolve, samplePassword, samplePin, slug, traktRows} from './data';
 import type {Device, Group, Hub, Miss, Person, Row, Settings} from './data';
 import {Activity} from './activity';
 import {GroupOrder, HomeEditor, moved} from './home';
@@ -562,7 +562,7 @@ function useOwnPicks(page: PageProps, person: Person, mine: boolean) {
   }, [who, mine, connected]);
   return own.who === who && mine ? own : {lists: [] as Found[], because: {} as Record<string, string>};
 }
-function PersonSections({page, person, tab, mine}: {page: PageProps; person: Person; tab: string; mine: boolean}) {
+function PersonSections({page, person, tab, mine, base = `/person/${person.id}`}: {page: PageProps; person: Person; tab: string; mine: boolean; base?: string}) {
   const {hub, update, toast} = page, group = hub.groups.find(item => item.id === person.groupId)!, own = useOwnPicks(page, person, mine);
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
   const props = editor(page, group, person, mine), rows = personRows(hub, person), order = orderOf(props.resolved.values.forYouOrder);
@@ -570,15 +570,23 @@ function PersonSections({page, person, tab, mine}: {page: PageProps; person: Per
   const canArrange = !mine || person.can.arrange, canAdd = !mine || person.can.arrange && person.can.add;
   // Work their Home asks the hub for on the next run; the page reads again either way, so the row says where it stands.
   const ask = (action: string, note: string) => void page.live!.call('POST', `/api/people/${person.id}/${action}`, {}).then(() => toast(note), fail(toast)).then(() => page.live!.reload());
+  // What they would gain with an account: their own rows that wait for one, for Add row to list greyed. The rows of their Trakt
+  // lists are collections, which only apps on their own AIOMetadata setup show.
+  const has = linkedOf(hub, person), needs = [...traktRows().map(row => ({id: row.id, title: row.title, needs: needOf(row.id, has)})),
+    ...(hub.front ? [{id: 'trakt-lists', title: 'My Trakt lists', needs: has.trakt ? '' : 'Trakt'}, {id: 'trakt-liked-lists', title: 'Trakt lists I liked', needs: has.trakt ? '' : 'Trakt'}] : [])].filter(item => item.needs);
+  // Where a row of their own comes from, when that depends on their accounts: said on the row ("From Trakt").
+  const from = (row: Row) => !row.core || !['watchlist', 'recommended-movies', 'recommended-series', 'recently-watched'].includes(row.id) ? undefined
+    : row.source === 'What was watched' ? (mine ? 'From what you’ve watched' : 'From what they’ve watched') : row.source === 'Played here' ? (mine ? 'From what you’ve played here' : 'From what they’ve played here') : `From ${row.source}`;
   return <>
     {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} mine={mine} person={person.id} level="own" rows={rows} front={!!hub.front} canAdd={canAdd} canArrange={canArrange}
-      tag={row => row.origin === 'own' && !row.core ? (mine ? 'Yours' : 'Personal') : undefined}
+      tag={row => row.origin === 'own' && !row.core ? (mine ? 'Yours' : 'Personal') : from(row)}
+      needs={needs} accounts={`#${base}/accounts`}
       lists={page.live ? own.lists : ownLists(person)} listsHint={page.live ? undefined : 'Connect Trakt or MDBList under Accounts to pick from your own lists.'}
       because={own.because} limit={props.resolved.values.limit} listsOk={!!hub.mdblist || person.lists} keyHint={mine ? 'Your own MDBList key, under Accounts, works too.' : <>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>}
       onChange={(next: Row[], note) => edit(target => {
         // Only a Trakt row (or a row for children) switched on or off while following the Home above: kept as their choice, so they still follow it.
         const flipped = !target.rows && next.length === rows.length && next.every((row, at) => row.id === rows[at].id) ? next.filter((row, at) => row.on !== rows[at].on) : [];
-        if (flipped.length === 1 && pickable(flipped[0].id)) target.picks = {...target.picks, [flipped[0].id]: flipped[0].on}; else target.rows = next;
+        if (flipped.length === 1 && pickable(flipped[0].id)) target.picks = {...currentPicks(target.picks, has), [flipped[0].id]: flipped[0].on}; else target.rows = next;
       }, note)}
       onMute={kind => props.set('forYouOff', [...(props.resolved.values.forYouOff ?? []), kind], `${FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'That kind'} won’t be picked`)}
       // "Less" from a For you row: that kind one step down their own order of kinds, so it is picked a little less from the next pick.
@@ -805,10 +813,14 @@ function Background({hub}: {hub: Hub}) {
     {name: 'Plays missing from MDBList', every: `For everyone who keeps progress in MDBList, every day from ${time(start)}`, last: jobs.listers ? ran(jobs.listed ?? null) : 'Nobody keeps progress in MDBList yet',
       next: jobs.listers ? `next run ${day(jobs.listed && new Date(jobs.listed * 1000).toISOString().slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? start + DAY_MS : Math.max(start, next))}` : 'once someone does'},
     ...(hub.front && jobs.forYouHour !== undefined ? [forYouJob(jobs, now, time, day, ran)] : []),
-    // Each My Trakt lists row: its lists and pictures looked at again a day after the last time (shelf.ts), one person a run, and
+    // Each row of someone's Trakt lists (their own, the ones they liked): its lists and pictures looked at again a day after the last time (shelf.ts), one person a run, and
     // sooner when someone asks or their lists changed. One due now (asked for, at 0) is under way, not due in 1970.
-    ...(hub.front ? [{name: 'My Trakt lists rows', every: 'For everyone every day; for one person when their lists change or they press Check now', last: `${ran(jobs.shelved ?? null)}${jobs.shelves ? ` · ${jobs.shelves} ${jobs.shelves === 1 ? 'person' : 'people'}` : ''}`,
+    ...(hub.front ? [{name: 'Trakt lists rows', every: 'For everyone every day; for one person when their lists change or they press Check now', last: `${ran(jobs.shelved ?? null)}${jobs.shelves ? ` · ${jobs.shelves} ${jobs.shelves === 1 ? 'person' : 'people'}` : ''}`,
       next: typeof jobs.shelfDue === 'number' ? (jobs.shelfDue + 86_400) * 1000 > now ? `next run ${day((jobs.shelfDue + 86_400) * 1000)}` : 'under way' : 'once someone adds one'}] : []),
+    // Recommended Movies and Shows where Trakt does not fill them, or under a content limit (worker/recs.ts): worked out from what
+    // each person watched, one person a run and once a day each, in a run with nothing else to do. It asks TMDB with the hub's key.
+    {name: 'Recommended rows', every: `For everyone with a Recommended row on Home, every day from ${time(start)}`, last: `${ran(jobs.recsAt ?? null)}${jobs.recs ? ` · ${jobs.recs} ${jobs.recs === 1 ? 'person' : 'people'}` : ''}`,
+      next: !hub.tmdb ? 'once the hub has a TMDB key' : typeof jobs.recsDue === 'number' ? (jobs.recsDue + 86_400) * 1000 > now ? `next run ${day((jobs.recsDue + 86_400) * 1000)}` : 'under way' : hub.people.length ? `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'once someone is added'},
   ];
   return <section>
     <div className="section-head"><div><h2>Background work</h2><p className="muted">The hub does these by itself for everyone, one person at a time. Buttons on a person’s own page act for that person only, right away.</p></div></div>
@@ -973,7 +985,7 @@ export function JoinPage(page: PageProps & {id: string; tab: string; base?: stri
       {!person.devices.length && <a href={`#${base}/devices`}><span className="check" aria-hidden="true">→</span><span><strong>Watch on a device</strong><small>Phone, TV or laptop. Takes a minute.</small></span></a>}
       {!person.trakt && SAMPLE && <a href={`#${base}/accounts`}><span className="check" aria-hidden="true">→</span><span><strong>Connect Trakt</strong><small>Optional. Adds your watchlist and recommendations.</small></span></a>}
     </div>}
-    <PersonSections page={page} person={person} tab={tab === 'playback' && !person.can.playback ? 'home' : tab} mine/>
+    <PersonSections page={page} person={person} tab={tab === 'playback' && !person.can.playback ? 'home' : tab} mine base={base}/>
     {tab === 'you' && <section>
       <div className="card settings">
         <Setting title="Name"><NameField label="Your name" value={person.name} onSave={value => edit(target => {target.name = value;}, 'Renamed')}/></Setting>

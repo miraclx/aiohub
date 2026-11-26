@@ -35,19 +35,21 @@ export interface Shown {key: string; kind: string; name: string; why?: Why; seed
 /* A person's For you today (foryou.ts): each place's pick, the other options from the day's pick, the kinds with nothing today and
    why ('off', 'limit', 'watching', 'none'), and the titles they never want picked from again. */
 export interface ForYouDetail {places: Record<string, Shown>; options: Shown[]; none: Record<string, string>; never: {seed: string; title: string}[]}
-/* pickedAt: when their For you places were last picked (unix seconds); shelfAt: when their My Trakt lists row was last worked out,
-   0 while it waits to be again. */
+/* pickedAt: when their For you places were last picked (unix seconds); shelfAt: when their Trakt lists rows were last worked out,
+   0 while they wait to be again; shelfTiles: each list's name and picture (`liked`: one they liked, not their own). */
 /* Whether their Trakt is synced with their progress (worker/sync.ts), and how that stands: `ask` while they have yet to answer,
    the last good pass, since when it has failed and why, since when a call has waited for Trakt, and until when Trakt asked the
    hub to wait (unix seconds). */
 export interface Matching {on: boolean; earlier: boolean; ask: boolean; good: number; failing: number | null; why: string | null; waiting: number | null; until?: number}
-export interface Person {matching?: Matching | null; forYou?: Record<string, string>; forYouKinds?: Record<string, string>; pickedAt?: number; forYouDetail?: ForYouDetail; shelfAt?: number; shelfTiles?: {title: string; image: string}[]; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; pin: string | null; password: string; devices: Device[]}
+export interface Person {matching?: Matching | null; forYou?: Record<string, string>; forYouKinds?: Record<string, string>; pickedAt?: number; forYouDetail?: ForYouDetail; shelfAt?: number; shelfTiles?: {title: string; image: string; liked?: boolean}[]; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; drift?: Drift | null; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
 export interface Hub {
   // The five-minute background work (manager only): last run (unix seconds), runs counted, calls waiting for Trakt, the last day the
   // Trakt/MDBList check finished, for how many people, and how many are part way through.
-  jobs?: {shelved?: number | null; shelves?: number; shelfDue?: number | null; last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number;
+  jobs?: {shelved?: number | null; shelves?: number; shelfDue?: number | null;
+    /* Recommended rows worked out by the hub (worker/recs.ts): the last time for anyone here, for how many people, and the oldest still kept. */
+    recsAt?: number | null; recs?: number; recsDue?: number | null; last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number;
     /* For you (each person's apps on their own AIOMetadata only): people picked for today of everyone, the last pick, whether the
        hub's apps are waiting to be brought in step, and the UTC hour picking starts. */
     picked?: number; pickedAt?: number | null; everyone?: number; syncing?: number; forYouHour?: number;
@@ -83,16 +85,17 @@ export const defaultRows = (): Row[] => [
   row('popular-movies', 'Popular Movies', 'Movies', 'TMDB', false),
   row('popular-series', 'Popular Shows', 'Series', 'TMDB', false),
 ];
-// A person's own rows, from the accounts they connect, sit above the shared ones: saved first, then picked for them.
-// Up next is off: nothing writes plays back to Trakt yet, so it would fall behind. The player's own Continue watching covers it.
-// Each watchlist is its own row. Recently Watched is one row whose source follows their accounts (sourceOf, below).
+// A person's own rows, from their accounts and their watching, sit above the shared ones: saved first, then picked for them.
+// Up Next and New for you start off: the player's own Continue watching and Next Up cover most of it.
+// One Watchlist, from Trakt, MDBList or both merged. Recommended is Trakt's, or without Trakt worked out from what they watched
+// (recs.ts on the Worker). Recently Watched is one row whose source follows their accounts (sourceOf, below).
 export const traktRows = (): Row[] => [
   {id: 'watchlist', title: 'Watchlist', kind: 'Movies & shows, newest first', source: 'Trakt', origin: 'own', on: true, core: true},
-  {id: 'mdblist-watchlist', title: 'Watchlist', kind: 'Movies & shows, newest first', source: 'MDBList', origin: 'own', on: true, core: true},
   {id: 'recommended-movies', title: 'Recommended Movies', kind: 'Movies', source: 'Trakt', origin: 'own', on: true, core: true},
   {id: 'recommended-series', title: 'Recommended Shows', kind: 'Series', source: 'Trakt', origin: 'own', on: true, core: true},
   {id: 'up-next', title: 'Up Next', kind: 'Series', source: 'Trakt', origin: 'own', on: false, core: true},
-  {id: 'recently-aired', title: 'Recently Aired for You', kind: 'Series', source: 'Trakt', origin: 'own', on: false, core: true},
+  // New episodes of the shows they watch, and movies on their watchlist that are out to stream now (rows.ts on the Worker).
+  {id: 'new-for-you', title: 'New for you', kind: 'Movies & shows, newest first', source: 'Trakt', origin: 'own', on: false, core: true},
   // Looking back comes last: Continue Watching and Next Up already cover picking something up again.
   {id: 'recently-watched', title: 'Recently Watched', kind: 'Movies & shows, latest first', source: 'Trakt', origin: 'own', on: true, core: true},
 ];
@@ -100,11 +103,43 @@ export const TRAKT_IDS = new Set(traktRows().map(row => row.id));
 /* Which accounts a person has connected: Trakt (to the hub, or the older way through AIOMetadata), and an MDBList key; and whether
    the hub can show something they watched (Trakt connected to the hub, an MDBList key, or a play here). */
 export interface Linked {trakt: boolean; lists: boolean; watched: boolean; kids?: boolean; front?: boolean}
-/* Whether a person's own row can be filled for them: the MDBList watchlist with MDBList, Recently Watched once there is something
-   to put in it (from Trakt, else MDBList, else what they played here), the rest with Trakt. */
-export const reaches = (id: string, has: Linked) => id === 'recently-watched' ? has.watched : id === 'mdblist-watchlist' ? has.lists : has.trakt;
-/* Rows on the same Home with the same name, on together and from different places, each say where they come from ("Watchlist ·
-   Trakt", "Watchlist · MDBList"); otherwise the plain name. Only what is shown changes: the name kept stays the plain one. */
+/* Whether a person's own row can be filled for them: the Watchlist with Trakt or MDBList, Recently Watched once there is something
+   to put in it (from Trakt, else MDBList, else what they played here), Recommended with Trakt or once they watched something,
+   the rest with Trakt. */
+export const reaches = (id: string, has: Linked) => id === 'recently-watched' ? has.watched : id === 'watchlist' ? has.trakt || has.lists
+  : id === 'recommended-movies' || id === 'recommended-series' ? has.trakt || has.watched : has.trakt;
+/* The account a row waits for, for Add row to say ("Needs Trakt."): '' when it is filled already, or waits for watching rather
+   than an account. */
+export const needOf = (id: string, has: Linked) => reaches(id, has) || !TRAKT_IDS.has(id) || id === 'recently-watched' || id.startsWith('recommended-') ? '' : id === 'watchlist' ? 'Trakt or MDBList' : 'Trakt';
+/* Rows kept under an id from before: Recently Aired became New for you, and the MDBList watchlist folded into the one Watchlist.
+   Nothing kept is rewritten for it. A Home is read as what its rows are now, each in its place and on or off as it was: an old
+   row whose new one is on the same Home too joins it (on if either was), and a name nobody changed becomes the new one. A Home
+   saved again is saved under the new ids. */
+export const WAS: Record<string, string> = {'recently-aired': 'new-for-you', 'mdblist-watchlist': 'watchlist'};
+export function current(rows: Row[]): Row[] {
+  if (!rows.some(row => WAS[row.id] || row.id === 'watchlist')) return rows;
+  const here = new Set(rows.map(row => row.id)), on = new Set(rows.filter(row => row.on).map(row => WAS[row.id] ?? row.id)), now = new Map(traktRows().map(row => [row.id, row]));
+  return rows.flatMap(row => {
+    const id = WAS[row.id] ?? row.id, to = now.get(id)!;
+    if (id !== row.id && here.has(id)) return [];
+    // A watchlist kept while two were on says whose it was ("Watchlist · Trakt"): there is one now.
+    if (id === 'watchlist') return [{...row, id, title: row.title.replace(/ · (Trakt|MDBList)$/, ''), source: to.source, on: on.has(id)}];
+    return id === row.id ? [row] : [{...row, id, title: row.title === 'Recently Aired for You' ? to.title : row.title, kind: to.kind, source: to.source}];
+  });
+}
+/* The same for what someone following the Home above switched on or off for themselves. With Trakt too, the MDBList watchlist
+   started off, so only switching it on says anything about the one Watchlist; alone, it was their watchlist. */
+export function currentPicks(picks: Record<string, boolean> | undefined, has: Linked): Record<string, boolean> {
+  const {'recently-aired': aired, 'mdblist-watchlist': lists, ...out} = picks ?? {};
+  if (aired !== undefined) out['new-for-you'] ??= aired;
+  if (lists !== undefined && has.lists) {
+    if (!has.trakt) out.watchlist = lists;
+    else if (lists) out.watchlist = true;
+  }
+  return out;
+}
+/* Rows on the same Home with the same name, on together and from different places, each say where they come from ("Top 250 ·
+   TMDB", "Top 250 · MDBList"); otherwise the plain name. Only what is shown changes: the name kept stays the plain one. */
 const placeOf = (row: Row) => row.source.split(' · ')[0];
 const plainName = (row: Row) => {const tail = ` · ${placeOf(row)}`; return row.title.endsWith(tail) ? row.title.slice(0, -tail.length) : row.title;};
 export function named(rows: Row[]): Row[] {
@@ -116,30 +151,27 @@ export function named(rows: Row[]): Row[] {
   });
 }
 /* A Home's rows with each of a person's own rows in its place: where this Home put it, else right after the one before it in
-   traktRows() (the first at the top). A hub or group Home keeps them even though only someone with the account gets them: that is
-   how the manager places them and chooses whether each starts on. */
+   traktRows() (the first at the top). A hub or group Home keeps them even though only someone they can be filled for gets them:
+   that is how the manager places them and chooses whether each starts on. */
 export function placed(rows: Row[]): Row[] {
-  const out = [...rows], all = traktRows();
+  const out = [...current(rows)], all = traktRows();
   all.forEach((row, n) => {if (!out.some(item => item.id === row.id)) out.splice(n ? out.findIndex(item => item.id === all[n - 1].id) + 1 : 0, 0, {...row, origin: 'hub'});});
   return named(out);
 }
-/* A person's rows: their own Home if they made one, else the Home above with the rows their accounts can fill, each on or off as
-   they last chose (`picks`), so switching one keeps them following the Home above. With both watchlists, the MDBList one starts off.
-   A row they gain after making a Home of their own comes at its end, off; the MDBList watchlist comes after the Trakt one, on when
-   it is their only watchlist. */
+/* A person's rows: their own Home if they made one, else the Home above with the rows that can be filled for them, each on or off
+   as they last chose (`picks`), so switching one keeps them following the Home above. A row they gain after making a Home of their
+   own comes at its end, off; the Watchlist at the top, on. */
 export function rowsOf(own: Row[] | null, shared: Row[], has: Linked, picks?: Record<string, boolean>): Row[] {
-  const fits = (row: Row) => !TRAKT_IDS.has(row.id) || reaches(row.id, has);
+  const fits = (row: Row) => !TRAKT_IDS.has(row.id) || reaches(row.id, has), chosen = currentPicks(picks, has);
   // Under the Kids limit the rows for children come too (see KIDS_IDS), unless this Home has them already.
   if (own) {
-    const out = withForYou(own.filter(fits), !!has.front);
+    const out = withForYou(current(own).filter(fits), !!has.front);
     if (has.kids) for (const row of kidsRows()) if (!out.some(item => item.id === row.id)) out.push({...row, on: false});
-    for (const row of traktRows()) if (reaches(row.id, has) && !out.some(item => item.id === row.id)) {
-      if (row.id !== 'mdblist-watchlist') {out.push({...row, on: false}); continue;}
-      out.splice(out.findIndex(item => item.id === 'watchlist') + 1, 0, {...row, on: !has.trakt});
-    }
+    // The Watchlist, gained with a first account, comes first and on, as a watchlist always did.
+    for (const row of traktRows()) if (reaches(row.id, has) && !out.some(item => item.id === row.id)) {if (row.id === 'watchlist') out.unshift(row); else out.push({...row, on: false});}
     return named(out);
   }
-  return named(withForYou(withKids(placed(shared), !!has.kids), !!has.front).filter(fits).map(row => !pickable(row.id) ? row : picks?.[row.id] !== undefined ? {...row, on: picks[row.id]} : row.id === 'mdblist-watchlist' && has.trakt ? {...row, on: false} : row));
+  return named(withForYou(withKids(placed(shared), !!has.kids), !!has.front).filter(fits).map(row => pickable(row.id) && chosen[row.id] !== undefined ? {...row, on: chosen[row.id]} : row));
 }
 /* Collection folders under a content limit, known by their row and cover. Kids get only the folders made for children: the others
    are filtered title by title after fetching, so they come thin, and shows with a rating read loosely slip through. Teen loses Adult
@@ -156,6 +188,9 @@ const SERVICES: Record<string, {provider: string; region: string}> = {
   '/covers/00.jpg': {provider: '350', region: 'GB'}, '/covers/01.jpg': {provider: '8', region: 'GB'}, '/covers/02.jpg': {provider: '337', region: 'GB'}, '/covers/03.jpg': {provider: '1899', region: 'NL'}, '/covers/04.jpg': {provider: '9', region: 'US'}, '/covers/05.jpg': {provider: '2303', region: 'US'},
   '/covers/08.jpg': {provider: '350', region: 'GB'}, '/covers/09.jpg': {provider: '8', region: 'GB'}, '/covers/10.jpg': {provider: '337', region: 'GB'}, '/covers/11.jpg': {provider: '1899', region: 'NL'}, '/covers/12.jpg': {provider: '9', region: 'US'}, '/covers/13.jpg': {provider: '2303', region: 'US'},
 };
+/* The US ratings each content limit lets through, for movies and for shows: what a TMDB search is asked for under it (native.ts),
+   and what a title the hub lists itself must be rated (recs.ts). */
+export const CERTS: Record<string, Record<'movie' | 'series', string>> = {kids: {movie: 'G|PG', series: 'TV-Y|TV-Y7|TV-G|TV-PG'}, teen: {movie: 'G|PG|PG-13', series: 'TV-Y|TV-Y7|TV-G|TV-PG|TV-14'}};
 export const serviceOf = (row: string, image: string, limit: Limit) => limit !== 'all' && (row === 'movies-by-service' || row === 'shows-by-service') ? SERVICES[image] ?? null : null;
 export const folderFits = (row: string, image: string, limit: Limit) => serviceOf(row, image, limit) ? true : limit === 'kids' ? !!KIDS_ONLY[row]?.includes(image) : limit !== 'teen' || !NOT_FOR_TEEN[row]?.includes(image);
 /* The rows for children a Home under the Kids limit gets without anyone adding them: on, right after a person's own rows, and
@@ -217,7 +252,8 @@ export function fillOrder<T extends {kind: string; key: string}>(found: T[], ord
     for (const kind of order) if (left.get(kind)?.length && (had.get(kind) ?? 0) <= round) out.push(left.get(kind)!.shift()!);
   return [...out, ...rest.filter(item => !taken.has(item.key))];
 }
-/* Rows someone following the Home above can switch on or off for themselves. */
+/* Rows someone following the Home above can switch on or off for themselves. A choice kept under an id from before (WAS) is
+   still read (currentPicks). */
 export const PICKABLE = new Set([...TRAKT_IDS, ...KIDS_IDS]);
 export const pickable = (id: string) => PICKABLE.has(id) || isPlace(id);
 /* Where a row's titles come from, as shown: Trending is Trakt's chart, or under a content limit a TMDB search (native.ts). */
@@ -327,8 +363,16 @@ export const hasLists = (person: Person) => person.lists || !!person.listsKept;
 /* Where a person's Recently Watched comes from: Trakt connected to the hub, else their MDBList, else what they played here. The
    older Trakt link through AIOMetadata does not count: the hub cannot read it. */
 export const sourceOf = (person: Person) => (person.history ? !person.history.again : SAMPLE && person.trakt) ? 'Trakt' : hasLists(person) ? 'MDBList' : 'Played here';
-export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), {trakt: hasTrakt(person), lists: hasLists(person), watched: SAMPLE || hasLists(person) || !!person.history && !person.history.again || !!person.played, kids: resolve(hub, hub.groups.find(item => item.id === person.groupId), person).values.limit === 'kids', front: !!hub.front}, person.picks)
-  .map(row => row.id === 'recently-watched' ? {...row, source: sourceOf(person)} : isPlace(row.id) && person.forYou?.[row.id] ? {...row, title: person.forYou[row.id], pick: person.forYouKinds?.[row.id] ?? 'popular'} : row);
+/* What can be filled for a person, from their accounts and their watching. */
+export const linkedOf = (hub: Hub, person: Person): Linked => ({trakt: hasTrakt(person), lists: hasLists(person), watched: SAMPLE || hasLists(person) || !!person.history && !person.history.again || !!person.played,
+  kids: resolve(hub, hub.groups.find(item => item.id === person.groupId), person).values.limit === 'kids', front: !!hub.front});
+/* Where each of a person's own rows comes from, as their Home says it: the one Watchlist from whichever of Trakt and MDBList they
+   have, Recommended from Trakt or else from what they watched. */
+const fromOf = (id: string, person: Person): string | undefined => id === 'recently-watched' ? sourceOf(person)
+  : id === 'watchlist' ? (hasTrakt(person) ? hasLists(person) ? 'Trakt and MDBList' : 'Trakt' : 'MDBList')
+  : id === 'recommended-movies' || id === 'recommended-series' ? (hasTrakt(person) ? 'Trakt' : 'What was watched') : undefined;
+export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), linkedOf(hub, person), person.picks)
+  .map(row => fromOf(row.id, person) ? {...row, source: fromOf(row.id, person)!} : isPlace(row.id) && person.forYou?.[row.id] ? {...row, title: person.forYou[row.id], pick: person.forYouKinds?.[row.id] ?? 'popular'} : row);
 
 const words = ['maple', 'river', 'copper', 'lantern', 'meadow', 'harbor', 'ember', 'willow', 'pebble', 'comet'];
 function seed(text: string) {let h = 11; for (const c of text) h = (h * 33 + c.charCodeAt(0)) >>> 0; return h;}

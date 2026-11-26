@@ -21,5 +21,6 @@ npx vite build >/dev/null 2>&1
 fresh; node --test tests/api.test.mjs 2>&1 | grep -E "^ℹ (tests|pass|fail)|✖"
 fresh; node tests/browser.mjs "$@" 2>&1 | tail -14
 # The same site with every person on their own AIOMetadata setup.
-fresh --var FRONT:aiometadata --var FLIXPATROL_API:http://127.0.0.1:8798/flix; node --test tests/aiom.test.mjs 2>&1 | grep -E "^ℹ (tests|pass|fail)|✖" | sed "s/^/aiom: /"
+# RECS_HOUR: the Recommended rows are worked out only in runs the tests date late in the day, so the other runs stay as they were.
+fresh --var FRONT:aiometadata --var FLIXPATROL_API:http://127.0.0.1:8798/flix --var RECS_HOUR:23; node --test tests/aiom.test.mjs 2>&1 | grep -E "^ℹ (tests|pass|fail)|✖" | sed "s/^/aiom: /"
 stop

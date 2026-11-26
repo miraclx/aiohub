@@ -15,7 +15,7 @@ AIOHub is a small site that sets up Jellyfin player apps for a household or a gr
 
 When a person connects Trakt, the hub:
 
-- reads their history, watchlist and lists, to fill their rows and to pick For you rows for them;
+- reads their history, watchlist, lists and recommendations, their calendar of new episodes and releases, and the shows they dropped or hid, to fill their rows and to pick For you rows for them;
 - adds to their history what they watch in their apps, as it plays. Trakt is told nothing about something opened and closed again within a couple of minutes;
 - once they turn sync on, syncs their Trakt with their progress from then on: plays and paused spots missing on either side are added, and nothing is removed. Coming from Trakt, that covers what they watched there in the last 14 days and everything after;
 - adds what they watched here before connecting only if they agree, after showing them the list.
