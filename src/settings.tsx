@@ -4,8 +4,8 @@ import {DragDropProvider} from '@dnd-kit/react';
 import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
 import type {Live} from './live';
 import {FIXTURES, FormatterPreviewClient} from 'formatter-preview';
-import {FOR_YOU_KINDS, allServices, defaultAddons, orderOf, signUp} from './data';
-import type {Hub, Level, Resolved, Settings, Template} from './data';
+import {FOR_YOU_KINDS, allServices, defaultAddons, fillOrder, orderOf, signUp} from './data';
+import type {ForYouDetail, Hub, Level, Resolved, Settings, Shown, Template} from './data';
 import {Chips, Confirm, Segments, Setting, Switch, hash} from './ui';
 import type {Scope} from './ui';
 import {Grip, moved} from './home';
@@ -147,38 +147,74 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
   </section>;
 }
 
-/* One kind of pick in Kinds of pick: dragged into place, switched on or off. Because you watched says how far back it looks. */
-function KindLine({id, title, index, on, limited, children, onSwitch}: {id: string; title: string; index: number; on: boolean; limited: boolean; children?: ReactNode; onSwitch: (on: boolean) => void}) {
+/* What each kind picks, in a line, for whoever is looking (foryou.ts, candidates, is what this says). */
+type Words = {you: string; your: string; youve: string};
+const ABOUT: Record<string, (w: Words) => string> = {
+  series: w => `The next films in a series ${w.youve} started, from ${w.your} four latest films.`,
+  pickup: w => `Shows ${w.you} left partway, last watched between three weeks and a year ago.`,
+  because: w => `Titles like one ${w.you} watched. From lately: ${w.your} four latest and two older ones. From any time: ${w.your} two latest and four older.`,
+  crew: w => `Films by the directors of ${w.your} two latest films.`,
+  genres: w => `Top-rated films in the genre that comes up most in what ${w.you} watched lately.`,
+  seasonal: () => 'Christmas or Halloween films, only in season.',
+  top10: w => `What’s most watched on Netflix where ${w.you} last played, or worldwide. Not from ${w.your} own watching.`,
+  different: w => `Well-rated films in a genre ${w.you} haven’t been watching, a different one each day.`,
+};
+/* One kind of pick in Kinds of pick: dragged into place, switched on or off, with what it picks. Because you watched says how far
+   back it looks. */
+function KindLine({id, title, about, index, on, limited, children, onSwitch}: {id: string; title: string; about: string; index: number; on: boolean; limited: boolean; children?: ReactNode; onSwitch: (on: boolean) => void}) {
   const sortable = useSortable({id, index});
   return <li ref={sortable.ref} className={`${sortable.isDragging ? 'dragging' : ''}${!on || limited ? ' dim' : ''}`}>
     <Grip handleRef={sortable.handleRef} label={`Move ${title}`}/>
-    <div><strong>{title}</strong>{limited && <small>Not under this content limit</small>}{on && !limited && children}</div>
+    <div><strong>{title}</strong><small>{about}</small>{limited && <small>Not under this content limit</small>}{on && !limited && children}</div>
     <Switch label={title} checked={on} onChange={onSwitch}/>
   </li>;
 }
+/* What a person's For you rows would hold if picked now: today's picks and other options (kept by the daily pick, foryou.ts) laid
+   out by this order and these switches, with the daily pick's own rule (fillOrder). Kept rows stay. A place with nothing left
+   holds a popular stand-in (undefined). */
+function previewOf(detail: ForYouDetail, places: string[], order: string[], off: string[]): {pick?: Shown; kept?: boolean}[] {
+  const kept = (place: string) => {const pick = detail.places[place]; return pick?.keep && !off.includes(pick.kind) ? pick : undefined;};
+  const today = places.filter(place => !kept(place)).flatMap(place => detail.places[place] ? [detail.places[place]] : []);
+  const all = fillOrder([...today, ...detail.options].filter(pick => pick.kind !== 'popular' && !off.includes(pick.kind)), order.filter(kind => !off.includes(kind)), places.flatMap(place => kept(place) ? [kept(place)!] : []));
+  let next = 0;
+  return places.map(place => kept(place) ? {pick: kept(place), kept: true} : {pick: all[next++]});
+}
+/* A pick's name after its kind's: "Inception" after "Because you watched", whole when it does not start so. */
+const after = (name: string, title: string) => name.startsWith(title) ? name.slice(title.length).replace(/^[\s:]+/, '').replace(/^./, letter => letter.toUpperCase()) : name;
 /* What the daily For you rows can pick from, on the Home tab (where those rows are): only where For you places exist, each
    person's apps on their own AIOMetadata setup. Set for the hub or a group, or changed for one person, like any setting. The kinds
-   come in order (dragged): a kind nearer the top is picked more often (foryou.ts). On a person's page also the titles they left out
-   for good, from a For you row, each of which can count again. */
-export function ForYouEditor({hub, resolved: {values, from}, scope, set, reset, never = [], onForget}: EditorProps & {never?: {seed: string; title: string}[]; onForget?: (item: {seed: string; title: string}) => void}) {
+   come in order (dragged), and the rows fill from the top of it (fillOrder). Folded to a line until opened. On a person's page it
+   shows what their rows would hold if picked now (`preview`), and the titles they left out for good, each of which can count again. */
+export function ForYouEditor({hub, resolved: {values, from}, scope, set, reset, mine, never = [], onForget, preview}: EditorProps & {never?: {seed: string; title: string}[]; onForget?: (item: {seed: string; title: string}) => void; preview?: {detail: ForYouDetail; places: string[]}}) {
+  const [open, setOpen] = useState(false);
   if (!hub.front) return null;
-  const order = orderOf(values.forYouOrder), off = values.forYouOff ?? [];
+  const order = orderOf(values.forYouOrder), off = values.forYouOff ?? [], on = order.filter(id => !off.includes(id));
   // Three settings shown as one: it says the nearest level any of them was changed at, and Reset puts all three back.
   const keys = ['forYouOrder', 'forYouOff', 'forYouBecause'] as const, rank: Record<Level, number> = {hub: 0, group: 1, own: 2};
   const at = keys.map(key => from[key]).reduce((a, b) => rank[b ?? 'hub'] > rank[a ?? 'hub'] ? b : a, 'hub' as Level);
   const kind = (id: string) => FOR_YOU_KINDS.find(item => item.id === id)!;
+  const words: Words = mine ? {you: 'you', your: 'your', youve: 'you’ve'} : {you: 'they', your: 'their', youve: 'they’ve'};
+  const hint = `Rows fill from the top: the first For you row gets the best of the first kind with something today, the next row the next kind, then round again. Drag to change the order. Switched off, a kind isn’t picked.${values.limit !== 'all' ? ' Under a content limit only director, genre, something different and seasonal picks are made.' : ''}`;
+  const shown = preview && previewOf(preview.detail, preview.places, order, off);
   return <section>
     <h3 className="sub">For you</h3>
     <div className="card settings">
-      <Setting column title="Kinds of pick" hint={`What the daily For you rows pick from. Drag to choose what comes first: the higher a kind, the more often it is picked. Switch one off and it isn’t picked.${values.limit !== 'all' ? ' Under a content limit only director, genre, something different and seasonal picks are made.' : ''}`} from={at} scope={scope} onReset={() => keys.forEach(key => reset(key))}>
+      <Setting column={open} title="Kinds of pick" hint={open ? hint : on.length ? `${kind(on[0]).title} first · ${on.length} of ${order.length} on` : 'All switched off'} from={at} scope={scope} onReset={() => keys.forEach(key => reset(key))}>
+        {!open ? <button type="button" className="ghost small" aria-expanded={false} onClick={() => setOpen(true)}>Change</button> : <>
         <DragDropProvider onDragEnd={event => {
           if (event.canceled || !isSortableOperation(event.operation) || !event.operation.source) return;
           const was = order.indexOf(String(event.operation.source.id)), to = event.operation.source.index;
           if (was >= 0 && was !== to) set('forYouOrder', moved(order, was, to), 'Order saved');
-        }}><ol className="kinds">{order.map((id, index) => <KindLine key={id} id={id} title={kind(id).title} index={index} on={!off.includes(id)} limited={values.limit !== 'all' && !kind(id).discover}
+        }}><ol className="kinds">{order.map((id, index) => <KindLine key={id} id={id} title={kind(id).title} about={ABOUT[id](words)} index={index} on={!off.includes(id)} limited={values.limit !== 'all' && !kind(id).discover}
           onSwitch={on => set('forYouOff', on ? off.filter(item => item !== id) : [...off, id], on ? `${kind(id).title} can be picked` : `${kind(id).title} won’t be picked`)}>
           {id === 'because' && <Segments label="Because you watched, from" value={values.forYouBecause ?? 'lately'} onChange={value => set('forYouBecause', value)} options={[{value: 'lately', label: 'From lately'}, {value: 'any', label: 'From any time'}]}/>}
         </KindLine>)}</ol></DragDropProvider>
+        {/* Worked out here as the order or a switch changes, from what the hub already has: nothing is asked of it. */}
+        {shown && !!shown.length && <div className="if-now" aria-label="If picked now"><h4>If picked now</h4>
+          <ol>{shown.map(({pick, kept}, n) => {const title = FOR_YOU_KINDS.find(item => item.id === pick?.kind)?.title ?? 'Popular';
+            return <li key={n}><strong>{title}</strong><small>{pick ? after(pick.name, title) || pick.why?.title : 'Until there’s more to go on'}{kept ? ' · kept' : ''}</small></li>;})}</ol>
+          <p className="muted small">From today’s options. The daily pick looks again at what {words.you} watched.</p></div>}
+        <button type="button" className="ghost small" aria-expanded onClick={() => setOpen(false)}>Done</button></>}
       </Setting>
       {scope.level === 'own' && !!never.length && <Setting column title="Not picked from" hint="Titles left out from a For you row. Nothing is picked from them until they count again.">
         <ul className="never">{never.map(item => <li key={item.seed}><span>{item.title}</span>{onForget && <button type="button" className="ghost small" onClick={() => onForget(item)}>Count again</button>}</li>)}</ul>

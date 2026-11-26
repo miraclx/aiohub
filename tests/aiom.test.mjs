@@ -34,11 +34,16 @@ const TMDB = {
     {id: 155, title: 'The Dark Knight', release_date: '2008-07-14', vote_average: 8.5}, {id: 999001, title: 'Not Out Yet', release_date: '2099-01-01', vote_average: 0}]},
   'tv/60622': {name: 'Fargo', genres: [{id: 80}, {id: 18}], last_episode_to_air: {season_number: 5, episode_number: 10}},
   'tv/1396': {name: 'Breaking Bad', genres: [{id: 18}], last_episode_to_air: {season_number: 5, episode_number: 16}, backdrop_path: '/bb-backdrop.jpg'},
+  // The Matrix, finished here late on (the For you test on a finished watch).
+  'movie/603/recommendations': {results: [{id: 604, title: 'The Matrix Reloaded', vote_average: 8.9}, ...films(7900, 9, 8.9)]},
+  'movie/603': {belongs_to_collection: {id: 2344, name: 'The Matrix Collection'}, genres: [{id: 878}, {id: 28}], credits: {crew: [{id: 9339, name: 'Lana Wachowski', job: 'Director'}]}},
+  'collection/2344': {name: 'The Matrix Collection', parts: [{id: 603, title: 'The Matrix', release_date: '1999-03-30', vote_average: 8.2}, {id: 604, title: 'The Matrix Reloaded', release_date: '2003-05-15', vote_average: 7.0}]},
 };
 const fake = {tmdb: [], flix: [], configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: [], ticks: [], positions: [], slow: 0, busy: 0, most: 0, catalogs: []};
 const uuidOf = n => `${String(n).padStart(8, '0')}-0000-4000-8000-0000000000aa`, ITEM = 'a1110100-0000-eaf7-78ff-ffffff010000';
 // What Ada's own server holds: a film she watched, an episode she is partway through, one MDBList already has, and their show.
 const FILM = 'a1110100-0000-eaf7-78ff-ffffff050000', LEFT = 'a1110100-0000-eaf7-78ff-ffffff060000', EP3 = 'a1110100-0000-eaf7-78ff-ffffff070000';
+const MATRIX = 'a1120100-0000-0002-5bff-ffffff010000', OTHER = 'a1110100-0000-eaf7-78ff-ffffff080000';
 const VIEW = 'b220f707-f7e5-0b8e-9314-1314e52c6304', EP = 'a1110100-0000-eaf7-78ff-ffffff020000', EP_HELD = 'a1110100-0000-eaf7-78ff-ffffff030000', SHOW = 'a1210200-0000-eaf7-78ff-ffffff040000';
 const HELD = {
   [ITEM]: {Id: ITEM, Type: 'Movie', Name: 'Meta Movie', ProviderIds: {Tmdb: '603', Imdb: 'tt0133093'}, UserData: {Played: true, LastPlayedDate: '2026-11-01T20:00:00.000Z'}},
@@ -49,6 +54,8 @@ const HELD = {
   [FILM]: {Id: FILM, Type: 'Movie', Name: 'Scrobbled Movie', ProviderIds: {Tmdb: '27205', Imdb: 'tt1375666'}},
   [LEFT]: {Id: LEFT, Type: 'Movie', Name: 'Left Running', ProviderIds: {Tmdb: '550', Imdb: 'tt0137523'}},
   [EP3]: {Id: EP3, Type: 'Episode', Name: 'Three', SeriesId: SHOW, SeriesName: 'Meta Show', ParentIndexNumber: 1, IndexNumber: 3, ProviderIds: {}},
+  // A film whose id on her server says TMDB 603 (see unpacked in here.ts), and another she finishes after it.
+  [MATRIX]: {Id: MATRIX, Type: 'Movie', Name: 'The Matrix', ProviderIds: {Tmdb: '603'}}, [OTHER]: {Id: OTHER, Type: 'Movie', Name: 'Another Film', ProviderIds: {}},
 };
 // Trakt: single-use refresh tokens, and every call as Ada logged. Each title above runs 6000 seconds. `refuse` turns that many
 // writes away with a 429, as Trakt's Cloudflare does to the shared addresses Workers call from; `refuseReads` does it to reads.
@@ -1196,6 +1203,8 @@ const settle = async time => {for (let n = 0; n < 6 && (sql('SELECT hub FROM for
 const setPerson = async (id, change) => {const me = (await owner('GET', '/api/state')).body.hub.people.find(item => item.id === id);
   const got = await owner('PUT', `/api/people/${id}`, {name: me.name, groupId: me.groupId, rows: me.rows, picks: me.picks, settings: me.settings, can: me.can, paused: me.paused, trakt: me.trakt, lists: me.lists, v: me.v, ...change(me)}); assert.equal(got.status, 200, JSON.stringify(got.body));};
 const KINDS = ['because', 'series', 'pickup', 'crew', 'genres', 'different', 'seasonal', 'top10'], only = (...kinds) => KINDS.filter(kind => !kinds.includes(kind));
+// The order of the kinds nobody changed (FOR_YOU_ORDER in data.ts).
+const KINDS_IN_ORDER = ['series', 'pickup', 'because', 'crew', 'genres', 'seasonal', 'top10', 'different'];
 test('For you: three places through each person’s Home, on their own setups only, each switched off like a Trakt row', async () => {
   assert.equal((await owner('GET', '/api/state')).body.hub.front, true);
   // Before anything is picked each place holds something popular, the same for anyone, so any sync writes the same.
@@ -1437,7 +1446,9 @@ test('each pick keeps what it came from, and the day’s pick keeps its other op
   // About ten other options, best first, none of them on a place; and each kind with nothing, with why.
   assert.ok(pool.options.length >= 5 && pool.options.length <= 10, JSON.stringify(pool.options.map(pick => pick.key)));
   assert.ok(!pool.options.some(pick => on.includes(pick.key)));
-  assert.deepEqual(pool.options.map(pick => pick.score), [...pool.options.map(pick => pick.score)].sort((a, b) => b - a));
+  // Places and options come in the order of the kinds: one of each kind that has something, then round again.
+  const kinds = [...Object.values(picks), ...pool.options].map(pick => pick.kind).filter(kind => kind !== 'popular'), firsts = [...new Set(kinds)];
+  assert.deepEqual(firsts, KINDS_IN_ORDER.filter(kind => firsts.includes(kind))); assert.deepEqual(kinds.slice(0, firsts.length), firsts, kinds.join());
   assert.equal(pool.none.pickup, 'none', JSON.stringify(pool.none));
   // The site is told the names, kinds and reasons, never what fills a row.
   const detail = await detailOf(adaSite);
@@ -1510,12 +1521,29 @@ test('“Not from this title again”: the row changes at once, and nothing is p
   assert.equal((await adaSite('POST', '/api/people/ada/foryou/never', {seed: pick.seed})).status, 200);
   assert.deepEqual((await detailOf()).never, []);
 });
-test('the order of the kinds sets how much each counts: one moved to the top fills the first row; the setting is checked', async () => {
+// A run of the cron may go to other work first (Trakt matching, the day's Trakt and MDBList look, a few steps a run): runs until
+// hers is picked for again.
+const atOf = () => sql("SELECT at FROM foryou WHERE person = 'ada'")[0].at;
+const repick = async time => {const was = atOf(); for (let n = 0; n < 12 && atOf() === was; n++) await cron(time + n * MIN);};
+test('rows fill from the top of the order of the kinds, round again when there are more rows than kinds; the setting is checked', async () => {
   const day = DEC + 17 * 86400e3; await pickDay(day);
-  assert.notEqual(picksOf('ada')['for-you-1'].kind, 'different');
+  // Each row from the next kind in her order that has something today, one of each.
+  const kinds = Object.values(picksOf('ada')).map(pick => pick.kind), none = poolOf('ada').none;
+  assert.deepEqual(kinds, KINDS_IN_ORDER.filter(kind => !none[kind]).slice(0, 3), JSON.stringify([kinds, none]));
+  // One moved to the top fills the first row.
   await setPerson('ada', me => ({settings: {...me.settings, forYouOrder: ['different', 'series', 'pickup', 'because', 'crew', 'genres', 'seasonal', 'top10']}}));
-  await cron(day + 70 * MIN);
+  await repick(day + 70 * MIN);
   assert.equal(picksOf('ada')['for-you-1'].kind, 'different', JSON.stringify(picksOf('ada')));
+  // Two kinds on for three rows: round again from the top, a second of the first kind (another title), before any stand-in.
+  await setPerson('ada', me => {const {forYouOrder: _, ...settings} = me.settings; return {settings: {...settings, forYouOff: only('because', 'crew')}};}); await repick(day + 71 * MIN);
+  const two = Object.values(picksOf('ada'));
+  assert.deepEqual(two.map(pick => pick.kind), ['because', 'crew', 'because'], JSON.stringify(two)); assert.notEqual(two[0].seed, two[2].seed);
+  // A row kept stays and counts as its kind's row: with crew first now, the other two are crew's, then because's second.
+  assert.equal((await place_('for-you-1', {keep: true})).status, 200);
+  await setPerson('ada', me => ({settings: {...me.settings, forYouOrder: ['crew', 'series', 'pickup', 'because']}})); await repick(day + 72 * MIN);
+  const kept = Object.values(picksOf('ada'));
+  assert.deepEqual(kept.map(pick => [pick.kind, !!pick.keep]), [['because', true], ['crew', false], ['because', false]], JSON.stringify(kept)); assert.equal(kept[0].key, two[0].key);
+  assert.equal((await place_('for-you-1', {keep: false})).status, 200);
   // Checked as it is saved: known kinds only, each once; the rest of the order is made up from the default.
   await setPerson('ada', me => ({settings: {...me.settings, forYouOrder: ['top10', 'bogus', 'top10']}}));
   assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').settings.forYouOrder, ['top10']);
@@ -1523,11 +1551,47 @@ test('the order of the kinds sets how much each counts: one moved to the top fil
   assert.equal((await owner('PUT', '/api/people/ada', {name: me.name, groupId: me.groupId, rows: me.rows, picks: me.picks, settings: {...me.settings, forYouBecause: 'sometimes'}, can: me.can, paused: me.paused, trakt: me.trakt, lists: me.lists, v: me.v})).status, 400);
   assert.equal((await owner('PUT', '/api/people/ada', {name: me.name, groupId: me.groupId, rows: me.rows, picks: me.picks, settings: {...me.settings, forYouOrder: 'top10'}, can: me.can, paused: me.paused, trakt: me.trakt, lists: me.lists, v: me.v})).status, 400);
   // Less of a kind (from a row's sheet) saves her order with it one step down, and she is picked for again under it.
-  const less = ['series', 'pickup', 'crew', 'because', 'genres', 'seasonal', 'top10', 'different'], at = sql("SELECT at FROM foryou WHERE person = 'ada'")[0].at;
+  const less = ['series', 'pickup', 'crew', 'because', 'genres', 'seasonal', 'top10', 'different'], at = atOf();
   await setPerson('ada', me => ({settings: {...me.settings, forYouOrder: less}}));
   assert.deepEqual((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').settings.forYouOrder, less);
-  await cron(day + 75 * MIN); assert.notEqual(sql("SELECT at FROM foryou WHERE person = 'ada'")[0].at, at);
-  await setPerson('ada', me => {const {forYouOrder: _, ...settings} = me.settings; return {settings};}); await cron(day + 80 * MIN); await settle(day + 85 * MIN);
+  await repick(day + 75 * MIN); assert.notEqual(atOf(), at);
+  await setPerson('ada', me => {const {forYouOrder: _, forYouOff: _o, ...settings} = me.settings; return {settings};}); await cron(day + 80 * MIN); await settle(day + 85 * MIN);
+});
+test('a finished watch picks one row again within minutes, with what was just watched: the lowest not kept, once a title, a few times a day', async () => {
+  const day = DEC + 18 * 86400e3, fresh = () => JSON.parse(sql("SELECT fresh FROM foryou WHERE person = 'ada'")[0].fresh);
+  await setPerson('ada', me => ({settings: {...me.settings, forYouOff: only('because', 'crew')}})); await pickDay(day);
+  const picking = async time => {for (let n = 0; n < 12 && fresh().due; n++) await cron(time + n * MIN);};
+  const before = picksOf('ada'), dueNow = async () => {for (let i = 0; i < 40 && !fresh().due; i++) await pause(150); return fresh().due;};
+  // She plays The Matrix to the end on her TV (95%): noted as finished, and the next run picks her lowest row again.
+  await say('/Sessions/Playing', {ItemId: MATRIX, PositionTicks: 0}, 700); await pause(400);
+  await say('/Sessions/Playing/Stopped', {ItemId: MATRIX, PositionTicks: 5700e7}); assert.ok(await dueNow(), JSON.stringify(fresh()));
+  fake.tmdb = []; await picking(day + 70 * MIN);
+  const after = picksOf('ada');
+  assert.deepEqual([after['for-you-1'], after['for-you-2']], [before['for-you-1'], before['for-you-2']], 'only one row changes');
+  assert.equal(after['for-you-3'].name, 'Because you watched The Matrix', JSON.stringify(after)); assert.equal(fresh().due, 0); assert.equal(fresh().at.length, 1);
+  assert.ok(fake.tmdb.length + fake.flix.length <= 22, `${fake.tmdb.length} calls`);
+  // What it held counts as lately picked; her apps get it as any pick, The Matrix Reloaded first.
+  assert.equal(JSON.parse(sql("SELECT before FROM foryou WHERE person = 'ada'")[0].before)[0], before['for-you-3'].key);
+  assert.equal(sql('SELECT hub FROM foryou_sync').length, 1); await settle(day + 75 * MIN);
+  const row = fyOf('Ada').find(item => item.id === 'custom.aiohub_rows.movie.foryou_because_m603');
+  assert.equal((await (await fetch(row.sourceUrl)).json()).metas[0].name, 'The Matrix Reloaded');
+  // The same title finished again counts no more.
+  const was = sql("SELECT picks, fresh FROM foryou WHERE person = 'ada'")[0];
+  await say('/Sessions/Playing', {ItemId: MATRIX, PositionTicks: 0}, 700); await pause(400); await say('/Sessions/Playing/Stopped', {ItemId: MATRIX, PositionTicks: 5800e7}); await pause(800);
+  await cron(day + 90 * MIN); assert.deepEqual(sql("SELECT picks, fresh FROM foryou WHERE person = 'ada'")[0], was);
+  // Another title, with her lowest row kept: the row above it is the one picked again.
+  assert.equal((await place_('for-you-3', {keep: true})).status, 200); const held = picksOf('ada');
+  await say('/Sessions/Playing', {ItemId: OTHER, PositionTicks: 0}, 700); await pause(400); await say('/Sessions/Playing/Stopped', {ItemId: OTHER, PositionTicks: 5900e7}); assert.ok(await dueNow());
+  await picking(day + 95 * MIN);
+  const now = picksOf('ada'); assert.deepEqual([now['for-you-1'], now['for-you-3']], [held['for-you-1'], held['for-you-3']]); assert.equal(fresh().at.length, 2);
+  assert.equal(now['for-you-2'].kind, 'crew'); assert.equal(now['for-you-2'].name, 'More from Lana Wachowski');
+  await settle(day + 100 * MIN);
+  // A few a day at most: past that a finish is let go, and nothing changes.
+  sql(`UPDATE foryou SET fresh = json_set(fresh, '$.due', ${Math.floor(Date.now() / 1000)}, '$.at', json('[${[1, 2, 3].map(n => Math.floor(Date.now() / 1000) - n * 60).join(',')}]')) WHERE person = 'ada'`);
+  const capped = picksOf('ada'); await picking(day + 105 * MIN);
+  assert.deepEqual(picksOf('ada'), capped); assert.equal(fresh().due, 0); assert.deepEqual(sql('SELECT hub FROM foryou_sync'), []);
+  assert.equal((await place_('for-you-3', {keep: false})).status, 200);
+  await setPerson('ada', me => {const {forYouOff: _, ...settings} = me.settings; return {settings};}); await settle(day + 110 * MIN);
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);

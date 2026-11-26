@@ -192,14 +192,25 @@ export const FOR_YOU_KINDS: {id: string; title: string; discover: boolean}[] = [
   {id: 'genres', title: 'Your genres', discover: true}, {id: 'different', title: 'Something different', discover: true}, {id: 'seasonal', title: 'Seasonal', discover: true},
   {id: 'top10', title: 'Top 10', discover: false},
 ];
-/* The order the kinds count for when nobody has changed it: the order of their weights before the order could be changed
-   (BASE in foryou.ts), so an untouched Home is picked for as it was. */
+/* The order of the kinds when nobody has changed it: following a series and the person's own watching first. */
 export const FOR_YOU_ORDER = ['series', 'pickup', 'because', 'crew', 'genres', 'seasonal', 'top10', 'different'];
 /* A saved order made whole: unknown kinds dropped, each kind once, any kind it lacks in its default place among the rest. */
 export function orderOf(saved: string[] = []): string[] {
   const out = [...new Set(saved.filter(id => FOR_YOU_ORDER.includes(id)))];
   for (const [at, id] of FOR_YOU_ORDER.entries()) if (!out.includes(id)) out.splice(Math.min(at, out.length), 0, id);
   return out;
+}
+/* The order For you rows fill in (foryou.ts picks with it; Kinds of pick shows it ahead with it): the best of the first kind in
+   `order` that has something, then the best of the next, a kind with nothing skipped; then round again from the top for a second of
+   each, and so on. `found` is best first within each kind. A kept pick stays where it is and counts as its kind's pick in that round.
+   What follows the last of them (`rest`, the stand-ins) comes after. */
+export function fillOrder<T extends {kind: string; key: string}>(found: T[], order: string[], kept: {kind: string; key: string}[] = [], rest: T[] = []): T[] {
+  const taken = new Set(kept.map(pick => pick.key)), left = new Map<string, T[]>(), had = new Map<string, number>(), out: T[] = [];
+  for (const pick of kept) had.set(pick.kind, (had.get(pick.kind) ?? 0) + 1);
+  for (const item of found) if (!taken.has(item.key)) {taken.add(item.key); left.set(item.kind, [...left.get(item.kind) ?? [], item]);}
+  for (let round = 0; order.some(kind => left.get(kind)?.length); round++)
+    for (const kind of order) if (left.get(kind)?.length && (had.get(kind) ?? 0) <= round) out.push(left.get(kind)!.shift()!);
+  return [...out, ...rest.filter(item => !taken.has(item.key))];
 }
 /* Rows someone following the Home above can switch on or off for themselves. */
 export const PICKABLE = new Set([...TRAKT_IDS, ...KIDS_IDS]);

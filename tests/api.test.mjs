@@ -322,6 +322,23 @@ test('the player address: one kept AIOStreams sign-in, renewed once when refused
   assert.equal(onTv.status, 200); assert.equal(onTv.body.User.Name, 'Ada L'); assert.equal(fake.signIns, 1);
   assert.equal((await stranger('POST', `${at}/Users/AuthenticateWithQuickConnect`, {Secret: asked.Secret}, tv)).status, 404, 'a code works once');
   assert.equal((await stranger('GET', `${at}/Users/Me`, undefined, {authorization: `${tv.authorization}, Token="${onTv.body.AccessToken}"`})).status, 200);
+  // The link a player app shows for Quick Connect points at Jellyfin's web page: it comes to the site, which asks who the TV is for
+  // (TvGate in pages.tsx). The code after the # stays with the browser; the hub's code rides along.
+  for (const path of ['/web', '/web/', '/web/index.html']) {const page = await fetch(`${BASE}${at}${path}`, {redirect: 'manual'}); assert.equal(page.status, 302, path); assert.equal(page.headers.get('location'), `${BASE}/?tv=${hub.code}`);}
+  // Someone else, signed in or not: the TV becomes whoever's name and password for this site are given. Wrong ones, a name nobody
+  // here has, or someone who has not joined yet, say so; a code no TV shows says that; nothing else is let in.
+  const other = (await stranger('POST', `${at}/QuickConnect/Initiate`, {}, tv)).body, someone = client();
+  assert.equal((await someone('POST', '/api/quick', {hub: hub.code, code: other.Code, name: 'Ada L', password: 'not hers'})).status, 403);
+  assert.equal((await someone('POST', '/api/quick', {hub: hub.code, code: other.Code, name: 'Nobody', password: 'chosen again'})).status, 403);
+  assert.equal((await someone('POST', '/api/quick', {hub: hub.code, code: other.Code, name: 'Ben', password: 'chosen again'})).status, 403);
+  assert.equal((await someone('POST', '/api/quick', {hub: hub.code, code: other.Code, name: '', password: 'chosen again'})).status, 400);
+  assert.equal((await someone('POST', '/api/quick', {hub: 'nohub', code: other.Code, name: 'Ada L', password: 'chosen again'})).status, 404);
+  assert.deepEqual(await someone('POST', '/api/quick', {hub: hub.code, code: '000000', name: 'ada l', password: 'chosen again'}), {status: 404, body: {message: 'No TV is showing that code right now. Check the code, or start again on the TV.'}});
+  assert.equal((await stranger('GET', `${at}/QuickConnect/Connect?secret=${other.Secret}`, undefined, tv)).body.Authenticated, false);
+  assert.deepEqual(await someone('POST', '/api/quick', {hub: hub.code, code: other.Code, name: 'ada l', password: 'chosen again'}), {status: 200, body: {name: 'Ada L'}});
+  assert.equal((await stranger('GET', `${at}/QuickConnect/Connect?secret=${other.Secret}`, undefined, tv)).body.Authenticated, true);
+  assert.equal((await someone('GET', '/api/state')).status, 401, 'no session is made');
+  assert.equal((await stranger('POST', '/api/quick', {hub: hub.code, code: other.Code, name: 'Ada L', password: 'chosen again'}, {origin: 'https://elsewhere.example'})).status, 403);
   // What the app reports while playing shows up under Activity: for the manager, and for the person themselves, never for someone else.
   // Each report also notes roughly where the device was (made-up places here, from test headers): the latest one is kept.
   // (Its first ten minutes play over ten minutes, reports dated back: a sitting with under two minutes played is left out once over.)

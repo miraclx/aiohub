@@ -1,6 +1,6 @@
 import {Fragment, useEffect, useRef, useState} from 'react';
 import {QRCodeSVG} from 'qrcode.react';
-import {FOR_YOU_KINDS, SAMPLE, orderOf, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, resolve, samplePassword, samplePin, slug, traktRows} from './data';
+import {FOR_YOU_KINDS, SAMPLE, isPlace, orderOf, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, resolve, samplePassword, samplePin, slug, traktRows} from './data';
 import type {Device, Group, Hub, Miss, Person, Row, Settings} from './data';
 import {Activity} from './activity';
 import {GroupOrder, HomeEditor, moved} from './home';
@@ -563,7 +563,7 @@ function PersonSections({page, person, tab, mine}: {page: PageProps; person: Per
       onPlace={page.live ? (place, asked, note) => void page.live!.call('POST', `/api/people/${person.id}/foryou/${place}`, asked).then(() => toast(note), fail(toast)).then(() => page.live!.reload()) : undefined}
       onCheckLists={page.live ? () => ask('shelf', mine ? 'Checking your lists. Your apps have them in a few minutes.' : 'Checking their lists. Their apps have them in a few minutes.') : undefined}
       onFollow={person.rows && canArrange ? () => edit(target => {target.rows = null;}, `Following ${group.name} again`) : undefined} followLabel={`Follow ${group.name} again`}/>}
-    {tab === 'home' && <ForYouEditor {...props} never={person.forYouDetail?.never}
+    {tab === 'home' && <ForYouEditor {...props} never={person.forYouDetail?.never} preview={page.live && person.forYouDetail ? {detail: person.forYouDetail, places: rows.filter(row => row.on && isPlace(row.id)).map(row => row.id)} : undefined}
       onForget={page.live ? item => void page.live!.call('POST', `/api/people/${person.id}/foryou/never`, {seed: item.seed}).then(() => toast(`“${item.title}” counts again from the next pick`), fail(toast)).then(() => page.live!.reload()) : undefined}/>}
     {tab === 'playback' && <PlaybackEditor {...props} kept={!!person.lists} limitSet={mine && !person.can.limit}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
@@ -750,11 +750,11 @@ function Advanced({live, toast}: {live: Live; toast: (text: string) => void}) {
    Times are the viewer's own. */
 const FIVE = 300_000, DAY_MS = 86_400_000;
 /* For you: one person a five-minute run from its hour (UTC), then the hub's apps are brought in step. Someone just added, or
-   whose places, kinds of pick or limit changed, is picked for at any hour. */
+   whose places, kinds of pick or limit changed, is picked for at any hour, and one row of someone who just finished something. */
 function forYouJob(jobs: NonNullable<Hub['jobs']>, now: number, time: (ms: number) => string, day: (ms: number) => string, ran: (s: number | null) => string) {
   const start = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T${String(jobs.forYouHour).padStart(2, '0')}:00:00Z`), picked = jobs.picked ?? 0, everyone = jobs.everyone ?? 0;
   const done = picked >= everyone, waiting = !done && now >= start;
-  return {name: 'For you picks', every: `every day at ${time(start)}`, last: `${ran(jobs.pickedAt ?? null)}${everyone ? ` · ${Math.min(picked, everyone)} of ${everyone} picked today` : ''}`,
+  return {name: 'For you picks', every: `For everyone every day at ${time(start)}; for one person when they change their rows or kinds, or finish something`, last: `${ran(jobs.pickedAt ?? null)}${everyone ? ` · ${Math.min(picked, everyone)} of ${everyone} picked today` : ''}`,
     next: waiting ? 'under way' : jobs.syncing ? 'updating apps' : `next run ${day(done || now >= start ? start + DAY_MS : start)}`};
 }
 function Background({hub}: {hub: Hub}) {
@@ -767,15 +767,17 @@ function Background({hub}: {hub: Hub}) {
   const next = Math.ceil((now + 1) / FIVE) * FIVE, start = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T04:00:00Z`);
   const daily = jobs.checked === new Date(now).toISOString().slice(0, 10) ? start + DAY_MS : Math.max(start, next);
   const rows = [
-    {name: 'Trakt sync', every: 'every 5 min', last: `${ran(jobs.last)}${jobs.waiting ? ` · ${jobs.waiting} waiting to send` : ''}`, next: `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
-    {name: 'Trakt and MDBList check', every: `every day at ${time(start)}`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next run ${day(daily)}`},
+    // Each job says what starts it: its times run for everyone in the hub, one person at a time; a play, a change or a press runs
+    // for that one person.
+    {name: 'Trakt sync', every: 'For everyone every 5 min; for one person as they play', last: `${ran(jobs.last)}${jobs.waiting ? ` · ${jobs.waiting} waiting to send` : ''}`, next: `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
+    {name: 'Trakt and MDBList check', every: `For everyone every day at ${time(start)}; for one person when they press Check again`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next run ${day(daily)}`},
     // Trakt matching (worker/sync.ts): in the same five-minute run, one person at a time, each looked at about every 20 minutes.
-    ...(hub.scrobble ? [{name: 'Trakt matching', every: 'each person every 20 min', last: jobs.matching ? `${ran(jobs.matched ?? null)} · ${jobs.matching} ${jobs.matching === 1 ? 'person' : 'people'}` : 'Nobody has it on yet',
+    ...(hub.scrobble ? [{name: 'Trakt matching', every: 'For everyone, each person every 20 min; for one person at once when they turn it on', last: jobs.matching ? `${ran(jobs.matched ?? null)} · ${jobs.matching} ${jobs.matching === 1 ? 'person' : 'people'}` : 'Nobody has it on yet',
       next: jobs.matching ? `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'once someone turns it on'}] : []),
     ...(hub.front && jobs.forYouHour !== undefined ? [forYouJob(jobs, now, time, day, ran)] : []),
     // Each My Trakt lists row: its lists and pictures looked at again a day after the last time (shelf.ts), one person a run, and
     // sooner when someone asks or their lists changed. One due now (asked for, at 0) is under way, not due in 1970.
-    ...(hub.front ? [{name: 'My Trakt lists rows', every: 'every day, and when someone asks', last: `${ran(jobs.shelved ?? null)}${jobs.shelves ? ` · ${jobs.shelves} ${jobs.shelves === 1 ? 'person' : 'people'}` : ''}`,
+    ...(hub.front ? [{name: 'My Trakt lists rows', every: 'For everyone every day; for one person when their lists change or they press Check now', last: `${ran(jobs.shelved ?? null)}${jobs.shelves ? ` · ${jobs.shelves} ${jobs.shelves === 1 ? 'person' : 'people'}` : ''}`,
       next: typeof jobs.shelfDue === 'number' ? (jobs.shelfDue + 86_400) * 1000 > now ? `next run ${day((jobs.shelfDue + 86_400) * 1000)}` : 'under way' : 'once someone adds one'}] : []),
   ];
   return <section>
@@ -976,6 +978,52 @@ export function JoinGate({token, live, toast, manager, signedAs, onIn}: {token: 
     {!info.joined && !!pass && pass.length < 8 && <p className="warn small">At least 8 characters: {8 - pass.length} more to go.</p>}
     <button className="primary big" disabled={busy || pass.length < (info.joined ? 1 : 8)}>Continue</button>
     <p className="muted small center-text">{info.joined ? 'Forgot it? Whoever invited you can let you choose a new one.' : 'Player apps get their own password, which you’ll find inside.'}</p>
+  </form>;
+}
+/* ---------- a TV's Quick Connect link ---------- */
+/* A player app's Quick Connect link: front.ts sends /h/<code>/web here, keeping the TV's code after the #. Nothing is approved
+   without a tap, and the TV always becomes someone in the hub, named on the Approve button: the manager picks who (never
+   themselves); a person approves it as themselves, or as someone else with that person's password for this site; with nobody
+   signed in, a person gives their name and password, or the manager signs in first. `tv`: the hub the TV asked. */
+export function TvGate({live, toast, hub, person, tv, given}: {live: Live; toast: (text: string) => void; hub: Hub | null; person?: Person; tv: string; given: string}) {
+  const [code, setCode] = useState(/^\d{6}$/.test(given) ? given : ''), [typed, setTyped] = useState(''), [pick, setPick] = useState(''), [other, setOther] = useState(false);
+  const [name, setName] = useState(''), [pass, setPass] = useState(''), [busy, setBusy] = useState(false), [done, setDone] = useState(''), [error, setError] = useState(''), [signing, setSigning] = useState(false);
+  const here = !!hub && (!tv || hub.code === tv), chosen = hub?.people.find(item => item.id === pick);
+  // The hub's own answer is said in place: an expired or unknown code, a wrong password.
+  const approve = (work: Promise<string>) => {setBusy(true); setError(''); void work.then(setDone, (failure: Error) => setError(failure.message)).finally(() => setBusy(false));};
+  const lead = <p className="muted">A TV is asking to sign in with the code {code.slice(0, 3)} {code.slice(3)}.</p>, said = error && <p className="warn">{error}</p>;
+  if (done) return <div className="setup stack gate center"><h1>TV approved</h1><p className="muted">It signs in as {done} in a few seconds.</p><a className="link" href="/">Go to the hub</a></div>;
+  if (!code) return <form className="setup stack gate" onSubmit={event => {event.preventDefault(); setCode(typed);}}>
+    <h1>Sign in a TV</h1><p className="muted">Choose Quick Connect on the TV, then type the code it shows.</p>
+    <label htmlFor="tv-code">Code from the TV</label><input id="tv-code" inputMode="numeric" maxLength={6} placeholder="6-digit code" autoFocus value={typed} onChange={event => setTyped(event.target.value.replace(/\D/g, ''))}/>
+    <button className="primary big" disabled={typed.length !== 6}>Continue</button>
+  </form>;
+  if (signing && !hub) return <><SignInPage live={live} toast={toast} canCreate={false}/><button type="button" className="link center-text tv-back" onClick={() => setSigning(false)}>Back to the TV</button></>;
+  if (here && !person && !other) return <form className="setup stack gate" onSubmit={event => {event.preventDefault(); if (chosen) approve(live.call('POST', `/api/people/${chosen.id}/quick`, {code}).then(() => chosen.name));}}>
+    <h1>Sign this TV in as…</h1>{lead}
+    {hub!.people.length ? <div className="tv-people" role="radiogroup" aria-label="Who the TV is for">{hub!.people.map(item => <label key={item.id}><input type="radio" name="tv-person" checked={pick === item.id} onChange={() => setPick(item.id)}/><Avatar name={item.name} size={32}/><span>{item.name}</span></label>)}</div>
+      : <p className="muted">Nobody is in this hub yet. Add someone under People first.</p>}
+    {said}
+    <button className="primary big" disabled={busy || !chosen}>{chosen ? `Approve as ${chosen.name}` : 'Approve'}</button>
+    <p className="muted small center-text">The TV gets their Home and plays as them. It never signs in as you.</p>
+  </form>;
+  if (here && person && !other) return <form className="setup stack gate" onSubmit={event => {event.preventDefault(); approve(live.call('POST', `/api/people/${person.id}/quick`, {code}).then(() => person.name));}}>
+    <div className="stack center"><Avatar name={person.name} size={84}/><h1>Sign this TV in as {person.name}?</h1>{lead}</div>
+    {said}
+    <button className="primary big" disabled={busy}>Approve as {person.name}</button>
+    <button type="button" className="ghost big" onClick={() => {setOther(true); setError('');}}>Someone else</button>
+  </form>;
+  // Someone else, or nobody signed in here: whoever it is for, by their name and password for this site.
+  const who = name.trim();
+  return <form className="setup stack gate" onSubmit={event => {event.preventDefault(); approve(live.call<{name: string}>('POST', '/api/quick', {hub: tv || hub?.code, code, name: who, password: pass}).then(found => found.name));}}>
+    <h1>Sign this TV in</h1>{lead}<p className="muted">Type the name of whoever it’s for, and their password for this site.</p>
+    {hub && !here && <p className="muted small">This browser is signed in to another hub.</p>}
+    <label htmlFor="tv-name">Name</label><input id="tv-name" value={name} onChange={event => setName(event.target.value)} autoComplete="username" autoCapitalize="words" autoFocus/>
+    <label htmlFor="tv-pass">Their password</label><input id="tv-pass" type="password" value={pass} onChange={event => setPass(event.target.value)} autoComplete="current-password"/>
+    {said}
+    <button className="primary big" disabled={busy || !who || !pass}>{who ? `Approve as ${who}` : 'Approve'}</button>
+    {other ? <button type="button" className="link center-text" onClick={() => {setOther(false); setError('');}}>Back</button>
+      : !hub && <button type="button" className="link center-text" onClick={() => setSigning(true)}>Run this hub? Sign in</button>}
   </form>;
 }
 export function SignInPage({live, toast, canCreate}: {live: Live; toast: (text: string) => void; canCreate: boolean}) {

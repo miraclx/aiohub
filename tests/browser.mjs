@@ -84,10 +84,10 @@ await owner.goto(BASE + '/#/hub/sources'); await owner.getByText('TorBox').first
 await fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/5 * * * *')}&time=${Date.UTC(2026, 0, 1, 3)}`);
 await owner.goto(BASE + '/#/hub/general'); await owner.reload(); const work = owner.locator('section', {has: owner.getByRole('heading', {name: 'Background work'})});
 const job = name => work.locator('.job', {has: owner.getByRole('heading', {name, exact: true})});
-await job('Trakt sync').getByText('every 5 min').waitFor();
+await job('Trakt sync').getByText('For everyone every 5 min; for one person as they play', {exact: true}).waitFor();
 await job('Trakt sync').getByText(/^Ran today at \d/).waitFor(); await job('Trakt sync').getByText(/^next run in \d min$/).waitFor();
-await job('Trakt matching').getByText('each person every 20 min').waitFor(); await job('Trakt matching').getByText('Nobody has it on yet').waitFor(); await job('Trakt matching').getByText('once someone turns it on').waitFor();
-await job('Trakt and MDBList check').getByText(/^every day at \d/).waitFor(); await job('Trakt and MDBList check').getByText('Not run yet').waitFor(); await job('Trakt and MDBList check').getByText(/^next run (today|tomorrow)$/).waitFor();
+await job('Trakt matching').getByText('For everyone, each person every 20 min; for one person at once when they turn it on', {exact: true}).waitFor(); await job('Trakt matching').getByText('Nobody has it on yet').waitFor(); await job('Trakt matching').getByText('once someone turns it on').waitFor();
+await job('Trakt and MDBList check').getByText(/^For everyone every day at \d.+; for one person when they press Check again$/).waitFor(); await job('Trakt and MDBList check').getByText('Not run yet').waitFor(); await job('Trakt and MDBList check').getByText(/^next run (today|tomorrow)$/).waitFor();
 await work.scrollIntoViewIfNeeded(); await shot(owner, '5b-background');
 // Advanced: behind the password again, then one line a setup, grouped, its keys folded away until asked for.
 const advanced = owner.locator('section', {has: owner.getByRole('heading', {name: 'Advanced'})});
@@ -486,23 +486,29 @@ const forYouDetail = {places: {'for-you-1': {key: 'because:m27205', kind: 'becau
     {key: 'because:s1396', kind: 'because', name: 'Because you watched Breaking Bad', why: {title: 'Breaking Bad', seen: seen - 3 * 86400}, seed: 's1396'}, {key: 'because:m550', kind: 'because', name: 'Because you watched Fight Club', why: {title: 'Fight Club', seen: seen - 9 * 86400}, seed: 'm550'}],
   none: {pickup: 'none', seasonal: 'off'}, never: [{seed: 'm680', title: 'Pulp Fiction'}]};
 const forYouState = shelf => async route => {const response = await route.fetch(), body = await response.json(), me = body.hub.people[0]; body.hub.front = true; body.hub.forYouHour = 5;
-  Object.assign(me, {...(shelf ? {rows: [shelfRow, ...me.rows], shelfAt: hourAgo} : {}), pickedAt: hourAgo, forYouDetail, forYou: {'for-you-1': 'Because you watched Inception', 'for-you-2': 'Next in The Dark Knight', 'for-you-3': 'Popular movies lately'}, forYouKinds: {'for-you-1': 'because', 'for-you-2': 'series', 'for-you-3': 'popular'}});
+  Object.assign(me, {...(shelf ? {rows: [shelfRow, ...me.rows], shelfAt: hourAgo} : {}), pickedAt: hourAgo, forYouDetail, forYou: Object.fromEntries(Object.entries(forYouDetail.places).map(([place, pick]) => [place, pick.name])), forYouKinds: Object.fromEntries(Object.entries(forYouDetail.places).map(([place, pick]) => [place, pick.kind]))});
   await route.fulfill({response, json: body}).catch(() => {});};
 await guest.route('**/api/state', forYouState(true));
 const askedNow = [];
 for (const path of ['**/api/people/ada/foryou/*', '**/api/people/ada/shelf']) await guest.route(path, route => {askedNow.push([new URL(route.request().url()).pathname, route.request().postDataJSON()]); return route.fulfill({status: 200, contentType: 'application/json', body: '{}'});});
-await guest.reload(); const rowOf = title => guest.locator('.rows .row', {has: guest.locator('h3', {hasText: new RegExp(`^${title}`)})});
+// A row by its name, or a For you row by what it holds today.
+await guest.reload(); const rowOf = title => guest.locator('.rows .row', {has: guest.locator('h3, p', {hasText: new RegExp(`^(Today: )?${title}`)})});
 await rowOf('My Trakt lists').getByText(/^Trakt · Lists checked (yesterday )?at .+ · next check (today|tomorrow)$/).waitFor();
-await rowOf('Because you watched Inception').getByText(/^For you · changes ((tomorrow )?at .+|soon)$/).waitFor();
-await rowOf('Next in The Dark Knight').getByText('For you · kept', {exact: true}).waitFor();
-await rowOf('Popular movies lately').getByText('For you · Popular, until there’s more to go on').waitFor();
+// A For you row is headed For you; its line says what it holds today and when it picks again, or that it is kept.
+await rowOf('Because you watched Inception').getByText(/^Today: Because you watched Inception · picks again (today|tomorrow|soon)$/).waitFor();
+await rowOf('Next in The Dark Knight').getByText('Today: Next in The Dark Knight · kept', {exact: true}).waitFor();
+await rowOf('Popular movies lately').getByText('Today: Popular movies lately · until there’s more to go on', {exact: true}).waitFor();
+assert.deepEqual(await guest.locator('.rows .row', {has: guest.locator('p', {hasText: /^Today: /})}).locator('h3').allTextContents(), ['For you', 'For you', 'For you']);
 assert.ok(!/picked|checked|changes/.test(await rowOf('Trending Movies').locator('p').first().textContent()), 'a row always current says nothing of times');
 await rowOf('My Trakt lists').scrollIntoViewIfNeeded(); await shot(guest, '18-home-times');
-// A For you row's sheet, top to bottom: what it is and why, the day's other options (five), the kinds with nothing today and why,
-// keeping it, and less like it.
-const placeSheet = guest.getByRole('dialog', {name: 'Because you watched Inception'});
+// A For you row's sheet tells the row's story: it picks something new each day, what it is today and why, when it picks again
+// (keep it, and it stays), then the day's other options (five), the kinds with nothing today and why, and less like it. The kind's
+// name is said once.
+const placeSheet = guest.getByRole('dialog', {name: 'For you'}), story = placeSheet.locator('.story');
 await rowOf('Because you watched Inception').getByRole('button', {name: 'Edit'}).click();
-await placeSheet.getByText(/^You watched it on [A-Z][a-z]+day\.$/).waitFor(); await placeSheet.getByText(/^Because you watched · changes ((tomorrow )?at .+|soon)$/).waitFor();
+await story.getByText('This row picks something new each day from the kinds you have on. Today it’s “Because you watched Inception”.', {exact: true}).waitFor();
+await story.getByText(/^You watched it on [A-Z][a-z]+day\.$/).waitFor(); await story.getByText(/^(Tomorrow at .+|At .+|Soon) it picks again, and it could be any kind\.$/).waitFor();
+assert.equal((await story.locator('p').allTextContents()).join(' ').match(/Because you watched/g).length, 1, await story.textContent());
 assert.equal(await placeSheet.locator('.options li').count(), 5, 'five other options');
 await placeSheet.getByRole('button', {name: /^More from Christopher Nolan\s*More from a director · Christopher Nolan directed Inception, which you watched on [A-Z][a-z]+day\.$/}).waitFor();
 await placeSheet.getByRole('button', {name: /^Something different: Western movies\s*Well liked, and not a genre you’ve been watching\.$/}).waitFor();
@@ -510,14 +516,22 @@ await placeSheet.getByText('Not available today').click(); await placeSheet.loca
 const sheetShots = async name => {if (!shots) return; for (const [width, height] of [[390, 844], [1280, 900]]) {await guest.setViewportSize({width, height}); await guest.waitForTimeout(300); const body = guest.locator('.sheet-body');
   await body.evaluate(element => {element.scrollTop = 0;}); await guest.screenshot({path: `${shots}/real-${name}-${width < 600 ? 'phone' : 'wide'}.png`});
   await body.evaluate(element => {element.scrollTop = element.scrollHeight;}); await guest.screenshot({path: `${shots}/real-${name}-${width < 600 ? 'phone' : 'wide'}-end.png`});} await guest.setViewportSize({width: 390, height: 844});};
-await placeSheet.getByRole('button', {name: 'Keep this one'}).waitFor(); await placeSheet.getByRole('button', {name: 'Not from Inception again'}).waitFor(); await placeSheet.getByRole('button', {name: 'Less “Because you watched”'}).waitFor();
+await story.getByRole('button', {name: 'Keep “Because you watched Inception”'}).waitFor(); await placeSheet.getByRole('button', {name: 'Not from Inception again'}).waitFor(); await placeSheet.getByRole('button', {name: 'Less “Because you watched”'}).waitFor();
 await sheetShots('18b-for-you-sheet');
 await placeSheet.getByRole('button', {name: /^Drama movies for you/}).click(); await toast(guest).filter({hasText: '“Drama movies for you” is on this row now. Your apps have it in a few minutes.'}).waitFor();
-await rowOf('Because you watched Inception').getByRole('button', {name: 'Edit'}).click(); await placeSheet.getByRole('button', {name: 'Keep this one'}).click(); await toast(guest).filter({hasText: 'Kept. It stays until you let it change.'}).waitFor();
+await rowOf('Because you watched Inception').getByRole('button', {name: 'Edit'}).click(); await placeSheet.getByRole('button', {name: 'Keep “Because you watched Inception”'}).click(); await toast(guest).filter({hasText: 'Kept. It stays until you let it change.'}).waitFor();
 // The kept row offers to let it change again; a title left out goes for good.
-const keptSheet = guest.getByRole('dialog', {name: 'Next in The Dark Knight'});
-await rowOf('Next in The Dark Knight').getByRole('button', {name: 'Edit'}).click(); await keptSheet.getByRole('button', {name: 'Let it change again'}).waitFor(); assert.match(await keptSheet.locator('.why').evaluate(element => element.firstChild.textContent), /^You watched The Dark Knight on [A-Z][a-z]+day\. 2 more films in the series are out\.$/);
+const keptSheet = guest.getByRole('dialog', {name: 'For you'});
+await rowOf('Next in The Dark Knight').getByRole('button', {name: 'Edit'}).click(); await keptSheet.getByRole('button', {name: 'Let it change again'}).waitFor();
+await story.getByText('Kept: it stays “Next in The Dark Knight” until you let it change.', {exact: true}).waitFor(); await story.getByText(/^You watched The Dark Knight on [A-Z][a-z]+day\. 2 more films in the series are out\.$/).waitFor();
 if (shots) await guest.screenshot({path: `${shots}/real-18d-for-you-kept-phone.png`}); await keptSheet.getByRole('button', {name: 'Not from The Dark Knight again'}).click(); await toast(guest).filter({hasText: 'Nothing more from “The Dark Knight”. Your apps have it in a few minutes.'}).waitFor();
+// A pick made before reasons were kept says only what it is and when it picks again, never its kind a second time.
+const inception = forYouDetail.places['for-you-1']; forYouDetail.places['for-you-1'] = {key: 'because:s60574', kind: 'because', name: 'Because you watched Peaky Blinders', seed: 's60574'};
+await guest.reload(); await rowOf('Because you watched Peaky Blinders').getByRole('button', {name: 'Edit'}).click();
+await story.getByText('This row picks something new each day from the kinds you have on. Today it’s “Because you watched Peaky Blinders”.', {exact: true}).waitFor();
+assert.equal(await story.locator('p').count(), 2, await story.textContent()); assert.equal((await story.locator('p').allTextContents()).join(' ').match(/Because you watched/g).length, 1, await story.textContent());
+if (shots) {await guest.locator('.sheet-body').evaluate(element => {element.scrollTop = 0;}); await guest.screenshot({path: `${shots}/real-18e-for-you-no-reason-phone.png`});}
+await placeSheet.getByRole('button', {name: 'Close'}).click(); forYouDetail.places['for-you-1'] = inception; await guest.reload();
 await rowOf('My Trakt lists').getByRole('button', {name: 'Edit'}).click(); await guest.getByRole('button', {name: 'Check my lists now'}).waitFor(); await shot(guest, '18c-check-lists');
 await guest.getByRole('button', {name: 'Check my lists now'}).click(); await toast(guest).filter({hasText: 'Checking your lists. Your apps have them in a few minutes.'}).waitFor();
 assert.deepEqual(askedNow, [['/api/people/ada/foryou/for-you-1', {use: 'genres:18'}], ['/api/people/ada/foryou/for-you-1', {keep: true}], ['/api/people/ada/foryou/for-you-2', {never: true}], ['/api/people/ada/shelf', {}]]);
@@ -531,19 +545,34 @@ const saved = async (check, what) => {let got; for (let i = 0; i < 40 && !check(
 await guest.reload(); await rowOf('Because you watched Inception').getByRole('button', {name: 'Edit'}).click(); await placeSheet.getByRole('button', {name: 'Less “Because you watched”'}).click();
 await toast(guest).filter({hasText: 'Because you watched moves down. Picks change in a few minutes.'}).waitFor();
 await saved(got => got.forYouOrder?.join() === 'series,pickup,crew,because,genres,seasonal,top10,different', 'one step down');
-const kinds = guest.locator('ol.kinds'), kindNames = () => kinds.locator('li strong').allTextContents();
+const kinds = guest.locator('ol.kinds'), kindNames = () => kinds.locator('li strong').allTextContents(), kindsCard = guest.locator('.setting', {hasText: 'Kinds of pick'});
+// Folded to a line until opened: which kind comes first, and how many are on.
+await kindsCard.getByText('Next in a movie series first · 8 of 8 on', {exact: true}).waitFor(); assert.equal(await kinds.count(), 0);
+if (shots) for (const [width, height] of [[390, 844], [1280, 900]]) {await guest.setViewportSize({width, height}); await kindsCard.scrollIntoViewIfNeeded(); await guest.waitForTimeout(300); await kindsCard.screenshot({path: `${shots}/real-19a-kinds-folded-${width < 600 ? 'phone' : 'wide'}.png`});}
+await guest.setViewportSize({width: 390, height: 844}); await kindsCard.getByRole('button', {name: 'Change'}).click();
 await kinds.scrollIntoViewIfNeeded(); assert.deepEqual(await kindNames(), ['Next in a movie series', 'Pick back up', 'More from a director', 'Because you watched', 'Your genres', 'Seasonal', 'Top 10', 'Something different']);
 await guest.locator('.setting', {hasText: 'Not picked from'}).getByText('Pulp Fiction').waitFor();
+// Each kind says what it picks, in her words.
+await kinds.locator('li', {hasText: 'Pick back up'}).getByText('Shows you left partway, last watched between three weeks and a year ago.', {exact: true}).waitFor();
+await kinds.locator('li', {hasText: 'Top 10'}).getByText('What’s most watched on Netflix where you last played, or worldwide. Not from your own watching.', {exact: true}).waitFor();
+// If picked now, from today's options: each row from the next kind in her order with something (the kept row stays), redone at
+// once as she drags or switches.
+const ifNow = () => kindsCard.locator('.if-now li').evaluateAll(lines => lines.map(line => [line.querySelector('strong').textContent, line.querySelector('small').textContent]));
+assert.deepEqual(await ifNow(), [['More from a director', 'More from Christopher Nolan'], ['Next in a movie series', 'Next in The Dark Knight · kept'], ['Because you watched', 'Inception']]);
 // Dragged by its handle, Something different goes to the top.
+// (A tall window, so the whole list, with each kind's line, is on screen at once.)
+await guest.setViewportSize({width: 390, height: 2000}); await kinds.scrollIntoViewIfNeeded();
 const grip = kinds.getByRole('button', {name: 'Move Something different'}), top = kinds.locator('li').first();
 const [from, to] = [await grip.boundingBox(), await top.boundingBox()];
 await guest.mouse.move(from.x + from.width / 2, from.y + from.height / 2); await guest.mouse.down();
 for (let step = 1; step <= 12; step++) {await guest.mouse.move(from.x + from.width / 2, from.y + (to.y + 4 - from.y) * step / 12); await guest.waitForTimeout(30);}
-await guest.mouse.up();
+await guest.mouse.up(); await guest.setViewportSize({width: 390, height: 844});
 await saved(got => got.forYouOrder?.[0] === 'different', 'dragged to the top'); assert.equal((await kindNames())[0], 'Something different');
+assert.deepEqual(await ifNow(), [['Something different', 'Western movies'], ['Next in a movie series', 'Next in The Dark Knight · kept'], ['More from a director', 'More from Christopher Nolan']]);
+await kinds.getByRole('switch', {name: 'More from a director'}).click(); await saved(got => got.forYouOff?.includes('crew'), 'crew off');
+assert.deepEqual((await ifNow())[2], ['Because you watched', 'Inception']); await kinds.getByRole('switch', {name: 'More from a director'}).click(); await saved(got => !got.forYouOff?.includes('crew'), 'crew on');
 await kinds.getByRole('switch', {name: 'Top 10'}).click(); await saved(got => got.forYouOff?.includes('top10'), 'Top 10 off');
 await kinds.getByRole('radio', {name: 'From any time'}).click(); await saved(got => got.forYouBecause === 'any', 'from any time');
-const kindsCard = guest.locator('.setting', {hasText: 'Kinds of pick'});
 if (shots) {const hidden = await guest.addStyleTag({content: '.toast { visibility: hidden !important; }'}); for (const [width, height] of [[390, 844], [1280, 900]]) {await guest.setViewportSize({width, height}); await kindsCard.scrollIntoViewIfNeeded(); await guest.waitForTimeout(300); await kindsCard.screenshot({path: `${shots}/real-19-kinds-of-pick-${width < 600 ? 'phone' : 'wide'}.png`});
   await guest.locator('.setting', {hasText: 'Not picked from'}).screenshot({path: `${shots}/real-19b-not-picked-from-${width < 600 ? 'phone' : 'wide'}.png`});} await hidden.evaluate(element => element.remove()); await guest.setViewportSize({width: 390, height: 844});}
 await guest.locator('.setting', {hasText: 'Not picked from'}).getByRole('button', {name: 'Count again'}).click(); await toast(guest).filter({hasText: '“Pulp Fiction” counts again from the next pick'}).waitFor();
@@ -554,7 +583,8 @@ await guest.unrouteAll({behavior: 'wait'}); await guest.reload(); await guest.lo
 // page and reloading cancels the first read, whose answer is then left unsent.)
 await owner.route('**/api/state', async route => {const response = await route.fetch(), body = await response.json(); body.hub.front = true; Object.assign(body.hub.jobs, {shelfDue: 0, shelves: 1, shelved: hourAgo}); await route.fulfill({response, json: body}).catch(() => {});});
 await owner.goto(BASE + '/#/hub/general'); await owner.reload(); const listsJob = owner.locator('.jobs li', {hasText: 'My Trakt lists rows'});
-await listsJob.getByText('under way').waitFor(); await listsJob.getByText('every day, and when someone asks').waitFor(); await listsJob.scrollIntoViewIfNeeded(); await shot(owner, '16d-background-under-way');
+await listsJob.getByText('under way').waitFor(); await listsJob.getByText('For everyone every day; for one person when their lists change or they press Check now', {exact: true}).waitFor();
+await owner.locator('.jobs li', {hasText: 'For you picks'}).getByText(/^For everyone every day at .+; for one person when they change their rows or kinds, or finish something$/).waitFor(); await listsJob.scrollIntoViewIfNeeded(); await shot(owner, '16d-background-under-way');
 await owner.unroute('**/api/state');
 await owner.goto(BASE + '/#/account'); await owner.getByRole('button', {name: 'New codes'}).click(); await owner.locator('.codes li').nth(9).waitFor(); await shot(owner, '9-codes');
 const state = await owner.evaluate(() => fetch('/api/state').then(answer => answer.text()));
@@ -582,4 +612,43 @@ await owner.goto(BASE + '/#/person/ada/settings'); await owner.locator('.share-t
 await owner.locator('.setting', {hasText: 'Make a copy'}).getByRole('button', {name: 'Copy'}).click(); await owner.getByRole('dialog').getByRole('textbox').fill('Ada Two'); await owner.getByRole('dialog').getByRole('textbox').press('Enter');
 // The address changes a moment before the page is drawn: the copy's page is the one headed with its name.
 await owner.waitForURL(/#\/person\/ada-two/); await owner.getByRole('heading', {name: 'Ada Two', exact: true}).waitFor(); for (let i = 0; i < 20; i++) {const shown = await owner.locator('.share-text code').allTextContents(); assert.ok(!shown.includes(link), `the copy shows its own link, never Ada's (at ${owner.url().split('#')[1]}, try ${i}, shown ${JSON.stringify(shown.map(item => item.slice(-12)))}, Ada's ends ${link.slice(-12)})`); await owner.waitForTimeout(150);}
+// A TV's Quick Connect link, as a player app shows it: Jellyfin's web page, with the TV's code after the #. It opens the site, which
+// asks who the TV is for, names them on the button and approves nothing without a tap.
+const tvAsks = async () => (await fetch(`${BASE}/h/${hubCode}/QuickConnect/Initiate`, {method: 'POST', headers: {authorization: 'MediaBrowser Client="Wholphin", Device="Living room TV", DeviceId="tv-quick"'}})).json();
+const tvIn = async tv => (await (await fetch(`${BASE}/h/${hubCode}/QuickConnect/Connect?secret=${tv.Secret}`)).json()).Authenticated;
+const tvLink = tv => `${BASE}/h/${hubCode}/web/#/quickconnect?code=${tv.Code}`;
+const tvShots = async (page, name) => {if (!shots) return; for (const [width, height] of [[390, 844], [1280, 900]]) {await page.setViewportSize({width, height}); await page.waitForTimeout(250); await page.screenshot({path: `${shots}/real-20${name}-${width < 600 ? 'phone' : 'wide'}.png`, fullPage: true});} await page.setViewportSize({width: 390, height: 844});};
+// The manager picks who it is for, from the hub's people: never themselves.
+let tv = await tvAsks(); await owner.goto(tvLink(tv));
+await owner.getByRole('heading', {name: 'Sign this TV in as…'}).waitFor(); assert.match(owner.url(), new RegExp(`/\\?tv=${hubCode}#/quickconnect\\?code=${tv.Code}$`));
+await owner.getByText(`A TV is asking to sign in with the code ${tv.Code.slice(0, 3)} ${tv.Code.slice(3)}.`, {exact: true}).waitFor();
+const tvPeople = owner.getByRole('radiogroup', {name: 'Who the TV is for'});
+assert.deepEqual(await tvPeople.locator('label > span:last-child').allTextContents(), ['Ada', 'Ada Two']); assert.ok(await owner.getByRole('button', {name: 'Approve', exact: true}).isDisabled());
+await tvPeople.getByRole('radio').first().check(); await tvShots(owner, 'a-tv-manager');
+await owner.getByRole('button', {name: 'Approve as Ada'}).click(); await owner.getByText('It signs in as Ada in a few seconds.', {exact: true}).waitFor(); assert.equal(await tvIn(tv), true);
+// A code that ran out (or that no TV shows) says so plainly.
+tv = await tvAsks(); sqlLocal(`UPDATE quick SET expires = 0 WHERE code = '${tv.Code}'`); await owner.goto(tvLink(tv));
+await tvPeople.getByRole('radio').first().check(); await owner.getByRole('button', {name: 'Approve as Ada'}).click();
+await owner.getByText('No TV is showing that code right now. Check the code, or start again on the TV.', {exact: true}).waitFor(); await tvShots(owner, 'b-tv-expired'); assert.equal(await tvIn(tv), undefined);
+// A person approves it as themselves.
+tv = await tvAsks(); await guest.goto(tvLink(tv)); await guest.getByRole('heading', {name: 'Sign this TV in as Ada?'}).waitFor(); await tvShots(guest, 'c-tv-person');
+await guest.getByRole('button', {name: 'Approve as Ada'}).click(); await guest.getByText('It signs in as Ada in a few seconds.', {exact: true}).waitFor(); assert.equal(await tvIn(tv), true);
+// Or as someone else, with that person's password for this site (Ada Two joins first, choosing hers). No session is made for them.
+let twoLink = ''; for (let i = 0; i < 40 && !twoLink; i++) {twoLink = await owner.evaluate(async () => (await (await fetch('/api/people/ada-two/signin')).json()).link ?? ''); if (!twoLink) await owner.waitForTimeout(150);}
+assert.equal((await fetch(`${BASE}/api/join`, {method: 'POST', headers: {origin: BASE, 'content-type': 'application/json'}, body: JSON.stringify({token: twoLink.split('/join/')[1], password: 'second password'})})).status, 200);
+tv = await tvAsks(); await guest.goto(tvLink(tv)); await guest.getByRole('button', {name: 'Someone else'}).click();
+await guest.getByLabel('Name').fill('Ada Two'); await guest.getByLabel('Their password').fill('not hers');
+await guest.getByRole('button', {name: 'Approve as Ada Two'}).click(); await guest.getByText('That name or password isn’t right.', {exact: true}).waitFor();
+await guest.getByLabel('Their password').fill('second password'); await tvShots(guest, 'd-tv-someone-else');
+await guest.getByRole('button', {name: 'Approve as Ada Two'}).click(); await guest.getByText('It signs in as Ada Two in a few seconds.', {exact: true}).waitFor(); assert.equal(await tvIn(tv), true);
+await guest.goto(BASE + '/#/me'); await guest.getByRole('heading', {name: 'Ada', exact: true}).waitFor();
+// Nobody signed in: whoever it is for, by name and password; or the manager signs in first, then picks. A link without a code asks
+// for it.
+const nobody = await open(); await nobody.goto(`${BASE}/h/${hubCode}/web/`); await nobody.getByRole('heading', {name: 'Sign in a TV'}).waitFor();
+tv = await tvAsks(); await nobody.getByLabel('Code from the TV').fill(tv.Code); await nobody.getByRole('button', {name: 'Continue'}).click();
+await nobody.getByRole('heading', {name: 'Sign this TV in', exact: true}).waitFor(); await nobody.getByLabel('Name').waitFor(); await tvShots(nobody, 'e-tv-signed-out');
+await nobody.getByRole('button', {name: 'Run this hub? Sign in'}).click(); await nobody.getByLabel('Hub code').fill(hubCode); await nobody.getByLabel('Password').fill('correct horse');
+await nobody.getByRole('button', {name: 'Sign in', exact: true}).click(); await nobody.getByRole('heading', {name: 'Sign this TV in as…'}).waitFor();
+await nobody.getByRole('radiogroup', {name: 'Who the TV is for'}).getByRole('radio').nth(1).check(); await nobody.getByRole('button', {name: 'Approve as Ada Two'}).click();
+await nobody.getByText('It signs in as Ada Two in a few seconds.', {exact: true}).waitFor(); await tvShots(nobody, 'f-tv-approved'); assert.equal(await tvIn(tv), true);
 console.log('browser flow ok; page errors:', JSON.stringify(errors)); await browser.close(); process.exit(errors.length ? 1 : 0);

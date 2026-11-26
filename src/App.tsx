@@ -5,7 +5,7 @@ import type {Hub} from './data';
 import {Activity} from './activity';
 import {asWho, call, changes, leaveAs, settle} from './live';
 import type {Live, Refused} from './live';
-import {AccountPage, GroupPage, HubPage, JoinGate, JoinPage, PeoplePage, PersonPage, SetupPage, SignInPage, backFromTrakt, lostTrakt} from './pages';
+import {AccountPage, GroupPage, HubPage, JoinGate, JoinPage, PeoplePage, PersonPage, SetupPage, SignInPage, TvGate, backFromTrakt, lostTrakt} from './pages';
 import type {PageProps} from './pages';
 import {Avatar, forgetReal, showReal, useRoute} from './ui';
 
@@ -154,6 +154,11 @@ function Hubbed() {
   const [at, id, tab] = parts, inside = phase === 'in' && !!page;
 
   if (phase === 'loading') return <Frame parts={parts} toastView={toastView}><p className="empty">Loading…</p></Frame>;
+  // A TV's Quick Connect link (front.ts): the TV's code after the #, as Jellyfin's own web page has it, and the hub's in ?tv. A link
+  // with nothing after the # asks for the code.
+  const tv = /^#!?\/quickconnect(?:\?(.*))?$/.exec(location.hash) ?? (!location.hash && new URLSearchParams(location.search).has('tv') ? [] : null);
+  if (tv) return <Frame parts={parts} toastView={toastView}><TvGate live={live} toast={toast} hub={inside ? hub : null} person={inside && who.role === 'person' ? hub?.people.find(person => person.id === who.personId) : undefined}
+    tv={new URLSearchParams(location.search).get('tv') ?? ''} given={new URLSearchParams(tv[1] ?? '').get('code') ?? ''}/></Frame>;
   // Someone's link always goes through its gate: their own opens straight away; another person's asks for that person's password
   // (saying who is signed in now), so a shared browser never shows the wrong page.
   if (at === 'join' && id) return <Frame parts={parts} toastView={toastView}><JoinGate token={id} live={live} toast={toast} manager={inside && who.role !== 'person'} signedAs={inside && who.role === 'person' ? hub?.people.find(person => person.id === who.personId)?.name : undefined} onIn={() => {void live.reload().then(() => go('/me'));}}/></Frame>;

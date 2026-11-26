@@ -10,6 +10,7 @@ import {blocked, failed, getSecret, guesses, newId, newToken, now, putSecret, sa
 import type {Target} from './trakt';
 import {LINK, brief, deliver, history, progressOf, soon} from './trakt';
 import {syncPlayers} from './native';
+import {finished} from './foryou';
 
 const MOUNT = '/jellyfin', SEEN_EVERY = 600, REMEMBER = 20_000, MOST_DEVICES = 30;
 // The headers are named one by one: in a browser, `*` does not cover Authorization.
@@ -125,7 +126,7 @@ async function seatOf(env: Env, hub: string, id: string): Promise<Seat | null> {
    reports pass through: on start, on stop, and at most once a minute in between (once in ten minutes while it sits paused).
    Nothing is sent on a person's behalf unless they connected Trakt history (scrobble, below). */
 const REPORTS: Record<string, 'start' | 'progress' | 'stop'> = {'/sessions/playing': 'start', '/sessions/playing/progress': 'progress', '/sessions/playing/stopped': 'stop'};
-const noted = new Map<string, number>(), seen = new Map<string, {pos: number; at: number; paused: boolean}>();
+const noted = new Map<string, number>(), seen = new Map<string, {pos: number; at: number; paused: boolean}>(), ends = new Set<string>();
 // A paused player that keeps reporting is noted once in ten minutes: still heard on Activity (src/activity.tsx), and well inside the
 // half hour after which Trakt is told a quiet play stopped (QUIET in trakt.ts).
 const EVERY = 60_000, PAUSED_EVERY = 600_000, APART = 1800;
@@ -150,6 +151,10 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
     env.DB.prepare('SELECT started, position, playing, paused, since, updated, parts, pauses, idle FROM sittings WHERE hub = ? AND person = ? AND item = ? AND device = ? ORDER BY started DESC LIMIT 1').bind(hub, seat.person, item, seat.on)]);
   const known = (found.results[0] ?? null) as Noted | null, latest = (sat.results[0] ?? null) as (Noted & {started: number}) | null;
   const position = kind === 'mark' ? known?.duration ?? 0 : Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' || kind === 'mark' ? 0 : 1;
+  // Played to 90% or more (as Activity says finished), a title can bring new For you picks: by its show for an episode (its art).
+  // A tick without playing is not a watch here.
+  const done = (length: number, at: number, art: string) => kind !== 'start' && kind !== 'mark' && length > 0 && at >= length * 0.9 ? art || item : '';
+  let ended = '';
   // Since when it has been as it is now: kept while a paused (or playing) title stays so, started again on any change.
   const pausedNow = kind === 'progress' && paused ? 1 : 0, since = known && kind === 'progress' && known.paused === pausedNow && known.since ? known.since : stamp;
   const {parts, pauses, idle} = watched(known, kind, position, pausedNow, stamp, before && kind !== 'start' ? before : undefined);
@@ -175,7 +180,7 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   // Sittings not heard from in 180 days go, now and then (and what is left of the starts once kept, migration 0010).
   const tidy = Math.random() < 0.02 ? [env.DB.prepare('DELETE FROM sittings WHERE hub = ? AND updated < ?').bind(hub, stamp - 180 * 86400), env.DB.prepare('DELETE FROM starts WHERE hub = ? AND at < ?').bind(hub, stamp - 180 * 86400)] : [];
   // Rows from before pictures were kept are looked up once more, on their next start.
-  if (known && (known.art || kind !== 'start')) await env.DB.batch([env.DB.prepare('UPDATE plays SET position = ?, playing = ?, paused = ?, since = ?, device = ?, updated = ?, place = ?, net = ?, parts = ?, pauses = ?, idle = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, pausedNow, since, seat.on, stamp, where.place, where.net, parts, pauses, idle, hub, seat.person, item), ...sitting(known.duration, position), ...tidy]);
+  if (known && (known.art || kind !== 'start')) {await env.DB.batch([env.DB.prepare('UPDATE plays SET position = ?, playing = ?, paused = ?, since = ?, device = ?, updated = ?, place = ?, net = ?, parts = ?, pauses = ?, idle = ? WHERE hub = ? AND person = ? AND item = ?').bind(position, playing, pausedNow, since, seat.on, stamp, where.place, where.net, parts, pauses, idle, hub, seat.person, item), ...sitting(known.duration, position), ...tidy]); ended = done(known.duration, position, known.art);}
   else {
     // First report for this title: ask AIOStreams what it is called, as this person.
     const about = await fetch(`${seat.base}/Users/${seat.upId}/Items/${encodeURIComponent(item)}`, {headers: {accept: 'application/json', authorization: asPerson(seat)}}).then(answer => answer.status === 200 ? answer.json() : null).catch(() => null) as {Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string} | null;
@@ -186,10 +191,12 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
     const length = Math.round(Number(about.RunTimeTicks ?? 0) / 1e7), at = kind === 'mark' ? length : position;
     await env.DB.batch([env.DB.prepare('INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, place, net, paused, since, parts, pauses, idle) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hub, person, item) DO UPDATE SET position = excluded.position, playing = excluded.playing, paused = excluded.paused, since = excluded.since, device = excluded.device, updated = excluded.updated, art = excluded.art, place = excluded.place, net = excluded.net, parts = excluded.parts, pauses = excluded.pauses, idle = excluded.idle')
       .bind(hub, seat.person, item, title.slice(0, 200), detail.slice(0, 120), at, length, seat.on, playing, stamp, art, where.place, where.net, pausedNow, stamp, parts, pauses, idle), ...sitting(length, at), ...tidy]);
-    firstHere = first;
+    firstHere = first; ended = done(length, at, art);
   }
   // A tick that comes while a sitting is under way (heard in the last minute) is the app's own, as it moves on to the next.
   if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused, jumped, !!latest && stamp - latest.updated <= 60);
+  // Once per title here in each running copy: the credits report every minute past 90%.
+  if (ended && !ends.has(`${hub}/${seat.person}/${ended}`)) {if (ends.size > 5000) ends.clear(); ends.add(`${hub}/${seat.person}/${ended}`); await finished(env, hub, seat.person, ended);}
   // Their first play here: Recently Watched now has something in it, so their Home gets it without waiting for the site to be opened.
   // Not for someone with Trakt connected to the hub: theirs was there already.
   if (firstHere && !seat.scrobble) {const found = await env.DB.prepare('SELECT id, data FROM hubs WHERE id = ?').bind(hub).first<{id: string; data: string}>(); if (found) await syncPlayers(env, found, origin).catch(() => null);}
@@ -384,6 +391,9 @@ export async function front(request: Request, site: Env, ctx: ExecutionContext, 
   const hub = found.id, env: Env = {...site, UP_ORIGIN: found.up};
   const lower = path.toLowerCase(), base = `${url.origin}/h/${code}`, started = Date.now(), reading = request.method === 'GET' || request.method === 'HEAD';
   // Things the hub answers itself.
+  // Player apps link Quick Connect to Jellyfin's web page (/web/#/quickconnect?code=…). Here the site asks who the TV is for: the
+  // browser keeps the part after # through the redirect, and the hub code rides along.
+  if (lower === '/web' || lower.startsWith('/web/')) return new Response(null, {status: 302, headers: {location: `${url.origin}/?tv=${encodeURIComponent(code)}`, 'cache-control': 'no-store'}});
   if (lower === '/quickconnect/enabled') return json(200, true);
   if (lower === '/quickconnect/initiate' || lower === '/quickconnect/connect' || (lower === '/users/authenticatewithquickconnect' && request.method === 'POST')) return quick(request, env, hub, url, lower, base);
   if (lower.startsWith('/quickconnect/') || /^\/users\/([^/]+\/)?password$/.test(lower) || lower === '/users/new') return json(403, {Message: 'Not available here'});

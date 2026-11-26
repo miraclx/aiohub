@@ -410,6 +410,14 @@ button.small { white-space: nowrap; flex-shrink: 0; }
 .setting:not(.column) > .secret code { overflow: visible; }
 /* Sign-in and invite screens stand alone, so they sit nearer the middle of a tall window instead of hugging the top. */
 .gate { margin-top: clamp(0px, calc(38vh - 260px), 220px); }
+/* A TV's Quick Connect page: the hub's people to choose from, one line each. */
+.tv-people { display: grid; gap: 8px; }
+.tv-people label { display: flex; align-items: center; gap: 12px; min-height: var(--tap); padding: 8px 14px; border-radius: 14px; background: var(--surface); cursor: pointer; font-weight: 550; }
+.tv-people label:has(input:checked) { outline: 2px solid var(--accent); }
+.tv-people input[type=radio] { width: 18px; min-height: 0; height: 18px; padding: 0; margin: 0; border: 0; flex-shrink: 0; accent-color: var(--accent); }
+.tv-people input[type=radio]:focus { outline: none; }
+.tv-people label:has(input:focus-visible) { outline: 2px solid var(--accent); }
+.tv-back { display: block; margin: 12px auto 0; }
 /* A value that is given, not typed: the hub code on the create screen. */
 .label { font-weight: 600; font-size: 14px; }
 .code-show { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border: 1px dashed var(--line); border-radius: 14px; }
@@ -473,14 +481,25 @@ label.sheet-sub { display: block; }
 .never { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
 .never li { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .why small { display: block; color: var(--muted); font-size: 13px; margin-top: 4px; }
+/* A For you row's sheet opens with what the row does, why today's pick, and when it changes, then keeping it. */
+.story { display: grid; gap: 6px; justify-items: start; }
+.story p { margin: 0; }
+.story button { margin-top: 8px; text-align: left; padding-top: 8px; padding-bottom: 8px; }
 .none summary { cursor: pointer; color: var(--muted); font-weight: 600; margin-top: 16px; min-height: var(--tap); display: flex; align-items: center; gap: 8px; }
 .none ul { list-style: none; margin: 0; padding: 0; background: var(--surface); border-radius: 14px; }
 .none li { display: grid; gap: 1px; padding: 10px 14px; }
 .none li + li { border-top: 1px solid var(--line); }
 .none small { color: var(--muted); }
-.note-above { margin-bottom: 10px; }
 .sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .kinds .segments { background: var(--surface); }
+.kinds li > div > small + small { margin-top: -4px; }
+/* Kinds of pick, opened: what the rows would hold if picked now, under the kinds, and Done. */
+.if-now { padding: 12px 14px; border-radius: 12px; background: var(--raised); }
+.if-now h4 { margin: 0 0 8px; color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.if-now ol { margin: 0 0 8px; padding-left: 22px; display: grid; gap: 6px; }
+.if-now li strong { display: block; font-weight: 600; }
+.if-now li small { display: block; color: var(--muted); font-size: 13px; }
+.settings .setting.column > button.ghost.small { align-self: flex-start; }
 /* A look that failed: an empty ring, since nothing is under way (wait) and nothing is known to be in step (ok). */
 .trackers .dot.off { background: transparent; border: 1.5px solid var(--muted); }
 .trackers .note { display: block; margin-top: 2px; }

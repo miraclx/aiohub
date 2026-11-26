@@ -25,16 +25,23 @@ const DAY_MS = 86_400_000, SHELF_ROW = 'trakt-lists';
 // A day in the viewer's own words, and a time with its day when that is not today ("yesterday at 6:04 AM").
 const dayOf = (ms: number) => {const days = Math.round((new Date(ms).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / DAY_MS); return days === 0 ? 'today' : days === 1 ? 'tomorrow' : days === -1 ? 'yesterday' : new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'});};
 const atOf = (ms: number) => `${dayOf(ms) === 'today' ? '' : `${dayOf(ms)} `}at ${new Date(ms).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;
-/* When a For you place changes next: the day's picking starts at the hour; someone not picked for since then is on one of the next
-   runs. The preview has no times. */
-function changesOf(times?: Times) {
-  if (!times?.pickedAt) return 'changes each day';
+/* When a For you place is picked again: the day's picking starts at the hour; someone not picked for since then is on one of the
+   next runs (0). Nothing without times (the preview). */
+function nextOf(times?: Times) {
+  if (!times?.pickedAt) return undefined;
   const now = Date.now(), start = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T${String(times.hour).padStart(2, '0')}:00:00Z`);
-  const next = now < start ? start : times.pickedAt * 1000 >= start ? start + DAY_MS : 0;
-  return next ? `changes ${atOf(next)}` : 'changes soon';
+  return now < start ? start : times.pickedAt * 1000 >= start ? start + DAY_MS : 0;
 }
-/* A place's line on a person's own Home: kept, or when it changes; a stand-in says why it is there. */
-const pickOf = (kind: string, times?: Times, kept?: boolean) => kept ? 'kept' : kind === 'popular' ? 'Popular, until there’s more to go on' : changesOf(times);
+/* A place's line on a person's own Home, under "For you": today's pick, then when it changes, that it is kept, or why a stand-in. */
+function pickOf(name: string, kind: string, times?: Times, kept?: boolean) {
+  const next = nextOf(times);
+  return `Today: ${name} · ${kept ? 'kept' : kind === 'popular' ? 'until there’s more to go on' : next === undefined ? 'picks again each day' : next ? `picks again ${dayOf(next)}` : 'picks again soon'}`;
+}
+/* The same in the row's sheet, in a sentence. */
+function againOf(times?: Times) {
+  const next = nextOf(times), when = next === undefined ? 'Each day' : next ? atOf(next) : 'Soon';
+  return `${when.charAt(0).toUpperCase()}${when.slice(1)} it picks again, and it could be any kind.`;
+}
 const kindTitle = (kind: string) => FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'Popular';
 /* When a title was watched, in the viewer's own days: "today", "on Tuesday", "on 3 Nov". */
 function seenOf(seconds?: number) {
@@ -43,11 +50,11 @@ function seenOf(seconds?: number) {
   return days <= 0 ? ' today' : days === 1 ? ' yesterday' : days < 7 ? ` on ${at.toLocaleDateString(undefined, {weekday: 'long'})}` : ` on ${at.toLocaleDateString(undefined, {day: 'numeric', month: 'short', ...(at.getFullYear() !== new Date().getFullYear() ? {year: 'numeric'} : {})})}`;
 }
 /* What a pick came from, in plain words, for whoever is looking (`mine`: their own page). The pick says the facts (foryou.ts);
-   a pick made before it did says only its kind. */
+   a pick made before it did says nothing, rather than its kind again. */
 function whyOf(pick: Shown, mine: boolean) {
   const you = mine ? 'you' : 'they', You = mine ? 'You' : 'They', {title = '', seen, who, more = 0} = pick.why ?? {};
   if (pick.kind === 'popular') return 'Popular titles, while there’s too little watched to pick from.';
-  if (!pick.why && pick.kind !== 'seasonal') return `${kindTitle(pick.kind)}.`;
+  if (!pick.why && pick.kind !== 'seasonal') return '';
   return {
     because: `${You} watched it${seenOf(seen)}.`,
     series: `${You} watched ${title}${seenOf(seen)}. ${more === 1 ? 'One more film in the series is out' : `${more} more films in the series are out`}.`,
@@ -57,7 +64,7 @@ function whyOf(pick: Shown, mine: boolean) {
     different: `Well liked, and not a genre ${you}’ve been watching.`,
     seasonal: 'In season now.',
     top10: `Most watched on Netflix in ${title} today.`,
-  }[pick.kind] ?? `${kindTitle(pick.kind)}.`;
+  }[pick.kind] ?? '';
 }
 /* Why a kind has nothing today (foryou.ts): switched off, not under the content limit, too little watched, or nothing left. */
 function noneOf(kind: string, code: string, limit: Limit, mine: boolean) {
@@ -82,12 +89,13 @@ function RowCard({row, index, tag, locked, later, person, limit = 'all', times, 
   const tiles = shelf ?? (!row.covers ? suggestionOf(row.id)?.parts.flatMap(({title, cover}) => cover ? [{title, image: `/covers/kids/${decodeURIComponent(cover.split('/').pop()!).replace(/\.jpg$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.jpg`}] : []) : undefined);
   const sortable = useSortable({id: row.id, index, disabled: locked});
   // Rows that are always current (the watchlist, lists, Recently Watched) say nothing of times.
-  const line = row.pick ? `For you · ${pickOf(row.pick, times, kept)}` : times && isPlace(row.id) && !times.pickedAt ? 'For you · Picked soon' : times && row.id === SHELF_ROW ? listsOf(times.shelfAt) : `${kindOf(row)} · ${sourceShown(row, limit)}`;
+  // A For you place is headed "For you", as on a hub's Home, and says what it holds today: the pick is today's, not the row's.
+  const line = row.pick ? pickOf(row.title, row.pick, times, kept) : times && isPlace(row.id) && !times.pickedAt ? 'For you · Picked soon' : times && row.id === SHELF_ROW ? listsOf(times.shelfAt) : `${kindOf(row)} · ${sourceShown(row, limit)}`;
   return <li ref={sortable.ref} className={`row${sortable.isDragging ? ' dragging' : ''}${locked ? ' locked' : ''}${later ? ' later' : ''}`}>
     {!locked && <Grip handleRef={sortable.handleRef} label={`Move ${row.title}`}/>}
     <div className="row-main">
       <div className="row-head">
-        <div><h3>{row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? laterOf(row) : none ? 'Not shown under this content limit' : line}</p></div>
+        <div><h3>{row.pick ? 'For you' : row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? laterOf(row) : none ? 'Not shown under this content limit' : line}</p></div>
         {!locked && <div className="row-actions">
           {onArrange && <button type="button" className="ghost small" onClick={onArrange}>Edit</button>}
           {onRemove && <button type="button" className="ghost small" onClick={onRemove}>Remove</button>}
@@ -134,6 +142,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
   // Following the Home above again, or removing a row, throws work away: both ask first.
   const [following, setFollowing] = useState(false), [dropping, setDropping] = useState<Row | null>(null), [placeOpen, setPlaceOpen] = useState<string | null>(null);
   const place = rows.find(row => row.id === placeOpen), placeKind = FOR_YOU_KINDS.find(item => item.id === place?.pick), now = place && forYou?.places[place.id];
+  const reason = place ? whyOf(now ?? {key: '', kind: place.pick ?? 'popular', name: place.title}, mine) : '';
   // The day's other options, never one on another of their places; and the kinds with nothing today.
   const options = (forYou?.options ?? []).filter(option => !Object.values(forYou?.places ?? {}).some(pick => pick.key === option.key)).slice(0, 5), none = Object.entries(forYou?.none ?? {});
   const closing = (place: string, asked: {use?: string; keep?: boolean; never?: boolean}, note: string) => {setPlaceOpen(null); onPlace?.(place, asked, note);};
@@ -223,22 +232,25 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, f
         if (from >= 0 && from !== to) set(folder.id, {covers: moved(folder.covers!, from, to)}, 'Order saved');
       }}><ol className="folders">{folder.covers.map((cover, index) => <FolderItem key={cover.image} cover={cover} index={index} onRename={title => set(folder.id, {covers: folder.covers!.map(item => item.image === cover.image ? {...item, title} : item)}, 'Renamed')}/>)}</ol></DragDropProvider></>}
     </Sheet>}
-    {place && <Sheet title={place.title} onClose={() => setPlaceOpen(null)}>
-      {/* Top to bottom: what is here and why, what else there is today, what there isn't and why, keeping it, and less like it. */}
-      <p className="sheet-lead why">{whyOf(now ?? {key: '', kind: place.pick ?? 'popular', name: place.title}, mine)}<small>{placeKind ? `${placeKind.title} · ` : ''}{pickOf(place.pick ?? 'popular', times, now?.keep)}</small></p>
+    {place && <Sheet title="For you" onClose={() => setPlaceOpen(null)}>
+      {/* Top to bottom: what the row does and holds today, why, when it picks again or that it is kept (and keeping it), what else
+          there is today, what there isn't and why, and less like it. */}
+      <div className="sheet-lead story">
+        <p>This row picks something new each day from the kinds {mine ? 'you' : 'they'} have on. Today it’s “{place.title}”.</p>
+        {reason && <p className="muted">{reason}</p>}
+        <p className="muted">{now?.keep ? `Kept: it stays “${place.title}” until you let it change.` : againOf(times)}</p>
+        {/* Kept, the place holds this pick at the daily pick until let go; a kind switched off or a content limit still lets it go. */}
+        {onPlace && <button type="button" className="ghost" onClick={() => closing(place.id, {keep: !now?.keep}, now?.keep ? 'It changes again from the next daily pick.' : 'Kept. It stays until you let it change.')}>{now?.keep ? 'Let it change again' : `Keep “${place.title}”`}</button>}
+      </div>
       {onPlace && <><h3 className="sheet-sub">Today’s other options</h3>
         {/* Already worked out at the day's pick: one goes in at once, as often as wanted. */}
         {options.length ? <ul className="picks compact options">{options.map(option => {
-          // The kind, unless the name says it already ("Because you watched …", "Top 10 …").
-          const why = whyOf(option, mine), kind = option.kind === 'popular' || option.name.startsWith(kindTitle(option.kind)) ? '' : `${kindTitle(option.kind)} · `;
-          return <li key={option.key}><button type="button" onClick={() => closing(place.id, {use: option.key}, `“${option.name}” is on this row now. ${apps}`)}><span><strong>{option.name}</strong><small>{kind}{why}</small></span></button></li>;
+          // The kind, unless the name says it already ("Because you watched …", "Top 10 …"), then why, if known.
+          const line = [option.kind === 'popular' || option.name.startsWith(kindTitle(option.kind)) ? '' : kindTitle(option.kind), whyOf(option, mine)].filter(Boolean).join(' · ');
+          return <li key={option.key}><button type="button" onClick={() => closing(place.id, {use: option.key}, `“${option.name}” is on this row now. ${apps}`)}><span><strong>{option.name}</strong>{line && <small>{line}</small>}</span></button></li>;
         })}</ul> : <p className="muted small">Nothing else to choose from today.</p>}
         {!!none.length && <details className="none"><summary>Not available today <span className="count">{none.length}</span></summary>
-          <ul>{none.map(([kind, code]) => <li key={kind}><strong>{kindTitle(kind)}</strong><small>{noneOf(kind, code, limit, mine)}</small></li>)}</ul></details>}
-        {/* Kept, the place holds this pick at the daily pick until let go; a kind switched off or a content limit still lets it go. */}
-        <h3 className="sheet-sub">{now?.keep ? 'Kept' : 'Keep it'}</h3>
-        <p className="muted small note-above">{now?.keep ? 'This row stays as it is each day until you let it change.' : 'This row changes each day. Keep it and it stays as it is.'}</p>
-        <button type="button" className="ghost" onClick={() => closing(place.id, {keep: !now?.keep}, now?.keep ? 'It changes again from the next daily pick.' : 'Kept. It stays until you let it change.')}>{now?.keep ? 'Let it change again' : 'Keep this one'}</button></>}
+          <ul>{none.map(([kind, code]) => <li key={kind}><strong>{kindTitle(kind)}</strong><small>{noneOf(kind, code, limit, mine)}</small></li>)}</ul></details>}</>}
       {(placeKind && (onLess || onMute) || now?.seed) && <><h3 className="sheet-sub">Less like this</h3>
         <div className="sheet-actions">
           {now?.seed && onPlace && <button type="button" className="ghost" onClick={() => closing(place.id, {never: true}, `Nothing more from “${now.why?.title ?? place.title}”. ${apps}`)}>Not from {now.why?.title ?? 'this title'} again</button>}

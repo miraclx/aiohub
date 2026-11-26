@@ -561,19 +561,36 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     await env.DB.batch([await putSecret(env, hub, id, 'signin', {...signin, pin}), ...(pin && signin.pin && pin !== signin.pin ? [env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ?').bind(hub, id)] : [])]);
     return {pin};
   }
-  if (action === 'quick' && request.method === 'POST') {
-    // Approving the code a TV shows: the TV becomes this person. Asked by the manager for them, or by the person themselves.
-    const key = guesses(request, `quick:${hub}:${id}`), code = String(body.code ?? '').replace(/\D/g, '');
-    if (await blocked(env, key)) bad(429, 'Too many tries. Wait ten minutes.');
-    const done = await env.DB.prepare('UPDATE quick SET person = ? WHERE hub = ? AND code = ? AND person IS NULL AND expires > ?').bind(id, hub, code, now()).run();
-    if (!done.meta.changes) {await failed(env, key); bad(404, 'No TV is showing that code right now. Check the code, or start again on the TV.');}
-    return {};
-  }
+  // Approving the code a TV shows, asked by the manager for them or by the person themselves.
+  if (action === 'quick' && request.method === 'POST') {await approveTv(request, env, hub, id, body.code); return {};}
   if (action === 'signout' && request.method === 'POST') {await env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ?').bind(hub, id).run(); return {};}
   // A device's name as the app sent it, or whatever is easier to recognise.
   if (action === 'devices' && rest && request.method === 'PUT') {const name = text(body.name, 60, 'Name').trim() || bad(400, 'Give it a name'); await env.DB.prepare('UPDATE devices SET name = ? WHERE hub = ? AND person = ? AND ref = ?').bind(name, hub, id, rest).run(); forgetSeats(hub, id); return {};} // what it plays is noted under its new name at once
   if (action === 'devices' && rest && request.method === 'DELETE') {await env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ? AND ref = ?').bind(hub, id, rest).run(); return {};}
   return bad(404, 'Not found');
+}
+
+/* Approving the code a TV shows (Quick Connect, front.ts): the TV becomes this person. Wrong codes count against them, per hub and
+   person. */
+async function approveTv(request: Request, env: Env, hub: string, id: string, given: unknown) {
+  const key = guesses(request, `quick:${hub}:${id}`), code = String(given ?? '').replace(/\D/g, '');
+  if (await blocked(env, key)) bad(429, 'Too many tries. Wait ten minutes.');
+  const done = await env.DB.prepare('UPDATE quick SET person = ? WHERE hub = ? AND code = ? AND person IS NULL AND expires > ?').bind(id, hub, code, now()).run();
+  if (!done.meta.changes) {await failed(env, key); bad(404, 'No TV is showing that code right now. Check the code, or start again on the TV.');}
+}
+/* "Someone else" on a TV's Quick Connect page (TvGate in pages.tsx), signed in or not: the TV becomes the person whose name and
+   password for this site are given, in the hub the TV asked. No session is made, so an invite link stays the only way into a
+   person's page. An unknown name costs the same work as a known one. */
+async function tvAs(request: Request, env: Env, body: Body) {
+  const name = text(body.name ?? '', 60, 'Name').trim() || bad(400, 'Type their name');
+  const hub = await env.DB.prepare('SELECT id FROM hubs WHERE code = ?').bind(text(body.hub ?? '', 40, 'Hub')).first<{id: string}>() ?? bad(404, 'This hub is gone.');
+  const login = slug(name), key = guesses(request, `quick-as:${hub.id}:${login}`);
+  if (await blocked(env, key)) bad(429, 'Too many tries. Wait ten minutes.');
+  const row = await env.DB.prepare('SELECT id, name, pass, joined FROM people WHERE hub = ? AND login = ?').bind(hub.id, login).first<{id: string; name: string; pass: string; joined: number}>();
+  const signin = row?.joined ? await getSecret<SignIn>(env, hub.id, row.id, 'signin') : null, password = String(body.password ?? '');
+  if (!(row && signin ? await ownPassword(password, row.pass, signin) : await checkPassword(password, NOBODY) && false)) {await failed(env, key); bad(403, 'That name or password isn’t right.');}
+  await approveTv(request, env, hub.id, row!.id, body.code);
+  return {name: row!.name};
 }
 
 /* A person's own lists: on their Trakt (theirs, and ones they liked) through the hub's Trakt connection, and on their MDBList with
@@ -890,6 +907,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     if (first === 'rows' && method === 'GET') return await rows(env, path.slice(1));
     const who = await whoIs(request, env);
     if (first === 'join' && method === 'POST') return await join(request, env, body, who);
+    if (first === 'quick' && method === 'POST') return reply(await tvAs(request, env, body));
     if (first === 'signout' && method === 'POST') {
       // From a person's view held beside the manager's: only that person's session ends; the manager stays signed in.
       if (who?.manager?.beside) {await env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(who.session).run(); return reply({}, 200, cookie('', 0, AS + who.person));}
