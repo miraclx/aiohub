@@ -11,7 +11,7 @@ signs people in and keeps their setups on AIOStreams and AIOMetadata in step wit
 - Home rows, collections by service and by genre, lists by link, content limits, posters.
 - For you rows: picked every day for each person from what they watch, such as more from a director, the next film in a series, or a seasonal set.
 - Quality, size, languages, sources, subtitles and the stream label, per hub, group or person.
-- Each person's own Trakt (rows) and MDBList (watch history), kept matching their progress here when they turn it on.
+- Each person's own Trakt (rows) and MDBList (watch history), synced with their progress here when they turn sync on.
 - Per-app sign-ins you can see and take away, Quick Connect for TVs, pause for a person, passkeys for the manager.
 
 It is one Cloudflare Worker with one small database. The Free plan is enough.

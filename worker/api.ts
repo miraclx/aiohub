@@ -1,6 +1,6 @@
 // The site's own API: managers' accounts, the hub they run, and what an invited person may change about themselves.
 // What reaches the streaming server goes through ./native.
-import {NO_ANSWER, carry, mdblist, plan} from './carry';
+import {NO_ANSWER, carry, earlierPlays, mdblist, plan, synced} from './carry';
 import {fix, looked, skip, skippedOf} from './drift';
 import {FOR_YOU_KINDS, PICKABLE, defaultAddons, defaultRows, defaultSettings, isPlace, pickable, slug, traktRows} from '../src/data';
 import type {Addon, Hub, Overrides, Row, Settings} from '../src/data';
@@ -9,7 +9,7 @@ import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './na
 import {forgetHub, forgetSeats} from './front';
 import {LINK, answered, brief, disconnect, forgetTrakt, keepLink, links, read, traktWait} from './trakt';
 import type {Link} from './trakt';
-import {pass} from './sync';
+import {pass, turnEvery} from './sync';
 import {rows} from './rows';
 import {PAIRS, copy, forgetShown, moving, shown} from './places';
 import {because} from './suggest';
@@ -106,9 +106,10 @@ function ago(seen: number) {
 const groupDto = (row: GroupRow) => ({id: row.id, name: row.name, ...(JSON.parse(row.data) as GroupData), v: row.version});
 // moving: their MDBList key is kept while they move where progress is kept, to MDBList or back Here (see places.ts).
 // listsKept: they have an MDBList key saved. With progress kept Here it is kept but not used for progress, only to read their lists.
-// matching: whether their Trakt is kept matching their progress (sync.ts), and how that stands: `ask` while they have yet to answer
+// matching: whether their Trakt is synced with their progress (sync.ts), and how that stands: `ask` while they have yet to answer
 // (they connected it themselves), the last good pass, since when it has been failing and why, and since when a call has waited for
-// Trakt (`waiting`), and until when Trakt asked the hub to wait (`until`, 0 when it did not). Times only; nothing of what they watched.
+// Trakt (`waiting`), and until when Trakt asked the hub to wait, for reads or for writes (`until`, left out when it did not). Times
+// only; nothing of what they watched.
 type Matching = {on: boolean; earlier: boolean; ask: boolean; good: number; failing: number | null; why: string | null; waiting: number | null; until?: number};
 const personDto = (row: PersonRow, devices: DeviceRow[], ready: boolean, history: {username: string; again: boolean} | null, aiomTrakt: boolean, listsName = '', drift: ReturnType<typeof looked> = null, moving: string | null = null, listsKept = false, played = false, matching: Matching | null = null) => ({
   ready, history, listsName, drift, moving, listsKept, played, matching,
@@ -155,6 +156,9 @@ async function newSession(env: Env, subject: {account: string} | {hub: string; p
 }
 
 /* ---------- what a page loads ---------- */
+/* The background work as the manager's page gets it. Trakt sync takes one person each run whichever hub they are in, so how often
+   a person's turn comes depends on how many sync across the whole site: only the minutes are given, never that count. */
+const jobsOf = ({syncAll, ...rest}: Record<string, unknown>, forYouHour: number) => ({...rest, syncEvery: turnEvery(Number(syncAll) || 0), forYouHour}) as unknown as Hub['jobs'];
 async function state(env: Env, who: Who) {
   const hub = who.hub, data = JSON.parse(hub.data) as HubData, mine = who.person;
   const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, drifts, jobs, plays, picked, shelves, syncs, waits, tolds] = await env.DB.batch([
@@ -175,7 +179,7 @@ async function state(env: Env, who: Who) {
     env.DB.prepare(`SELECT (SELECT at FROM runs WHERE job = 'cron') AS last, (SELECT count FROM runs WHERE job = 'cron') AS runs, (SELECT since FROM runs WHERE job = 'cron') AS since,
       (SELECT max(at) FROM drift WHERE hub = ?1 AND work IS NULL AND result IS NOT NULL) AS ran, (SELECT count(*) FROM trakt_outbox WHERE hub = ?1) AS waiting,
       (SELECT max(day) FROM drift WHERE hub = ?1 AND work IS NULL) AS checked, (SELECT count(*) FROM drift WHERE hub = ?1 AND day = (SELECT max(day) FROM drift WHERE hub = ?1) AND work IS NULL) AS people, (SELECT count(*) FROM drift WHERE hub = ?1 AND work IS NOT NULL) AS checking,
-      (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing, (SELECT max(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelved, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelves, (SELECT max(good) FROM sync WHERE hub = ?1 AND matching = 1) AS matched, (SELECT count(*) FROM sync WHERE hub = ?1 AND matching = 1) AS matching, (SELECT min(c.at) FROM rows_cache c JOIN people p ON p.hub = c.hub AND p.id = c.person WHERE c.hub = ?1 AND c.kind = 'shelf' AND EXISTS (SELECT 1 FROM json_each(p.data, '$.rows') r WHERE json_extract(r.value, '$.id') = 'trakt-lists' AND json_extract(r.value, '$.on') = 1)) AS shelfDue`).bind(hub.id, new Date().toISOString().slice(0, 10)),
+      (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing, (SELECT max(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelved, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelves, (SELECT max(good) FROM sync WHERE hub = ?1 AND matching = 1) AS matched, (SELECT count(*) FROM sync WHERE hub = ?1 AND matching = 1) AS matching, (SELECT count(*) FROM sync y JOIN secrets s ON s.hub = y.hub AND s.owner = y.person AND s.kind = ?3 WHERE y.matching = 1) AS syncAll, (SELECT max(lists_at) FROM drift WHERE hub = ?1) AS listed, (SELECT count(*) FROM people p JOIN secrets s ON s.hub = p.hub AND s.owner = p.id AND s.kind = 'mdblist' WHERE p.hub = ?1 AND json_extract(p.data, '$.lists') = 1) AS listers, (SELECT min(c.at) FROM rows_cache c JOIN people p ON p.hub = c.hub AND p.id = c.person WHERE c.hub = ?1 AND c.kind = 'shelf' AND EXISTS (SELECT 1 FROM json_each(p.data, '$.rows') r WHERE json_extract(r.value, '$.id') = 'trakt-lists' AND json_extract(r.value, '$.on') = 1)) AS shelfDue`).bind(hub.id, new Date().toISOString().slice(0, 10), LINK),
     // Who has played something here: their Recently Watched has something in it even without Trakt or MDBList.
     env.DB.prepare('SELECT DISTINCT person FROM plays WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
     // What each For you place holds today, by name and what it came from (the manager sees them on that person's Home tab), the
@@ -184,12 +188,12 @@ async function state(env: Env, who: Who) {
     // When each My Trakt lists row was last worked out (0: asked for again, shelf.ts), for the row's line on their Home.
     // Its tiles too (name and picture of each list), so the row shows them on the site as the apps do.
     env.DB.prepare('SELECT person, at, items FROM rows_cache WHERE hub = ? AND kind = ? AND person = coalesce(?, person)').bind(hub.id, SHELF, mine ?? null),
-    // Whether each person's Trakt is kept matching and how that stands, and how long their oldest call has waited for Trakt.
+    // Whether each person's Trakt is synced and how that stands, and how long their oldest call has waited for Trakt.
     // The daily look's own failing counts too (drift.ts): whichever has failed longer is said.
     env.DB.prepare('SELECT y.person, y.matching, y.earlier, y.good, y.failing, y.why, d.failing AS stale, d.why AS staleWhy FROM sync y LEFT JOIN drift d ON d.hub = y.hub AND d.person = y.person WHERE y.hub = ? AND y.person = coalesce(?, y.person)').bind(hub.id, mine ?? null),
     env.DB.prepare('SELECT person, min(made) AS since FROM trakt_outbox WHERE hub = ? AND person = coalesce(?, person) GROUP BY person').bind(hub.id, mine ?? null),
-    // Until when Trakt asked the hub to wait before reading more of theirs (trakt.ts), so the page can say the time.
-    env.DB.prepare("SELECT person, at FROM rows_cache WHERE hub = ? AND kind = 'trakt-wait' AND at > ? AND person = coalesce(?, person)").bind(hub.id, now(), mine ?? null),
+    // Until when Trakt asked the hub to wait before reading or sending more of theirs (trakt.ts), so the page can say the time.
+    env.DB.prepare("SELECT person, max(at) AS at FROM rows_cache WHERE hub = ? AND kind IN ('trakt-wait', 'trakt-wait-send') AND at > ? AND person = coalesce(?, person) GROUP BY person").bind(hub.id, now(), mine ?? null),
   ]);
   const forYou = new Map((picked.results as {person: string; picks: string; pool: string; never: string; at: number}[]).map(row => [row.person, {names: namesOf(row.picks), kinds: kindsOf(row.picks), at: row.at, detail: detailOf(row.picks, row.pool, row.never)}]));
   const shelfAt = new Map((shelves.results as {person: string; at: number}[]).map(row => [row.person, row.at]));
@@ -220,7 +224,7 @@ async function state(env: Env, who: Who) {
     role: mine ? 'person' : 'owner', personId: mine ?? null,
     hub: {
       name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID, traktClient: env.TRAKT_CLIENT_ID ?? '', front: env.FRONT === 'aiometadata',
-      ...(mine ? {manager: !!who.manager} : {jobs: {...jobs.results[0] as object, forYouHour: pickHour(env)} as Hub['jobs']}),
+      ...(mine ? {manager: !!who.manager} : {jobs: jobsOf(jobs.results[0] as Record<string, unknown>, pickHour(env))}),
       // The UTC hour the day's For you picking starts, so a Home can say when the next picks come.
       forYouHour: pickHour(env),
       groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', mine ? looked(drifts.results[0] as {result: string | null; skipped: string | null; at: number} | undefined) : null, moves[row.id] ?? null, keyed.has(row.id), playedHere.has(row.id), matchingOf(row.id))).map(person => {const picked = forYou.get(person.id), shelved = shelfAt.get(person.id);
@@ -404,7 +408,7 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     if (request.method === 'POST' && rest === 'link') {
       const access = text(body.access, 4000, 'Login').trim(), refresh = text(body.refresh, 4000, 'Login').trim(), redirect = text(body.redirect ?? '', 300, 'Address');
       if (!access || !refresh || (redirect && !/^https?:\/\/[^/]+\/api\/trakt\/callback$/.test(redirect))) bad(400, 'Trakt did not finish connecting. Try again.');
-      // Whether it is kept matching is theirs to say, on their own page, and asked anew for each connection: a person who signed in
+      // Whether it is synced is theirs to say, on their own page, and asked anew for each connection: a person who signed in
       // themselves is asked there at once; one connected by their manager sees "Turn on" there.
       await keepLink(env, hub, id, {access, refresh, expires: Math.floor(Number(body.created) || now()) + Math.floor(Number(body.lasts) || 7 * 86400), username: text(body.username ?? '', 80, 'Name').trim(), ...(redirect ? {redirect} : {}), ...(who.person === id ? {ask: true} : {})});
       await env.DB.prepare('DELETE FROM sync WHERE hub = ? AND person = ?').bind(hub, id).run();
@@ -422,12 +426,16 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     }
   }
   if (action === 'matching') {
-    // Keeping their Trakt and their progress matching writes to their own accounts: only they turn it on or off, from their own page.
+    // Syncing their Trakt with their progress writes to their own accounts: only they turn it on or off, from their own page. A
+    // manager is refused whatever they send, and nothing of it (what was watched before, what was synced) is shown to them.
     if (who.person !== id) bad(403, 'Only they can do this, from their own page');
     const link = env.TRAKT_CLIENT_ID ? await getSecret<Link>(env, hub, id, LINK) : null;
     if (!link) bad(409, 'Connect Trakt first.');
-    // How many things they watched here before connecting, for the tick that offers to send them too.
-    if (request.method === 'GET') return {earlier: link!.since ? (await env.DB.prepare('SELECT count(*) AS n FROM plays WHERE hub = ? AND person = ? AND updated < ?').bind(hub, id, link!.since).first<{n: number}>())?.n ?? 0 : 0};
+    // What the hub synced for them lately, for What was synced on the Trakt card.
+    if (request.method === 'GET' && rest === 'synced') return {synced: await synced(env, hub, id)};
+    // What they watched here before connecting, for the tick that offers to send it too: how many, and each one (the newest
+    // hundred), from the plays kept here.
+    if (request.method === 'GET' && !rest) {const plays = link!.since ? await earlierPlays(env, hub, id, link!.since, await skippedOf(env, hub, id)) : []; return {earlier: plays.length, plays: plays.slice(0, 100)};}
     if (request.method === 'POST' && rest === 'pass') {
       const got = await pass(env, hub, id, (JSON.parse(row.data) as PersonData).lists);
       // Looked at again next time: what was just sent is on the other side now.

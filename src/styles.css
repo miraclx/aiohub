@@ -42,28 +42,6 @@ main { display: block; }
 .jobs .job { flex: 1; display: grid; gap: 4px; }
 .jobs .job > div { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: baseline; }
 .jobs .job h3 { margin: 0; }
-/* The Trakt and MDBList card: one line per play, Trakt's cell on the left, MDBList's on the right, which way it goes between. */
-.trackers .trackers-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.trackers .trackers-cols { display: flex; justify-content: space-between; text-transform: uppercase; letter-spacing: .06em; font-size: 12px; padding: 12px 8px 6px; border-bottom: 1px solid var(--line); }
-.trackers .plays { list-style: none; margin: 0 0 14px; padding: 0; }
-.trackers .plays > li + li { border-top: 1px solid var(--line); }
-.trackers .play { width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 8px; text-align: center; border-radius: 10px; min-height: 64px; }
-.trackers .play:hover { background: var(--raised); }
-.trackers .play .what { flex: 1; min-width: 0; display: grid; gap: 2px; }
-.trackers .play .what small { color: var(--muted); font-size: 13px; }
-.trackers .play .what em { font-style: normal; color: var(--accent); }
-.trackers .play .arrow { color: var(--accent); }
-.trackers .cell { width: 32px; height: 32px; flex-shrink: 0; display: grid; place-items: center; border-radius: 50%; font-size: 15px; }
-.trackers .cell.has { color: var(--ok); background: color-mix(in srgb, var(--ok) 16%, transparent); }
-.trackers .cell.add { color: var(--accent); border: 1.5px dashed var(--accent); }
-.trackers .cell.none { color: var(--muted); }
-.trackers .play.left { opacity: .45; }
-.trackers .play.left strong { text-decoration: line-through; }
-.trackers .play.left .cell.add, .trackers .play.left .arrow, .trackers .play.left .what em { color: var(--muted); border-color: var(--muted); }
-.trackers > .primary { width: 100%; }
-.trackers.quiet { display: flex; align-items: center; gap: 10px; }
-.trackers.quiet p { margin: 0; }
-.trackers .dot, .trackers.quiet .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex-shrink: 0; }
 .credit { margin: 72px 0 0; text-align: center; font-size: 13px; color: var(--muted); }
 .credit a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .credit .heart { color: var(--accent); }
@@ -446,10 +424,6 @@ a.primary.button { display: inline-flex; align-items: center; min-height: 34px; 
 .below-head { margin: -4px 0 10px; }
 /* On a phone the choice drops under its text and spans the row, its options sharing it evenly. */
 @media (max-width: 520px) { .accounts .account-row:has(> .segments) { flex-direction: column; align-items: stretch; } .accounts .account-row > .segments button { flex: 1; } }
-/* The way out of a move: quiet, as in "Everything stays Here too. Stay on Here". */
-.trackers .link.stay { color: var(--muted); text-decoration: underline; font-weight: 400; }
-.trackers .more-plays { display: block; margin: 0 auto 12px; }
-.trackers .dot.wait { background: var(--muted); }
 /* Add row: small labelled sections of picks, two columns where the sheet is wide enough to keep each name whole. */
 label.sheet-sub { display: block; }
 .pick-section { margin-top: 14px; }
@@ -460,8 +434,33 @@ label.sheet-sub { display: block; }
 @media (min-width: 640px) { .picks { grid-template-columns: 1fr 1fr; } }
 /* A key kept while progress is Here: the way to remove it stays quiet. */
 .kept-key .link { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
-/* Where progress is kept: its own card under the accounts. */
-.accounts.progress { margin-top: 20px; }
+/* What an account gives: short lines under its name, each with a small mark. */
+.accounts .gains { display: grid; gap: 4px; }
+.accounts .gains p { margin: 0; padding-left: 14px; position: relative; }
+.accounts .gains p::before { content: ""; position: absolute; left: 2px; top: 8px; width: 4px; height: 4px; border-radius: 50%; background: var(--muted); }
+.accounts h3 .free { margin-left: 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+/* A short list inside a card: earlier plays behind Show them, and What was synced. */
+.accounts .listed { display: grid; gap: 6px; margin-top: 8px; max-height: 260px; overflow-y: auto; }
+.accounts .listed p { margin: 0; font-size: 13px; }
+.accounts .listed strong { color: var(--text); font-weight: 600; }
+.accounts .under-tick { margin: -6px 0 0 32px; }
+.accounts .synced > p { margin: 8px 0 0; }
+/* What differs from Trakt, with sync off: one line, then each thing behind Show them, tapped to leave it out. */
+.accounts .differ { display: grid; gap: 8px; }
+.accounts .differ-list { display: grid; }
+.accounts .differ-line { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 4px; text-align: left; border-radius: 10px; min-height: 52px; }
+.accounts .differ-line + .differ-line { border-top: 1px solid var(--line); border-top-left-radius: 0; border-top-right-radius: 0; }
+.accounts .differ-line:hover { background: var(--raised); }
+.accounts .differ-line .mark { width: 20px; height: 20px; flex-shrink: 0; display: grid; place-items: center; border-radius: 6px; border: 1.5px solid var(--accent); color: var(--accent); font-size: 13px; }
+.accounts .differ-line .what { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.accounts .differ-line .what strong { font-weight: 600; font-size: 14px; }
+.accounts .differ-line small { color: var(--muted); font-size: 13px; }
+.accounts .differ-line .to { flex-shrink: 0; color: var(--accent); }
+.accounts .differ-line.left .what { opacity: .5; }
+.accounts .differ-line.left strong { text-decoration: line-through; }
+.accounts .differ-line.left .mark { border-color: var(--muted); }
+.accounts .differ-line.left .to { color: var(--muted); }
+.accounts .differ .more-plays { justify-self: start; }
 /* Connected as …: its own line, cut short with an ellipsis when long. */
 .accounts .who { margin: 2px 0 4px; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .accounts .who strong { color: var(--text); font-weight: 600; }
@@ -500,9 +499,6 @@ label.sheet-sub { display: block; }
 .if-now li strong { display: block; font-weight: 600; }
 .if-now li small { display: block; color: var(--muted); font-size: 13px; }
 .settings .setting.column > button.ghost.small { align-self: flex-start; }
-/* A look that failed: an empty ring, since nothing is under way (wait) and nothing is known to be in step (ok). */
-.trackers .dot.off { background: transparent; border: 1.5px solid var(--muted); }
-.trackers .note { display: block; margin-top: 2px; }
 /* Accounts: one line of how something stands, a dot then the words (wrapping under the words, never under the dot). */
 .accounts .status-line { display: flex; align-items: flex-start; gap: 10px; margin: 0; color: var(--text); line-height: 20px; }
 .accounts .status-line .dot { box-sizing: border-box; width: 8px; height: 8px; flex-shrink: 0; margin-top: 6px; background: var(--ok); border-radius: 50%; }
@@ -519,6 +515,3 @@ label.sheet-sub { display: block; }
 .accounts .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
 .accounts .toggle-row p { margin-top: 2px; }
 .accounts .toggle-row strong { font-weight: 600; font-size: 15px; }
-/* Your progress: the comparison's one button, with Show what's different beside it. */
-.trackers-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
-div.trackers { display: grid; gap: 6px; }

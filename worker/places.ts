@@ -17,7 +17,7 @@ import {LINK} from './trakt';
 import type {Link} from './trakt';
 import {traktPlays} from './drift';
 import {NO_ANSWER, NO_SETUP, carry, ledger, mdblist, pauseOf, plan, pointKey, remember, traktPoints} from './carry';
-import type {Failed, TraktPoint} from './carry';
+import type {Failed, Noted, TraktPoint} from './carry';
 import {deliver} from './trakt';
 import type {Cell} from './carry';
 import {packed, server} from './here';
@@ -34,7 +34,7 @@ export interface Incoming {key: string; kind: 'movie' | 'show'; ids: Ids; title:
 // A pass ticks Here until its own calls reach BUDGET, leaving room in the Worker's ~50 for the rest of the pass.
 // NEAR: a spot here stays when the other side's is from no more than this much later (a send can take that long to land).
 export const SPAN = 14 * 86400, CHECK = 300, BUDGET = 22, NEAR = 600;
-const detail = (season?: number, episode?: number) => season != null ? `Season ${season} · Episode ${episode}` : 'Movie';
+export const detail = (season?: number, episode?: number) => season != null ? `Season ${season} · Episode ${episode}` : 'Movie';
 const same = (a: string, b: string) => a.replace(/-/g, '').toLowerCase() === b.replace(/-/g, '').toLowerCase();
 export const where = (kind: string, tmdb: number | undefined, season?: number, episode?: number) => `${kind}/${tmdb}${season != null ? `:${season}:${episode}` : ''}`;
 
@@ -179,7 +179,7 @@ export async function tickHere(own: Server, plays: Incoming[], budget = BUDGET) 
   let added = 0, unmatched = 0, left = 0;
   // Which were ticked, and which this server numbers differently (never guessed again): by each play's key. One the server did not
   // answer about is neither, and is tried again later.
-  const done: string[] = [], missed: string[] = [];
+  const done: Noted[] = [], missed: string[] = [];
   const shows = new Map<string, Map<string, string> | null>();
   for (const play of plays) {
     if (own.counter.calls > budget) {left++; continue;}
@@ -192,7 +192,7 @@ export async function tickHere(own: Server, plays: Incoming[], budget = BUDGET) 
       if (!id) {unmatched++; if (numbered) missed.push(sentKey(play)); continue;}
     }
     const taken = play.pct != null ? (play.runtime ? await own.position(id, play.runtime * play.pct / 100) : false) : await own.mark(id, play.at);
-    if (taken) {added++; done.push(sentKey(play));} else unmatched++;
+    if (taken) {added++; done.push({key: sentKey(play), title: play.title, detail: detail(play.season, play.episode)});} else unmatched++;
   }
   return {added, unmatched, left, done, missed};
 }
@@ -205,10 +205,10 @@ export async function copy(env: Env, hub: string, person: string, pair: Pair, sk
     if ('error' in got) return got;
     const lists = (await getSecret<{key: string}>(env, hub, person, 'mdblist'))!, ask = mdblist(env, lists.key), todo = got.points.filter(point => !skip.has(point.key));
     // A spot is sent once (by where it is and when it was left there): a later one is a new spot.
-    const toTrakt: string[] = [], toLists: string[] = [];
+    const toTrakt: Noted[] = [], toLists: Noted[] = [], said = (point: typeof todo[number]): Noted => ({key: `${point.key}@${point.at}`, title: point.title, detail: detail(point.season, point.episode)});
     for (const point of todo.slice(0, 10)) {
-      if (point.to === 'trakt') {if (await deliver(env, hub, person, `carry:${point.key.slice(3)}`, {kind: 'pause', path: '/scrobble/pause', body: pauseOf(point)}) === 'off') return {error: 'Trakt needs connecting again.'}; added++; toTrakt.push(`${point.key}@${point.at}`);}
-      else {const answer = await ask('/scrobble/pause', listsPause(point)); if (answer.status === 200 || answer.status === 201) {added++; toLists.push(`${point.key}@${point.at}`);} else unmatched++;}
+      if (point.to === 'trakt') {if (await deliver(env, hub, person, `carry:${point.key.slice(3)}`, {kind: 'pause', path: '/scrobble/pause', body: pauseOf(point)}) === 'off') return {error: 'Trakt needs connecting again.'}; added++; toTrakt.push(said(point));}
+      else {const answer = await ask('/scrobble/pause', listsPause(point)); if (answer.status === 200 || answer.status === 201) {added++; toLists.push(said(point));} else unmatched++;}
     }
     if (toTrakt.length || toLists.length) await env.DB.batch([...remember(env, hub, person, 'trakt', toTrakt), ...remember(env, hub, person, 'mdblist', toLists)]);
     return {added, unmatched, more: todo.length > 10, left: Math.max(0, todo.length - 10)};

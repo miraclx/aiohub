@@ -1,9 +1,9 @@
 /* Whether a person's Trakt and their own MDBList agree on what they watched in the last two weeks. Looked at once a day for
    everyone with both connected (Trakt to the hub, MDBList with their own key). A play one has and the other lacks is copied across
-   by itself for someone who keeps Trakt matching (sync.ts), a few each run, and never shown: only adds, each play once (the
+   by itself for someone who has Trakt sync on (sync.ts), a few each run, and never shown: only adds, each play once (the
    `sent` ledger), so one they deleted on either side stays deleted. For anyone else it is shown on their own page, under Accounts,
    and copied across only when they ask (`fix`). Looking never changes either side.
-   For someone keeping Trakt matching the look is skipped on a day nothing moved: Trakt's last-activity stamps are as they were
+   For someone with Trakt sync on the look is skipped on a day nothing moved: Trakt's last-activity stamps are as they were
    at the last look (sync.ts keeps them), and MDBList lists nothing watched since.
    The two note a finish at slightly different moments, so plays of the same title within twelve hours are the same viewing.
    Workers Free allows about fifty outside calls and database queries per run, so the reading is spread over a few cron runs and
@@ -90,7 +90,7 @@ function compare(work: Work): Found {
 export async function drift(env: Env, time: number): Promise<boolean> {
   const date = new Date(time), day = date.toISOString().slice(0, 10);
   if (!env.TRAKT_CLIENT_ID || date.getUTCHours() < HOUR) return false;
-  // One person a run: whoever is part way through, else whoever has not had today's look, else someone keeping Trakt matching
+  // One person a run: whoever is part way through, else whoever has not had today's look, else someone with Trakt sync on
   // whose look found plays to copy across (not tried again within half an hour).
   // Only someone whose progress is kept in MDBList: a key kept while progress is Here is not compared.
   const who = await env.DB.prepare(`SELECT s.hub, s.owner AS person, d.day, d.work, coalesce(y.matching, 0) AS matching, y.stamps, y.daily FROM secrets s JOIN secrets m ON m.hub = s.hub AND m.owner = s.owner AND m.kind = 'mdblist'
@@ -114,7 +114,7 @@ export async function drift(env: Env, time: number): Promise<boolean> {
     return true;
   }
   const start = now(), ask = mdblist(env, lists.key);
-  // Keeping Trakt matching, with nothing moved since the last look: Trakt's stamps as they were then, and MDBList lists nothing
+  // Trakt sync on, with nothing moved since the last look: Trakt's stamps as they were then, and MDBList lists nothing
   // watched since (one read). The day counts as looked at.
   const daily = who.daily ? JSON.parse(who.daily) as {w: number; p: number; at: number} : null, stamps = who.stamps ? JSON.parse(who.stamps) as {w: number; p: number} : null;
   const noted = () => env.DB.prepare('UPDATE sync SET daily = ? WHERE hub = ? AND person = ?').bind(JSON.stringify({...stamps, at: start}), hub, person);
@@ -257,7 +257,8 @@ export async function fix(env: Env, hub: string, person: string, auto = false): 
   for (const round of rounds(toMdblist)) {
     if ((await ask('/sync/watched', body(round))).status === 200) {sent += round.length; done.push(...round);} else back[1].push(...round);
   }
-  const noted = [...remember(env, hub, person, 'trakt', back[0].length ? [] : toTrakt.map(playKey)), ...remember(env, hub, person, 'mdblist', done.map(playKey))];
+  const said = (miss: Miss) => ({key: playKey(miss), title: miss.name || 'Untitled', detail: miss.season != null ? `Season ${miss.season} · Episode ${miss.episode}` : 'Movie'});
+  const noted = [...remember(env, hub, person, 'trakt', back[0].length ? [] : toTrakt.map(said)), ...remember(env, hub, person, 'mdblist', done.map(said))];
   if (noted.length) await env.DB.batch(noted);
   // What did not go through goes back on the list, for another try.
   if (back[0].length || back[1].length) await env.DB.prepare('UPDATE drift SET result = ? WHERE hub = ? AND person = ?').bind(JSON.stringify({...left, toTrakt: back[0], toMdblist: [...back[1], ...later]}), hub, person).run();

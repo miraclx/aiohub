@@ -16,15 +16,17 @@ AIOHub is a small site that sets up Jellyfin player apps for a household or a gr
 When a person connects Trakt, the hub:
 
 - reads their history, watchlist and lists, to fill their rows and to pick For you rows for them;
-- adds to their history what they watch in their apps, as it plays; keeps their Trakt and their progress here matching, adding plays and paused spots missing on either side and removing nothing; adds what they watched here before connecting only if they agree.
+- adds to their history what they watch in their apps, as it plays. Trakt is told nothing about something opened and closed again within a couple of minutes;
+- once they turn sync on, syncs their Trakt with their progress from then on: plays and paused spots missing on either side are added, and nothing is removed. Coming from Trakt, that covers what they watched there in the last 14 days and everything after;
+- adds what they watched here before connecting only if they agree, after showing them the list.
 
 It never posts comments or ratings, never touches other people's accounts, and never shares the sign-in with anyone else. Disconnecting Trakt deletes the stored sign-in; it can also be revoked any time at trakt.tv under Settings, Connected apps.
 
-Keeping Trakt and their progress matching is the person's own choice, made on their own page; it stays off until they turn it on.
+Sync is the person's own choice, made on their own page; it stays off until they turn it on, and a manager cannot turn it on for them. The hub keeps a record of each play it synced (its title, where it was added and when), so that nothing is sent twice and a play they delete stays deleted. Only they can see that list, on their own page; it goes when they are removed from the hub.
 
 ## MDBList
 
-While a person's progress is kept in their MDBList, what they play, tick as watched or pause in their apps is written to their MDBList, and plays and paused spots from their Trakt are added to it to keep the two matching. Their MDBList key also reads their watchlist and lists for their rows. Removing the key stops all of it; nothing in their MDBList account is removed.
+While a person's progress is kept in their MDBList, what they play, tick as watched or pause in their apps is written to their MDBList, and, with Trakt sync on, plays and paused spots from their Trakt are added to it. Once a day the hub also adds anything they watched here that their MDBList lacks. Their MDBList key also reads their watchlist and lists for their rows. Removing the key stops all of it; nothing in their MDBList account is removed.
 
 ## Where it lives
 

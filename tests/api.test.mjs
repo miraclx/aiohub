@@ -527,6 +527,11 @@ test('MDBList: a person’s own key records only their plays, in their own Home 
   assert.equal((await owner('POST', '/api/people/ben/mdblist', {key: 'someone-elses-wrong-key'})).status, 400);
   assert.deepEqual((await owner('POST', '/api/people/ben/mdblist', {key: 'bens-own-mdblist-key'})).body, {username: 'benlists'});
   const state = (await owner('GET', '/api/state')).body; assert.equal(state.hub.people.find(person => person.id === 'ben').lists, true); assert.ok(!JSON.stringify(state).includes('bens-own-mdblist-key'));
+  // The background work counts him for the daily send of what MDBList lacks, and says how often a person's Trakt sync turn comes
+  // (never how many people sync across the site).
+  assert.equal(state.hub.jobs.listers, 1); assert.equal(state.hub.jobs.listed, null); assert.equal(state.hub.jobs.syncEvery, 20); assert.equal(state.hub.jobs.syncAll, undefined);
+  // Trakt sync is the person's own to turn on, look at or run: the manager is refused each of them, whatever is sent.
+  for (const [method, path] of [['POST', ''], ['GET', ''], ['GET', '/synced'], ['POST', '/pass']]) assert.equal((await owner(method, `/api/people/ben/matching${path}`, method === 'GET' ? undefined : {on: true, earlier: true})).status, 403, `${method} ${path}`);
   assert.deepEqual((await owner('POST', '/api/sync', {})).body, {state: 'ok'});
   assert.equal(mine().config.playbackReporting, true); assert.equal(mine().config.mdblistWatchTracking, true);
   // Everyone else's setups record nothing, and only Ben is left free to have his plays recorded.

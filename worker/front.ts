@@ -277,7 +277,14 @@ async function listen(env: Env, hub: string, seat: Seat, kind: string, text: str
 const asPerson = (seat: Seat) => `MediaBrowser Client="AIOHub", Device="AIOHub", DeviceId="hub-${seat.jf}", Version="1", Token="${seat.up}"`;
 /* Trakt history, for a person who connected it (see trakt.ts). Starting, pausing, carrying on, stopping and ticking as watched are
    passed on as they happen, in the background; the app's own request never waits. Progress in between is not sent. A call
-   Trakt does not take waits in the outbox; what Trakt was told here counts it as told, so what follows carries on from it. */
+   Trakt does not take waits in the outbox; what Trakt was told here counts it as told, so what follows carries on from it.
+   Trakt hears nothing of a sitting until enough of it has played to count (brief, in trakt.ts): a start shows there as "watching
+   now" for the rest of the running time unless a stop follows, and wipes the spot Trakt kept, so one sent for something opened
+   for half a minute and closed would do both. The start (and any pause) is held instead (`scrobbled` 'held'; 'held-watched' when
+   Trakt had counted the title as watched before, which a tick straight after still has to know), and goes with the first report
+   after the sitting counts, with how far in it is by then; from there on everything is as before. A sitting that ends while still
+   brief says nothing at all. Carrying on a sitting that already counts (the same device, within half an hour) is not brief, so it
+   starts at once. An app that reports only start and stop has no report in between to send the start with: its stop is sent. */
 const told = new Map<string, string>();
 async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress' | 'stop' | 'mark', item: string, position: number, paused: boolean, jumped = false, during = false) {
   const key = `${hub}/${seat.person}/${item}`, want = kind === 'start' ? 'playing' : kind === 'progress' ? (paused ? 'paused' : 'playing') : 'stopped';
@@ -286,18 +293,30 @@ async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'prog
   // A pause or carrying on only counts inside a play Trakt was told about; a report that arrives after stop starts nothing.
   // A skip while playing is told as a fresh start from the new place.
   const skipped = jumped && want === 'playing' && row?.scrobbled === 'playing';
-  if (!row || (kind === 'progress' && !skipped && (row.scrobbled === want || (row.scrobbled !== 'playing' && row.scrobbled !== 'paused')))) return;
-  // A stop, or the app's own tick during a sitting, ending one with too little played (opened, run to the end, left: seen it) is
-  // not a watch. A tick from the episode list a while later is.
-  if (kind === 'stop' || (kind === 'mark' && during)) {
+  // `held`: this title's start is being held back (see above). `live`: Trakt was told of a play of it that is still going.
+  const held = !!row?.scrobbled?.startsWith('held'), live = row?.scrobbled === 'playing' || row?.scrobbled === 'paused';
+  if (!row || (kind === 'progress' && !skipped && !held && (row.scrobbled === want || !live))) return;
+  // Whether this device's sitting has too little played to count yet. A tick from the episode list a while later is no sitting.
+  if (kind !== 'mark' || during) {
     const sat = await env.DB.prepare('SELECT parts, started, updated FROM sittings WHERE hub = ? AND person = ? AND item = ? AND device = ? ORDER BY started DESC LIMIT 1').bind(hub, seat.person, item, seat.on).first<{parts: string | null; started: number; updated: number}>();
-    if (sat && brief(sat, row.duration)) {await env.DB.prepare("UPDATE plays SET scrobbled = 'stopped', scrobbled_at = ? WHERE hub = ? AND person = ? AND item = ?").bind(now(), hub, seat.person, item).run(); return;}
+    if (sat && brief(sat, row.duration)) {
+      const set = (state: string, stamped: boolean) => env.DB.prepare(`UPDATE plays SET scrobbled = ?${stamped ? ', scrobbled_at = ?' : ''} WHERE hub = ? AND person = ? AND item = ?`).bind(...(stamped ? [state, now()] : [state]), hub, seat.person, item);
+      // Still brief as it starts or carries on: held, unless Trakt knows of a play of this title still going (on another device):
+      // that one's state is left as it is.
+      if (kind === 'start' || kind === 'progress') {if (!held && !live) await set(row.scrobbled === 'watched' ? 'held-watched' : 'held', false).run(); return;}
+      // A stop, or the app's own tick during the sitting, ending it while still brief (opened, run to the end, left: seen it) is
+      // not a watch, and Trakt never heard of it. What was held is let go, with anything of its own still waiting to be sent, and
+      // the title is as Trakt last knew it; a play still going elsewhere is not touched.
+      if (held) await env.DB.batch([set(row.scrobbled === 'held-watched' ? 'watched' : 'stopped', row.scrobbled !== 'held-watched'), env.DB.prepare("DELETE FROM trakt_outbox WHERE hub = ? AND person = ? AND item = ? AND kind IN ('start', 'pause')").bind(hub, seat.person, item)]);
+      else if (!live && row.scrobbled !== 'watched') await set('stopped', true).run();
+      return;
+    }
   }
   const ids = row.ids ?? await idsOf(env, hub, seat, item);
   if (!ids) return;
   const target = JSON.parse(ids) as Target, progress = row.duration ? progressOf(position, row.duration) : 0;
   // Many apps tick a title as watched right after a stop that Trakt already counted (or has waiting): that would be a second play.
-  if (kind === 'mark' && row.scrobbled === 'watched' && now() - (row.scrobbled_at ?? 0) < 12 * 3600) return;
+  if (kind === 'mark' && (row.scrobbled === 'watched' || row.scrobbled === 'held-watched') && now() - (row.scrobbled_at ?? 0) < 12 * 3600) return;
   // Without a length there is no telling how far in; and under 1% there is nothing for Trakt to keep.
   if (kind !== 'mark' && !row.duration) return;
   const call = kind === 'mark' ? {kind, path: '/sync/history', body: history(target, new Date().toISOString())}
