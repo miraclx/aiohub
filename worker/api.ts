@@ -447,8 +447,11 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     if (request.method === 'POST' && !rest) {
       // Turned on afresh, the next look goes back two weeks (no stamps kept). `earlier` only goes with it on.
       const on = flag(body.on), earlier = on && flag(body.earlier);
-      await env.DB.prepare(`INSERT INTO sync (hub, person, matching, earlier) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (hub, person) DO UPDATE SET matching = excluded.matching, earlier = excluded.earlier,
-        stamps = CASE WHEN sync.matching = 0 THEN NULL ELSE sync.stamps END, checked = 0, failing = NULL, why = NULL`).bind(hub, id, on ? 1 : 0, earlier ? 1 : 0).run();
+      // Next Up starts over with it (sync.ts, nextUp: the latest episode of each show watched on Trakt lately; what was ticked
+      // before is never ticked twice): what it kept goes, unless sync was on already.
+      await env.DB.batch([env.DB.prepare("DELETE FROM rows_cache WHERE hub = ?1 AND person = ?2 AND kind = 'backfill' AND NOT EXISTS (SELECT 1 FROM sync WHERE hub = ?1 AND person = ?2 AND matching = 1)").bind(hub, id),
+        env.DB.prepare(`INSERT INTO sync (hub, person, matching, earlier) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (hub, person) DO UPDATE SET matching = excluded.matching, earlier = excluded.earlier,
+        stamps = CASE WHEN sync.matching = 0 THEN NULL ELSE sync.stamps END, checked = 0, failing = NULL, why = NULL`).bind(hub, id, on ? 1 : 0, earlier ? 1 : 0)]);
       await answered(env, hub, id);
       return {};
     }

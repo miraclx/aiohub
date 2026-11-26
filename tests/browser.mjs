@@ -179,9 +179,9 @@ await trakt.getByRole('button', {name: 'Connect'}).click(); await trakt.getByTex
 await toast(guest).filter({hasText: 'Trakt connected as adatrakt'}).waitFor(); await trakt.getByText('Connected as adatrakt').waitFor();
 assert.equal(new URL(guest.url()).hash, '#/me/accounts', 'back where Connect was pressed, with nothing from Trakt left in the address');
 // Signed in herself, she is asked at once, on the Trakt card, whether to sync (on to start with): from now on, and honest that only
-// the last 14 days come over from Trakt. Nothing watched here yet, so there is no tick for earlier plays. The question stays until
-// she answers, through a reload too.
-const consent = trakt.locator('.consent'), SYNC = 'Sync Trakt with this hub. From now on, what you watch in either ends up in both. Nothing is removed. What you watched on Trakt in the last 14 days is added to this hub too.';
+// the last 14 days come over from Trakt, and the latest episode of each show from the last 120. Nothing watched here yet, so
+// there is no tick for earlier plays. The question stays until she answers, through a reload too.
+const consent = trakt.locator('.consent'), SYNC = 'Sync Trakt with this hub. From now on, what you watch in either ends up in both. Nothing is removed. What you watched on Trakt in the last 14 days is added to this hub too. For each show you watched there in the last 120 days, the latest episode is ticked here as well, so Next Up carries on.';
 await consent.getByText(SYNC).waitFor(); assert.equal(await consent.getByRole('checkbox').count(), 1); assert.equal(await consent.getByRole('checkbox').isChecked(), true);
 await consent.getByRole('button', {name: 'Not now'}).waitFor(); assert.equal(await trakt.locator('.status-line').count(), 0); await both(guest, '12d-trakt-consent', trakt);
 await guest.reload(); await consent.getByText(SYNC).waitFor();

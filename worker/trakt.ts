@@ -135,20 +135,28 @@ export async function traktWait(env: Env, hub: string, person: string): Promise<
   return 0;
 }
 /* One read as this person, renewed and retried like `send`. null when not connected, Trakt wants connecting again, or it did not answer.
-   `paging`, when given, is told how many pages Trakt says the list has. */
-export async function read<T>(env: Env, hub: string, person: string, path: string, paging?: {pages: number}): Promise<T | null> {
+   `paging`, when given, is told how many pages Trakt says the list has. With `most` in it, an answer longer than that many
+   bytes (by what Trakt says its length is, else by its text) is not parsed: null, with `over` set. A Worker on the Free plan
+   has about ten milliseconds of processor time a run, and parsing megabytes would end the run. */
+export async function read<T>(env: Env, hub: string, person: string, path: string, paging?: {pages: number; most?: number; over?: boolean}): Promise<T | null> {
   if (await traktWait(env, hub, person)) return null;
   let token = await access(env, hub, person);
   if (!token) return null;
   const get = (access: string) => fetch(api(env) + path, {headers: head(env, access)}).catch(() => null);
   let answer = await get(token);
   if (answer?.status === 401) {token = await access(env, hub, person, token); if (!token) return null; answer = await get(token);}
-  if (!answer?.ok) console.error('trakt read', path.split('?')[0], answer?.status ?? 0, answer?.headers.get('x-ratelimit') ?? '', answer?.headers.get('retry-after') ?? '');
+  if (!answer?.ok) console.error('trakt read', path.split('?')[0].replace(/^\/shows\/[^/]+/, '/shows/:id'), answer?.status ?? 0, answer?.headers.get('x-ratelimit') ?? '', answer?.headers.get('retry-after') ?? '');
   // Told to wait: nothing of theirs is read again before then, whoever asks.
   if (answer?.status === 429) clear.delete(`${hub}/${person}`);
   if (answer?.status === 429) await env.DB.prepare("INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, ?, '') ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at")
     .bind(hub, person, WAITING, now() + Math.min(3600, Math.max(30, Number(answer.headers.get('retry-after')) || 120))).run();
   if (paging && answer?.ok) paging.pages = Number(answer.headers.get('x-pagination-page-count')) || 0;
+  if (paging?.most && answer?.ok) {
+    if (Number(answer.headers.get('content-length')) > paging.most) {paging.over = true; await answer.body?.cancel().catch(() => null); return null;}
+    const text = await answer.text().catch(() => '');
+    if (text.length > paging.most) {paging.over = true; return null;}
+    try {return JSON.parse(text) as T;} catch {return null;}
+  }
   return answer?.ok ? await answer.json().catch(() => null) as T | null : null;
 }
 export const history = (target: Target, at: string) => 'movie' in target ? {movies: [{ids: target.movie.ids, watched_at: at}]}

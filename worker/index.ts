@@ -21,7 +21,7 @@ export default {
   },
   // Every five minutes: Trakt calls still waiting are tried again, and plays whose player went quiet without saying stop are
   // stopped on Trakt for it. Then one person's Trakt is synced with their progress (sync.ts): one cheap look at what changed,
-  // and a few writes only when something did. A run that step left alone takes a step of the day's look at whether Trakt and MDBList
+  // and a few writes only when something did (on a turn with nothing to do, a few shows for Next Up, until each is done). A run that step left alone takes a step of the day's look at whether Trakt and MDBList
   // agree (drift.ts), each on its own so it never holds those up. A run those left alone takes a step of the day's For you picks
   // (foryou.ts): each makes a few dozen calls, and a run may make only about fifty. A run with none of that to do sends one
   // person's MDBList what was watched here and it lacks (sync.ts, leftovers), once a day each: after those, so it never holds a pick

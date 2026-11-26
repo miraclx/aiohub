@@ -196,6 +196,8 @@ Newest first. Dates are the commit dates on `main`.
 - A TV's Quick Connect link opens a page on the hub where you approve the code.
 - A For you row is picked again within minutes of finishing something.
 - The Accounts page shows what was synced and where, and says when the hub is waiting on Trakt.
+- Next Up in the apps carries on with shows watched on Trakt: with Trakt sync on and progress kept on the hub, the latest
+  episode of each show from the last 120 days is ticked, with its Trakt date.
 
 ### 2026-11-25
 

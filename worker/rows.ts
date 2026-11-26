@@ -293,7 +293,7 @@ async function freshOf(env: Env, hub: string, person: string, row: Served): Prom
     for (const entry of Array.isArray(watched) ? watched : []) if (entry.type === 'movie') note(there, 'movie', entry.movie?.ids); else note(there, 'series', entry.show?.ids, entry.episode?.season, entry.episode?.number);
     if (!Array.isArray(watched) || page >= paging.pages) break;
   }
-  const hidden = new Set(await hiddenOf(env, hub, person, hid.results[0] as {at: number; items: string} | undefined, time));
+  const hidden = new Set((await hiddenOf(env, hub, person, hid.results[0] as {at: number; items: string} | undefined, time)).keys);
   const gone = Object.fromEntries(Object.entries(kept.gone ?? {}).filter(([, at]) => at > time - (BACK * WINDOW + 7) * DAY));
   const list = [...found.values()].filter(item => {
     if (keysOf(item).some(key => hidden.has(key)) || gone[goneKey(item)]) return false;
@@ -307,15 +307,23 @@ async function freshOf(env: Env, hub: string, person: string, row: Served): Prom
 const store = (env: Env, hub: string, person: string, kind: string, at: number, value: unknown) => env.DB.prepare('INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, ?, ?) ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at, items = excluded.items')
   .bind(hub, person, kind, at, JSON.stringify(value));
 /* The shows they dropped, or hid from their progress, on Trakt (its two lists of them), by every id a title goes by here. Kept a
-   day by hub and person; while Trakt does not answer, what was kept, asked again in an hour. */
-async function hiddenOf(env: Env, hub: string, person: string, had: {at: number; items: string} | undefined, time: number): Promise<string[]> {
-  let before: string[] = [];
-  try {before = had ? JSON.parse(had.items) as string[] : [];} catch {before = [];}
-  if (had && time - had.at < DAY) return before;
+   day by hub and person; while Trakt does not answer, what was kept, asked again in an hour. `known`: Trakt has answered at
+   some time, so an empty list means none are hidden rather than nobody was asked (kept as null until it has). */
+async function hiddenOf(env: Env, hub: string, person: string, had: {at: number; items: string} | undefined, time: number): Promise<{keys: string[]; known: boolean}> {
+  let before: string[] | null = null;
+  try {before = had ? JSON.parse(had.items) as string[] | null : null;} catch {before = null;}
+  if (had && time - had.at < DAY) return {keys: before ?? [], known: !!before};
   const lists = [await read<{show?: Media}[]>(env, hub, person, '/users/hidden/progress_watched?type=show&limit=100'), await read<{show?: Media}[]>(env, hub, person, '/users/hidden/dropped?type=show&limit=100')];
   const got = lists.some(Array.isArray), out = got ? [...new Set(lists.flatMap(list => Array.isArray(list) ? list : []).flatMap(entry => {const item = itemOf(entry.show, 'series'); return item ? keysOf(item) : [];}))] : before;
   await store(env, hub, person, HIDDEN, got ? time : time - DAY + 3600, out).run();
-  return out;
+  return {keys: out ?? [], known: !!out};
+}
+/* The same for sync.ts (Next Up leaves these shows alone), from the list New for you keeps: a show goes by its IMDb id, tmdb:<id>
+   and series:<id>. null while it is not known which they are (Trakt never answered about them). */
+export async function hiddenShows(env: Env, hub: string, person: string): Promise<Set<string> | null> {
+  const had = await env.DB.prepare('SELECT at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, person, HIDDEN).first<{at: number; items: string}>();
+  const got = await hiddenOf(env, hub, person, had ?? undefined, now());
+  return got.known ? new Set(got.keys) : null;
 }
 
 /* ---------- the addon ---------- */

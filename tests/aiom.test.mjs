@@ -67,7 +67,10 @@ const HELD = {
 // writes away with a 429, as Trakt's Cloudflare does to the shared addresses Workers call from; `refuseReads` does it to reads.
 // `retryAfter`: the seconds a refused write is told to wait (Trakt's own limit says so; Cloudflare's refusal does not).
 // `activity`: what Trakt's /sync/last_activities says changed last (sync.ts reads it first).
-const trakt = {calendar: {shows: [], dvd: []}, hidden: {progress_watched: [], dropped: []}, activity: {movies: {watched_at: '2020-01-01T00:00:00.000Z', paused_at: '2020-01-01T00:00:00.000Z'}, episodes: {watched_at: '2020-01-01T00:00:00.000Z', paused_at: '2020-01-01T00:00:00.000Z'}}, history: [], playback: null, watchlist: null, calls: [], reads: [], issued: 0, valid: new Set(), refresh: '', expiresIn: 7 * 86400, refreshed: [], revoked: [], stop: 201, refuse: 0, refused: [], refuseReads: false, retryAfter: 0};
+// `watched`: every show she watched, each with its seasons, and each episode with when it was last watched. Read two ways (sync.ts,
+// nextUp): /sync/watched/shows?extended=noseasons lists the shows without their seasons, and /shows/<Trakt id>/progress/watched
+// gives one show's `last_episode`. `big`: the list comes back over a megabyte long.
+const trakt = {calendar: {shows: [], dvd: []}, hidden: {progress_watched: [], dropped: []}, activity: {movies: {watched_at: '2020-01-01T00:00:00.000Z', paused_at: '2020-01-01T00:00:00.000Z'}, episodes: {watched_at: '2020-01-01T00:00:00.000Z', paused_at: '2020-01-01T00:00:00.000Z'}}, history: [], watched: [], playback: null, watchlist: null, calls: [], reads: [], issued: 0, valid: new Set(), refresh: '', expiresIn: 7 * 86400, refreshed: [], revoked: [], stop: 201, refuse: 0, refused: [], refuseReads: false, retryAfter: 0};
 // The hub keeps Trakt's paused list a few minutes: a test that changes the list has the kept one forgotten, as if time had passed.
 let paused = null;
 Object.defineProperty(trakt, 'playback', {get: () => paused, set: value => {paused = value; try {sql("DELETE FROM rows_cache WHERE kind = 'playback'");} catch { /* before the database is there */ }}});
@@ -85,6 +88,7 @@ const lists = {plays: {}, recent: {movies: [], shows: [], episodes: []}, refuse:
 const READS = {
   '/sync/watchlist/all/added/desc': () => trakt.watchlist ?? WATCHLIST,
   '/sync/history': () => trakt.history,
+  '/sync/watched/shows': () => trakt.watched.map(({seasons: _, none: __, ...entry}) => entry),
   '/sync/playback': () => trakt.playback ?? [],
   '/recommendations/movies': Array.from({length: 45}, (_, n) => film(n + 1)),
   '/recommendations/shows': [{title: 'Breaking Bad', ids: {imdb: 'tt0903747', tmdb: 1396}}],
@@ -125,6 +129,20 @@ function traktAnswer(request, path, body, send, answer) {
     const from = Date.parse(calendar[2]), to = from + Number(calendar[3]) * 86400e3;
     return Number(calendar[3]) > 33 ? send(400, {}) : send(200, trakt.calendar[calendar[1]].filter(item => {const at = Date.parse(item.first_aired ?? item.released); return at >= from && at < to;}));
   }
+  // One show's progress, as Trakt works it out: specials left out unless asked for, and `last_episode` the latest aired episode
+  // she watched, or with last_activity=watched the one she watched most lately (the highest of those watched at the same moment).
+  // null for a show Trakt has no such episode for (`none`).
+  const progress = request.method === 'GET' && /^\/shows\/(\d+)\/progress\/watched$/.exec(where);
+  if (progress) {
+    trakt.reads.push({where: '/shows/progress/watched', query, auth}); if (trakt.refuseReads) return send(429, {});
+    const entry = trakt.watched.find(item => item.show.ids.trakt === Number(progress[1])), ask = new URLSearchParams(query ?? ''); if (!entry) return send(404, {});
+    const seasons = entry.seasons.filter(season => season.number > 0 || ask.get('specials') === 'true'), all = seasons.flatMap(season => season.episodes.map(episode => ({season: season.number, number: episode.number, at: Date.parse(episode.last_watched_at)})));
+    const nth = episode => episode.season * 10000 + episode.number, last = all.sort((a, b) => (ask.get('last_activity') === 'watched' ? b.at - a.at : 0) || nth(b) - nth(a))[0];
+    return send(200, {aired: all.length, completed: all.length, last_watched_at: all.length ? new Date(Math.max(...all.map(episode => episode.at))).toISOString() : null, reset_at: null, next_episode: null,
+      seasons: seasons.map(season => ({number: season.number, aired: season.episodes.length, completed: season.episodes.length, episodes: season.episodes.map(episode => ({number: episode.number, completed: true, last_watched_at: episode.last_watched_at}))})),
+      last_episode: last && !entry.none ? {season: last.season, number: last.number, title: 'An episode', ids: {trakt: 1}} : null});
+  }
+  if (request.method === 'GET' && where === '/sync/watched/shows' && trakt.big) {trakt.reads.push({where, query, auth}); answer.writeHead(200, {'content-type': 'application/json'}); return answer.end(`[${' '.repeat(1_100_000)}]`);}
   if (request.method === 'GET' && READS[where]) {
     trakt.reads.push({where, query, auth}); if (trakt.refuseReads) return send(429, {});
     // Paged as Trakt pages, by `page` and `limit` with its page count; history between `start_at` and `end_at`.
@@ -217,7 +235,8 @@ http.createServer(async (request, answer) => {
     if (rest.startsWith('/UserViews')) return send(200, {Items: [{Id: VIEW, Name: 'Trending Movies', CollectionType: 'movies'}]});
     // Ticking and keeping a spot, as AIOMetadata takes them, each read back after (the card's writes into Here).
     const own = /^\/Users\/[^/]+\/(PlayedItems|Items)\/([^/?]+)(\/UserData)?/.exec(rest), held = own && HELD[decodeURIComponent(own[2])];
-    if (own && own[1] === 'PlayedItems' && request.method === 'POST') {if (held) {held.UserData = {...held.UserData, Played: true}; fake.ticks.push({id: held.Id, at: new URLSearchParams(rest.split('?')[1]).get('DatePlayed')});} return send(200, {Played: true});}
+    // A tick keeps the date it came with (DatePlayed) exactly, as AIOMetadata does; now when none came.
+    if (own && own[1] === 'PlayedItems' && request.method === 'POST') {if (held) {const at = new URLSearchParams(rest.split('?')[1]).get('DatePlayed'); held.UserData = {...held.UserData, Played: true, LastPlayedDate: at ?? new Date().toISOString()}; fake.ticks.push({id: held.Id, at});} return send(200, {Played: true});}
     // A spot replaces the one held, with the date last played it came with (never later than now; now when none came), and
     // leaves watched alone.
     if (own && own[3] && request.method === 'POST') {if (held) {held.UserData = {...held.UserData, PlaybackPositionTicks: body.PlaybackPositionTicks, LastPlayedDate: new Date(Math.min(Date.parse(body.LastPlayedDate ?? '') || Date.now(), Date.now())).toISOString()}; fake.positions.push({id: held.Id, ticks: body.PlaybackPositionTicks, at: body.LastPlayedDate});} return held ? send(200, {}) : send(400, {});}
@@ -1274,6 +1293,8 @@ test('the cron keeps her in sync: one cheap look a turn, real work only when Tra
   const KNIGHT = pack('movie', 'tt0468569'), ALIEN = pack('movie', 'tt0078748'), ticks = () => fake.ticks.map(tick => HELD[tick.id].Name);
   HELD[ALIEN] = {Id: ALIEN, Type: 'Movie', Name: 'Alien', RunTimeTicks: 6000e7, UserData: {}};
   stamp(ago(1)); due(); await cron(); assert.ok(sql("SELECT stamps FROM sync WHERE person = 'ada'")[0].stamps, 'the stamps are kept after a good look');
+  // Her first turn with nothing to do reads, once, the shows she watched on Trakt (Next Up, below): none, so that is done with.
+  trakt.reads = []; due(); await cron(); assert.deepEqual(reads(), ['/sync/last_activities', '/sync/watched/shows']);
   // Nothing moved: Trakt is asked one cheap question and nothing else, and the run is not busy (For you may still run after it).
   trakt.reads = []; due(); await cron(); assert.deepEqual(reads(), ['/sync/last_activities']);
   // A film on Trakt she left out on her own page stays out of sync too: never ticked here.
@@ -1330,6 +1351,94 @@ test('the cron keeps her in sync: one cheap look a turn, real work only when Tra
   trakt.refuseReads = true; due(); await cron(); trakt.refuseReads = false;
   const row = sql("SELECT failing, why, checked FROM sync WHERE person = 'ada'")[0]; assert.ok(row.failing > 0); assert.equal(row.why, 'Trakt didn’t answer just now.'); assert.ok(row.checked + 1200 > Date.now() / 1000, 'asked again when Trakt says, not before'); waited();
   due(); await cron(); assert.equal(sql("SELECT failing FROM sync WHERE person = 'ada'")[0].failing, null, 'a good look clears it');
+});
+test('Next Up: the latest episode of each show she watched on Trakt in the last 120 days is ticked here with its own date, a few a turn, once, and nothing goes back to Trakt', async () => {
+  const due = () => sql("UPDATE sync SET checked = 0 WHERE person = 'ada'"), reads = () => trakt.reads.map(read => read.where), MAY = Date.UTC(2026, 4, 1, 4);
+  const show = (n, title) => ({title, ids: {trakt: 7700 + n, imdb: `tt77000${String(n).padStart(2, '0')}`, tmdb: 7700 + n}}), ticked = from => fake.ticks.slice(from).map(tick => `${HELD[tick.id].SeriesName} ${HELD[tick.id].ParentIndexNumber}x${HELD[tick.id].IndexNumber}`);
+  // An episode as her server holds it, under its show, unticked unless said; and a show as Trakt has it: each episode with when
+  // it was last watched (the show's own date is the latest of them, a special's included).
+  const held = (of, season, episode, more = {}) => {
+    const id = pack('episode', of.ids.imdb, season, episode), series = pack('series', of.ids.imdb);
+    HELD[series] = {Id: series, Type: 'Series', Name: of.title, ProviderIds: {Tmdb: String(of.ids.tmdb), Imdb: of.ids.imdb}};
+    HELD[id] = {Id: id, Type: 'Episode', SeriesId: series, SeriesName: of.title, ParentIndexNumber: season, IndexNumber: episode, RunTimeTicks: 6000e7, UserData: {}, ...more};
+    return id;
+  };
+  const seen = (of, ...episodes) => ({plays: episodes.length, last_watched_at: episodes.map(([, , at]) => at).sort().at(-1), show: of,
+    seasons: [...new Set(episodes.map(([season]) => season))].map(number => ({number, episodes: episodes.filter(([season]) => season === number).map(([, episode, at]) => ({number: episode, plays: 1, last_watched_at: at}))}))});
+  const SEV = show(1, 'Severance'), OLD = show(2, 'Long Ago'), HAD = show(3, 'Seen Here'), OUT = show(4, 'Left Out'), HID = show(5, 'Hidden'), DROP = show(6, 'Dropped'), ODD = show(7, 'Numbered Apart'), TIE = show(8, 'Whole Season'), MORE = [show(9, 'Ninth'), show(10, 'Tenth'), show(11, 'Eleventh')], NONE = show(13, 'No Episode');
+  const AT = {sev: ago(40), tie: ago(50), odd: ago(30), had: ago(19), more: [ago(60), ago(70), ago(100)]};
+  // Severance: the one she watched most lately is 2x3, forty days back (a later episode watched before it, and a special watched
+  // yesterday, are not it); she started it here once, so a play of it is kept here. A show last watched 130 days back; one Trakt
+  // names no last episode for; one whose latest her server already has; one she left out on her page; one hidden and one dropped
+  // on Trakt; one her server numbers differently; a season marked watched all at once.
+  const SEV_EP = held(SEV, 2, 3); held(SEV, 2, 2); held(SEV, 3, 1); const OLD_EP = held(OLD, 1, 5), NONE_EP = held(NONE, 1, 1), HAD_EP = held(HAD, 1, 2, {UserData: {Played: true, LastPlayedDate: AT.had}}), OUT_EP = held(OUT, 1, 4), HID_EP = held(HID, 1, 1), DROP_EP = held(DROP, 1, 1);
+  const ODD_EP = held(ODD, 3, 1, {Listed: false}); for (const n of [1, 2, 3]) held(TIE, 1, n); MORE.forEach(of => held(of, 4, 2));
+  trakt.watched = [seen(OLD, [1, 5, ago(130)]), seen(SEV, [1, 1, ago(200)], [3, 1, ago(90)], [2, 2, ago(41)], [2, 3, AT.sev], [0, 1, ago(1)]), {...seen(NONE, [1, 1, ago(15)]), none: true}, seen(HAD, [1, 2, ago(20)]), seen(OUT, [1, 4, ago(25)]), seen(HID, [1, 1, ago(10)]), seen(DROP, [1, 1, ago(11)]),
+    seen(ODD, [3, 1, AT.odd]), seen(TIE, [1, 1, AT.tie], [1, 3, AT.tie], [1, 2, AT.tie]), ...MORE.map((of, n) => seen(of, [4, 1, ago(110)], [4, 2, AT.more[n]]))];
+  trakt.hidden = {progress_watched: [{type: 'show', show: HID}], dropped: [{type: 'show', show: DROP}]};
+  assert.equal((await adaSite('POST', '/api/people/ada/drift', {skip: `i:show/${OUT.ids.tmdb}:1:4`})).status, 200);
+  sql(`INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art) SELECT id, 'ada', '${SEV_EP}', 'Severance', 'Season 2 · Episode 3', 600, 6000, 'Strand · Mac', 0, unixepoch() - 45 * 86400, '' FROM hubs`);
+  // The day's pass for plays that never reached Trakt, before any of it: whatever it has to send goes now, and is not counted below.
+  due(); await cron(MAY); await heard(0); for (let n = 0; n < 5 && waiting().length; n++) {await pause(2500); await cron();}
+  assert.deepEqual(waiting(), []);
+  sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind IN ('backfill', 'hidden')"); trakt.calls = []; trakt.reads = [];
+  const before = fake.ticks.length, posted = fake.watched.length, ONE = '/shows/progress/watched', queued = () => JSON.parse(sql("SELECT items FROM rows_cache WHERE person = 'ada' AND kind = 'backfill'")[0].items);
+  // Her next turn with nothing else to do: one short read of the shows she watched (no seasons or episodes in it), the shows she
+  // hid or dropped, and then one read for each of the three shows this run takes, newest first: Severance, the one with no last
+  // episode (done with), and the one her server already has.
+  due(); await cron(); assert.deepEqual(reads(), ['/sync/last_activities', '/sync/watched/shows', '/users/hidden/progress_watched', '/users/hidden/dropped', ONE, ONE, ONE]);
+  assert.match(trakt.reads[1].query, /extended=noseasons/); assert.deepEqual(trakt.reads.slice(4).map(read => read.query), Array(3).fill('specials=false&last_activity=watched'));
+  assert.deepEqual(ticked(before), ['Severance 2x3']);
+  // With the date Trakt has for that episode, which her server keeps: that is what Next Up goes by.
+  assert.deepEqual(fake.ticks.slice(before).map(tick => tick.at), [AT.sev]); assert.equal(HELD[SEV_EP].UserData.LastPlayedDate, AT.sev); assert.equal(HELD[SEV_EP].UserData.Played, true);
+  // The rest wait: only the shows inside 120 days were kept (not the old one), less the two hidden or dropped and these three.
+  assert.deepEqual(queued().list.map(of => of.name), ['Left Out', 'Numbered Apart', 'Whole Season', 'Ninth', 'Tenth', 'Eleventh']);
+  // The next runs carry on where this one stopped, three shows each, without asking Trakt for the list again: the one she left out
+  // and the one her server numbers differently are not ticked, the season marked at once is (its last episode); then the last three.
+  trakt.reads = []; await cron(); assert.deepEqual(reads(), ['/sync/last_activities', ONE, ONE, ONE]); assert.deepEqual(ticked(before), ['Severance 2x3', 'Whole Season 1x3']); assert.equal(queued().list.length, 3);
+  trakt.reads = []; await cron(); assert.deepEqual(reads(), ['/sync/last_activities', ONE, ONE, ONE]);
+  assert.deepEqual(ticked(before), ['Severance 2x3', 'Whole Season 1x3', 'Ninth 4x2', 'Tenth 4x2', 'Eleventh 4x2']); assert.deepEqual(fake.ticks.slice(before + 1).map(tick => tick.at), [AT.tie, ...AT.more]); assert.deepEqual(queued(), {page: 0, list: []});
+  // Never ticked: the old one (and not given a newer date), the one with no last episode, the one she left out, the hidden and
+  // the dropped, the one her server numbers differently (never guessed), and nothing but the latest of a show. The one her
+  // server already had keeps its own date.
+  for (const id of [OLD_EP, NONE_EP, OUT_EP, HID_EP, DROP_EP, ODD_EP, pack('episode', SEV.ids.imdb, 2, 2), pack('episode', SEV.ids.imdb, 3, 1), pack('episode', MORE[0].ids.imdb, 4, 1)]) assert.ok(!HELD[id]?.UserData?.Played, HELD[id]?.SeriesName);
+  assert.equal(HELD[HAD_EP].UserData.LastPlayedDate, AT.had, 'left as it was');
+  // What was synced lists each tick, as any other play brought here.
+  const did = (await adaSite('GET', '/api/people/ada/matching/synced')).body.synced.slice(0, 5).map(item => [item.title, item.detail, item.to, item.spot]);
+  assert.deepEqual(did.sort(), [['Eleventh', 'Season 4 · Episode 2', 'here', false], ['Ninth', 'Season 4 · Episode 2', 'here', false], ['Severance', 'Season 2 · Episode 3', 'here', false], ['Tenth', 'Season 4 · Episode 2', 'here', false], ['Whole Season', 'Season 1 · Episode 3', 'here', false]]);
+  // Every key by hub and person: what is kept of it, and what was noted as sent.
+  assert.deepEqual(sql("SELECT person, count(*) AS n FROM rows_cache WHERE kind = 'backfill' GROUP BY hub, person"), [{person: 'ada', n: 1}]);
+  assert.deepEqual(sql(`SELECT DISTINCT person FROM sent WHERE play LIKE '%show/77%'`), [{person: 'ada'}]);
+  // Done: a later turn asks Trakt its one cheap question and her server nothing. She unticks one here; it stays unticked.
+  HELD[SEV_EP].UserData = {}; const signIns = fake.signIns; trakt.reads = []; due(); await cron(); assert.deepEqual(reads(), ['/sync/last_activities']); assert.equal(fake.signIns, signIns);
+  // Nothing bounced: not as it was ticked, and not on the day's pass for plays here that never reached Trakt, which looks at the
+  // episode (she had started it here, and her server now has it watched) and finds it noted as something Trakt already has. Trakt's
+  // history, as this stand-in gives it, does not list it, so nothing else could have held it back. Nor the day's look at Trakt
+  // and MDBList, on a run her turn is not due in. Nor anything to MDBList.
+  HELD[SEV_EP].UserData = {Played: true, LastPlayedDate: AT.sev};
+  due(); await cron(MAY + 86400e3); sql("UPDATE sync SET checked = 9000000000 WHERE person = 'ada'"); await cron(MAY + 86400e3 + 300e3); await pause(600);
+  assert.deepEqual(trakt.calls, []); assert.deepEqual(waiting(), []); assert.equal(fake.watched.length, posted);
+  assert.deepEqual(sql(`SELECT place, play, title FROM sent WHERE person = 'ada' AND play LIKE '%show/${SEV.ids.tmdb}:%' ORDER BY place`), [{place: 'here', play: `i:show/${SEV.ids.tmdb}:2:3`, title: 'Severance'}, {place: 'trakt', play: `w:show/${SEV.ids.tmdb}:2:3`, title: null}]);
+  // Sync turned off and on again starts it over: Trakt is read once more, and what was ticked before is not ticked twice (the one
+  // she unticked stays so).
+  const stamps = sql("SELECT stamps FROM sync WHERE person = 'ada'")[0].stamps; HELD[SEV_EP].UserData = {};
+  assert.equal((await adaSite('POST', '/api/people/ada/matching', {on: true, earlier: true})).status, 200); assert.equal(sql("SELECT count(*) AS n FROM rows_cache WHERE person = 'ada' AND kind = 'backfill'")[0].n, 1, 'kept while sync stays on');
+  assert.equal((await adaSite('POST', '/api/people/ada/matching', {on: false})).status, 200); assert.equal((await adaSite('POST', '/api/people/ada/matching', {on: true, earlier: true})).status, 200);
+  assert.equal(sql("SELECT count(*) AS n FROM rows_cache WHERE person = 'ada' AND kind = 'backfill'")[0].n, 0);
+  sql(`UPDATE sync SET stamps = '${stamps}', checked = 0 WHERE person = 'ada'`); trakt.reads = []; const again = fake.ticks.length; await cron(); await cron(); await cron();
+  assert.deepEqual(reads(), ['/sync/last_activities', '/sync/watched/shows', ONE, ONE, ONE, '/sync/last_activities', ONE, ONE, ONE, '/sync/last_activities', ONE, ONE, ONE]); assert.equal(fake.ticks.length, again); assert.ok(!HELD[SEV_EP].UserData.Played); assert.deepEqual(queued(), {page: 0, list: []});
+  // A list too long to parse within a run (over a megabyte) is not parsed and not asked for again: Next Up is done with for her.
+  sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'backfill'"); trakt.big = true; trakt.reads = []; due(); await cron();
+  assert.deepEqual(reads(), ['/sync/last_activities', '/sync/watched/shows']); assert.deepEqual(queued(), {page: 0, list: [], big: true}); assert.equal(fake.ticks.length, again);
+  trakt.reads = []; due(); await cron(); assert.deepEqual(reads(), ['/sync/last_activities'], 'not tried every turn'); trakt.big = false;
+  // With her progress kept in MDBList she gets none of it: her server reads MDBList itself, so nothing is read for it or written there.
+  const NEW = show(12, 'Twelfth'), NEW_EP = held(NEW, 1, 1); trakt.watched = [seen(NEW, [1, 1, ago(3)])];
+  sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'backfill'; UPDATE people SET data = json_set(data, '$.lists', json('true')) WHERE id = 'ada'");
+  const quiet = fake.signIns; trakt.reads = []; due(); await cron(); assert.deepEqual(reads(), ['/sync/last_activities']); assert.equal(fake.signIns, quiet); assert.equal(fake.ticks.length, again); assert.equal(fake.watched.length, posted);
+  assert.ok(!HELD[NEW_EP].UserData.Played); assert.deepEqual(sql("SELECT kind FROM rows_cache WHERE person = 'ada' AND kind = 'backfill'"), []);
+  // As she was, for what follows: progress here, nothing more for Next Up to do.
+  sql("UPDATE people SET data = json_set(data, '$.lists', json('false')) WHERE id = 'ada'; DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'hidden'"); trakt.watched = []; trakt.hidden = {progress_watched: [], dropped: []};
+  trakt.reads = []; due(); await cron(); assert.deepEqual(reads(), ['/sync/last_activities', '/sync/watched/shows']); trakt.reads = []; trakt.calls = [];
 });
 test('with progress in MDBList and sync on, what the daily look finds goes across by itself, through the outbox, once', async () => {
   trakt.refuse = 0;
