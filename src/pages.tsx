@@ -1,7 +1,7 @@
 import {Fragment, useEffect, useRef, useState} from 'react';
 import type {ReactNode} from 'react';
 import {QRCodeSVG} from 'qrcode.react';
-import {FOR_YOU_KINDS, SAMPLE, isPlace, orderOf, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, currentPicks, linkedOf, needOf, resolve, samplePassword, samplePin, slug, traktRows, pillOf, SHELF_TITLES} from './data';
+import {FOR_YOU_KINDS, KEEPS_ROWS, SAMPLE, isPlace, orderOf, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, currentPicks, linkedOf, needOf, resolve, samplePassword, samplePin, slug, traktRows, pillOf, SHELF_TITLES} from './data';
 import type {Device, Group, Hub, Person, Row, Settings} from './data';
 import {Activity} from './activity';
 import {GroupOrder, HomeEditor, moved} from './home';
@@ -155,7 +155,7 @@ function Devices({page, person, mine}: {page: PageProps; person: Person; mine: b
     </div></>}
     <h3 className="sub">Signed in</h3>
     {ask && <Confirm title={ask.title} body={ask.body} action={ask.action} onYes={() => {const yes = ask.yes; setAsk(null); yes();}} onClose={() => setAsk(null)}/>}
-    {person.devices.length ? <><ul className="feed">{person.devices.map(device => <li key={device.id}><div className="quiet-name">{live ? <NameField label={`Name of ${device.name}`} value={device.name} onSave={value => act(live.call('PUT', `${at}/devices/${device.id}`, {name: value}), 'Renamed')}/> : <strong>{device.name}</strong>}<small>{device.app} · {device.seen === 'Now' ? 'active now' : `last used ${device.seen.toLowerCase()}`}{seenAt(device)}</small></div><button type="button" className="ghost small" onClick={() => setAsk({title: `Sign out ${device.name}?`, body: `The app on ${device.name} has to sign in again before it plays anything. Nothing else changes.`, action: 'Sign out', yes: () => live ? act(live.call('DELETE', `${at}/devices/${device.id}`), `${device.name} signed out`) : edit(target => {target.devices = target.devices.filter(item => item.id !== device.id);}, `${device.name} signed out`)})}>Sign out</button></li>)}</ul>
+    {person.devices.length ? <><ul className="feed">{person.devices.map(device => <li key={device.id}><div className="quiet-name">{live ? <NameField label={`Name of ${device.name}`} value={device.name} onSave={value => act(live.call('PUT', `${at}/devices/${device.id}`, {name: value}), 'Renamed')}/> : <strong>{device.name}</strong>}<small>{device.app} · {device.seen === 'Now' ? 'active now' : `last used ${device.seen.toLowerCase()}`}{seenAt(device)}</small>{KEEPS_ROWS.some(app => device.app.toLowerCase().includes(app.toLowerCase())) && <small className="keeps-rows">This app only shows new rows after its libraries are refreshed.{page.hub.setupPage?.startsWith('https://') && <> <a className="link" href={page.hub.setupPage} target="_blank" rel="noopener noreferrer">Set up automatic refresh</a></>}</small>}</div><button type="button" className="ghost small" onClick={() => setAsk({title: `Sign out ${device.name}?`, body: `The app on ${device.name} has to sign in again before it plays anything. Nothing else changes.`, action: 'Sign out', yes: () => live ? act(live.call('DELETE', `${at}/devices/${device.id}`), `${device.name} signed out`) : edit(target => {target.devices = target.devices.filter(item => item.id !== device.id);}, `${device.name} signed out`)})}>Sign out</button></li>)}</ul>
       <button type="button" className="link below" onClick={() => live ? act(live.call('POST', `${at}/rotate`, {}), 'Signed out everywhere. New password set.') : edit(target => {target.devices = []; target.password = samplePassword(person.id);}, 'Signed out everywhere. New password set.')}>Sign {who} out everywhere</button></>
       : <p className="muted">No device yet.</p>}
   </section>;
@@ -925,21 +925,30 @@ function Servers({hub, live, toast}: {hub: Hub; live: Live; toast: (text: string
   </section>;
 }
 
-/* An address the hub calls after a Home change has reached the apps (worker/notice.ts): optional, the manager's to set. It
-   carries a token, so it is typed like a key, never shown again, and the site sends back only its host name. Laid out like the
-   hub's keys under Sources: what it does, then Replace and Remove once one is set. */
+/* An address the hub calls after a Home change has reached the apps (worker/notice.ts): optional, the manager's to set. Only
+   the manager is sent it, and it sits in a plain field, changed in place the way a name is: Save appears once the text differs
+   from what is kept. Emptied and saved, it is removed, after asking. */
 function Notice({hub, live, toast}: {hub: Hub; live: Live; toast: (text: string) => void}) {
-  const set = hub.jobs?.notice ?? null, [draft, setDraft] = useState(''), [replacing, setReplacing] = useState(false), [busy, setBusy] = useState(false), [asking, setAsking] = useState(false);
-  const save = () => {setBusy(true); void live.call('PUT', '/api/notice', {address: draft}).then(() => {setDraft(''); setReplacing(false); toast(set ? 'Address replaced' : 'Address saved'); return live.reload();}, (error: Error) => toast(error.message)).finally(() => setBusy(false));};
-  const field = <form className="field-row" onSubmit={event => {event.preventDefault(); save();}}><input type="password" aria-label="Address to call when Home changes" placeholder={set ? 'New address' : 'https://'} autoComplete="off" autoFocus={!!set} value={draft} onChange={event => setDraft(event.target.value)}/><button className="ghost small" disabled={busy || !draft.trim()}>Save</button></form>;
   return <section>
-    {asking && <Confirm title="Remove the address?" body="The hub stops calling it when Home changes." action="Remove" onClose={() => setAsking(false)} onYes={() => {setAsking(false); void live.call('DELETE', '/api/notice').then(() => {toast('Address removed'); return live.reload();}, (error: Error) => toast(error.message));}}/>}
-    {/* Always one under the other: beside two buttons the words have no room on a phone. */}
-    <ul className="accounts"><li className="stacked">
-      <div><h3>Call this address when Home changes</h3><p>After a Home change has reached the apps, the hub sends an empty request here. Leave empty for nothing.</p>{set && <p>An address at {set.host} is set.</p>}</div>
-      {!set || replacing ? field : <div className="field-row"><button type="button" className="ghost small" onClick={() => {setReplacing(true); setDraft('');}}>Replace</button><button type="button" className="ghost small" onClick={() => setAsking(true)}>Remove</button></div>}
-    </li></ul>
+    {/* Always one under the other: beside a button the words have no room on a phone. */}
+    <ul className="accounts">
+      <li className="stacked"><div><h3>Call this address when Home changes</h3><p>After a Home change has reached the apps, the hub sends an empty request here. Leave empty for nothing.</p></div>
+        <AddressField kept={hub.jobs?.notice?.address ?? ''} label="Address to call when Home changes" at="/api/notice" said={['Address saved', 'Address replaced', 'Address removed']} ask={['Remove the address?', 'The hub stops calling it when Home changes.']} live={live} toast={toast}/></li>
+      <li className="stacked"><div><h3>A page people can open to set this up</h3><p>If the address above belongs to something people sign up to themselves, put its page here. It is offered to people whose apps need it.</p></div>
+        <AddressField kept={hub.setupPage ?? ''} label="Page people can open to set this up" at="/api/notice/page" said={['Page saved', 'Page replaced', 'Page removed']} ask={['Remove the page?', 'People are no longer offered it.']} live={live} toast={toast}/></li>
+    </ul>
   </section>;
+}
+/* One of the two: the kept address in a plain field. Save shows while the text differs from what is kept; saved empty, it is
+   removed, after asking. A long address scrolls inside the field. */
+function AddressField({kept, label, at, said, ask, live, toast}: {kept: string; label: string; at: string; said: [string, string, string]; ask: [string, string]; live: Live; toast: (text: string) => void}) {
+  const [draft, setDraft] = useState(kept), [busy, setBusy] = useState(false), [asking, setAsking] = useState(false);
+  useEffect(() => setDraft(kept), [kept]);
+  const save = () => {if (!draft.trim()) return setAsking(true); setBusy(true); void live.call('PUT', at, {address: draft}).then(() => {toast(kept ? said[1] : said[0]); return live.reload();}, (error: Error) => toast(error.message)).finally(() => setBusy(false));};
+  return <>
+    {asking && <Confirm title={ask[0]} body={ask[1]} action="Remove" onClose={() => setAsking(false)} onYes={() => {setAsking(false); void live.call('DELETE', at).then(() => {toast(said[2]); return live.reload();}, (error: Error) => toast(error.message));}}/>}
+    <form className="field-row" onSubmit={event => {event.preventDefault(); if (draft.trim() !== kept) save();}}><input type="text" inputMode="url" aria-label={label} placeholder="https://" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={draft} onChange={event => setDraft(event.target.value)}/>{draft.trim() !== kept && <button className="ghost small" disabled={busy}>Save</button>}</form>
+  </>;
 }
 
 /* ---------- the manager's own account ---------- */

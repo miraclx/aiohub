@@ -47,14 +47,20 @@ export interface Matching {on: boolean; earlier: boolean; passed?: boolean; ask:
 export interface Person {matching?: Matching | null; hearts?: {on: boolean; extra?: number; more?: boolean} | null; forYou?: Record<string, string>; forYouKinds?: Record<string, string>; pickedAt?: number; forYouDetail?: ForYouDetail; shelfAt?: number; shelfTiles?: {title: string; image: string; liked?: boolean}[]; played?: boolean; moving?: 'mdblist' | 'here' | null; listsKept?: boolean; v?: number; ready?: boolean; history?: {username: string; again: boolean} | null; aiomTrakt?: boolean; listsName?: string; id: string; name: string; groupId: string; joined: boolean; paused?: boolean; trakt: boolean; lists: boolean; rows: Row[] | null; picks?: Record<string, boolean>; settings: Overrides; can: {arrange: boolean; add: boolean; playback: boolean; limit?: boolean}; pin: string | null; password: string; devices: Device[]}
 export interface Group {v?: number; id: string; name: string; rows: Row[] | null; settings: Overrides; paused?: boolean}
 export interface Addon {id: string; name: string; note: string; locked?: boolean; custom?: boolean; url?: string}
+/* Player apps known to keep their own copy of the Home rows, by the app name a device shows under Devices (matched whatever
+   the case). A label only: a quiet line beside such a device says so. No behaviour hangs off it. */
+export const KEEPS_ROWS = ['Nuvio'];
 export interface Hub {
+  /* A page the manager set for people to open (Hub, General; worker/notice.ts), sent to everyone signed in to the hub. */
+  setupPage?: string;
   // The five-minute background work (manager only): last run (unix seconds), runs counted, calls waiting for Trakt, the last day the
   // Trakt/MDBList check finished, for how many people, and how many are part way through.
   jobs?: {shelved?: number | null; shelves?: number; shelfDue?: number | null;
     /* The address called when Home changes (worker/notice.ts), as a manager is shown it: its host name, when it was last called
        (unix seconds, 0 for never) and how that went ('ok', 'none' for no answer, or '3xx', '4xx', '5xx'), and whether a call is
-       waiting its turn (`again`: the one second try after a call that failed). null: none set. The address itself is never sent. */
-    notice?: {host: string; at: number; result: string | null; waiting: boolean; again: boolean} | null;
+       waiting its turn (`again`: the one second try after a call that failed). null: none set. The address itself is sent to the
+       manager's own session only. */
+    notice?: {address: string; host: string; at: number; result: string | null; waiting: boolean; again: boolean} | null;
     /* Recommended rows worked out by the hub (worker/recs.ts): the last time for anyone here, for how many people, and the oldest still kept. */
     recsAt?: number | null; recs?: number; recsDue?: number | null;
     /* Up Next and New for you looked up by the hub for people without Trakt (worker/ahead.ts): the same three. */
@@ -512,10 +518,10 @@ export const sampleHub = (): Hub => ({
 });
 
 // Invented titles. Activity is what the player last reported, not a full play-by-play log.
-export interface Play {art?: string; id: string; personId: string; title: string; detail: string; when: string; day: 'Today' | 'Yesterday' | 'Earlier this week'; progress?: number; on: string; where?: string; parts?: [number, number][]; ranges?: string[]; mark?: number; line?: string; longer?: string; clock?: string; down?: boolean; stamp?: number}
+export interface Play {art?: string; id: string; personId: string; title: string; detail: string; when: string; live?: boolean; quiet?: boolean; day: 'Today' | 'Yesterday' | 'Earlier this week'; progress?: number; on: string; where?: string; parts?: [number, number][]; ranges?: string[]; mark?: number; line?: string; longer?: string; clock?: string; down?: boolean; stamp?: number}
 export const samplePlays = (): Play[] => [
-  {id: 'p1', personId: 'ada', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', when: 'Now', day: 'Today', progress: 62, on: 'AIOStreams · Living room TV', parts: [[0, 40], [48, 14]], line: 'Watched 27 of 50 min · skipped 4 min · paused twice'},
-  {id: 'p2', personId: 'dev', title: 'The Quiet Orbit', detail: 'Movie', when: 'Now', day: 'Today', progress: 18, on: 'Odin · Apple TV'},
+  {id: 'p1', personId: 'ada', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', when: 'Since 8:05 pm', live: true, day: 'Today', progress: 62, on: 'AIOStreams · Living room TV', parts: [[0, 40], [48, 14]], line: 'Watched 27 of 50 min · skipped 4 min · paused twice'},
+  {id: 'p2', personId: 'dev', title: 'The Quiet Orbit', detail: 'Movie', when: 'Since 7:40 pm', live: true, day: 'Today', progress: 18, on: 'Odin · Apple TV'},
   {id: 'p3', personId: 'ben', title: 'Paper Kites', detail: 'Movie · finished', when: '2 h ago', day: 'Today', on: 'AIOStreams · Ben’s tablet', where: 'Lagos, NG · SpaceX'},
   {id: 'p4', personId: 'ada', title: 'Harbor Lights', detail: 'Season 2 · Episode 3 · finished', when: '5 h ago', day: 'Today', on: 'AIOStreams · Living room TV'},
   {id: 'p5', personId: 'dev', title: 'North of Nowhere', detail: 'Season 1 · Episode 8 · finished', when: '9:40 pm', day: 'Yesterday', on: 'Odin · Apple TV'},

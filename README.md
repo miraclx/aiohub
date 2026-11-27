@@ -57,6 +57,7 @@ itself and hosts no video.
   runs next.
 - **A call when Home changes.** Optional. Under Hub, General, the manager can enter a web address, and the hub sends it
   an empty request after a Home change has reached the apps, at most once every five minutes.
+  Beside it the manager can put a page people can open to set the same thing up themselves; it shows as a link on their Devices page.
 - **Debrid accounts.** A debrid service is a paid account that fetches a file and hands back a direct link to stream it
   from. The hub can hold several (TorBox, Real-Debrid, AllDebrid, Premiumize, Debrid-Link, EasyDebrid), and each group or
   person uses the one you pick for them. People never see the keys.

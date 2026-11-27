@@ -217,7 +217,11 @@ input:not([type=range]):focus { outline: 2px solid var(--accent); outline-offset
 .now .posters { flex: 0 0 auto; mask-image: none; -webkit-mask-image: none; }
 .now .posters span { flex-basis: 56px; }
 .now .posters span:nth-child(n+2) { display: none; }
-.now-text { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.now-text { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; }
+/* Since when it has been on: beside the title on a wide screen, under the device line on a narrow one (below). */
+.now-text > * { grid-column: 1 / -1; }
+.now-text > .title { grid-column: 1; }
+.now-text > time { grid-column: 2; grid-row: 1; align-self: center; }
 .now-text small, .feed small { color: var(--muted); font-size: 14px; }
 .bar { position: relative; display: block; height: 5px; border-radius: 999px; background: var(--raised); margin-top: 8px; }
 .bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
@@ -233,10 +237,18 @@ input:not([type=range]):focus { outline: 2px solid var(--accent); outline-offset
 .feed li + li { border-top: 1px solid var(--line); }
 .feed li > div { flex: 1; min-width: 0; display: grid; }
 /* A play's bar runs under its text and its time alike, so every bar ends at the same edge whatever the time says. */
-.feed.plays li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 12px; }
+.feed.plays li, .feed.who li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 12px; }
 .feed.plays li > .bar { grid-column: 2 / -1; }
 .thumb { flex: 0 0 30px; }
-.feed time { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.feed time, .now time { color: var(--muted); font-size: 13px; white-space: nowrap; }
+/* When a play ran is a span of two times, too wide to sit beside a title on a narrow screen: there it goes under the device
+   line, above the bar, and the title keeps the whole width. */
+@media (max-width: 600px) {
+  .feed.plays li, .feed.who li { grid-template-columns: auto minmax(0, 1fr); }
+  .feed.plays li > time, .feed.who li > time { grid-column: 2 / -1; grid-row: 2; justify-self: start; white-space: normal; opacity: .75; margin-top: -9px; }
+  .feed.plays li > .bar { grid-row: 3; }
+  .now-text > time { grid-column: 1 / -1; grid-row: auto; justify-self: start; white-space: normal; opacity: .75; }
+}
 .thumb .posters { mask-image: none; -webkit-mask-image: none; }
 .thumb .posters span { flex-basis: 30px; border-radius: 5px; }
 .thumb .posters span:nth-child(n+2) { display: none; }
@@ -516,3 +528,4 @@ label.sheet-sub { display: block; }
 :is(.accounts, .sync-card) .offer { display: grid; gap: 8px; padding: 12px 14px; border-radius: 12px; background: var(--raised); }
 :is(.accounts, .sync-card) .offer > p:first-child { color: var(--text); font-size: 14px; line-height: 20px; }
 :is(.accounts, .sync-card) .offer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; }
+.keeps-rows { font-size: 13px !important; opacity: .85; }

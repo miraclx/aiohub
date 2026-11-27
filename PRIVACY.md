@@ -75,7 +75,9 @@ Removing the key stops all of it; nothing in their MDBList account is removed.
 
 A manager can enter one web address under Hub, General. After a Home change has reached the apps, the hub sends that address one empty request, at most once every five minutes. The request has no content and says nothing about the hub or anyone in it: no names, no titles, no ids, no sign-in. It goes only to the address the manager entered, and nowhere if none is set. As with any request the site makes, the receiving server can see that it came from Cloudflare, and Cloudflare adds a header naming the domain the site runs on.
 
-The address is encrypted before it is stored, like a key. It is never shown again, not even to the manager, who sees only its host name. The hub keeps when it last called the address and whether that worked.
+The address is encrypted before it is stored, like a key. Only the manager is shown it, on that same page, where they can change or remove it; nobody else in the hub is, and it is never written to logs.
+
+Beside it the manager can enter a second address: a page people can open to set the same thing up for themselves. It is stored the same way. It is a link meant for the hub's own people, so everyone signed in to the hub is sent it, and it shows on their Devices page beside an app it helps with. Nobody who is not signed in to the hub is shown it, and the hub never calls it. The hub keeps when it last called the address and whether that worked.
 
 ## Where it lives
 

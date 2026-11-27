@@ -7,7 +7,7 @@ import {FOR_YOU_KINDS, PICKABLE, SHELF_TITLES, WAS, current as currentRows, defa
 import type {Addon, Hub, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncInTurn} from './native';
-import {NOTICE, cleanAddress, changed as homeChanged} from './notice';
+import {NOTICE, NOTICE_PAGE, cleanAddress, changed as homeChanged} from './notice';
 import {forgetHub, forgetSeats} from './front';
 import {EARLIER, LINK, answered, brief, deliver, disconnect, forgetTrakt, keepLink, links, read, stopSending, syncOn, traktWait} from './trakt';
 import type {Link} from './trakt';
@@ -170,10 +170,11 @@ async function newSession(env: Env, subject: {account: string} | {hub: string; p
 /* ---------- what a page loads ---------- */
 /* The background work as the manager's page gets it. Trakt sync takes one person each run whichever hub they are in, so how often
    a person's turn comes depends on how many sync across the whole site: only the minutes are given, never that count. */
-// `notice`: the address called when Home changes (notice.ts), as far as a manager is shown it: its host name, when it was last
-// called and how that went, and whether a call is waiting its turn (`again`: the one second try after a call that failed).
-const jobsOf = ({syncAll, noticeHost, noticeAt, noticeResult, noticeWanted, noticeRetry, ...rest}: Record<string, unknown>, forYouHour: number) => ({...rest, syncEvery: turnEvery(Number(syncAll) || 0), forYouHour,
-  notice: typeof noticeHost === 'string' ? {host: noticeHost, at: Number(noticeAt) || 0, result: noticeResult ?? null, waiting: noticeWanted === 2, again: noticeWanted === 2 && noticeRetry === 1} : null}) as unknown as Hub['jobs'];
+// `notice`: the address called when Home changes (notice.ts), as a manager is shown it: the address itself (theirs to read and
+// change; only a manager's own session gets this at all), its host name, when it was last called and how that went, and whether
+// a call is waiting its turn (`again`: the one second try after a call that failed).
+const jobsOf = ({syncAll, noticeHost, noticeAt, noticeResult, noticeWanted, noticeRetry, ...rest}: Record<string, unknown>, forYouHour: number, address: string) => ({...rest, syncEvery: turnEvery(Number(syncAll) || 0), forYouHour,
+  notice: typeof noticeHost === 'string' ? {address, host: noticeHost, at: Number(noticeAt) || 0, result: noticeResult ?? null, waiting: noticeWanted === 2, again: noticeWanted === 2 && noticeRetry === 1} : null}) as unknown as Hub['jobs'];
 async function state(env: Env, who: Who) {
   const hub = who.hub, data = JSON.parse(hub.data) as HubData, mine = who.person;
   const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, jobs, plays, picked, shelves, syncs, waits, tolds, favs] = await env.DB.batch([
@@ -182,7 +183,7 @@ async function state(env: Env, who: Who) {
     mine ? env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? AND person = ? ORDER BY seen DESC').bind(hub.id, mine) : env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? ORDER BY seen DESC').bind(hub.id),
     env.DB.prepare('SELECT name FROM accounts WHERE id = ?').bind(hub.owner),
     env.DB.prepare("SELECT owner, kind FROM secrets WHERE hub = ? AND kind IN ('upstream', 'upstream-aiom')").bind(hub.id),
-    env.DB.prepare("SELECT kind FROM secrets WHERE hub = ? AND owner = ? AND kind IN ('key:tmdb', 'key:mdblist', 'key:posters')").bind(hub.id, HUB_OWNER),
+    env.DB.prepare("SELECT kind FROM secrets WHERE hub = ? AND owner = ? AND kind IN ('key:tmdb', 'key:mdblist', 'key:posters', ?)").bind(hub.id, HUB_OWNER, NOTICE_PAGE),
     env.DB.prepare('SELECT substr(id, 1, 16) AS id, name, created FROM passkeys WHERE account = ? ORDER BY created').bind(who.account?.id ?? ''),
     env.DB.prepare('SELECT owner, value FROM secrets WHERE hub = ? AND kind = ? AND owner = coalesce(?, owner)').bind(hub.id, LINK, mine ?? null),
     env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind = 'trakt'").bind(hub.id),
@@ -246,7 +247,12 @@ async function state(env: Env, who: Who) {
     role: mine ? 'person' : 'owner', personId: mine ?? null,
     hub: {
       name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID, traktClient: env.TRAKT_CLIENT_ID ?? '', front: env.FRONT === 'aiometadata',
-      ...(mine ? {manager: !!who.manager} : {jobs: jobsOf(jobs.results[0] as Record<string, unknown>, pickHour(env))}),
+      // The address called when Home changes is read from the vault for the manager's own session only: never for a person's,
+      // the manager's view of a person's page included.
+      ...(mine ? {manager: !!who.manager} : {jobs: jobsOf(jobs.results[0] as Record<string, unknown>, pickHour(env), typeof (jobs.results[0] as {noticeHost?: unknown}).noticeHost === 'string' ? await getSecret<string>(env, hub.id, HUB_OWNER, NOTICE) ?? '' : '')}),
+      // The page the manager set for people to open (notice.ts, NOTICE_PAGE): a link meant for them, so everyone signed in to
+      // this hub gets it.
+      setupPage: keys.results.some(row => (row as {kind: string}).kind === NOTICE_PAGE) ? await getSecret<string>(env, hub.id, HUB_OWNER, NOTICE_PAGE) ?? '' : '',
       // The UTC hour the day's For you picking starts, so a Home can say when the next picks come.
       forYouHour: pickHour(env),
       groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', moves[row.id] ?? null, keyed.has(row.id), playedHere.has(row.id), matchingOf(row.id), heartsOf(row.id))).map(person => {const picked = forYou.get(person.id), shelved = shelfAt.get(person.id);
@@ -966,14 +972,27 @@ async function setHost(env: Env, who: Who, body: Body) {
   return {v: who.hub.version + 1, missing};
 }
 /* The address the hub calls after a Home change has reached the apps (notice.ts). It carries a token, so it goes into the vault
-   and is never sent back or logged: the manager is shown its host name only. Nothing is asked of it when it is saved. A new
+   and is never logged; it is sent back only to the manager's own session, with the page (state, above), never in this answer. Nothing is asked of it when it is saved. A new
    address starts with nothing waiting; the time since the last call still counts. */
-async function setNotice(env: Env, who: Who, body: Body, site: URL) {
+function typedAddress(env: Env, body: Body, site: URL) {
   const typed = (typeof body.address === 'string' ? body.address : bad(400, 'Address is not valid')).trim() || bad(400, 'Paste the address');
   if (typed.length > 300) bad(400, 'That address is too long.');
   let mine = ''; try {mine = env.SITE_ORIGIN ? new URL(env.SITE_ORIGIN).hostname : '';} catch { /* none */ }
   const clean = cleanAddress(typed, [site.hostname, mine]);
-  if ('error' in clean) return bad(400, clean.error);
+  return 'error' in clean ? bad(400, clean.error) : clean;
+}
+/* The page beside it (notice.ts, NOTICE_PAGE): taken under the same rules, kept in the vault by itself. Setting or removing
+   one leaves the other as it was. */
+async function setNoticePage(env: Env, who: Who, body: Body, site: URL) {
+  await (await putSecret(env, who.hub.id, HUB_OWNER, NOTICE_PAGE, typedAddress(env, body, site).address)).run();
+  return {};
+}
+async function dropNoticePage(env: Env, who: Who) {
+  await env.DB.prepare('DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(who.hub.id, HUB_OWNER, NOTICE_PAGE).run();
+  return {};
+}
+async function setNotice(env: Env, who: Who, body: Body, site: URL) {
+  const clean = typedAddress(env, body, site);
   await env.DB.batch([await putSecret(env, who.hub.id, HUB_OWNER, NOTICE, clean.address),
     env.DB.prepare('INSERT INTO notices (hub, host) VALUES (?, ?) ON CONFLICT (hub) DO UPDATE SET host = excluded.host, result = NULL, wanted = 0, retry = 0').bind(who.hub.id, clean.host)]);
   return {};
@@ -1149,6 +1168,8 @@ export async function api(request: Request, env: Env, url: URL, ctx?: ExecutionC
     if (first === 'keys' && second === 'mdblist' && method === 'DELETE') return reply(await dropKey(env, who, second));
     if (first === 'notice' && !second && method === 'PUT') return reply(await setNotice(env, who, body, url));
     if (first === 'notice' && !second && method === 'DELETE') return reply(await dropNotice(env, who));
+    if (first === 'notice' && second === 'page' && method === 'PUT') return reply(await setNoticePage(env, who, body, url));
+    if (first === 'notice' && second === 'page' && method === 'DELETE') return reply(await dropNoticePage(env, who));
     if (first === 'account') return reply(await account(request, env, who, second, third, body, url.origin));
     return reply({message: 'Not found'}, 404);
   } catch (error) {

@@ -1,8 +1,9 @@
 /* Home change notice: an address a hub's manager may set (Hub, General), which the hub calls after a Home change has reached the
    apps. One empty POST: no body, nothing about the hub or anyone in it, never following a redirect, five seconds at most.
 
-   - The address carries a token in its path, so it is kept in the vault (kind NOTICE, the hub's own) and never logged or sent
-     back; its host name, kept beside it (notices.host), is all a manager is shown.
+   - The address carries a token in its path, so it is kept in the vault (kind NOTICE, the hub's own) and never logged. Only the
+     manager's own session is sent it back (api.ts, state), to read and change; its host name, kept beside it (notices.host),
+     is what the Background work row shows.
    - When: a resend of the hub's setups (native.ts, syncPlayers) that wrote at least one setup and finished. Whoever resends says
      so here (changed, below): a page, the hub itself after an account change, the cron, a first play. A resend that wrote
      nothing calls nothing.
@@ -14,6 +15,10 @@ import type {Env} from './util';
 import {getSecret, now} from './util';
 
 export const NOTICE = 'key:notice', EVERY = 300;
+/* A page the manager may set beside the address (Hub, General): one people can open to set the same thing up for themselves.
+   Kept the same way (the vault, the hub's own), under the same rules for what address is taken. Unlike the address it is a link
+   meant for the hub's people: every signed-in session of the hub is sent it (api.ts, state), nobody else. Nothing here calls it. */
+export const NOTICE_PAGE = 'key:notice-page';
 const HUB = '#hub', WAIT = 5000, AGENT = 'Mozilla/5.0 (compatible)';
 // Names that only mean something inside a home or office network, or on the machine itself.
 const INSIDE = new Set(['localhost', 'local', 'localdomain', 'internal', 'intranet', 'lan', 'home', 'corp', 'private', 'arpa', 'onion']);

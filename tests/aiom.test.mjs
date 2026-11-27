@@ -3536,7 +3536,7 @@ const noticeOf = async () => (await owner('GET', '/api/state')).body.hub.jobs.no
 // The time between calls is five minutes: a test lets it pass by moving the last call back.
 const windowOver = () => sql('UPDATE notices SET called = called - 300');
 const called = async (count, why) => {for (let n = 0; n < 60 && notice.calls.length < count; n++) await pause(100); await pause(300); assert.equal(notice.calls.length, count, why);};
-test('the address to call when Home changes: the manager sets, replaces and removes it; it is kept in the vault and never sent back; an address that is not public https is refused; nobody else can read or set it', async () => {
+test('the address to call when Home changes: the manager sets, replaces and removes it; it is kept in the vault and sent back to the manager’s own session only; an address that is not public https is refused; nobody else can read or set it', async () => {
   const said = [], put = async (who, address) => {const got = await who('PUT', '/api/notice', {address}); said.push(JSON.stringify(got.body)); return got;};
   assert.equal(await noticeOf(), null); assert.deepEqual(sql('SELECT hub FROM notices'), []);
   // Refused, each for its own reason, and nothing is kept: not https, a username or password in it, this site's own host, a
@@ -3557,20 +3557,48 @@ test('the address to call when Home changes: the manager sets, replaces and remo
   // Someone who is not the manager can neither set nor remove it, signed in or not.
   assert.equal((await put(adaSite, ADDRESS)).status, 403); assert.equal((await adaSite('DELETE', '/api/notice')).status, 403); assert.equal((await put(client(), ADDRESS)).status, 401);
   assert.deepEqual(sql('SELECT hub FROM notices'), []);
-  // Set: the answer is empty, the vault holds it sealed, and the manager is shown that one is set and its host name, no more.
+  // Set: the answer is empty, the vault holds it sealed, and the manager's own page gets the address back, with its host name.
   const set = await put(owner, `  ${ADDRESS} `); assert.equal(set.status, 200); assert.deepEqual(set.body, {});
-  assert.deepEqual(await noticeOf(), {host: 'hooks.one.example', at: 0, result: null, waiting: false, again: false});
+  assert.deepEqual(await noticeOf(), {address: ADDRESS, host: 'hooks.one.example', at: 0, result: null, waiting: false, again: false});
   const kept = sql("SELECT hub, owner, value FROM secrets WHERE kind = 'key:notice'"); assert.equal(kept.length, 1); assert.equal(kept[0].owner, '#hub'); assert.equal(kept[0].hub, sql('SELECT id FROM hubs')[0].id); assert.match(kept[0].value, /^v1\./);
   assert.ok(!JSON.stringify(sql('SELECT * FROM notices')).includes(TOKEN) && !kept[0].value.includes(TOKEN), 'in the database only sealed');
-  const pages = async () => [await owner('GET', '/api/state'), await adaSite('GET', '/api/state'), await owner('POST', '/api/sync', {}), await adaSite('POST', '/api/sync', {})].map(got => JSON.stringify(got.body));
-  for (const text of [...await pages(), ...said]) {assert.ok(!text.includes(TOKEN), 'the address is in no answer'); assert.ok(!text.includes('/in/'));}
+  // Only there: once in the manager's page, in no other answer, to nobody else, signed in or not.
+  const theirs = JSON.stringify((await owner('GET', '/api/state')).body); assert.equal(theirs.split(ADDRESS).length, 2, 'once, in the manager’s own page'); assert.ok(!theirs.replace(ADDRESS, '').includes(TOKEN));
+  const pages = async () => [await adaSite('GET', '/api/state'), await owner('POST', '/api/sync', {}), await adaSite('POST', '/api/sync', {}), await client()('GET', '/api/state'), await owner('GET', '/api/activity')].map(got => JSON.stringify(got.body));
+  for (const text of [...await pages(), ...said]) {assert.ok(!text.includes(TOKEN), 'the address is in no other answer'); assert.ok(!text.includes('/in/'));}
   // Her own page says nothing of it at all, not even that one is set.
   const hers = JSON.stringify((await adaSite('GET', '/api/state')).body); assert.ok(!hers.includes('hooks.one.example') && !hers.includes('notice'));
   // Replaced: the new host shows, and one address is kept. Removed: nothing is left of it.
-  assert.equal((await put(owner, `https://other.two.example:8443/x/${TOKEN}`)).status, 200); assert.equal((await noticeOf()).host, 'other.two.example'); assert.equal(sql("SELECT value FROM secrets WHERE kind = 'key:notice'").length, 1);
+  assert.equal((await put(owner, `https://other.two.example:8443/x/${TOKEN}`)).status, 200); assert.equal((await noticeOf()).host, 'other.two.example'); assert.equal((await noticeOf()).address, `https://other.two.example:8443/x/${TOKEN}`); assert.equal(sql("SELECT value FROM secrets WHERE kind = 'key:notice'").length, 1);
   assert.notEqual(sql("SELECT value FROM secrets WHERE kind = 'key:notice'")[0].value, kept[0].value);
   const gone = await owner('DELETE', '/api/notice'); assert.equal(gone.status, 200); assert.deepEqual(gone.body, {}); assert.equal(await noticeOf(), null);
   assert.deepEqual(sql('SELECT hub FROM notices'), []); assert.deepEqual(sql("SELECT kind FROM secrets WHERE kind = 'key:notice'"), []);
+});
+test('the page people can open: the manager sets, replaces and removes it under the same rules as the address; everyone signed in to the hub gets it and nobody else; a person never gets the address; neither removes the other', async () => {
+  const PAGE = 'https://pages.three.example/set-up?from=hub', pageOf = async who => (await who('GET', '/api/state')).body.hub?.setupPage, put = (who, address) => who('PUT', '/api/notice/page', {address});
+  assert.equal(await pageOf(owner), ''); assert.equal(await pageOf(adaSite), '');
+  for (const [address, why] of [['http://pages.three.example/set-up', /must start with https/], ['https://someone:word@pages.three.example/', /username or password/], ['https://127.0.0.1/set-up', /this site’s own address/], ['https://10.0.0.5/set-up', /public website name/], ['https://box.internal/set-up', /public website name/], ['pages.three.example', /not a web address/], ['   ', /Paste the address/], [`https://pages.three.example/${'a'.repeat(300)}`, /too long/]]) {
+    const got = await put(owner, address); assert.equal(got.status, 400, address); assert.match(got.body.message, why, address);
+  }
+  assert.equal((await owner('PUT', '/api/notice/page', {address: 7})).status, 400); assert.equal((await owner('PUT', '/api/notice/page', {})).status, 400);
+  assert.equal((await put(adaSite, PAGE)).status, 403); assert.equal((await adaSite('DELETE', '/api/notice/page')).status, 403); assert.equal((await put(client(), PAGE)).status, 401);
+  assert.deepEqual(sql("SELECT kind FROM secrets WHERE kind = 'key:notice-page'"), []);
+  // Set, with the address set too: sealed in the vault, the hub's own. The manager gets both; she gets the page and not the address.
+  assert.equal((await owner('PUT', '/api/notice', {address: ADDRESS})).status, 200);
+  const set = await put(owner, `  ${PAGE} `); assert.equal(set.status, 200); assert.deepEqual(set.body, {});
+  const kept = sql("SELECT hub, owner, value FROM secrets WHERE kind = 'key:notice-page'"); assert.equal(kept.length, 1); assert.equal(kept[0].owner, '#hub'); assert.equal(kept[0].hub, sql('SELECT id FROM hubs')[0].id); assert.match(kept[0].value, /^v1\./); assert.ok(!kept[0].value.includes('pages.three'));
+  assert.equal(await pageOf(owner), PAGE); assert.equal((await noticeOf()).address, ADDRESS);
+  const hers = JSON.stringify((await adaSite('GET', '/api/state')).body); assert.equal(await pageOf(adaSite), PAGE); assert.ok(!hers.includes(TOKEN) && !hers.includes('hooks.one.example') && !hers.includes('"notice"'), 'the page only, never the address');
+  // Nobody not signed in to this hub.
+  const out = await client()('GET', '/api/state'); assert.ok(!JSON.stringify(out.body).includes('pages.three'));
+  for (const path of ['/api/open', `/api/open/${sql('SELECT code FROM hubs')[0].code}`]) assert.ok(!JSON.stringify((await client()('GET', path)).body).includes('pages.three'), path);
+  // Replaced: one kept. The address removed: the page stays. The page removed: the address stays.
+  assert.equal((await put(owner, PAGE + '2')).status, 200); assert.equal(await pageOf(adaSite), PAGE + '2'); assert.equal(sql("SELECT kind FROM secrets WHERE kind = 'key:notice-page'").length, 1);
+  assert.equal((await owner('DELETE', '/api/notice')).status, 200); assert.equal(await noticeOf(), null); assert.equal(await pageOf(owner), PAGE + '2');
+  assert.equal((await owner('PUT', '/api/notice', {address: ADDRESS})).status, 200);
+  const gone = await owner('DELETE', '/api/notice/page'); assert.equal(gone.status, 200); assert.deepEqual(gone.body, {}); assert.equal(await pageOf(owner), ''); assert.equal(await pageOf(adaSite), ''); assert.equal((await noticeOf()).address, ADDRESS);
+  assert.deepEqual(sql("SELECT kind FROM secrets WHERE kind = 'key:notice-page'"), []);
+  assert.equal((await owner('DELETE', '/api/notice')).status, 200); assert.deepEqual(sql('SELECT hub FROM notices'), []);
 });
 test('it is called once after a resend that changed a setup, from a page, from the hub by itself after an account change, and from the cron; never after one that changed nothing; a burst inside five minutes is one call when they are up; a failed call is tried once more', async () => {
   const hubId = sql('SELECT id FROM hubs')[0].id, flagFor = () => sql(`DELETE FROM foryou_sync; INSERT INTO foryou_sync (hub, at, tries) VALUES ('${hubId}', unixepoch() - 600, 0)`);
@@ -3587,7 +3615,7 @@ test('it is called once after a resend that changed a setup, from a page, from t
   assert.equal((await owner('PUT', '/api/notice', {address: ADDRESS})).status, 200);
   // Nothing changed: a page's resend, the cron's and a plain cron run call nothing, and nothing is left waiting.
   assert.deepEqual(await syncAll(), {state: 'ok'}); flagFor(); await cron(); for (let n = 0; n < 8 && sql('SELECT hub FROM foryou_sync').length; n++) await cron(); assert.deepEqual(sql('SELECT hub FROM foryou_sync'), []);
-  await called(0, 'a resend that wrote nothing calls nothing'); assert.deepEqual(await noticeOf(), {host: 'hooks.one.example', at: 0, result: null, waiting: false, again: false});
+  await called(0, 'a resend that wrote nothing calls nothing'); assert.deepEqual(await noticeOf(), {address: ADDRESS, host: 'hooks.one.example', at: 0, result: null, waiting: false, again: false});
   // From a page: one call, after the page had its answer (which says nothing of it). An empty POST to the address as it was typed,
   // its query left off by the stand-in's path only; nothing of the hub or anyone in it, no cookie, no sign-in, a plain user agent.
   let was = await change(); const before = Math.floor(Date.now() / 1000); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(watchedOn(), !was);
@@ -3629,8 +3657,10 @@ test('it is called once after a resend that changed a setup, from a page, from t
   notice.status = 204; windowOver(); await change(); assert.deepEqual(await syncAll(), {state: 'ok'}); await called(sofar + 8, 'answered again'); shown = await noticeOf(); assert.equal(shown.result, 'ok'); assert.equal(shown.waiting, false); assert.equal(shown.again, false);
   // Every call was the same empty POST to the same path, one at a time.
   assert.deepEqual([...new Set(notice.calls.map(call => `${call.method} ${call.path} ${call.body.length}`))], [`POST /notice/in/${TOKEN} 0`]);
-  // The address is in nothing the site answers, and in no line the Worker logged (the test run's log, where there is one).
-  for (const got of [await owner('GET', '/api/state'), await adaSite('GET', '/api/state'), await owner('POST', '/api/sync', {})]) assert.ok(!JSON.stringify(got.body).includes(TOKEN));
+  // The address is in nothing the site answers but the manager's own page, and in no line the Worker logged (the test run's log,
+  // where there is one).
+  assert.equal((await noticeOf()).address, ADDRESS);
+  for (const got of [await adaSite('GET', '/api/state'), await owner('POST', '/api/sync', {})]) assert.ok(!JSON.stringify(got.body).includes(TOKEN));
   const log = existsSync('/tmp/aiohub-dev.log') ? readFileSync('/tmp/aiohub-dev.log', 'utf8') : ''; assert.ok(!log.includes(TOKEN), 'not in the log'); assert.ok(!log.includes('hooks.one.example'), 'nor its host');
   // Removed: a change resent calls nothing. Her Home and her sync go back as they were.
   assert.equal((await owner('DELETE', '/api/notice')).status, 200); windowOver(); await change(); assert.deepEqual(await syncAll(), {state: 'ok'}); await cron(); await called(sofar + 8, 'removed, nothing is called');

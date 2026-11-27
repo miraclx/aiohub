@@ -673,24 +673,114 @@ if (shots) {
   await owner.setViewportSize({width: 390, height: 844}); await owner.waitForTimeout(300); await pausedLong.scrollIntoViewIfNeeded(); await pausedLong.screenshot({path: `${shots}/real-16d-activity-longer-paused-phone.png`}); await shot(owner, '16d-activity-longer-page-phone');
   await owner.setViewportSize({width: 1280, height: 800});
 }
+// When each play ran is said as a span, from when it started to when its player was last heard, in this device's own time zone
+// (plays made in the local database as above): on now, ended, gone quiet without saying it stopped, a tick in an app (a moment: one
+// time, though its row has a start), and one from three days ago, which leads with its weekday. A start and end on different days,
+// or in the same minute, say the end alone.
+{
+  const t0 = Math.floor(Date.now() / 1000), made = [
+    // item, title, position, duration, playing, started, updated, parts
+    ['w-live', 'Night Ferry', 600, 6000, 1, t0 - 600, t0, '0-600'], ['w-ended', 'Copper Coast', 1250, 1300, 0, t0 - 6000, t0 - 4800, '0-1250'], ['w-quiet', 'The Quiet Orbit', 1200, 6000, 1, t0 - 2400, t0 - 1200, '0-1200'],
+    ['w-tick', 'North of Nowhere', 3000, 3000, 0, t0 - 3300, t0 - 3000, 'marked'], ['w-old', 'Letters from the Northern Sea', 3000, 6000, 0, t0 - 3 * 86400 - 3000, t0 - 3 * 86400, '0-3000']];
+  execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', made.map(([item, title, position, duration, playing, started, updated, parts]) => `INSERT INTO plays (hub, person, item, title, detail, position, duration, device, playing, updated, art, parts) SELECT id, 'ada', '${item}', '${title}', 'Movie', ${position}, ${duration}, 'Strand · iPad', ${playing}, ${updated}, '', '${parts}' FROM hubs; INSERT INTO sittings (hub, person, item, started, device, position, playing, updated, parts) SELECT id, 'ada', '${item}', ${started}, 'Strand · iPad', ${position}, ${playing}, ${updated}, '${parts}' FROM hubs`).join('; ')], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
+  await owner.reload(); await owner.mouse.move(0, 0); await owner.getByText('Letters from the Northern Sea').waitFor();
+  // The same times as the page says them, worked out in the page (its own locale and time zone).
+  const said = Object.fromEntries(await owner.evaluate(rows => rows.map(([item, started, updated]) => {
+    const clock = at => at.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'}), a = new Date(started * 1000), b = new Date(updated * 1000), from = clock(a), to = clock(b);
+    return [item, {from, to, span: a.toDateString() !== b.toDateString() || from === to ? to : `${from} to ${to}`, apart: a.toDateString() === b.toDateString() && from !== to, today: b.toDateString() === new Date().toDateString(), weekday: b.toLocaleDateString(undefined, {weekday: 'long'})}];
+  }), made.map(row => [row[0], row[5], row[6]])));
+  const entry = title => owner.locator('ul.now li, ul.plays li', {hasText: title}), when = title => entry(title).locator('time').textContent();
+  assert.equal(await owner.locator('ul.now li', {hasText: 'Night Ferry'}).locator('time').textContent(), `Since ${said['w-live'].from}`, 'on now: since when');
+  assert.equal(await when('Copper Coast'), said['w-ended'].span, 'ended: from when to when'); assert.match(await entry('Copper Coast').locator('small').first().textContent(), /Movie · finished$/, 'the detail line says no time');
+  assert.equal(await when('The Quiet Orbit'), !said['w-quiet'].today ? said['w-quiet'].span : said['w-quiet'].apart ? `${said['w-quiet'].from}, last heard ${said['w-quiet'].to}` : `Last heard ${said['w-quiet'].to}`, 'gone quiet: its start, and when it was last heard');
+  assert.equal(await when('North of Nowhere'), said['w-tick'].to, 'a tick is a moment: one time'); assert.match(await entry('North of Nowhere').locator('small').first().textContent(), /Movie · marked as watched$/);
+  assert.equal(await when('Letters from the Northern Sea'), `${said['w-old'].weekday}, ${said['w-old'].span}`, 'before yesterday: the weekday, then the span');
+  if (said['w-ended'].apart) assert.match(await when('Copper Coast'), /^\d{1,2}:\d\d(\s?[AP]M)? to \d{1,2}:\d\d(\s?[AP]M)?$/i);
+  for (const title of ['Night Ferry', 'Copper Coast', 'The Quiet Orbit', 'North of Nowhere', 'Letters from the Northern Sea']) assert.doesNotMatch(await when(title), /[–—]/, 'no dashes');
+  // Where it sits: at the right of the title on a wide screen; on a phone under the device line (above the bar), so the title
+  // keeps the whole width and its one line.
+  const placed = title => entry(title).evaluate(item => {
+    const box = part => item.querySelector(part)?.getBoundingClientRect(), time = box('time'), name = box('.title'), device = box('.on-device'), bar = box('.bar'), text = item.querySelector('.title').parentElement.getBoundingClientRect(), all = item.getBoundingClientRect(), pad = parseFloat(getComputedStyle(item).paddingRight);
+    return {beside: time.left >= name.right - 1 && time.top < device.top, under: time.top >= device.bottom - 1 && Math.abs(time.left - device.left) <= 1 && (!bar || time.bottom <= bar.top + 1), whole: Math.abs(text.right - (all.right - pad)) <= 1, oneLine: name.height < 2 * parseFloat(getComputedStyle(item.querySelector('.title')).fontSize), inside: time.right <= all.right - pad + 1};
+  });
+  const titles = ['Night Ferry', 'Copper Coast', 'The Quiet Orbit', 'North of Nowhere', 'Letters from the Northern Sea'];
+  for (const title of titles) {const got = await placed(title); assert.ok(got.beside && !got.under && got.oneLine && got.inside, `wide, ${title}: ${JSON.stringify(got)}`);}
+  await shot(owner, '16e-activity-when-wide');
+  // The sheet of who watched a title says the day too, in the same words.
+  const who = owner.locator('dialog.sheet'), asked = async () => {await entry('Copper Coast').getByRole('button', {name: 'Copper Coast'}).click(); const text = await who.locator('time').textContent(); if (shots) await owner.screenshot({path: `${shots}/real-16e-activity-when-sheet-${owner.viewportSize().width < 600 ? 'phone' : 'wide'}.png`}); await who.getByRole('button', {name: 'Close'}).click(); return text;};
+  assert.match(await asked(), /^(Today|Yesterday), /); assert.ok((await asked()).endsWith(said['w-ended'].span));
+  await owner.setViewportSize({width: 390, height: 844}); await owner.waitForTimeout(300);
+  for (const title of titles) {const got = await placed(title); assert.ok(got.under && !got.beside && got.whole && got.oneLine && got.inside, `phone, ${title}: ${JSON.stringify(got)}`);}
+  assert.ok((await asked()).endsWith(said['w-ended'].span)); assert.equal(await owner.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'nothing runs off the side of a phone');
+  await shot(owner, '16e-activity-when-phone'); await owner.setViewportSize({width: 1280, height: 800});
+  execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--command', "DELETE FROM sittings WHERE item LIKE 'w-%'; DELETE FROM plays WHERE item LIKE 'w-%'"], {cwd: new URL('..', import.meta.url), env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: 'ignore'});
+  await owner.reload(); await owner.mouse.move(0, 0); await owner.getByText('Tiny Tales').first().waitFor();
+}
 await credit(owner); assert.equal(await owner.getByText('Test build').count(), 0, 'no test-build banner');
 await owner.goto(BASE + '/#/hub/general'); await owner.getByRole('heading', {name: 'Background work'}).waitFor(); await shot(owner, '16c-general-wide'); await owner.setViewportSize({width: 390, height: 844});
-// The address to call when Home changes (Hub, General): typed like a key, refused unless it is https, then only its host name is
-// shown, with Replace and Remove; Background work says how the last call went. (.example names exist nowhere; nothing is called.)
+// The address to call when Home changes (Hub, General): a plain field holding the saved address, for the manager, changed in place
+// like a name: Save shows only while the text differs from what is kept. Refused unless it is https. Emptied and saved, it is
+// removed, after asking. Background work says how the last call went, never the address. (.example names exist nowhere; nothing
+// is called.)
 {
-  const item = owner.locator('.accounts li', {hasText: 'Call this address when Home changes'}), noticeJob = owner.locator('.jobs li', {hasText: 'Home change notice'}), field = owner.getByLabel('Address to call when Home changes');
+  const item = owner.locator('.accounts li', {hasText: 'Call this address when Home changes'}), noticeJob = owner.locator('.jobs li', {hasText: 'Home change notice'}), field = owner.getByLabel('Address to call when Home changes'), save = item.getByRole('button', {name: 'Save'});
   await item.getByText('After a Home change has reached the apps, the hub sends an empty request here. Leave empty for nothing.', {exact: true}).waitFor();
   await noticeJob.getByText('Not set', {exact: true}).waitFor(); await noticeJob.getByText('After a Home change has reached the apps, at most once every 5 min', {exact: true}).waitFor();
-  assert.equal(await field.getAttribute('type'), 'password'); await item.scrollIntoViewIfNeeded(); await shot(owner, '16e-notice-empty-phone'); if (shots) await item.screenshot({path: `${shots}/real-16e-notice-empty-item-phone.png`});
-  await field.fill('http://hooks.one.example/in/browser-token'); await item.getByRole('button', {name: 'Save'}).click(); await toast(owner).filter({hasText: 'The address must start with https://.'}).waitFor();
-  await field.fill('https://hooks.one.example/in/browser-token'); await item.getByRole('button', {name: 'Save'}).click(); await toast(owner).filter({hasText: 'Address saved'}).waitFor();
-  await item.getByText('An address at hooks.one.example is set.', {exact: true}).waitFor(); await noticeJob.getByText('Nothing sent yet', {exact: true}).waitFor(); assert.equal(await field.count(), 0);
-  assert.ok(!(await owner.content()).includes('browser-token'), 'the address is not on the page once saved');
+  assert.equal(await field.getAttribute('type'), 'text'); assert.equal(await field.inputValue(), ''); assert.equal(await save.count(), 0, 'nothing to save yet'); assert.equal(await item.getByRole('button').count(), 0, 'no Replace or Remove');
+  await item.scrollIntoViewIfNeeded(); await shot(owner, '16e-notice-empty-phone'); if (shots) await item.screenshot({path: `${shots}/real-16e-notice-empty-item-phone.png`});
+  await field.fill('http://hooks.one.example/in/browser-token'); await save.click(); await toast(owner).filter({hasText: 'The address must start with https://.'}).waitFor(); assert.equal(await field.inputValue(), 'http://hooks.one.example/in/browser-token', 'what was typed stays to be mended');
+  await field.fill('https://hooks.one.example/in/browser-token'); await save.click(); await toast(owner).filter({hasText: 'Address saved'}).waitFor();
+  // Saved: the field holds the address itself, Save is gone, and it is still there after a reload. The Background work row has none of it.
+  await save.waitFor({state: 'detached'}); assert.equal(await field.inputValue(), 'https://hooks.one.example/in/browser-token'); await noticeJob.getByText('Nothing sent yet', {exact: true}).waitFor();
+  assert.equal(await item.getByText('is set', {exact: false}).count(), 0); assert.equal(await item.getByRole('button').count(), 0, 'no Replace or Remove'); assert.ok(!(await owner.locator('.jobs').textContent()).includes('browser-token'), 'Background work does not say the address');
+  await owner.reload(); await item.waitFor(); assert.equal(await field.inputValue(), 'https://hooks.one.example/in/browser-token'); assert.equal(await save.count(), 0);
   if (shots) {await item.scrollIntoViewIfNeeded(); await owner.waitForTimeout(300); await owner.screenshot({path: `${shots}/real-16e-notice-set-phone.png`}); await item.screenshot({path: `${shots}/real-16e-notice-set-item-phone.png`}); await noticeJob.screenshot({path: `${shots}/real-16e-notice-job-phone.png`});}
-  await item.getByRole('button', {name: 'Replace', exact: true}).click(); await field.fill('https://other.two.example/x/browser-token'); if (shots) await item.screenshot({path: `${shots}/real-16e-notice-replace-item-phone.png`});
-  await item.getByRole('button', {name: 'Save'}).click(); await toast(owner).filter({hasText: 'Address replaced'}).waitFor(); await item.getByText('An address at other.two.example is set.', {exact: true}).waitFor();
-  await item.getByRole('button', {name: 'Remove', exact: true}).click(); const sure = owner.getByRole('dialog', {name: 'Remove the address?'}); await sure.getByText('The hub stops calling it when Home changes.', {exact: true}).waitFor();
-  await sure.getByRole('button', {name: 'Remove', exact: true}).click(); await toast(owner).filter({hasText: 'Address removed'}).waitFor(); await field.waitFor(); await noticeJob.getByText('Not set', {exact: true}).waitFor();
+  // Changed in place: Save comes with the first difference and goes when the text is back as kept. A long address scrolls inside
+  // the field; nothing runs off the side of a phone.
+  await field.fill('https://hooks.one.example/in/browser-token-2'); await save.waitFor(); await field.fill('https://hooks.one.example/in/browser-token'); await save.waitFor({state: 'detached'});
+  const long = `https://other.two.example/x/browser-token/${'long-part-'.repeat(12)}end`; await field.fill(long); if (shots) await item.screenshot({path: `${shots}/real-16e-notice-replace-item-phone.png`});
+  const fits = async () => owner.evaluate(() => {const input = document.querySelector('[aria-label="Address to call when Home changes"]'), item = input.closest('li').getBoundingClientRect(), box = input.getBoundingClientRect(), button = input.parentElement.querySelector('button')?.getBoundingClientRect(); return {inside: box.left >= item.left && (button ?? box).right <= item.right + 0.5, scrolls: input.scrollWidth > input.clientWidth, page: document.documentElement.scrollWidth <= innerWidth};});
+  assert.deepEqual(await fits(), {inside: true, scrolls: true, page: true});
+  await save.click(); await toast(owner).filter({hasText: 'Address replaced'}).waitFor(); await save.waitFor({state: 'detached'}); assert.equal(await field.inputValue(), long); assert.deepEqual(await fits(), {inside: true, scrolls: true, page: true});
+  if (shots) {await item.screenshot({path: `${shots}/real-16e-notice-long-item-phone.png`}); await owner.setViewportSize({width: 1280, height: 900}); await item.scrollIntoViewIfNeeded(); await owner.waitForTimeout(300); await item.screenshot({path: `${shots}/real-16e-notice-long-item-wide.png`}); await owner.setViewportSize({width: 390, height: 844});}
+  // Emptied and saved: asked first. Cancel keeps it; Remove takes it away.
+  await field.fill(''); await save.click(); const sure = owner.getByRole('dialog', {name: 'Remove the address?'}); await sure.getByText('The hub stops calling it when Home changes.', {exact: true}).waitFor();
+  await sure.getByRole('button', {name: 'Cancel'}).click(); await owner.reload(); await item.waitFor(); assert.equal(await field.inputValue(), long, 'still kept');
+  await field.fill(''); await save.click(); await sure.getByRole('button', {name: 'Remove', exact: true}).click(); await toast(owner).filter({hasText: 'Address removed'}).waitFor(); await noticeJob.getByText('Not set', {exact: true}).waitFor(); assert.equal(await field.inputValue(), ''); assert.equal(await save.count(), 0);
+}
+
+// Beside it, a page people can open to set this up: the same kind of field, under the same rules. On a person's Devices page (their
+// own, and the manager's view of it) a device whose app keeps its own copy of the Home rows gets one quiet line, which ends with a
+// link to that page once one is set. No line for any other app. (Two devices made here in the local database.)
+{
+  const item = owner.locator('.accounts li', {hasText: 'A page people can open to set this up'}), field = owner.getByLabel('Page people can open to set this up'), save = item.getByRole('button', {name: 'Save'}), PAGE = 'https://pages.three.example/set-up';
+  await item.getByText('If the address above belongs to something people sign up to themselves, put its page here. It is offered to people whose apps need it.', {exact: true}).waitFor();
+  assert.equal(await field.inputValue(), ''); assert.equal(await item.getByRole('button').count(), 0);
+  sqlLocal("INSERT INTO devices (id, ref, hub, person, device, app, name, seen, created) SELECT 'made-nv', 'made-nv', id, 'ada', 'made-nv', 'NUVIO', 'Hall TV', unixepoch(), unixepoch() FROM hubs; INSERT INTO devices (id, ref, hub, person, device, app, name, seen, created) SELECT 'made-st', 'made-st', id, 'ada', 'made-st', 'Strand', 'Desk Mac', unixepoch(), unixepoch() FROM hubs");
+  const LINE = 'This app only shows new rows after its libraries are refreshed.', device = (page, app) => page.locator('.feed li', {hasText: `${app} ·`}), line = (page, app) => device(page, app).locator('small.keeps-rows');
+  const seen = async (page, to, linked) => {
+    await page.goto(BASE + to); await page.reload(); await device(page, 'Strand').waitFor(); await line(page, 'NUVIO').waitFor();
+    assert.equal(await page.locator('small.keeps-rows').count(), 1, 'only beside the app it is about'); assert.equal(await line(page, 'Strand').count(), 0);
+    const link = line(page, 'NUVIO').getByRole('link', {name: 'Set up automatic refresh'});
+    if (!linked) {assert.equal(await line(page, 'NUVIO').textContent(), LINE); assert.equal(await link.count(), 0); return;}
+    assert.equal(await line(page, 'NUVIO').textContent(), `${LINE} Set up automatic refresh`); assert.deepEqual([await link.getAttribute('href'), await link.getAttribute('target'), await link.getAttribute('rel')], [PAGE, '_blank', 'noopener noreferrer']);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'nothing runs off the side');
+  };
+  await seen(guest, '/#/me/devices', false); if (shots) {await line(guest, 'NUVIO').scrollIntoViewIfNeeded(); await guest.screenshot({path: `${shots}/real-16f-devices-line-phone.png`});}
+  await seen(owner, '/#/person/ada/devices', false);
+  await owner.goto(BASE + '/#/hub/general'); await item.waitFor();
+  await field.fill('http://pages.three.example/set-up'); await save.click(); await toast(owner).filter({hasText: 'The address must start with https://.'}).waitFor();
+  await field.fill(PAGE); await save.click(); await toast(owner).filter({hasText: 'Page saved'}).waitFor(); await save.waitFor({state: 'detached'}); assert.equal(await field.inputValue(), PAGE);
+  assert.equal(await owner.getByLabel('Address to call when Home changes').inputValue(), '', 'the address is its own'); await owner.locator('.jobs li', {hasText: 'Home change notice'}).getByText('Not set', {exact: true}).waitFor();
+  if (shots) {await item.scrollIntoViewIfNeeded(); await owner.waitForTimeout(300); await owner.screenshot({path: `${shots}/real-16f-notice-page-phone.png`}); await owner.setViewportSize({width: 1280, height: 900}); await item.scrollIntoViewIfNeeded(); await owner.waitForTimeout(300); await owner.screenshot({path: `${shots}/real-16f-notice-page-wide.png`}); await owner.setViewportSize({width: 390, height: 844});}
+  await seen(guest, '/#/me/devices', true); if (shots) {await line(guest, 'NUVIO').scrollIntoViewIfNeeded(); await guest.screenshot({path: `${shots}/real-16f-devices-link-phone.png`}); await guest.setViewportSize({width: 1280, height: 900}); await guest.waitForTimeout(300); await guest.screenshot({path: `${shots}/real-16f-devices-link-wide.png`}); await guest.setViewportSize({width: 390, height: 844});}
+  await seen(owner, '/#/person/ada/devices', true);
+  // Replaced, then emptied and saved: asked first, and the line goes back to the sentence alone.
+  await owner.goto(BASE + '/#/hub/general'); await item.waitFor(); await field.fill(PAGE + '-2'); await save.click(); await toast(owner).filter({hasText: 'Page replaced'}).waitFor(); await save.waitFor({state: 'detached'});
+  await field.fill(''); await save.click(); const sure = owner.getByRole('dialog', {name: 'Remove the page?'}); await sure.getByText('People are no longer offered it.', {exact: true}).waitFor();
+  await sure.getByRole('button', {name: 'Remove', exact: true}).click(); await toast(owner).filter({hasText: 'Page removed'}).waitFor(); assert.equal(await field.inputValue(), '');
+  await seen(guest, '/#/me/devices', false);
+  sqlLocal("DELETE FROM devices WHERE id IN ('made-nv', 'made-st')");
 }
 
 // Back as the manager: Ada shows as joined, and the playback change stuck.
