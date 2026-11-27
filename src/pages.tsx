@@ -1,7 +1,7 @@
 import {Fragment, useEffect, useRef, useState} from 'react';
 import type {ReactNode} from 'react';
 import {QRCodeSVG} from 'qrcode.react';
-import {FOR_YOU_KINDS, SAMPLE, isPlace, orderOf, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, currentPicks, linkedOf, needOf, resolve, samplePassword, samplePin, slug, traktRows, TRAKT_AND_HERE} from './data';
+import {FOR_YOU_KINDS, SAMPLE, isPlace, orderOf, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, currentPicks, linkedOf, needOf, resolve, samplePassword, samplePin, slug, traktRows, pillOf, SHELF_TITLES} from './data';
 import type {Device, Group, Hub, Person, Row, Settings} from './data';
 import {Activity} from './activity';
 import {GroupOrder, HomeEditor, moved} from './home';
@@ -166,9 +166,14 @@ const Who = ({name}: {name: string}) => <p className="who" title={name || undefi
    - Connect means the hub reads from an account, for its rows on Home. It never writes to it. The Trakt and MDBList cards hold
      only that: connect or disconnect, who it is connected as, and what connecting gives.
    - Sync is what writes, and is the Sync card's alone: a switch per connected account for what they watch (finished plays and
-     paused spots; adds only, nothing is ever marked unwatched), and one Watchlist switch for the titles they save in the apps
-     (the only place a removal can happen: an un-save in an app, with Trakt connected and the switch on).
+     paused spots; sync itself only adds), and one Watchlist switch for the titles they save in the apps.
+   - Two things remove, each only in answer to what they did in an app: a title marked unwatched there leaves their Trakt history
+     while Trakt sync is on, and a title un-saved there leaves their Trakt watchlist while Watchlist is on (front.ts).
    - Which watchlist is not a setting: Trakt's when Trakt is connected, with MDBList following; else MDBList's.
+   - Whose they are (api.ts, `theirs`): once a person has joined, their accounts and their sync are theirs alone. Their manager
+     sees whether each account is connected and how each switch stands, and can change none of it: the cards have no buttons,
+     and one line at the top says so. For someone who has not joined, the manager connects accounts with them and sets MDBList
+     sync and Watchlist; Trakt sync waits for them.
    What each switch drives has one owner, made here once (useTraktSync, useListsSync) and read by the cards: the page's rounds of
    catching up must never run twice. */
 function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
@@ -176,7 +181,7 @@ function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: 
   const trakt = useTraktSync(page, person, mine), lists = useListsSync(page, person, mine || !person.joined);
   const linked = live ? !!person.history || person.lists || !!person.listsKept || !!person.moving : !!person.trakt || person.lists;
   return <section>
-    <div className="section-head"><div><h2>Accounts</h2><p className="muted">{mine ? 'Connect your own accounts. Connecting only reads from them. Sync, below, is what writes.' : live ? <>{person.name} can connect their own accounts, or you can do it here with them. Connecting only reads from them. Sync, below, is what writes.</> : <>Only {person.name} can connect these, from their own page. <a className="link" href={`#/person/${person.id}/settings`}>Get their link</a></>}</p></div></div>
+    <div className="section-head"><div><h2>Accounts</h2><p className="muted">{mine ? 'Connect your own accounts. Connecting only reads from them. Sync, below, is what writes.' : live && person.joined ? `${person.name} manages their own accounts and sync.` : live ? <>{person.name} can connect their own accounts, or you can do it here with them. Connecting only reads from them. Sync, below, is what writes.</> : <>Only {person.name} can connect these, from their own page. <a className="link" href={`#/person/${person.id}/settings`}>Get their link</a></>}</p></div></div>
     <ul className="accounts">
       <li><div><h3>Streams</h3><p>Played through the shared {resolve(hub, group, person).values.debrid} account. Nothing to set up.</p></div><span className="pill ok">Shared</span></li>
       <Trakt page={page} person={person} mine={mine}/>
@@ -262,10 +267,15 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
       .then(() => {toast(username ? `Trakt connected as ${username}` : 'Trakt connected'); live!.apps(); void live!.reload();}, fail(toast));
     setPhase('');
   };
-  // What connecting gives (rows.ts, foryou.ts). Nothing here needs sync.
-  const gains = [...(hub.front ? [mine ? 'For you knows your taste from your whole Trakt history.' : `For you knows ${person.name}’s taste from their whole Trakt history.`] : []),
-    `${mine ? 'Your' : 'Their'} Trakt rows appear on Home: Watchlist, Recommended, Up Next, New for you and ${their} lists.`];
-  const on = !!link && !link.again;
+  // What connecting gives. Nothing here needs sync, and only what truly needs Trakt is said:
+  // - For you works without Trakt, from what was watched here (or their MDBList); with it, their whole Trakt history is read too
+  //   (foryou.ts, gather).
+  // - The rows only Trakt fills are Up Next, New for you and their Trakt lists (rows.ts, fill; data.ts, reaches). The Watchlist
+  //   comes with MDBList alone too, Recommended is worked out from what was watched, and Recently Watched from MDBList or here.
+  const gains = [...(hub.front ? [`For you gets better: it sees everything ${mine ? 'you’ve' : 'they’ve'} watched on Trakt, not only what ${mine ? 'you' : 'they'} watched here.`] : []),
+    `Adds Up Next, New for you and ${their} Trakt lists to Home.`];
+  // Once they have joined, their accounts are theirs alone: their manager sees who it is connected as, and no buttons.
+  const on = !!link && !link.again, shown = !mine && !!live && person.joined;
   if (!live) {
     const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
     return <li className="stacked"><div className="account-row"><div><h3>Trakt <span className="free">Free</span></h3>{person.trakt && <Who name=""/>}</div>
@@ -284,6 +294,8 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     const ask = new URLSearchParams({response_type: 'code', client_id: client, redirect_uri: `${location.origin}/api/trakt/callback`, state, code_challenge: challenge, code_challenge_method: 'S256', ...(mine ? {} : {prompt: 'login'})});
     location.assign(`${TRAKT_AUTH}/oauth/authorize?${ask}`);
   };
+  if (shown) return <li className="stacked"><div className="account-row"><div><h3>Trakt <span className="free">Free</span></h3>{on ? <Who name={link!.username}/> : <p className="who">Not connected</p>}</div></div>
+    {link?.again && <p className="small status-line" role="status"><span className="dot off" aria-hidden="true"/><span>Trakt needs {person.name} to sign in again.</span></p>}</li>;
   return <li className="stacked"><div className="account-row"><div><h3>Trakt <span className="free">Free</span></h3>{on && <Who name={link!.username}/>}</div>
     {!hub.scrobble || !client ? <span className="pill">Not on this site</span>
       : on ? <button type="button" className="ghost small" disabled={busy} onClick={() => setDropping(true)}>Disconnect</button>
@@ -400,8 +412,8 @@ function useListsSync(page: PageProps, person: Person, sets: boolean) {
 /* What was synced: the Sync card offers one short list of what the hub
    did for them lately (the `sent` ledger: what it is called, where it went, when), newest first; a paused spot that took the
    place of an earlier one reads as updated rather than added. Asked for only when opened, and
-   only on their own page. */
-interface Sync {title: string; detail: string; to: 'trakt' | 'here' | 'mdblist'; spot: boolean; updated?: boolean; at: number}
+   only on their own page. A title they marked unwatched in an app reads "removed from Trakt". */
+interface Sync {title: string; detail: string; to: 'trakt' | 'here' | 'mdblist'; spot: boolean; updated?: boolean; removed?: boolean; at: number}
 function Synced({page, person}: {page: PageProps; person: Person}) {
   const {live, hub} = page, whose = `${hub.code}/${person.id}`;
   const [open, setOpen] = useState(false), [got, setGot] = useState<{who: string; list: Sync[] | null; failed: boolean}>({who: '', list: null, failed: false});
@@ -414,7 +426,7 @@ function Synced({page, person}: {page: PageProps; person: Person}) {
   const list = got.who === whose ? got.list : null, to = {trakt: ['to Trakt', 'on Trakt'], here: ['here', 'here'], mdblist: ['to your MDBList', 'in your MDBList']};
   return <div className="synced">
     <button type="button" className="link small" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Hide what was synced' : 'What was synced'}</button>
-    {open && (list ? list.length ? <div className="listed">{list.map((item, n) => <p key={n}><strong>{item.title}</strong> · {item.detail ? `${item.detail} · ` : ''}{item.spot ? 'paused spot ' : ''}{item.updated ? `updated ${to[item.to][1]}` : `added ${to[item.to][0]}`} · {dateOf(item.at * 1000)}</p>)}</div>
+    {open && (list ? list.length ? <div className="listed">{list.map((item, n) => <p key={n}><strong>{item.title}</strong> · {item.detail ? `${item.detail} · ` : ''}{item.spot ? 'paused spot ' : ''}{item.removed ? 'removed from Trakt' : item.updated ? `updated ${to[item.to][1]}` : `added ${to[item.to][0]}`} · {dateOf(item.at * 1000)}</p>)}</div>
       : <p className="muted small">Nothing has needed syncing yet.</p> : <p className="muted small">{got.failed && got.who === whose ? 'Couldn’t load the list just now.' : 'Loading…'}</p>)}
   </div>;
 }
@@ -422,14 +434,15 @@ function Synced({page, person}: {page: PageProps; person: Person}) {
    on purpose: a row a switch, each with its name, the switch, one sentence of what it does, and under that at most one quiet
    line. Nothing on it explains sync twice.
    - A row only for an account that is connected: Trakt, MDBList, then Watchlist for whatever is connected (the hub says when
-     it can be had: `hearts`). Then one line, "Sync never marks anything as unwatched.", and What was synced.
+     it can be had: `hearts`). Then, while either sync is on, what unwatching does (in an app it reaches everywhere; on
+     Trakt's own site or apps it does not reach here, said only with Trakt sync on), and What was synced.
    - Under a switch: normally "Last checked 6:20 PM" (Trakt) or nothing. A status line speaks only when something is unusual
      (catching up, told to wait, not answering, sign in again, stopped), one short sentence each.
    - The one question, right after their own Trakt sign-in: answering it sets the Trakt switch, and it is never asked again.
    - Two one-off offers, each one line with what can be done, and a small confirm before anything is added: what they watched
      here before turning Trakt sync on, and titles they had saved that their Trakt watchlist lacks (counted by the cron).
    - Who sets what (the API holds the same rule: api.ts, `theirs`): they set all three from their own page. Their manager sets
-     none of them once they have joined (each shows as it is, with one line saying so); for someone who has not joined, the
+     none of them once they have joined (each shows as it is; the line at the top of the tab says so); for someone who has not joined, the
      manager sets MDBList sync and Watchlist, and Trakt sync waits for them (only they can turn it on, from their own page).
    Where their progress is kept is not said here. */
 function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: Person; mine: boolean; trakt: ReturnType<typeof useTraktSync>; lists: ReturnType<typeof useListsSync>}) {
@@ -437,7 +450,7 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
   const [listing, setListing] = useState(false), [going, setGoing] = useState(false), [sure, setSure] = useState<'' | 'plays' | 'saves'>('');
   // The preview has no hub behind it: its Trakt and Watchlist switches are kept here, for show.
   const [shown, setShown] = useState({watching: true, hearts: false});
-  const I = mine ? 'I' : 'they', my = mine ? 'my' : 'their', your = mine ? 'your' : 'their', Your = mine ? 'Your' : 'Their', keep = `${mine ? 'You' : 'They'} can keep watching.`;
+  const I = mine ? 'I' : 'they', my = mine ? 'my' : 'their', your = mine ? 'your' : 'their', keep = `${mine ? 'You' : 'They'} can keep watching.`;
   // Theirs to set, or their manager's while they have not joined. Trakt sync is theirs alone.
   const sets = mine || !person.joined;
   const hasTrakt = live ? !!link : !!person.trakt, on = live ? !!link && !link.again : !!person.trakt;
@@ -470,13 +483,16 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
   const preview = () => toast('Preview: nothing is connected here');
   // The Watchlist switch and its offer: saved once the hub answers. The switch changes their setup, so the apps follow (`apps`).
   const ask = (path: string, body: unknown, note: (got: {added?: number; more?: boolean}) => string, apps = false) => {setGoing(true); void live!.call<{added?: number; more?: boolean}>('POST', `/api/people/${person.id}/favorites${path}`, body).then(got => {toast(note(got)); if (apps) live!.apps(); return live!.reload();}, fail(toast)).finally(() => setGoing(false));};
-  const extra = mine && hearts?.on ? hearts.extra ?? 0 : 0, both = hasTrakt && hasLists;
-  // Which watchlist is not a setting: Trakt's when Trakt is connected, else MDBList's. Named only when both are connected.
-  const saves = both ? `Titles ${I} save in the apps go on ${my} Trakt watchlist, and what’s on it shows as saved there.${person.lists ? ` ${Your} MDBList watchlist follows.` : ''}`
-    : `Titles ${I} save in the apps go on ${my} watchlist, and ${my} watchlist shows as saved there.`;
+  const extra = mine && hearts?.on ? hearts.extra ?? 0 : 0;
+  // Which watchlist is not a setting (Trakt's when Trakt is connected, else MDBList's), and no account is named here.
+  const saves = mine ? 'Save a title in an app (the heart, in some apps) and it’s on my watchlist. Add one to my watchlist and it shows as saved in the apps.'
+    : 'A title they save in an app (the heart, in some apps) goes on their watchlist. One added to their watchlist shows as saved in the apps.';
+  // What unwatching does, said while a sync is on. In an app: their own setup takes it, MDBList hears through their setup while
+  // MDBList sync is on, and Trakt through the hub while Trakt sync is on (front.ts, unmarked). On Trakt's side it is not looked
+  // for. On MDBList's side nothing is said: what their setup does with it is its own.
+  const anySync = watching || (live ? person.lists : hasLists);
   return <div className="card settings sync-card">
     <div className="setting column"><h3>Sync</h3>
-      {!sets && <p role="note">{person.name} manages their own sync.</p>}
       {asking && <div className="consent">
         <p className="ask"><strong>Sync what you watch with Trakt?</strong> What you watch here goes to Trakt, and what you watch in other Trakt apps comes back.</p>
         <div className="consent-actions"><button type="button" className="primary small" disabled={trakt.busy} onClick={() => void trakt.turn(true)}>Turn on</button>
@@ -509,8 +525,8 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
     {/* Watchlist (worker/hearts.ts, worker/native.ts): only offered when it can be had (the hub says). */}
     {hearts && <div className="setting column sync-row">
       <div className="switch-row"><h3>Watchlist</h3><Switch checked={hearts.on} disabled={!sets || going} label="Watchlist sync" onChange={value => live ? ask('', {on: value}, () => value ? 'Watchlist is on' : 'Watchlist is off. Nothing was removed.', true) : setShown({...shown, hearts: value})}/></div>
+      <p>Saved titles and {my} watchlist are one list.</p>
       <p>{saves}</p>
-      <p>The save button is the heart in some apps.</p>
       {/* With MDBList alone, saves reach it only through MDBList sync (native.ts): said while that is off. */}
       {!hasTrakt && !person.lists && <p className={hearts.on ? 'status-line' : 'quiet'} role={hearts.on ? 'status' : undefined}>{hearts.on && <span className="dot wait" aria-hidden="true"/>}<span>This works once MDBList sync is on.</span></p>}
       {/* Once: titles they had already saved that their Trakt watchlist lacks. Never added by itself. */}
@@ -521,23 +537,26 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
       </div>}
       {sure === 'saves' && <Confirm plain title={`Add ${extra} ${extra === 1 ? 'title' : 'titles'} to your watchlist?`} body="They go on your Trakt watchlist. You can take any of them off later." action="Add them" onYes={() => {setSure(''); ask('/add', {}, got => got.more ? `Adding ${got.added} to your watchlist. The rest are offered after the next check.` : `Adding ${got.added} to your watchlist`);}} onClose={() => setSure('')}/>}
     </div>}
-    <div className="setting column sync-foot"><p>Sync never marks anything as unwatched.</p>
+    {anySync && <div className="setting column sync-foot"><p>{mine ? 'Unwatch something in an app and it’s unwatched everywhere.' : 'When they unwatch something in an app, it’s unwatched everywhere.'}{watching && ' Unwatching on Trakt’s own site or apps doesn’t reach here.'}</p>
       {!!live && mine && on && matching?.on && <Synced page={page} person={person}/>}
-    </div>
+    </div>}
   </div>;
 }
 /* The MDBList card: Connect gives its rows, and that is all it holds. Optional and free. Connecting saves their own key (checked
    with MDBList, kept in the vault); it reads their lists from then on and writes nothing. Whether their watching is synced with
-   it is the Sync card's switch (useListsSync). Disconnect while sync is on turns it off the same way first, so nothing is lost:
-   that is the switch's to do, so a manager is not offered Disconnect for someone who has joined while their sync is on.
+   it is the Sync card's switch (useListsSync). Disconnect while sync is on turns it off the same way first, so nothing is lost.
+   For someone who has joined, their manager sees only who it is connected as.
    Another MDBList account is Disconnect, then Connect. */
 function MdbList({page, person, mine, sync}: {page: PageProps; person: Person; mine: boolean; sync: ReturnType<typeof useListsSync>}) {
   const {update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
   const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [dropping, setDropping] = useState(false), [anyway, setAnyway] = useState(false);
   const their = mine ? 'your' : 'their', moving = person.moving ?? null, connected = person.lists || (!!live && (!!person.listsKept || !!moving));
   const {busy, setBusy, copying, setStopped, done, move} = sync;
-  // What connecting gives (rows.ts). Hiding what was watched is said too, with what it needs.
-  const gains = [`Lists that update themselves, and ${their} MDBList watchlist on Home.`, `Rows can hide what ${mine ? 'you’ve' : 'they’ve'} watched, once MDBList sync is on.`];
+  // What connecting gives: their MDBList watchlist in the Watchlist row (rows.ts, fill) and their own MDBList lists to add as
+  // rows (api.ts, ownLists). Hiding what was watched is said too, with what it needs (native.ts, hideWatchedMdblist).
+  const gains = [`Adds ${their} MDBList watchlist to Watchlist, and ${their} MDBList lists to Add row.`, `Rows can hide what ${mine ? 'you’ve' : 'they’ve'} watched, once MDBList sync is on.`];
+  // Once they have joined, their accounts are theirs alone: their manager sees who it is connected as, and no buttons.
+  if (live && !mine && person.joined) return <li className="stacked"><div className="account-row"><div><h3>MDBList <span className="free">Free</span></h3>{connected ? <Who name={person.listsName ?? ''}/> : <p className="who">Not connected</p>}</div></div></li>;
   if (!live) {
     const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
     return <li className="stacked"><div className="account-row"><div><h3>MDBList <span className="free">Free</span></h3>{person.lists && <Who name=""/>}</div>
@@ -555,7 +574,7 @@ function MdbList({page, person, mine, sync}: {page: PageProps; person: Person; m
   // why someone disconnects: MDBList stopped taking their key), they can disconnect anyway.
   const drop = async () => {setDropping(false); if (person.lists || moving === 'here') {if (await move('here')) forget(); else setAnyway(true);} else forget();};
   return <li className="stacked"><div className="account-row"><div><h3>MDBList <span className="free">Free</span></h3>{connected && <Who name={person.listsName ?? ''}/>}</div>
-    {connected ? (mine || !person.joined || !(person.lists || moving)) && <button type="button" className="ghost small" disabled={busy || !!copying} onClick={() => setDropping(true)}>Disconnect</button>
+    {connected ? <button type="button" className="ghost small" disabled={busy || !!copying} onClick={() => setDropping(true)}>Disconnect</button>
       : !keying && <button type="button" className="primary small" disabled={busy} onClick={() => setKeying(true)}>Connect</button>}</div>
     <Gains lines={gains}/>
     {keying && <form className="stack link-back" onSubmit={event => {event.preventDefault(); save();}}>
@@ -592,15 +611,14 @@ function PersonSections({page, person, tab, mine, base = `/person/${person.id}`}
   // What they would gain with an account: their own rows that wait for one, for Add row to list greyed. The rows of their Trakt
   // lists are collections, which only apps on their own AIOMetadata setup show.
   const has = linkedOf(hub, person), needs = [...traktRows().map(row => ({id: row.id, title: row.title, needs: needOf(row.id, has)})),
-    ...(hub.front ? [{id: 'trakt-lists', title: 'My Trakt lists', needs: has.trakt ? '' : 'Trakt'}, {id: 'trakt-liked-lists', title: 'Trakt lists I liked', needs: has.trakt ? '' : 'Trakt'}] : [])].filter(item => item.needs);
-  // Where a row of their own comes from, when that depends on their accounts: said on the row ("From Trakt").
-  const from = (row: Row) => !row.core || !['watchlist', 'recommended-movies', 'recommended-series', 'recently-watched'].includes(row.id) ? undefined
-    : row.source === 'What was watched' ? (mine ? 'From what you’ve watched' : 'From what they’ve watched') : row.source === 'Played here' ? (mine ? 'From what you’ve played here' : 'From what they’ve played here') : row.source === TRAKT_AND_HERE ? 'From Trakt and here' : `From ${row.source}`;
+    ...(hub.front ? [{id: 'trakt-lists', title: SHELF_TITLES['trakt-lists'], needs: has.trakt ? '' : 'Trakt'}, {id: 'trakt-liked-lists', title: SHELF_TITLES['trakt-liked-lists'], needs: has.trakt ? '' : 'Trakt'}] : [])].filter(item => item.needs);
   return <>
     {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} mine={mine} person={person.id} level="own" rows={rows} front={!!hub.front} canAdd={canAdd} canArrange={canArrange}
       // Their own page, without the permission: said where the button would be, rather than nothing there.
       addHint={!mine || canAdd ? undefined : person.can.add ? 'Changing Home is turned off for you. Your manager can turn it on.' : 'Adding rows is turned off for you. Your manager can turn it on.'}
-      tag={row => row.origin === 'own' && !row.core ? (mine ? 'Yours' : 'Personal') : from(row)}
+      // A row from their own account or watching says so in a pill (pillOf); "Yours" is for a row they added themselves, and
+      // gives way to it (home.tsx, lineOf).
+      tag={row => row.origin === 'own' && !row.core ? (mine ? 'Yours' : 'Personal') : undefined} pill={row => pillOf(row, mine)}
       needs={needs} accounts={`#${base}/accounts`}
       lists={page.live ? own.lists : ownLists(person)} listsHint={page.live ? undefined : 'Connect Trakt or MDBList under Accounts to pick from your own lists.'}
       because={own.because} limit={props.resolved.values.limit} listsOk={!!hub.mdblist || person.lists} keyHint={mine ? 'Your own MDBList key, under Accounts, works too.' : <>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>}

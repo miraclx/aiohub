@@ -13,7 +13,9 @@
    - MDBList and Trakt, for plays made in other apps: the daily look (drift.ts), which copies across by itself.
    - Here to MDBList, for someone whose MDBList sync is on (their progress is kept in MDBList; with or without Trakt): once a day, what was watched here
      and their MDBList lacks (`leftovers`). Their setup tells MDBList of each play itself; this is for any that never got there.
-   Only adds: nothing is ever unwatched or removed, since a play missing on one side cannot be told from one deleted there. Each
+   Only adds: no pass here ever unwatches or removes anything, since a play missing on one side cannot be told from one deleted
+   there. (The one removal the hub makes is not sync's: a title marked unwatched in an app, front.ts, whose older plays every
+   pass here then leaves where they are: carry.ts, unmarks.) Each
    play goes to a place once (the `sent` ledger, carry.ts), so one deleted there stays deleted. A paused spot replaces the one in
    the home only when it is later and not the hub's own (places.ts, lacking), and is noted as updated rather than added; on their
    own server it is dated when it was left on Trakt. Every Trakt write goes through the outbox.
@@ -26,7 +28,7 @@ import type {Env} from './util';
 import {getSecret, now} from './util';
 import {LINK, read, traktWait} from './trakt';
 import type {Link, Target} from './trakt';
-import {NO_ANSWER, NO_SETUP, carry, history, ledger, mdblist, pointKey, remember, traktPoints} from './carry';
+import {NO_ANSWER, NO_SETUP, before, carry, history, ledger, mdblist, pointKey, remember, traktPoints, unmarks} from './carry';
 import type {Failed, Noted, TraktPoint} from './carry';
 import {SAME, mdblistPlays, skippedOf, traktPlays} from './drift';
 import {BUDGET, NEAR, SPAN, detail, fromPoint, lacking, listsPause, quiet, sentKey, tickHere, where} from './places';
@@ -65,6 +67,8 @@ type Into = {added: number; more: boolean; calls: number};
 type Play = Omit<Incoming, 'id'>;
 // Left out on their page, under any of the keys a page gives a play: a look at here and Trakt (i:, ip:), the daily look at
 // MDBList and Trakt (the title or episode with its time), or its paused spots (pt:).
+// From before they marked it unwatched in an app (carry.ts, unmarks): a play or a spot Trakt still lists from then stays out.
+const unwatched = (gone: Map<string, number>, play: Play) => before(gone, play.key.slice(play.pct != null ? 3 : 2), secs(play.at));
 const leftOut = (skip: Set<string>, play: Play) => skip.has(play.key) || (play.pct != null ? skip.has(`pt:${play.key.slice(3)}`) : skip.has(`${play.key.slice(2)}@${secs(play.at)}`));
 /* Trakt's plays into the person's own server: the one place that happens, for the look below and for Next Up. Only while that
    server passes nothing on to a tracker (places.ts, quiet). What it lacks is ticked until its calls reach `budget`, each episode
@@ -113,7 +117,7 @@ export async function toHome(env: Env, hub: string, person: string, since: {w: n
       if (at > since.p && key && play && !ours(key, at, NEAR)) plays.push(play);
     }
   }
-  const done = await ledger(env, hub, person, lists ? 'mdblist' : 'here'), todo = plays.filter(play => !leftOut(skip, play) && !done.has(sentKey(play)));
+  const done = await ledger(env, hub, person, lists ? 'mdblist' : 'here'), gone = await unmarks(env, hub, person), todo = plays.filter(play => !leftOut(skip, play) && !done.has(sentKey(play)) && !unwatched(gone, play));
   if (!todo.length) return {added: 0, more, calls};
   if (!lists) {
     const here = await intoHere(env, hub, person, todo, budget);
@@ -172,8 +176,9 @@ export async function toHome(env: Env, hub: string, person: string, since: {w: n
      last_watched_at there, else the show's. No `last_episode`, or a date outside the span: the show is done with, never given
      a newer date. Trakt not answering for a show: once more on a later turn, in an hour.
    A turn leaves out the shows they hid or dropped on Trakt (rows.ts; not known yet: nothing is ticked that turn) before asking
-   about any, then what they left out on their page, what was ticked here before (the `here` ledger, so one unticked since
-   stays unticked) and what the hub itself sent to Trakt. Their server is asked about the rest in one read; one it already has
+   about any, then what they left out on their page, what was ticked here before (the `here` ledger), what they marked
+   unwatched in an app since Trakt's date for it (carry.ts, unmarks: one unticked stays unticked) and what the hub itself sent
+   to Trakt. Their server is asked about the rest in one read; one it already has
    watched, or does not know, is done with. The rest are ticked with Trakt's date until the calls reach WRITES; one the server
    did not answer about is tried once more.
    Nothing goes back to Trakt: the tick goes straight to their own server, which passes nothing on (quiet); it makes no play
@@ -230,8 +235,8 @@ export async function nextUp(env: Env, hub: string, person: string, kept: string
   }
   // Not answered about: after the first, the rest were not asked. Those not tried twice yet go to the end, for an hour on.
   const again = unread.filter(show => !show.again).map(show => ({...show, again: true})), wait = unread.length ? {next: at + WAIT} : {};
-  const skip = await skippedOf(env, hub, person), done = await ledger(env, hub, person, 'here'), own = await ownSends(env, hub, person, from - SAME);
-  const todo = plays.filter(play => !leftOut(skip, play) && !done.has(sentKey(play)) && !(own.get(play.key.slice(2)) ?? []).some(sent => Math.abs(sent - secs(play.at)) <= SAME));
+  const skip = await skippedOf(env, hub, person), done = await ledger(env, hub, person, 'here'), gone = await unmarks(env, hub, person), own = await ownSends(env, hub, person, from - SAME);
+  const todo = plays.filter(play => !leftOut(skip, play) && !done.has(sentKey(play)) && !unwatched(gone, play) && !(own.get(play.key.slice(2)) ?? []).some(sent => Math.abs(sent - secs(play.at)) <= SAME));
   if (!todo.length) {queue.list = [...rest, ...again]; await keep({page: 0, list: queue.list, ...wait}).run(); return {added: 0, more: !unread.length && queue.list.length > 0, calls};}
   const got = await intoHere(env, hub, person, todo.map(({show: _, ...play}) => play), WRITES, told => {
     // Still to do: what the budget left (the end of what the server lacked), and, once more, any it did not answer about.

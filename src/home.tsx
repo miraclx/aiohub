@@ -2,7 +2,7 @@ import {useState} from 'react';
 import type React from 'react';
 import {DragDropProvider} from '@dnd-kit/react';
 import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
-import {FOR_YOU_KINDS, SECTIONS, TRAKT_IDS, aboutRow, folderFits, isPlace, nextPlace, sourceShown, suggestedFor, suggestionOf} from './data';
+import {FOR_YOU_KINDS, SECTIONS, TRAKT_IDS, aboutRow, folderFits, isPlace, nextPlace, pillOf, sourceShown, suggestedFor, suggestionOf} from './data';
 import type {Cover, ForYouDetail, Level, Limit, Row, Shown} from './data';
 import {Art, Confirm, Covers, NameField, Segments, Sheet, Switch, hash} from './ui';
 
@@ -19,7 +19,7 @@ const LATER: Record<string, string> = {
 const laterOf = (row: Row) => isPlace(row.id) ? 'For you · Picked daily for each person, from what they watch' : LATER[row.id] ?? `${row.source} · Appears once someone connects Trakt`;
 // On a hub or group Home a For you place is kept for each person too: what fills it is picked for them every day.
 /* On a real person's Home, when their rows that change on their own last did and next will: the UTC hour the day's For you
-   picking starts, when they were last picked for, and when their My Trakt lists row was last worked out (0 while it waits to be
+   picking starts, when they were last picked for, and when their My lists row was last worked out (0 while it waits to be
    again). Unix seconds. */
 export interface Times {hour: number; pickedAt?: number; shelfAt?: number; tiles?: {title: string; image: string; liked?: boolean}[]}
 // The two rows of a person's Trakt lists: their own, and the ones they liked (shelf.ts on the Worker).
@@ -76,12 +76,20 @@ function noneOf(kind: string, code: string, limit: Limit, mine: boolean) {
   return {because: `Nothing new to suggest from ${mine ? 'your' : 'their'} latest watching`, series: 'No movie series with more to watch', pickup: 'Nothing left partway in the last year', crew: 'No director with enough left to watch',
     genres: 'No genre stands out yet', different: 'Nothing left to suggest today', seasonal: 'No season right now', top10: 'Too little left to watch in the Top 10'}[kind] ?? 'Nothing today';
 }
-/* My Trakt lists and Trakt lists I liked: worked out once a day, and again soon after it is asked for (at 0) or when a day has gone by. */
-const listsOf = (at = 0) => !at || Date.now() - at * 1000 >= DAY_MS ? 'Trakt · Updating now' : `Trakt · Lists checked ${atOf(at * 1000)} · next check ${dayOf(at * 1000 + DAY_MS)}`;
+/* My lists and Lists I liked: worked out once a day, and again soon after it is asked for (at 0) or when a day has gone by. */
+const listsOf = (at = 0) => !at || Date.now() - at * 1000 >= DAY_MS ? 'Updating now' : `Lists checked ${atOf(at * 1000)} · next check ${dayOf(at * 1000 + DAY_MS)}`;
+/* Where a row comes from, by one rule, wherever a row is listed (on Home, under Not on Home, in Add row):
+   - from the person's OWN account or watching: a pill says so ("Your Trakt", "What you've watched": pillOf in data.ts), and the
+     line under the name keeps only its kind and anything else useful (newest first, when it was last checked);
+   - from a PUBLIC source (Trakt trending, TMDB, a collection, a list added by its link): the source in plain text after its kind
+     ("Movies · TMDB"), and no pill.
+   Never both on one row. `tag` is the other pill, "Yours" for a row the person added themselves: where a row has both, the
+   account pill is the one shown. */
+const lineOf = (row: Row, limit: Limit, pill?: string) => pill ? kindOf(row) : `${kindOf(row)} · ${sourceShown(row, limit)}`;
 // A suggestion's kind as it reads now: rows saved earlier said "tabs" where it says "folders".
 const kindOf = (row: Row) => suggestionOf(row.id)?.kind ?? row.kind;
 const placeHeld = (row: Row, level: Level) => level !== 'own' && (TRAKT_IDS.has(row.id) || isPlace(row.id));
-function RowCard({row, index, tag, locked, later, person, limit = 'all', times, kept, onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; locked: boolean; later?: boolean; person?: string; limit?: Limit; times?: Times; kept?: boolean; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
+function RowCard({row, index, tag, pill, locked, later, person, limit = 'all', times, kept, onToggle, onRemove, onArrange}: {row: Row; index: number; tag?: string; pill?: string; locked: boolean; later?: boolean; person?: string; limit?: Limit; times?: Times; kept?: boolean; onToggle: () => void; onRemove?: () => void; onArrange?: () => void}) {
   // Under a content limit only the folders that suit it are shown, as in the player apps.
   const covers = row.covers?.filter(cover => folderFits(row.id, cover.image, limit)), none = !!row.covers?.length && !covers?.length;
   // A suggested collection of tabs has no one catalog to show posters from: its folders' own art instead, as the apps show them.
@@ -92,13 +100,14 @@ function RowCard({row, index, tag, locked, later, person, limit = 'all', times, 
   const sortable = useSortable({id: row.id, index, disabled: locked});
   // Rows that are always current (the watchlist, lists, Recently Watched) say nothing of times.
   // A For you place is headed "For you", as on a hub's Home, and says what it holds today: the pick is today's, not the row's.
-  // A row whose tag says where it comes from ("From Trakt") does not say it twice.
-  const line = row.pick ? pickOf(row.title, row.pick, times, kept) : times && isPlace(row.id) && !times.pickedAt ? 'For you · Picked soon' : times && isShelf(row.id) ? listsOf(times.shelfAt) : tag?.startsWith('From ') ? kindOf(row) : `${kindOf(row)} · ${sourceShown(row, limit)}`;
+  // A row whose pill says where it comes from ("Your Trakt") does not say it twice (lineOf).
+  const line = row.pick ? pickOf(row.title, row.pick, times, kept) : times && isPlace(row.id) && !times.pickedAt ? 'For you · Picked soon' : times && isShelf(row.id) ? `${pill ? '' : 'Trakt · '}${listsOf(times.shelfAt)}` : lineOf(row, limit, pill);
+  const said = later ? undefined : pill ?? tag;
   return <li ref={sortable.ref} className={`row${sortable.isDragging ? ' dragging' : ''}${locked ? ' locked' : ''}${later ? ' later' : ''}`}>
     {!locked && <Grip handleRef={sortable.handleRef} label={`Move ${row.title}`}/>}
     <div className="row-main">
       <div className="row-head">
-        <div><h3>{row.pick ? 'For you' : row.title}{tag && <em className="tag own">{tag}</em>}</h3><p>{later ? laterOf(row) : none ? 'Not shown under this content limit' : line}</p></div>
+        <div><h3>{row.pick ? 'For you' : row.title}{said && <em className="tag own">{said}</em>}</h3><p>{later ? laterOf(row) : none ? 'Not shown under this content limit' : line}</p></div>
         {!locked && <div className="row-actions">
           {onArrange && <button type="button" className="ghost small" onClick={onArrange}>Edit</button>}
           {onRemove && <button type="button" className="ghost small" onClick={onRemove}>Remove</button>}
@@ -120,6 +129,8 @@ export function moved<T>(list: T[], from: number, to: number) {const next = [...
 export interface HomeProps {
   rows: Row[]; level: Level; onChange: (rows: Row[], note: string) => void;
   tag: (row: Row) => string | undefined; lists?: Pick[]; listsHint?: string;
+  /* On a person's own Home: the pill of a row that comes from their own account or watching (pillOf). */
+  pill?: (row: Row) => string | undefined;
   /* On a person's own Home: the rows that wait for an account they have not connected, each with what it needs ("Trakt"), and
      the address of their Accounts tab. Add row lists them greyed, with the way to connect. */
   needs?: {id: string; title: string; needs: string}[]; accounts?: string;
@@ -137,11 +148,11 @@ export interface HomeProps {
   front?: boolean;
   /* On a person's own Home: stop a kind of For you pick (the For you setting), or move it down their order of kinds (`order`), from
      the place it filled. On a real hub also: when their rows that change on their own last did, their For you today (`forYou`),
-     a place asked to change (onPlace: an option, kept or not, a title left out), and their My Trakt lists checked now. */
+     a place asked to change (onPlace: an option, kept or not, a title left out), and their My lists checked now. */
   onMute?: (kind: string) => void; onLess?: (kind: string) => void; order?: string[];
   times?: Times; forYou?: ForYouDetail; onPlace?: (place: string, asked: {use?: string; keep?: boolean; never?: boolean}, note: string) => void; onCheckLists?: () => void;
 }
-export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, needs = [], accounts, followLabel, onFollow, canAdd = true, canArrange = true, mine = false, addHint, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute, onLess, order = [], times, forYou, onPlace, onCheckLists}: HomeProps) {
+export function HomeEditor({rows, level, onChange, tag, pill, lists = [], listsHint, needs = [], accounts, followLabel, onFollow, canAdd = true, canArrange = true, mine = false, addHint, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute, onLess, order = [], times, forYou, onPlace, onCheckLists}: HomeProps) {
   const [adding, setAdding] = useState(false), [allLists, setAllLists] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
   // A For you row switched off is listed under Not on Home only for someone without Add row, who could not bring one back otherwise;
   // with Add row, "Another For you row" does that, and the For you rows already on Home say there are some.
@@ -168,9 +179,9 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, n
   // Anything already on this Home stays where it is in Add row, dimmed, saying where it is: groups never shift.
   // An account-driven row (the two rows of their Trakt lists) says what it is instead of its kind (aboutRow, data.ts).
   const choice = (item: Pick, note: string) => {
-    const row = rows.find(each => each.id === item.id), at = row && (row.on ? 'On Home' : 'Not on Home'), about = aboutRow(item, mine);
+    const row = rows.find(each => each.id === item.id), at = row && (row.on ? 'On Home' : 'Not on Home'), about = aboutRow(item, mine), own = level === 'own' ? pillOf(item, mine) : undefined;
     if (about && !at) note = about;
-    return <li key={item.id}><button type="button" disabled={!!at} onClick={() => add({id: item.id, title: item.title, kind: item.kind, source: item.source})}><span><strong>{item.title}</strong><small>{at || note}</small></span></button></li>;
+    return <li key={item.id}><button type="button" disabled={!!at} onClick={() => add({id: item.id, title: item.title, kind: item.kind, source: item.source})}><span><strong>{item.title}{own && <em className="tag own">{own}</em>}</strong><small>{at || note}</small></span></button></li>;
   };
   return <section>
     <div className="section-head"><div><h2>Home</h2><p className="muted">{mine ? 'What you see first when you open the player.' : level === 'own' ? 'What they see first when they open the player.' : 'The Home everyone here starts with.'}{canArrange ? ' Drag to reorder.' : ''}</p></div>{canAdd ? <button type="button" className="primary" onClick={() => {setAllLists(false); setAdding(true);}}>+ Add row</button> : addHint && <p className="muted small add-hint">{addHint}</p>}</div>
@@ -183,7 +194,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, n
       const from = on.findIndex(row => row.id === String(event.operation.source!.id)), to = event.operation.source.index;
       if (from >= 0 && from !== to) onChange([...moved(on, from, to), ...off], 'Order saved');
     }}>
-      <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} locked={!canArrange} later={placeHeld(row, level)} person={person} limit={limit} times={times} kept={!!forYou?.places[row.id]?.keep}
+      <ol className="rows">{on.map((row, index) => <RowCard key={row.id} row={row} index={index} tag={tag(row)} pill={pill?.(row)} locked={!canArrange} later={placeHeld(row, level)} person={person} limit={limit} times={times} kept={!!forYou?.places[row.id]?.keep}
         onToggle={() => set(row.id, {on: false}, `“${row.title}” is off Home`)}
         onArrange={isPlace(row.id) ? row.pick && (onMute || onPlace) ? () => setPlaceOpen(row.id) : undefined : () => setArranging(row.id)}
         // A For you place is one of several alike: removing it only switches it off, to Not on Home, where Show brings it back
@@ -193,7 +204,8 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, n
     {!on.length && <p className="empty">Nothing on Home yet. Add a row or turn one on below.</p>}
     {!!off.length && <details className="off" open={off.length <= 4}><summary>Not on Home <span className="count">{off.length}</span></summary>
       <ul>{off.map(row => {const place = placeHeld(row, level);
-        return <li key={row.id} className={place ? 'later' : undefined}><div><h3>{row.title}</h3><p>{place ? laterOf(row) : `${kindOf(row)} · ${sourceShown(row, limit)}`}</p>{/* Off Home there is no Edit to say it in: what the row is, here. */}{!place && aboutRow(row, mine) && <p className="about-row">{aboutRow(row, mine)}</p>}</div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>;})}</ul>
+        const said = place ? undefined : pill?.(row) ?? tag(row);
+        return <li key={row.id} className={place ? 'later' : undefined}><div><h3>{row.title}{said && <em className="tag own">{said}</em>}</h3><p>{place ? laterOf(row) : lineOf(row, limit, place ? undefined : pill?.(row))}</p>{/* Off Home there is no Edit to say it in: what the row is, here. */}{!place && aboutRow(row, mine) && <p className="about-row">{aboutRow(row, mine)}</p>}</div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>;})}</ul>
     </details>}
     {adding && <Sheet title="Add a row" onClose={() => setAdding(false)}>
       <form className="link-form" onSubmit={event => {
@@ -207,7 +219,7 @@ export function HomeEditor({rows, level, onChange, tag, lists = [], listsHint, n
       </form>
       {(!!theirs.length || (!find && listsHint && mine)) && <><h3 className="sheet-sub">Your lists</h3>
         {/* The first five, the rest a tap away: someone with many lists still sees the ready-made rows without a long scroll. */}
-        {theirs.length ? <><ul className="picks compact">{(allLists ? theirs : theirs.slice(0, 5)).map(item => choice(item, `${item.source.split(' · ')[0]} · ${item.kind.replace(/^List · /, '')}`))}</ul>
+        {theirs.length ? <><ul className="picks compact">{(allLists ? theirs : theirs.slice(0, 5)).map(item => choice(item, pillOf(item, mine) ? item.kind.replace(/^List · /, '') : `${item.source.split(' · ')[0]} · ${item.kind.replace(/^List · /, '')}`))}</ul>
           {theirs.length > 5 && !allLists && <button type="button" className="link more" onClick={() => setAllLists(true)}>Show all {theirs.length}</button>}</>
           : <p className="muted small">{listsHint}</p>}</>}
       {/* Rows an account would add: not to be picked yet, so greyed, each saying what it needs and where to connect it. */}

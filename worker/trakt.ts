@@ -4,7 +4,7 @@
    Connecting only reads: it fills their Trakt rows (rows.ts) and writes nothing. What they watch here goes to Trakt as it plays
    only while their sync is on (the `sync` row, `matching`: sync.ts), which is theirs alone to turn on. A call Trakt does not
    take then waits in an outbox and is tried again (below).
-   STRICTLY OFF: for someone whose sync is off, no start, pause, stop or tick is sent, kept or tried, whoever asks. The gate is
+   STRICTLY OFF: for someone whose sync is off, no start, pause, stop, tick or un-mark is sent, kept or tried, whoever asks. The gate is
    here, where every such call passes (deliver, flush, sweep), asked of the database each time and never remembered; front.ts
    and the passes that end here have their own on top. A heart for Favorites (hearts.ts) is the person's other, separate switch
    (their watchlist, not their watching) and is not held by this one.
@@ -56,8 +56,9 @@ export const syncOn = async (env: Env, hub: string, person: string) => !!(await 
    out days late if sync came back on, unasked, and meanwhile it would read as "waiting for Trakt" and hold their Favorites step
    up (hearts.ts looks at nobody with a call waiting). A play Trakt was mid-way through hearing of, or whose call was dropped
    here, counts as never sent (as on a disconnect), so it is among the earlier plays they can tick if they turn sync on again.
-   A heart waiting for Favorites stays. Rows here only: nothing on Trakt changes. */
-const WATCHING = "('start', 'pause', 'stop', 'mark')";
+   So is a removal still waiting, for a title they marked unwatched in an app ('unwatch': front.ts, unmarked): Trakt keeps those
+   plays. A heart waiting for Favorites stays. Rows here only: nothing on Trakt changes. */
+const WATCHING = "('start', 'pause', 'stop', 'mark', 'unwatch')";
 export const stopSending = (env: Env, hub: string, person: string) => [
   env.DB.prepare(`UPDATE plays SET scrobbled = CASE WHEN scrobbled = 'held-watched' THEN 'watched' ELSE NULL END WHERE hub = ?1 AND person = ?2 AND (scrobbled IN ('playing', 'paused', 'held', 'held-watched')
     OR item IN (SELECT item FROM trakt_outbox WHERE hub = ?1 AND person = ?2 AND kind IN ${WATCHING}))`).bind(hub, person),
@@ -197,7 +198,10 @@ export const progressOf = (position: number, duration: number) => Math.min(100, 
    a time, in order. */
 // 'heart' and 'unheart': a watchlist add or remove for a heart made or taken away in an app (front.ts, hearted), kept and tried
 // like a tick. Their `item` is the title's ledger key, never a play's id, so nothing here mistakes one for a start or pause.
-export interface Call {kind: 'start' | 'pause' | 'stop' | 'mark' | 'heart' | 'unheart'; path: string; body: Record<string, unknown>}
+// 'unwatch': a title's plays taken off their Trakt history, for a title they marked unwatched in an app (front.ts, unmarked, the
+// only place one is made). It tells of their watching, so it goes only for someone whose sync is on, like a tick. Its `item` is a
+// key of its own too.
+export interface Call {kind: 'start' | 'pause' | 'stop' | 'mark' | 'unwatch' | 'heart' | 'unheart'; path: string; body: Record<string, unknown>}
 interface Waiting {id: number; hub: string; person: string; kind: Call['kind']; path: string; body: string; made: number; tries: number; next: number; doubt: number; synced: number | null}
 /* A call that tells Trakt of watching (anything but a heart): only ever for someone whose sync is on. */
 const watching = (kind: Call['kind']) => kind !== 'heart' && kind !== 'unheart';

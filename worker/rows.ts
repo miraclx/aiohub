@@ -61,9 +61,16 @@ export const customId = (row: Served) => `custom.${MANIFEST.replace(/[^a-zA-Z0-9
 export const CUSTOM = new RegExp(`^custom\\.${MANIFEST.replace(/[^a-zA-Z0-9]/g, '_')}\\.`);
 /* One row as AIOMetadata stores an imported catalog (the shape its own import makes), here kept on a short cache time. */
 export const catalogOf = (address: string, rowId: string, name: string, on: boolean) => catalogFor(address, servedOf(rowId)!, name, on);
+/* AIOMetadata (4.1.0, addon/index.ts, artSettings) leaves the rating posters off any catalog whose id contains `upnext` or
+   `up_next`, unless the catalog says `metadata.useShowPosterForUpNext`: its own Up Next lists episodes, whose art is a still. The
+   hub's rows with such ids (Up Next, New for you, a For you "Pick back up") list whole titles, and keep those ids because that
+   is also what keeps watched titles in them, so they carry the flag and get rating posters like every other row. Only those:
+   every other catalog is as it was, to the byte, so no other setup is written again for it. */
+const upNextId = (id: string) => id.includes('upnext') || id.includes('up_next');
 export function catalogFor(address: string, row: Served, name: string, on: boolean) {
   return {id: customId(row), type: row.type, name, enabled: on, showInHome: true, source: 'custom', sourceUrl: `${address}/catalog/${row.type}/${row.id}.json`,
-    genres: ['None'], cacheTTL: row.ttl, enableRatingPosters: true, manifestData: {type: row.type, id: row.id, name, extra: [{name: 'skip'}], idPrefixes: ['tt', 'tmdb']}};
+    genres: ['None'], cacheTTL: row.ttl, enableRatingPosters: true, manifestData: {type: row.type, id: row.id, name, extra: [{name: 'skip'}], idPrefixes: ['tt', 'tmdb']},
+    ...(upNextId(row.id) ? {metadata: {useShowPosterForUpNext: true}} : {})};
 }
 
 /* A person's rows address, made once and kept: the same address every time, so a sync with nothing changed sends nothing. */
@@ -186,7 +193,8 @@ async function fromMdblist(env: Env, key: string, kind: 'mdb_watchlist' | 'mdb_h
    its IMDb or TMDB id (here.ts); a play on any other server that Trakt was never told about is left out. */
 export async function played(env: Env, hub: string, person: string, done = false): Promise<Item[]> {
   // `done`: only what was finished (played to 90% or more, as Activity says finished; util.ts, FINISHED, for a file that runs longer than listed) or ticked as watched in an app.
-  const got = await env.DB.prepare(`SELECT item, ids, title, updated FROM plays WHERE hub = ?1 AND person = ?2${done ? ` AND (${FINISHED}
+  // One marked unwatched in an app since (front.ts, unmarked) is neither.
+  const got = await env.DB.prepare(`SELECT item, ids, title, updated FROM plays WHERE hub = ?1 AND person = ?2 AND unwatched = 0${done ? ` AND (${FINISHED}
     OR EXISTS (SELECT 1 FROM sittings s WHERE s.hub = plays.hub AND s.person = plays.person AND s.item = plays.item AND s.parts LIKE '%marked%'))` : ''} ORDER BY updated DESC LIMIT 300`).bind(hub, person).all<{item: string; ids: string | null; title: string; updated: number}>();
   return once(got.results.map(play => {
     let target: {movie?: Media; show?: Media} | null = null;
@@ -305,7 +313,7 @@ function startedHere(plays: {item: string; ids: string | null; detail: string; p
 async function freshOf(env: Env, hub: string, person: string, row: Served): Promise<Item[]> {
   const [had, hid, plays] = await env.DB.batch([env.DB.prepare('SELECT at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, person, NEW),
     env.DB.prepare('SELECT at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, person, HIDDEN),
-    env.DB.prepare('SELECT item, ids, detail, position, parts FROM plays WHERE hub = ? AND person = ? ORDER BY updated DESC LIMIT 300').bind(hub, person)]);
+    env.DB.prepare('SELECT item, ids, detail, position, parts FROM plays WHERE hub = ? AND person = ? AND unwatched = 0 ORDER BY updated DESC LIMIT 300').bind(hub, person)]);
   const before = had.results[0] as {at: number; items: string} | undefined, time = now(), here = startedHere(plays.results as Parameters<typeof startedHere>[0]);
   let kept: Kept = {list: [], gone: {}};
   try {kept = before ? JSON.parse(before.items) as Kept : kept;} catch { /* kept as nothing */ }

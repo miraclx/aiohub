@@ -142,10 +142,19 @@ export const needOf = (id: string, has: Linked) => reaches(id, has) || !TRAKT_ID
    row whose new one is on the same Home too joins it (on if either was), and a name nobody changed becomes the new one. A Home
    saved again is saved under the new ids. */
 export const WAS: Record<string, string> = {'recently-aired': 'new-for-you', 'mdblist-watchlist': 'watchlist'};
+/* The two rows of a person's Trakt lists (shelf.ts on the Worker), as they are called now: "My lists" and "Lists I liked". Their
+   pill says they come from the person's Trakt ("Your Trakt", pillOf), so the name no longer needs to. A row saved under the name
+   it had before (SHELF_WAS) is read as the name it has now, the same way and with nothing rewritten; one the person renamed
+   keeps their name. Ids, addresses and catalogs are as they were.
+   (No clash today: MDBList lists are added one by one, each under its own name. A row of all someone's MDBList lists, if there
+   ever is one, would need a name that tells the two apart.) */
+export const SHELF_TITLES: Record<string, string> = {'trakt-lists': 'My lists', 'trakt-liked-lists': 'Lists I liked'};
+const SHELF_WAS: Record<string, string> = {'trakt-lists': 'My Trakt lists', 'trakt-liked-lists': 'Trakt lists I liked'};
 export function current(rows: Row[]): Row[] {
-  if (!rows.some(row => WAS[row.id] || row.id === 'watchlist')) return rows;
+  if (!rows.some(row => WAS[row.id] || row.id === 'watchlist' || SHELF_WAS[row.id] === row.title)) return rows;
   const here = new Set(rows.map(row => row.id)), on = new Set(rows.filter(row => row.on).map(row => WAS[row.id] ?? row.id)), now = new Map(traktRows().map(row => [row.id, row]));
   return rows.flatMap(row => {
+    if (SHELF_WAS[row.id] === row.title) return [{...row, title: SHELF_TITLES[row.id]}];
     const id = WAS[row.id] ?? row.id, to = now.get(id)!;
     if (id !== row.id && here.has(id)) return [];
     // A watchlist kept while two were on says whose it was ("Watchlist · Trakt"): there is one now.
@@ -283,6 +292,22 @@ export function fillOrder<T extends {kind: string; key: string}>(found: T[], ord
 export const PICKABLE = new Set([...TRAKT_IDS, ...KIDS_IDS]);
 export const pickable = (id: string) => PICKABLE.has(id) || isPlace(id);
 /* Where a row's titles come from, as shown: Trending is Trakt's chart, or under a content limit a TMDB search (native.ts). */
+/* The pill of a row that comes from the person's OWN account or watching, in their words ("Your Trakt") or their manager's
+   ("Their Trakt"); nothing for a row from a public source, which names its source in plain text after its kind instead
+   (home.tsx, lineOf). One rule for every place a row is listed. Which account, for the rows that follow a person's accounts, is
+   the row's `source` as their Home has it (personRows, below):
+   - Watchlist: Trakt, MDBList, or both. Recommended: Trakt, or what they watched. Recently Watched: Trakt (with what they
+     watched here while their Trakt sync is off), else MDBList, else what they watched here.
+   - Up Next, New for you, My lists, Lists I liked and each Trakt list of their own or that they liked: Trakt.
+   - A list of their own on MDBList, added from Add row ("MDBList · your list"): MDBList. One added by its link is public.
+   A For you row has no source: its line says why it was picked. */
+const FOLLOWS = new Set(['watchlist', 'recommended-movies', 'recommended-series', 'recently-watched']);
+export function pillOf(row: {id: string; source: string}, mine = true): string | undefined {
+  const Your = mine ? 'Your' : 'Their', you = mine ? 'you' : 'they';
+  const from = FOLLOWS.has(row.id) ? row.source : row.id === 'up-next' || row.id === 'new-for-you' || SHELF_TITLES[row.id] || /^trakt-(mine|liked)\./.test(row.id) ? 'Trakt' : / · your list$/.test(row.source) ? row.source.split(' · ')[0] : '';
+  return from === 'Trakt' || from === 'MDBList' || from === 'Trakt and MDBList' ? `${Your} ${from}` : from === 'What was watched' ? `What ${you}’ve watched` : from === 'Played here' ? `What ${you}’ve watched here`
+    : from === TRAKT_AND_HERE ? `${Your} Trakt and watched here` : undefined;
+}
 export const sourceShown = (row: Row, limit: Limit = 'all') => (row.id === 'trending-movies' || row.id === 'trending-series') && limit === 'all' ? 'Trakt' : row.source;
 export const isTrakt = (item: Row) => item.source === 'Trakt' || item.source.startsWith('Trakt ·');
 /* ---------- suggested rows ("Ready-made rows" in Add row) ----------

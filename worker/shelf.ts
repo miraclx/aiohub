@@ -1,5 +1,5 @@
-/* A person's Trakt lists as Home rows: their own as one (SHELF_ROW, "My Trakt lists") and the ones they liked as another
-   (LIKED_ROW, "Trakt lists I liked"). Each is a collection with a wide tile for each list, pictured by the backdrop (TMDB) of its
+/* A person's Trakt lists as Home rows: their own as one (SHELF_ROW, "My lists") and the ones they liked as another
+   (LIKED_ROW, "Lists I liked"). Each is a collection with a wide tile for each list, pictured by the backdrop (TMDB) of its
    best-known title: the one most people rated on Trakt, of its first hundred. Both are worked out together and kept as one
    (`shelf`); a row holds the lists of its kind. Opening a tile shows the list, served by
    the hub as any of their own lists is (rows.ts). Which lists there are, and their pictures, are worked out ahead by the cron

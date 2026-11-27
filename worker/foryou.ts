@@ -208,13 +208,17 @@ async function candidates(ask: Ask, watched: Item[], plays: {item: string; detai
   }
   if (open('pickup')) {
     // Shows last watched more than three weeks ago (within the year) with an episode still to watch: Trakt says so (Up Next), or the
-    // last episode played here comes before the newest one aired.
-    const left: Item[] = [];
-    for (const item of seeds.filter(item => item.type === 'series' && at - item.at! > LEFT && at - item.at! < 365 * DAY).slice(0, 4)) {
+    // last episode played here comes before the newest one aired. Every such show is looked at, most recently watched first: one
+    // Trakt lists needs no call at all, and only the others are asked of TMDB, four of them a day at most (the cap is for the
+    // calls, never for how many shows can be in the row). Only a show that was looked up counts towards her genres.
+    const left: Item[] = []; let looked = 0;
+    for (const item of seeds.filter(item => item.type === 'series' && at - item.at! > LEFT && at - item.at! < 365 * DAY)) {
+      if (next.has(item.tmdb!)) {left.push(item); continue;}
+      if (looked >= 4) continue;
+      looked++;
       const about = await show(ask, item.tmdb!), last = plays.find(play => play.item === `tmdb:${item.tmdb}` || play.item === item.id), had = /Season (\d+) · Episode (\d+)/.exec(last?.detail ?? '');
       for (const genre of about?.g ?? []) genres.set(genre, (genres.get(genre) ?? 0) + 0.5);
-      const behind = had && about?.last ? Number(had[1]) * 10000 + Number(had[2]) < about.last[0] * 10000 + about.last[1] : false;
-      if (next.has(item.tmdb!) || behind) left.push(item);
+      if (had && about?.last && Number(had[1]) * 10000 + Number(had[2]) < about.last[0] * 10000 + about.last[1]) left.push(item);
     }
     if (left.length) out.push({pick: {kind: 'pickup', key: 'pickup', name: 'Pick back up', type: 'series', serve: `foryou_upnext_${left.slice(0, 20).map(item => item.tmdb).join('-')}`, why: {title: left[0].name, more: left.length - 1}}, titles: left.length * 4, quality: 0.6});
   }
@@ -301,7 +305,7 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
     else await env.DB.prepare('UPDATE foryou_sync SET tries = tries + ?, at = ? WHERE hub = ?').bind(got.more ? 0 : 1, now(), pending.hub).run();
     return true;
   }
-  // Someone's My Trakt lists row, worked out again (shelf.ts): one person a run, before the picks.
+  // Someone's My lists row, worked out again (shelf.ts): one person a run, before the picks.
   if (await refreshShelf(env, people.results as {hub: string; id: string; data: string}[], hub => flag(env, hub))) return true;
   // Whoever has no place on is done at once; then one person a run is picked for; then, with nobody due, one person who just
   // finished something (finished, below).
@@ -332,7 +336,7 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
 async function gather(env: Env, item: Due, time: number) {
   const key = await getSecret<string>(env, item.hub, HUB, 'key:tmdb');
   const [cache, plays] = await env.DB.batch([env.DB.prepare('SELECT kind, at, items AS body FROM rows_cache WHERE hub = ? AND person = ? AND at > ?').bind(item.hub, TMDB_OWNER, now() - 3 * DAY),
-    env.DB.prepare('SELECT item, ids, detail, place, updated FROM plays WHERE hub = ? AND person = ? ORDER BY updated DESC LIMIT 300').bind(item.hub, item.person)]);
+    env.DB.prepare('SELECT item, ids, detail, place, updated FROM plays WHERE hub = ? AND person = ? AND unwatched = 0 ORDER BY updated DESC LIMIT 300').bind(item.hub, item.person)]);
   const ask: Ask = {env, hub: item.hub, key: key ?? '', held: new Map((cache.results as {kind: string; at: number; body: string}[]).map(row => [row.kind, row])), calls: {left: key ? CALLS : 0}, writes: []};
   const played = (plays.results as {item: string; ids: string | null; detail: string; place: string | null; updated: number}[]).map(play => {
     let ids: {show?: {ids?: {tmdb?: number}}} | null = null; try {ids = play.ids ? JSON.parse(play.ids) : null;} catch {ids = null;}
@@ -361,6 +365,15 @@ export async function finished(env: Env, hub: string, person: string, title: str
   const was = read<Fresh>(row?.fresh, {});
   if (!row || was.seen?.includes(title)) return;
   await env.DB.prepare('UPDATE foryou SET fresh = ? WHERE hub = ? AND person = ? AND fresh = ?').bind(JSON.stringify({...was, seen: [title, ...was.seen ?? []].slice(0, SEEN), due: now()}), hub, person, row.fresh).run();
+}
+/* A title marked unwatched in an app (front.ts, unmarked): it no longer counts as finished lately, so finishing it again counts
+   again; and when it was the latest finish, the pick it had coming is let go. Over what was read only, as above. */
+export async function unfinished(env: Env, hub: string, person: string, title: string) {
+  if (env.FRONT !== 'aiometadata') return;
+  const row = await env.DB.prepare('SELECT fresh FROM foryou WHERE hub = ? AND person = ?').bind(hub, person).first<{fresh: string}>();
+  const was = read<Fresh>(row?.fresh, {});
+  if (!row || !was.seen?.includes(title)) return;
+  await env.DB.prepare('UPDATE foryou SET fresh = ? WHERE hub = ? AND person = ? AND fresh = ?').bind(JSON.stringify({...was, seen: was.seen.filter(seen => seen !== title), ...(was.seen[0] === title ? {due: 0} : {})}), hub, person, row.fresh).run();
 }
 /* The run's step for someone who finished something: the lowest of their places not kept is picked again by the same rule (the
    others stay and count as their kinds' picks), with what they just watched among the seeds. What it held counts as lately picked.

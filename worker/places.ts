@@ -1,6 +1,6 @@
 /* Two of a person's places side by side: where their progress is kept (Here, their own server; or their MDBList) and Trakt, or,
    while MDBList's Sync switch moves where progress is kept, the old place and the new one. Each line is a play one of the two
-   lacks; a pass copies it across. Nothing is ever removed anywhere. The page uses the two moves (here-mdblist, mdblist-here);
+   lacks; a pass copies it across. Nothing is ever removed anywhere by a pass. The page uses the two moves (here-mdblist, mdblist-here);
    the pairs with Trakt are answered only while their Trakt sync is on (api.ts), which does the same by itself (sync.ts).
    Pairs, by what is looked at:
    - here-trakt: plays here that never reached Trakt go to Trakt (carry.ts); plays on Trakt in the last two weeks that Here lacks
@@ -18,7 +18,7 @@ import {getSecret, now, putSecret} from './util';
 import {LINK} from './trakt';
 import type {Link} from './trakt';
 import {traktPlays} from './drift';
-import {NO_ANSWER, NO_SETUP, carry, ledger, mdblist, pauseOf, plan, pointKey, remember, traktPoints} from './carry';
+import {NO_ANSWER, NO_SETUP, before, carry, ledger, mdblist, pauseOf, plan, pointKey, remember, traktPoints, unmarks} from './carry';
 import type {Failed, Noted, TraktPoint} from './carry';
 import {deliver} from './trakt';
 import type {Cell} from './carry';
@@ -152,8 +152,9 @@ export async function look(env: Env, hub: string, person: string, pair: Pair, sk
       plays = got;
     }
     // What the hub ticked here before is never ticked again, so one unticked since stays that way.
-    const done = await ledger(env, hub, person, 'here');
-    plays = plays.filter(play => !skip.has(play.key) && !done.has(sentKey(play)));
+    // Nor is one they marked unwatched in an app since the other side's date for it (carry.ts, unmarks).
+    const done = await ledger(env, hub, person, 'here'), gone = await unmarks(env, hub, person);
+    plays = plays.filter(play => !skip.has(play.key) && !done.has(sentKey(play)) && !before(gone, play.key.slice(play.pct != null ? 3 : 2), Math.floor(Date.parse(play.at) / 1000) || 0));
     if (plays.length > CHECK) {more = true; plays = plays.slice(0, CHECK);}
     // Nothing the other side has to bring here: no need of their server.
     if (!plays.length) return {lines: lines.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)), more, unmatched, already, incoming};

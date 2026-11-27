@@ -563,7 +563,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
     // Whose Watchlist switch is on (wantedOf, jellyfinWatchlistServices).
     env.DB.prepare('SELECT person FROM favs WHERE hub = ?').bind(hub.id)]);
   const saving = new Set((saveRows.results as {person: string}[]).map(row => row.person));
-  // Each person's Trakt lists as the cron last worked them out (shelf.ts), for their My Trakt lists row.
+  // Each person's Trakt lists as the cron last worked them out (shelf.ts), for their My lists row.
   const shelves = new Map((shelfRows.results as {person: string; items: string}[]).map(row => [row.person, shelfFrom(row.items)]));
   // What fills each person's For you places today (foryou.ts): only what was picked and kept, so every sync writes the same.
   const forYou = new Map((pickRows.results as {person: string; picks: string}[]).map(row => [row.person, JSON.parse(row.picks) as Record<string, Pick>]));

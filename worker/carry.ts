@@ -78,12 +78,30 @@ export const remember = (env: Env, hub: string, person: string, place: Place, pl
   const key = typeof play === 'string' ? play : play.key, title = typeof play === 'string' ? null : play.title.slice(0, 200), detail = typeof play === 'string' ? null : play.detail.slice(0, 120);
   return env.DB.prepare('INSERT INTO sent (hub, person, place, play, at, title, detail, item) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').bind(hub, person, place, key.slice(0, 200), now(), title, detail, typeof play === 'string' ? null : play.item?.slice(0, 200) ?? null);
 });
+/* Titles and episodes the person marked unwatched in an app (front.ts, unmarked), each with when: kept in `sent` by hub and person,
+   under 'here' as u:<title or episode> with no name (so their page does not list it), whether or not anything is synced. It is
+   what makes an un-mark stick: every pass that copies plays between their places (Trakt to their home, sync.ts; Next Up; the
+   two-place looks, places.ts; the daily look at Trakt and MDBList, drift.ts) leaves out a play, or a paused spot, dated at or
+   before it (`before`), so Trakt's or MDBList's older history never ticks it again. A play made after it goes as any other. */
+export async function unmarks(env: Env, hub: string, person: string): Promise<Map<string, number>> {
+  return new Map((await env.DB.prepare("SELECT play, at FROM sent WHERE hub = ? AND person = ? AND place = 'here' AND play LIKE 'u:%'").bind(hub, person).all<{play: string; at: number}>()).results.map(row => [row.play.slice(2), row.at]));
+}
+export const before = (gone: Map<string, number>, key: string, at: number) => (gone.get(key) ?? 0) >= at;
+/* Noting an un-mark, for these titles or episodes (movie/<tmdb>, show/<tmdb>:<season>:<episode>). What the ledgers held of each
+   as watched or part-watched (i:, w:, p:, in any place) is let go, kept only for their list of what was synced (as x:<key>, no longer tied to a play here), so
+   watching it again is copied like anything new: only the note above holds its older plays back. */
+export const unmark = (env: Env, hub: string, person: string, keys: string[], at: number) => {
+  const list = JSON.stringify(keys);
+  return [env.DB.prepare(`UPDATE OR REPLACE sent SET play = 'x:' || play, item = NULL WHERE hub = ?1 AND person = ?2 AND play IN (SELECT a.value || e.value FROM json_each('["i:","w:","p:"]') a, json_each(?3) e)`).bind(hub, person, list),
+    env.DB.prepare("INSERT INTO sent (hub, person, place, play, at) SELECT ?1, ?2, 'here', 'u:' || e.value, ?3 FROM json_each(?4) e WHERE true ON CONFLICT (hub, person, place, play) DO UPDATE SET at = excluded.at").bind(hub, person, at, list)];
+};
 /* What the hub synced for a person lately, newest first, as their own page lists it: what it is called, where it went, and when.
    `spot`: a paused spot rather than a finished watch (by how its key starts). `updated`: a spot that took the place of an
-   earlier one held there, rather than one added where there was none. */
+   earlier one held there, rather than one added where there was none. `removed`: a title's plays taken off Trakt because they
+   marked it unwatched in an app (front.ts, kept as r:). */
 export async function synced(env: Env, hub: string, person: string) {
   const rows = (await env.DB.prepare('SELECT place, play, at, title, detail FROM sent WHERE hub = ? AND person = ? AND title IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 30').bind(hub, person).all<{place: Place; play: string; at: number; title: string; detail: string | null}>()).results;
-  return rows.map(row => ({title: row.title, detail: row.detail ?? '', to: row.place, spot: /^(p|ip|ir|pm|pt):/.test(row.play), ...(row.play.startsWith('ir:') ? {updated: true} : {}), at: row.at}));
+  return rows.map(row => ({title: row.title, detail: row.detail ?? '', to: row.place, spot: /^(x:)?(p|ip|ir|pm|pt):/.test(row.play), ...(row.play.startsWith('ir:') ? {updated: true} : {}), ...(row.play.startsWith('r:') ? {removed: true} : {}), at: row.at}));
 }
 /* Since when what is watched here goes to Trakt by itself: when their sync was last turned on (the moment they connected, for
    someone who turned it on before that was kept). A play here from before then is an earlier play. */
@@ -94,12 +112,12 @@ const toldLive = (play: {scrobbled: string | null; updated: number} | undefined,
 /* What they watched here before sync was turned on (`since`: sendingSince, or now while it is off), newest first, as the
    question lists it: from the plays kept here (title and
    date), with no call to their server or to Trakt. The same plays a pass looks at (the newest 500, `plan`), less what was played
-   under 1%, what Trakt was told of as it played (sync was on then), what was sent to Trakt before (by the play's id here, kept
+   under 1%, what was marked unwatched in an app since (front.ts, unmarked), what Trakt was told of as it played (sync was on then), what was sent to Trakt before (by the play's id here, kept
    with what was sent), and what is known to have been left
    out. What is really sent can still be fewer: Trakt may already have a play, their server may no longer hold a title as watched,
    and one left out before Trakt's ids for it were looked up is not known here. */
 export async function earlierPlays(env: Env, hub: string, person: string, link: Link, since: number, skip: Set<string>) {
-  const rows = (await env.DB.prepare('SELECT item, title, detail, position, duration, updated, ids, scrobbled FROM plays WHERE hub = ? AND person = ? ORDER BY updated DESC LIMIT 500').bind(hub, person).all<{item: string; title: string; detail: string; position: number; duration: number; updated: number; ids: string | null; scrobbled: string | null}>()).results;
+  const rows = (await env.DB.prepare('SELECT item, title, detail, position, duration, updated, ids, scrobbled FROM plays WHERE hub = ? AND person = ? AND unwatched = 0 ORDER BY updated DESC LIMIT 500').bind(hub, person).all<{item: string; title: string; detail: string; position: number; duration: number; updated: number; ids: string | null; scrobbled: string | null}>()).results;
   const early = rows.filter(row => row.updated < since && row.duration > 0 && row.position * 100 >= row.duration && !toldLive(row, link));
   if (!early.length) return [];
   const sent = await ledger(env, hub, person, 'trakt'), gone = new Set((await env.DB.prepare("SELECT item FROM sent WHERE hub = ? AND person = ? AND place = 'trakt' AND item IS NOT NULL").bind(hub, person).all<{item: string}>()).results.map(row => row.item));
@@ -134,7 +152,8 @@ export async function plan(env: Env, hub: string, person: string, skip: Set<stri
   // Copied before: a tracker may still answer from a few minutes ago, and one the person deleted there stays deleted, so these are
   // never sent twice.
   const toLists = lists?.key ? await ledger(env, hub, person, 'mdblist') : new Set<string>(), toTrakt = link ? await ledger(env, hub, person, 'trakt') : new Set<string>();
-  const rows = (await env.DB.prepare('SELECT item, updated, scrobbled FROM plays WHERE hub = ? AND person = ? AND updated >= ? ORDER BY updated DESC LIMIT 500').bind(hub, person, want.since ?? 0).all<{item: string; updated: number; scrobbled: string | null}>()).results;
+  // (One marked unwatched in an app since is not looked at, whatever their server says of it: front.ts, unmarked.)
+  const rows = (await env.DB.prepare('SELECT item, updated, scrobbled FROM plays WHERE hub = ? AND person = ? AND unwatched = 0 AND updated >= ? ORDER BY updated DESC LIMIT 500').bind(hub, person, want.since ?? 0).all<{item: string; updated: number; scrobbled: string | null}>()).results;
   const none: Plan = {watched: [], partway: [], already: 0, unknown: 0, more: false, trakt: !!link, lists: !!lists?.key, had: []};
   // Nothing played here: nothing to copy, with or without a player setup.
   if (!rows.length) return none;

@@ -2,7 +2,7 @@
 // What reaches the streaming server goes through ./native.
 import {NO_ANSWER, carry, earlierPlays, mdblist, plan, sendingSince, synced} from './carry';
 import {skip, skippedOf} from './drift';
-import {FOR_YOU_KINDS, PICKABLE, WAS, current as currentRows, defaultAddons, defaultRows, defaultSettings, isPlace, pickable, slug, traktRows} from '../src/data';
+import {FOR_YOU_KINDS, PICKABLE, SHELF_TITLES, WAS, current as currentRows, defaultAddons, defaultRows, defaultSettings, isPlace, pickable, slug, traktRows} from '../src/data';
 import type {Addon, Hub, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './native';
@@ -183,7 +183,7 @@ async function state(env: Env, who: Who) {
     env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind = 'trakt'").bind(hub.id),
     env.DB.prepare("SELECT owner, value FROM secrets WHERE hub = ? AND kind = 'mdblist' AND owner = coalesce(?, owner)").bind(hub.id, mine ?? null),
     // The background work, for the manager: when it last ran, how often it has, what waits for Trakt, the last daily check. The
-    // next My Trakt lists row due counts only rows still on a Home: one taken off is never worked out again.
+    // next My lists row due counts only rows still on a Home: one taken off is never worked out again.
     env.DB.prepare(`SELECT (SELECT at FROM runs WHERE job = 'cron') AS last, (SELECT count FROM runs WHERE job = 'cron') AS runs, (SELECT since FROM runs WHERE job = 'cron') AS since,
       (SELECT max(at) FROM drift WHERE hub = ?1 AND work IS NULL AND result IS NOT NULL) AS ran, (SELECT count(*) FROM trakt_outbox WHERE hub = ?1) AS waiting,
       (SELECT max(day) FROM drift WHERE hub = ?1 AND work IS NULL) AS checked, (SELECT count(*) FROM drift WHERE hub = ?1 AND day = (SELECT max(day) FROM drift WHERE hub = ?1) AND work IS NULL) AS people, (SELECT count(*) FROM drift WHERE hub = ?1 AND work IS NOT NULL) AS checking,
@@ -193,7 +193,7 @@ async function state(env: Env, who: Who) {
     // What each For you place holds today, by name and what it came from (the manager sees them on that person's Home tab), the
     // day's other options, and when it was picked.
     env.DB.prepare('SELECT person, picks, pool, never, at FROM foryou WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
-    // When each My Trakt lists row was last worked out (0: asked for again, shelf.ts), for the row's line on their Home.
+    // When each My lists row was last worked out (0: asked for again, shelf.ts), for the row's line on their Home.
     // Its tiles too (name and picture of each list), so the row shows them on the site as the apps do.
     env.DB.prepare('SELECT person, at, items FROM rows_cache WHERE hub = ? AND kind = ? AND person = coalesce(?, person)').bind(hub.id, SHELF, mine ?? null),
     // Whether each person's Trakt is synced and how that stands, and how long their oldest call has waited for Trakt.
@@ -372,7 +372,10 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
   // does only while they have not joined (`joined`: they chose a password of their own through their invite link, so they have
   // a page of their own to do it from), and then only MDBList sync and the Watchlist switch: Trakt sync is theirs alone
   // ('matching', below). Asked by every route that moves one of the two, whatever the page shows.
-  const theirs = () => {if (who.person !== id && row.joined) bad(403, `${row.name} manages their own sync.`);};
+  // The same rule for their accounts (`what` 'accounts'): once they have joined, only they connect, disconnect or reconnect their
+  // Trakt (either way of connecting it), and only they save or remove their MDBList key. Their manager still sees whether each is
+  // connected, and can remove them from the hub, which removes the hub's copies and sends nothing to any account.
+  const theirs = (what: 'sync' | 'accounts' = 'sync') => {if (who.person !== id && row.joined) bad(403, `${row.name} manages their own ${what}.`);};
   if (action === 'signin' && request.method === 'GET') {
     const invite = await getSecret<string>(env, hub, id, 'invite');
     return {username: row.name, password: signin.password, pin: signin.pin, link: invite ? inviteLink(origin, invite) : ''};
@@ -381,6 +384,7 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     // Trakt is connected on AIOMetadata's own page, which hands the person a Token ID. Here it is checked and kept for their Home.
     // (The way it used to be done. Connecting Trakt to the hub, under 'scrobble', does all of it now.)
     const data = await personData(env, hub, id), save = (next: PersonData) => savePersonData(env, hub, id, next);
+    if (request.method === 'POST' || request.method === 'DELETE') theirs('accounts');
     if (request.method === 'POST') {
       const tokenId = /^[\w-]{16,80}$/.test(String(body.tokenId ?? '').trim()) ? String(body.tokenId).trim() : bad(400, 'Paste the Token ID from the “Trakt connected” page');
       const answer = await fetch(`${hosted(env, JSON.parse(who.hub.data) as HubData).AIOM_ORIGIN}/api/oauth/token/info`, {method: 'POST', headers: {'content-type': 'application/json', accept: 'application/json', 'user-agent': 'AIOHub/1.0'}, body: JSON.stringify({tokenId})}).catch(() => null);
@@ -403,6 +407,8 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     const stored = await env.DB.prepare('SELECT data FROM people WHERE hub = ? AND id = ?').bind(hub, id).first<{data: string}>(), data = JSON.parse(stored!.data) as PersonData;
     const save = (lists: boolean) => env.DB.prepare('UPDATE people SET data = ?, version = version + 1 WHERE hub = ? AND id = ?').bind(JSON.stringify({...data, lists}), hub, id);
     if (request.method === 'POST') {
+      // Saving a key is theirs once they have joined, and so is every way of removing one (below).
+      theirs('accounts');
       // Anything but `keep` turns MDBList sync on for someone it is off for (at once, or by starting the copy): a sync switch.
       if (!data.lists && body.keep !== true) theirs();
       // `reuse`: the key they saved before (kept while progress is Here) is taken up again, so nothing needs pasting.
@@ -423,10 +429,10 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       return {username};
     }
     // Removing the key itself: nothing of MDBList is kept or read for them any more.
-    // With sync on (or on its way either way) that turns it off too, so it goes by the switch's rule. Their Watchlist switch
+    // Their Watchlist switch
     // goes off with the key when it was MDBList's (no Trakt connected to the hub): connecting again later starts with it off.
     if (request.method === 'DELETE' && rest === 'key') {
-      if (data.lists || (await getSecret<{moving?: string}>(env, hub, id, 'mdblist'))?.moving) theirs();
+      theirs('accounts');
       await env.DB.batch([...(await hasSecret(env, hub, id, LINK) ? [] : [turnHearts(env, hub, id, false)]), env.DB.prepare("DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = 'mdblist'").bind(hub, id), env.DB.prepare('DELETE FROM drift WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND (kind = 'lists' OR kind LIKE 'mdb_%')").bind(hub, id), save(false)]);
       return {};
     }
@@ -439,6 +445,8 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     // kept and renewed here. Connecting gives their Trakt rows on Home (rows.ts), added to a Home of their own, and writes
     // nothing to Trakt: what they watch moves only once they turn sync on ('matching', below).
     if (request.method === 'POST' && rest === 'link') {
+      // Theirs alone once they have joined: a manager can neither connect nor reconnect it, so no sign-in a manager starts is kept.
+      theirs('accounts');
       const access = text(body.access, 4000, 'Login').trim(), refresh = text(body.refresh, 4000, 'Login').trim(), redirect = text(body.redirect ?? '', 300, 'Address');
       if (!access || !refresh || (redirect && !/^https?:\/\/[^/]+\/api\/trakt\/callback$/.test(redirect))) bad(400, 'Trakt did not finish connecting. Try again.');
       // Whether it is synced is theirs to say, on their own page, and asked anew for each connection (the sync row goes, so it is
@@ -453,6 +461,7 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       return {state: 'connected'};
     }
     if (request.method === 'DELETE') {
+      theirs('accounts');
       await disconnect(env, hub, id); forgetSeats(hub, id);
       // The Trakt rows stay only while AIOMetadata's own Trakt connection is still there to fill them.
       if (!await hasSecret(env, hub, id, 'trakt')) await savePersonData(env, hub, id, withTraktRows(await personData(env, hub, id), false)).run();
@@ -551,7 +560,7 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     // Their own lists, to add as Home rows: on their own page only, never shown to anyone else.
     if (who.person !== id) bad(403, 'Only they can see these, from their own page');
     const {lists, whole} = await ownLists(env, hub, id), trakts = lists.filter(item => item.id.startsWith('trakt-')).length;
-    // Their My Trakt lists row is worked out once a day (shelf.ts). A list added, removed or renamed since, seen here at no extra
+    // Their My lists row is worked out once a day (shelf.ts). A list added, removed or renamed since, seen here at no extra
     // cost, has it worked out again on the next run; only from a whole answer with Trakt connected, so Trakt not answering (or
     // wanting connecting again) never looks like a change.
     if (whole && env.FRONT === 'aiometadata' && wantsShelf((JSON.parse(row.data) as PersonData).rows) && await tracked(env, hub, id)) {
@@ -562,10 +571,10 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     // Their own Trakt lists as one row and the ones they liked as another, a tile each (shelf.ts): collections, which only
     // AIOMetadata in front can show.
     const liked = lists.filter(item => item.id.startsWith('trakt-liked.')).length, shelf = (id: string, title: string, count: number, source: string) => count ? [{id, title, kind: `Collection · ${count} ${count === 1 ? 'list' : 'lists'}`, source}] : [];
-    return {lists: env.FRONT === 'aiometadata' ? [...shelf(SHELF_ROW, 'My Trakt lists', trakts - liked, 'Trakt · your lists'), ...shelf(LIKED_ROW, 'Trakt lists I liked', liked, 'Trakt · lists you liked'), ...lists] : lists};
+    return {lists: env.FRONT === 'aiometadata' ? [...shelf(SHELF_ROW, SHELF_TITLES[SHELF_ROW], trakts - liked, 'Trakt · your lists'), ...shelf(LIKED_ROW, SHELF_TITLES[LIKED_ROW], liked, 'Trakt · lists you liked'), ...lists] : lists};
   }
   if (action === 'shelf' && request.method === 'POST') {
-    // "Check my lists now", from the My Trakt lists row: worked out again on the next run. Once a minute at most, by hub and person.
+    // "Check my lists now", from the My lists row: worked out again on the next run. Once a minute at most, by hub and person.
     if (!wantsShelf((JSON.parse(row.data) as PersonData).rows)) bad(409, 'Neither Trakt lists row is on this Home.');
     const kept = await env.DB.prepare('SELECT at FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, id, SHELF).first<{at: number}>();
     if (kept?.at && now() - kept.at < 60) bad(429, 'The lists were just checked. Try again in a minute.');
@@ -725,7 +734,7 @@ async function ownLists(env: Env, hub: string, id: string): Promise<{lists: OwnL
   if (whole) await env.DB.prepare("INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, 'lists', ?, ?) ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at, items = excluded.items").bind(hub, id, now(), JSON.stringify(out.slice(0, 100))).run();
   return {lists: out.slice(0, 100), whole};
 }
-/* A My Trakt lists row to be worked out again on the next run (refreshShelf takes anything a day old): its time goes to 0, or one
+/* A My lists row to be worked out again on the next run (refreshShelf takes anything a day old): its time goes to 0, or one
    with nothing yet is made so. What it holds stays until then. */
 const shelfAgain = (env: Env, hub: string, id: string) => env.DB.prepare("INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, 0, '[]') ON CONFLICT (hub, person, kind) DO UPDATE SET at = 0").bind(hub, id, SHELF).run();
 

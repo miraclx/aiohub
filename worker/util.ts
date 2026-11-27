@@ -33,8 +33,9 @@ export const now = () => Math.floor(Date.now() / 1000);
 export const pastListed = (length: number, at: number) => length > 0 && at > length + Math.max(30, length * 0.05);
 export const NEAR_END = 0.95;
 /* Whether a title (a row of `plays`, by that name) was finished, in SQL: played to 90% or more of its listed length, or, for one
-   that runs longer than listed, a sitting of it that got to within 5% of where earlier ones had. */
-export const FINISHED = `((plays.over = 0 AND plays.duration > 0 AND plays.position >= plays.duration * 0.9) OR (plays.over > 0 AND EXISTS (SELECT 1 FROM sittings z WHERE z.hub = plays.hub AND z.person = plays.person AND z.item = plays.item AND z.reached > 0 AND z.position >= z.reached * ${NEAR_END})))`;
+   that runs longer than listed, a sitting of it that got to within 5% of where earlier ones had. Never one marked unwatched in an
+   app since (plays.unwatched, front.ts). */
+export const FINISHED = `(plays.unwatched = 0 AND ((plays.over = 0 AND plays.duration > 0 AND plays.position >= plays.duration * 0.9) OR (plays.over > 0 AND EXISTS (SELECT 1 FROM sittings z WHERE z.hub = plays.hub AND z.person = plays.person AND z.item = plays.item AND z.reached > 0 AND z.position >= z.reached * ${NEAR_END}))))`;
 export const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 export const unb64 = (text: string) => Uint8Array.from(atob(text.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 export const hex = (bytes: Uint8Array) => [...bytes].map(n => n.toString(16).padStart(2, '0')).join('');

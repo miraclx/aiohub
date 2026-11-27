@@ -22,7 +22,7 @@ const KNOWN = new Map(Object.entries(FRANCHISES).flatMap(([row, keys]) => keys.m
 /* Suggestion id -> the title that points to it, newest first. One query: their plays here (what Trakt knows each by), then their
    Trakt history and watchlist pages kept by the hub. */
 export async function because(env: Env, hub: string, person: string): Promise<Record<string, string>> {
-  const rows = (await env.DB.prepare(`SELECT ids AS what, title FROM (SELECT ids, title FROM plays WHERE hub = ?1 AND person = ?2 AND ids IS NOT NULL AND ids != '' ORDER BY updated DESC LIMIT 300)
+  const rows = (await env.DB.prepare(`SELECT ids AS what, title FROM (SELECT ids, title FROM plays WHERE hub = ?1 AND person = ?2 AND ids IS NOT NULL AND ids != '' AND unwatched = 0 ORDER BY updated DESC LIMIT 300)
     UNION ALL SELECT items AS what, '' AS title FROM (SELECT items FROM rows_cache WHERE hub = ?1 AND person = ?2 AND (kind = 'history' OR kind LIKE 'history.%' OR kind = 'watchlist' OR kind LIKE 'watchlist.%') ORDER BY kind)`)
     .bind(hub, person).all<{what: string; title: string}>()).results;
   const out: Record<string, string> = {};

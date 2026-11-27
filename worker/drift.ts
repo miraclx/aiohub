@@ -11,7 +11,7 @@
 import type {Env} from './util';
 import {getSecret, now} from './util';
 import {LINK, deliver, read} from './trakt';
-import {NO_ANSWER, ledger, mdblist, remember, sendingSince} from './carry';
+import {NO_ANSWER, before, ledger, mdblist, remember, sendingSince, unmarks} from './carry';
 import type {Link} from './trakt';
 
 const DAY = 86400, SPAN = 14 * DAY;
@@ -219,9 +219,11 @@ async function fix(env: Env, hub: string, person: string): Promise<{trakt: numbe
   if (!sync?.matching) return {trakt: 0, mdblist: 0};
   // Sent once before: never again, so a play deleted on either side since stays deleted. A play from before sync was turned on
   // goes to Trakt only if they said so (sync.ts, `earlier`); it is taken off the list either way.
-  const [onTrakt, onLists] = [await ledger(env, hub, person, 'trakt'), await ledger(env, hub, person, 'mdblist')];
-  const before = sync.earlier ? 0 : sendingSince(link);
-  const found = {...listed, toTrakt: listed.toTrakt.filter(miss => !onTrakt.has(playKey(miss)) && miss.at >= before), toMdblist: listed.toMdblist.filter(miss => !onLists.has(playKey(miss)))};
+  // Nor a play from before they marked the title unwatched in an app (carry.ts, unmarks): after that Trakt lacks it on purpose,
+  // and MDBList may still list it, or the other way about. Neither side gets it back from the other.
+  const [onTrakt, onLists, gone] = [await ledger(env, hub, person, 'trakt'), await ledger(env, hub, person, 'mdblist'), await unmarks(env, hub, person)];
+  const from = sync.earlier ? 0 : sendingSince(link), kept = (miss: Miss) => !before(gone, missKey(miss), miss.at);
+  const found = {...listed, toTrakt: listed.toTrakt.filter(miss => !onTrakt.has(playKey(miss)) && miss.at >= from && kept(miss)), toMdblist: listed.toMdblist.filter(miss => !onLists.has(playKey(miss)) && kept(miss))};
   const titles: Record<string, Title> = {}, ask = mdblist(env, lists.key);
   let toTrakt = found.toTrakt;
   if (toTrakt.length) {

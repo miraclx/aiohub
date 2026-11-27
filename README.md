@@ -31,7 +31,8 @@ itself and hosts no video.
 - **Their own Trakt and MDBList.** Trakt and MDBList are services that keep a record of what you watch, plus watchlists
   and lists. A person can connect either or both. Connecting gives its rows on Home and sends nothing. Each has one
   Sync switch, off until it is turned on: on, what is watched here goes there as it plays and what is watched elsewhere
-  comes back; off, nothing moves either way. Sync never marks anything as unwatched. One more switch, Watchlist, makes
+  comes back; off, nothing moves either way. Marking something unwatched in an app, with Trakt sync on, takes its plays
+  off Trakt too; unwatching on Trakt's own site or apps does not reach the hub. One more switch, Watchlist, makes
   the titles they save in the apps (the heart or Save button) and their watchlist one list: Trakt's watchlist when Trakt is
   connected, with MDBList following, else MDBList's.
   Their lists and liked lists can be rows on Home.
@@ -191,6 +192,15 @@ Newest first. Dates are the commit dates on `main`.
 
 ### 2026-11-26
 
+- Unwatch something in an app and, with Trakt sync on, its plays leave your Trakt history too (every play of that film or
+  episode; a season or show is each of its episodes, up to 60). It stays unwatched here: older plays Trakt or MDBList still
+  list are not brought back, and watching it again syncs as usual. Unwatching on Trakt's own site or apps does not reach
+  the hub.
+- Once a person has joined, their accounts are theirs alone: a manager sees whether Trakt and MDBList are connected, and
+  can no longer connect or disconnect them. A manager can still remove the person.
+- Home rows say where they come from by one rule: a row from your own account or watching has a pill ("Your Trakt",
+  "What you've watched"), and a row from a public source names it after its kind ("Movies · TMDB"). The two rows of your
+  Trakt lists are now called My lists and Lists I liked.
 - The Sync card is one row a switch: Trakt, MDBList and Watchlist, each with one sentence, and a status line only when
   something is unusual. Watchlist follows one rule for everyone: off, the titles you save stay in the apps; on, they and your
   watchlist are one list (Trakt's when connected, else MDBList's, which no longer happens by itself). A manager can set
