@@ -15,7 +15,7 @@ import type {Env} from './util';
 import {getSecret, now} from './util';
 import {upNextOf, watchedOf} from './rows';
 import type {Item} from './rows';
-import {syncPlayers} from './native';
+import {syncInTurn} from './native';
 import {refreshShelf} from './shelf';
 import type {Synced} from './native';
 
@@ -147,7 +147,11 @@ export async function served(env: Env, hub: string, person: string, id: string, 
   const kinds = kind === 'because' ? [`tmdb:${rest[0] === 'm' ? 'movie' : 'tv'}/${rest.slice(1)}/recommendations?page=1`] : kind === 'series' ? [`tmdb:collection/${rest}`] : rest.split('-').map(show => `tmdb:tv/${show}`);
   const kept = await env.DB.prepare(`SELECT kind, at, items AS body FROM rows_cache WHERE hub = ? AND person = ? AND kind IN (${kinds.map(() => '?').join(', ')})`).bind(hub, TMDB_OWNER, ...kinds).all<{kind: string; at: number; body: string}>();
   const ask: Ask = {env, hub, key, held: new Map(kept.results.map(row => [row.kind, row])), calls: {left: 3}, writes: []};
-  const seen = seenSet(await watchedOf(env, hub, person, false));
+  // An account of theirs that has never answered (rows.ts, watchedOf): what they watched is not known, so nothing is listed
+  // rather than titles they may have watched.
+  const watched = await watchedOf(env, hub, person);
+  if (!watched.known) return [];
+  const seen = seenSet(watched.items);
   let out: Item[] = [];
   if (kind === 'because') out = asItems(unseen(await recommended(ask, rest[0] === 'm' ? 'movie' : 'series', Number(rest.slice(1))) ?? [], type, seen), type);
   else if (kind === 'series') out = asItems(unseen((await series(ask, Number(rest)))?.parts.filter(part => part.d && part.d <= new Date().toISOString().slice(0, 10)) ?? [], 'movie', seen), 'movie');
@@ -290,8 +294,8 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
   // hub's setups still waiting to be brought in step are seen to at any hour. A change before HOUR is picked for as of the day it
   // was last picked, so the day's own picking still comes at HOUR.
   const picking = date.getUTCHours() >= pickHour(env), started = now();
-  const [hubs, groups, people, kept, syncs] = await env.DB.batch([env.DB.prepare('SELECT id, data FROM hubs ORDER BY id'), env.DB.prepare('SELECT hub, id, data FROM groups'), env.DB.prepare('SELECT hub, id, grp, data FROM people ORDER BY hub, created, id'),
-    env.DB.prepare('SELECT hub, person, day, sig, picks, before, never, fresh FROM foryou'), env.DB.prepare('SELECT hub, tries FROM foryou_sync')]);
+  const [hubs, groups, people, kept] = await env.DB.batch([env.DB.prepare('SELECT id, data FROM hubs ORDER BY id'), env.DB.prepare('SELECT hub, id, data FROM groups'), env.DB.prepare('SELECT hub, id, grp, data FROM people ORDER BY hub, created, id'),
+    env.DB.prepare('SELECT hub, person, day, sig, picks, before, never, fresh FROM foryou')]);
   const hubData = new Map((hubs.results as {id: string; data: string}[]).map(row => [row.id, row])), had = new Map((kept.results as (Kept & {hub: string; person: string})[]).map(row => [`${row.hub}/${row.person}`, row]));
   const everyone: Due[] = (people.results as {hub: string; id: string; grp: string; data: string}[]).flatMap(row => {
     const hub = hubData.get(row.hub), group = (groups.results as {hub: string; id: string; data: string}[]).find(item => item.hub === row.hub && item.id === row.grp);
@@ -301,17 +305,9 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
     const on = picking || !before ? day : before.day;
     return [{hub: row.hub, person: row.id, places, sig, settings, before, day: on, due: !(before?.day === on && before.sig === sig)}];
   }), due = everyone.filter(item => item.due);
-  // A hub whose people are all picked for today, and whose picks changed: its setups are brought in step, in a run of its own.
-  for (const pending of syncs.results as {hub: string; tries: number}[]) {
-    if (due.some(item => item.hub === pending.hub)) continue;
-    const hub = hubData.get(pending.hub);
-    const got: Synced = hub ? await syncPlayers(env, hub, '', SYNC_BUDGET).catch(error => ({state: 'error', message: (error as Error).message})) : {state: 'ok'};
-    if (got.state !== 'ok') console.error('foryou sync', got.state, got.more ? 'more' : '');
-    // Still more to do (a few setups a run) is not a failed try; anything else short of done is, and is let go after a few.
-    if (got.state === 'ok' || (!got.more && pending.tries + 1 >= SYNC_TRIES)) await env.DB.prepare('DELETE FROM foryou_sync WHERE hub = ?').bind(pending.hub).run();
-    else await env.DB.prepare('UPDATE foryou_sync SET tries = tries + ?, at = ? WHERE hub = ?').bind(got.more ? 0 : 1, now(), pending.hub).run();
-    return true;
-  }
+  // A hub whose setups are still to be saved again after a try that failed (resend, below; a first try has had its run already,
+  // ahead of everything, unless it waits for someone due here, whom this run then picks for).
+  if (await resend(env, time, false)) return true;
   // Someone's My lists row, worked out again (shelf.ts): one person a run, before the picks.
   if (await refreshShelf(env, people.results as {hub: string; id: string; data: string}[], hub => flag(env, hub))) return true;
   // Whoever has no place on is done at once; then one person a run is picked for; then, with nobody due, one person who just
@@ -339,6 +335,50 @@ export async function forYou(env: Env, time: number): Promise<boolean> {
     env.DB.prepare('DELETE FROM rows_cache WHERE hub = ? AND person = ? AND at < ?').bind(next.hub, TMDB_OWNER, now() - 3 * DAY)]);
   return true;
 }
+/* A hub whose setups are to be saved again (flag, below: its picks changed, a Watchlist switch was turned, an account was
+   connected or removed with no page left open to send it): they are brought in step, in a run of its own. One hub a run, the one
+   waiting longest.
+   - Its first try comes ahead of every cron step that works a person or a hub at a time (index.ts, `early`), so none of them can
+     hold it up. A try that failed is tried again from the day's For you step instead (forYou, below), behind those steps, so
+     AIOMetadata not answering never holds them up in turn.
+   - It never waits on picking for longer than WAITS (a little over one run): a hub flagged within that time, with someone still
+     to pick for, is left for the run after their pick (the day's picking, a person a run, flags it again as each is picked), so
+     a day's picks reach the apps in one go; any other is seen to now. So a flagged hub is in step by the next run or the one
+     after, whoever is still to be picked for.
+   True when it did (it then had the run to itself). */
+const WAITS = 420;
+export async function resend(env: Env, time: number, early: boolean): Promise<boolean> {
+  if (env.FRONT !== 'aiometadata') return false;
+  const waiting = (await env.DB.prepare(`SELECT s.hub, s.tries, s.at, h.data FROM foryou_sync s LEFT JOIN hubs h ON h.id = s.hub${early ? ' WHERE s.tries = 0' : ''} ORDER BY s.at`).all<{hub: string; tries: number; at: number; data: string | null}>()).results;
+  if (!waiting.length) return false;
+  const lately = waiting.filter(row => now() - row.at < WAITS), picking = lately.length ? await dueHubs(env, time) : new Set<string>();
+  const pending = waiting.find(row => !(now() - row.at < WAITS && picking.has(row.hub)));
+  if (!pending) return false;
+  // (Other work on its setups under way, a page's or the hub's own: left for the next run.)
+  const got: Synced | null = pending.data ? await syncInTurn(env, {id: pending.hub, data: pending.data}, '', SYNC_BUDGET).catch(error => ({state: 'error', message: (error as Error).message})) : {state: 'ok'};
+  if (!got) return true;
+  if (got.state !== 'ok') console.error('foryou sync', got.state, got.more ? 'more' : '');
+  // Still more to do (a few setups a run) is not a failed try; anything else short of done is, and is let go after a few. A flag
+  // made again meanwhile (`at` moved on) stays for the next run.
+  if (got.state === 'ok' || (!got.more && pending.tries + 1 >= SYNC_TRIES)) await env.DB.prepare('DELETE FROM foryou_sync WHERE hub = ? AND at = ?').bind(pending.hub, pending.at).run();
+  else await env.DB.prepare('UPDATE foryou_sync SET tries = tries + ? WHERE hub = ? AND at = ?').bind(got.more ? 0 : 1, pending.hub, pending.at).run();
+  return true;
+}
+/* The hubs with someone the day's step (forYou) has yet to pick for, as it sees them. */
+async function dueHubs(env: Env, time: number): Promise<Set<string>> {
+  const date = new Date(time), day = date.toISOString().slice(0, 10), picking = date.getUTCHours() >= pickHour(env);
+  const [hubs, groups, people, kept] = await env.DB.batch([env.DB.prepare('SELECT id, data FROM hubs'), env.DB.prepare('SELECT hub, id, data FROM groups'), env.DB.prepare('SELECT hub, id, grp, data FROM people'), env.DB.prepare('SELECT hub, person, day, sig FROM foryou')]);
+  const had = new Map((kept.results as {hub: string; person: string; day: string; sig: string}[]).map(row => [`${row.hub}/${row.person}`, row])), out = new Set<string>();
+  for (const row of people.results as {hub: string; id: string; grp: string; data: string}[]) {
+    const hub = (hubs.results as {id: string; data: string}[]).find(item => item.id === row.hub), group = (groups.results as {hub: string; id: string; data: string}[]).find(item => item.hub === row.hub && item.id === row.grp);
+    if (!hub || !group) continue;
+    const top = JSON.parse(hub.data) as {rows: Row[]; defaults: Settings}, theirs = JSON.parse(group.data) as {rows: Row[] | null; settings: Partial<Settings>}, own = JSON.parse(row.data) as PersonData;
+    const {places, sig} = placesOf(own, theirs.rows ?? top.rows, {...top.defaults, ...theirs.settings, ...own.settings} as Settings), before = had.get(`${row.hub}/${row.id}`);
+    // Only someone with a place to pick for: anyone else is done in passing, and changes nothing in the apps.
+    if (places.length && !(before?.day === (picking || !before ? day : before.day) && before.sig === sig)) out.add(row.hub);
+  }
+  return out;
+}
 /* What could fill someone's places now, worked out within the run's calls, and the titles they left out for good. */
 async function gather(env: Env, item: Due, time: number) {
   const key = await getSecret<string>(env, item.hub, HUB, 'key:tmdb');
@@ -353,7 +393,7 @@ async function gather(env: Env, item: Due, time: number) {
   const {limit, forYouOff: off = [], forYouBecause} = item.settings, never = read<{seed: string}[]>(item.before?.never, []).map(left => left.seed);
   const following = new Set((limit === 'all' && !off.includes('pickup') ? await upNextOf(env, item.hub, item.person).catch(() => [] as Item[]) : []).map(show => show.tmdb ?? 0));
   // Read as far back as DEEP titles, so older watching can seed a row too (a few pages of Trakt history; MDBList comes whole).
-  const watched = await watchedOf(env, item.hub, item.person, true, DEEP).catch(() => [] as Item[]);
+  const watched: Item[] = (await watchedOf(env, item.hub, item.person, DEEP).catch(() => null))?.items ?? [];
   const {found, none} = await candidates(ask, watched, played, following, country, limit, off, time, never, forYouBecause === 'any').catch(error => {console.error('foryou', (error as Error).message); return {found: [] as Candidate[], none: {}};});
   return {ask, found, none, never};
 }

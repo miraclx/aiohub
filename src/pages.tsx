@@ -261,9 +261,10 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     // Trakt's own reason (its status and error name, never anything secret) goes in the message, so a failure can be told apart.
     if (!got?.access_token || !got.refresh_token) {setPhase(''); return toast(token ? `Trakt didn’t accept that sign-in (${token.status}${said?.error ? ` ${String(said.error).slice(0, 40)}` : ''}). Connect again.` : 'Trakt isn’t answering right now. Connect again in a few minutes.');}
     const me = await patiently(() => fetch(`${TRAKT_API}/users/settings`, {headers: {'content-type': 'application/json', 'trakt-api-version': '2', 'trakt-api-key': client, authorization: `Bearer ${got.access_token}`}}), waiting);
-    const username = String((me?.ok ? await me.json().catch(() => null) as {user?: {username?: string}} | null : null)?.user?.username ?? '');
+    // Their username to show, and Trakt's own stable name for the account (its slug), so the hub knows the same account connected again.
+    const user = (me?.ok ? await me.json().catch(() => null) as {user?: {username?: string; ids?: {slug?: string}}} | null : null)?.user, username = String(user?.username ?? ''), slug = String(user?.ids?.slug ?? '');
     setPhase('connecting');
-    await live!.call('POST', `${at}/link`, {access: got.access_token, refresh: got.refresh_token, lasts: got.expires_in, created: got.created_at, username, redirect})
+    await live!.call('POST', `${at}/link`, {access: got.access_token, refresh: got.refresh_token, lasts: got.expires_in, created: got.created_at, username, slug, redirect})
       .then(() => {toast(username ? `Trakt connected as ${username}` : 'Trakt connected'); live!.apps(); void live!.reload();}, fail(toast));
     setPhase('');
   };
@@ -462,7 +463,7 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
   const watching = live ? on && !!matching?.on : hasTrakt && shown.watching;
   const hearts = live ? person.hearts ?? null : hub.front && (hasTrakt || hasLists) ? {on: shown.hearts} as NonNullable<Person['hearts']> : null;
   const {catching, earlier} = trakt, {copying, stopped} = lists;
-  // The question, once: while they have yet to answer after their own sign-in.
+  // After their own sign-in, until they turn sync on: the Trakt row carries a Recommended tag (never on their manager's view).
   const asking = !!live && mine && on && !!matching?.ask && !matching.on;
   /* Under the Trakt switch. Unusual: told to wait (by Trakt, with the time), not answering, their MDBList key refused, nothing
      taken for three days (with Try again), or paused until Trakt is signed in to again. Otherwise only when it last checked. */
@@ -497,14 +498,10 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
   const anySync = watching || (live ? person.lists : hasLists);
   return <div className="card settings sync-card">
     <div className="setting column"><h3>Sync</h3>
-      {asking && <div className="consent">
-        <p className="ask"><strong>Sync what you watch with Trakt?</strong> What you watch here goes to Trakt, and what you watch in other Trakt apps comes back.</p>
-        <div className="consent-actions"><button type="button" className="primary small" disabled={trakt.busy} onClick={() => void trakt.turn(true)}>Turn on</button>
-          <button type="button" className="link small" disabled={trakt.busy} onClick={() => void trakt.turn(false)}>Not now</button></div>
-      </div>}
     </div>
     {hasTrakt && <div className="setting column sync-row">
-      <div className="switch-row"><h3>Trakt</h3><Switch checked={watching} disabled={!mine || (!!live && !on) || trakt.busy} label="Trakt sync" onChange={value => live ? void trakt.turn(value) : setShown({...shown, watching: value})}/></div>
+      {/* Just connected and not yet turned on: the row itself says sync is the suggested choice, until they turn it on. */}
+      <div className="switch-row"><h3>Trakt{asking && <em className="tag">Recommended</em>}</h3><Switch checked={watching} disabled={!mine || (!!live && !on) || trakt.busy} label="Trakt sync" onChange={value => live ? void trakt.turn(value) : setShown({...shown, watching: value})}/></div>
       <p>Keep what {I} watch the same here and on Trakt.</p>
       {odd ? <p className="status-line" role="status"><span className={`dot ${odd.dot}`} aria-hidden="true"/><span>{odd.text}</span></p>
         : checked ? <p className="quiet">{checked}</p>
@@ -850,6 +847,10 @@ function Background({hub}: {hub: Hub}) {
   const rows = [
     // Each job says what starts it: its times run for everyone in the hub, one person at a time; a play, a change or a press runs
     // for that one person.
+    // A Home change with no page left open to send it (worker/foryou.ts, resend): the hub's setups are saved again by the next
+    // run or the one after, ahead of everything else here. While one waits, since when.
+    ...(hub.front ? [{name: 'Home changes to the apps', every: 'When a Home changes with nobody on the site to send it, within 10 min', last: jobs.syncing && jobs.syncingSince ? `Home changes waiting to reach the apps, since ${time(jobs.syncingSince * 1000)}` : 'Nothing waiting',
+      next: jobs.syncing ? `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'when a Home changes'}] : []),
     {name: 'Trakt sync: here to Trakt', every: 'For everyone with Trakt sync on, every 5 min; for one person as they play', last: `${ran(jobs.last)}${jobs.waiting ? ` · ${jobs.waiting} waiting to send` : ''}`, next: `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
     {name: 'Trakt and MDBList check', every: `For everyone with both Trakt and MDBList sync on, every day at ${time(start)}`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next run ${day(daily)}`},
     // Trakt sync (worker/sync.ts): in the same five-minute run, one person each run, so each is looked at about every 20 minutes,
@@ -873,10 +874,11 @@ function Background({hub}: {hub: Hub}) {
     // each person watched, one person a run and once a day each, in a run with nothing else to do. It asks TMDB with the hub's key.
     {name: 'Recommended rows', every: `For everyone with a Recommended row on Home, every day from ${time(start)}`, last: `${ran(jobs.recsAt ?? null)}${jobs.recs ? ` · ${jobs.recs} ${jobs.recs === 1 ? 'person' : 'people'}` : ''}`,
       next: !hub.tmdb ? 'once the hub has a TMDB key' : typeof jobs.recsDue === 'number' ? (jobs.recsDue + 86_400) * 1000 > now ? `next run ${day((jobs.recsDue + 86_400) * 1000)}` : 'under way' : hub.people.length ? `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'once someone is added'},
-    // Up Next and New for you for people without Trakt (worker/ahead.ts): which episodes and watchlist films have come out, looked
-    // up one person a run and once a day each, in a run with nothing else to do, and again after they finish something. It asks
-    // TMDB with the hub's key. With Trakt connected the two rows are Trakt's and need none of this.
-    {name: 'Up Next and New for you', every: `For everyone without Trakt who has either row on Home, every day from ${time(start)}; for one person after they finish something, from that hour`, last: `${ran(jobs.aheadAt ?? null)}${jobs.aheads ? ` · ${jobs.aheads} ${jobs.aheads === 1 ? 'person' : 'people'}` : ''}`,
+    // Up Next and New for you as far as the hub works them out (worker/ahead.ts): which episodes and watchlist films have come
+    // out, looked up one person a run and once a day each, in a run with nothing else to do, and again after they finish
+    // something. It asks TMDB with the hub's key. For people without Trakt it is all of both rows; for people with Trakt, only
+    // what their MDBList or their watching here adds to Trakt's own, and nothing for someone with neither.
+    {name: 'Up Next and New for you', every: `For everyone who has either row on Home and watches something Trakt does not know of, every day from ${time(start)}; for one person after they finish something, from that hour`, last: `${ran(jobs.aheadAt ?? null)}${jobs.aheads ? ` · ${jobs.aheads} ${jobs.aheads === 1 ? 'person' : 'people'}` : ''}`,
       next: !hub.tmdb ? 'once the hub has a TMDB key' : typeof jobs.aheadDue === 'number' ? (jobs.aheadDue + 86_400) * 1000 > now ? `next run ${day((jobs.aheadDue + 86_400) * 1000)}` : 'under way' : 'once someone turns one on'},
   ];
   return <section>
@@ -1003,7 +1005,7 @@ export function SetupPage({hub, go, update, toast, live, signedIn, needCode, lin
       const person = newPerson({...hub, people: []}, text, group.id);
       const finish = () => {
         update(next => {
-          next.defaults = {...defaultSettings(), quality, debrid: service}; next.rows = defaultRows(); next.groups = [group]; next.people = [person];
+          next.defaults = {...defaultSettings(), quality, debrid: service}; next.rows = defaultRows(!!next.front); next.groups = [group]; next.people = [person];
           if (!live) {next.services = [service]; next.me.name = user.trim() || next.me.name;}
         });
         toast('You’re set up'); go(`/person/${person.id}/settings`);

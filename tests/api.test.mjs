@@ -81,6 +81,9 @@ test('sign-up needs the setup code, then the site is full', async () => {
   assert.equal((await owner('POST', '/api/signup', {password: 'correct horse', code: 'local-claim', hub: 'vanity', proof: offer.proof})).status, 400);
   assert.equal((await owner('POST', '/api/signup', {password: 'correct horse', code: 'local-claim', hub: 'vanity'})).status, 400);
   assert.equal((await owner('POST', '/api/signup', {password: 'correct horse', code: 'local-claim', hub: offer.hub, proof: offer.proof})).status, 200);
+  // The Home a new hub starts with (no For you places here: nothing fills them without AIOMetadata in front).
+  assert.deepEqual((await owner('GET', '/api/state')).body.hub.rows.map(row => `${row.id}${row.on ? '' : ' off'}`), ['new-for-you', 'watchlist', 'recommended-movies', 'recommended-series', 'trending-movies', 'trending-series', 'movies-by-service', 'shows-by-service',
+    'movies-by-genre', 'shows-by-genre', 'mixed-genre', 'top-movies', 'top-series', 'recently-watched', 'up-next off', 'popular-movies off', 'popular-series off']);
   assert.equal((await stranger('POST', '/api/signup', {password: 'correct horse', code: 'local-claim'})).status, 403);
   assert.deepEqual((await stranger('GET', '/api/open')).body, {signup: false, code: true});
 });
@@ -573,7 +576,7 @@ test('Trakt: a checked connection gives that person their own rows, and only a d
   const state = (await owner('GET', '/api/state')).body; assert.equal(state.hub.people.find(person => person.id === 'ben').trakt, true); assert.ok(!JSON.stringify(state).includes('trakt-token-id-0001'));
   assert.deepEqual((await owner('POST', '/api/sync', {})).body, {state: 'ok'});
   const home = mine().config; assert.equal(home.apiKeys.traktTokenId, 'trakt-token-id-0001'); assert.equal(home.hideWatchedTrakt, false);
-  assert.deepEqual(home.catalogs.slice(0, 3).map(row => [row.id, row.type, row.source, row.enabled]), [['trakt.watchlist', 'all', 'trakt', true], ['trakt.recommendations.movies', 'movie', 'trakt', true], ['trakt.recommendations.shows', 'series', 'trakt', true]]);
+  assert.deepEqual(home.catalogs.slice(0, 4).map(row => [row.id, row.type, row.source, row.enabled]), [['trakt.unwatched', 'series', 'trakt', true], ['trakt.watchlist', 'all', 'trakt', true], ['trakt.recommendations.movies', 'movie', 'trakt', true], ['trakt.recommendations.shows', 'series', 'trakt', true]]);
   assert.equal([...fake.homes.values()].filter(item => item.config.apiKeys.traktTokenId).length, 1, 'nobody else gets the connection');
   // His own rows get real posters on the site as well; a row he does not have is not there for someone else.
   assert.deepEqual((await owner('GET', '/api/previews?person=ben')).body.rows.watchlist, ['https://img.example/1.jpg', 'https://img.example/2.jpg']); assert.equal((await owner('GET', '/api/previews')).body.rows.watchlist, undefined);

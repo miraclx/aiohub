@@ -560,6 +560,19 @@ export async function previews(site: Env, hub: {id: string; data: string}, perso
   return out;
 }
 
+/* One piece of work on a hub's setups at a time. Two at once can each make or save the same setup and leave the hub holding
+   the password of one and the address of the other. A page asking (`patient`) waits a few seconds for the one under way, then
+   goes ahead as it always did; the hub's own work (after an account change, or from the cron) leaves it for later instead:
+   null. The claim is kept by hub (rows_cache) and counts for a minute, should whoever made it never come back. */
+const AT_IT = 'syncing', NOBODY = '#sync', HELD_FOR = 60, PATIENCE = 12;
+export async function syncInTurn(env: Env, hub: {id: string; data: string}, origin = '', most = 30, patient = false): Promise<Synced | null> {
+  const claim = () => env.DB.prepare("INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?1, ?2, ?3, ?4, '') ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at WHERE rows_cache.at <= ?4 - ?5").bind(hub.id, NOBODY, AT_IT, now(), HELD_FOR).run();
+  let mine = !!(await claim()).meta.changes;
+  for (let n = 0; !mine && patient && n < PATIENCE; n++) {await new Promise(done => setTimeout(done, 300)); mine = !!(await claim()).meta.changes;}
+  if (!mine && !patient) return null;
+  try {return await syncPlayers(env, hub, origin, most);}
+  finally {if (mine) await env.DB.prepare('DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub.id, NOBODY, AT_IT).run().catch(() => null);}
+}
 /* Brings the hub's setups in step with the site: the debrid account, sources, stream label, who can sign in, everyone's Home, and
    what each group and person has changed for themselves. */
 export async function syncPlayers(site: Env, hub: {id: string; data: string}, origin = '', most = 30): Promise<Synced> {

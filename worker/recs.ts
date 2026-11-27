@@ -1,7 +1,7 @@
 /* Recommended Movies and Recommended Shows without Trakt, and under a content limit.
    With Trakt connected and answering, and no content limit, the two rows are Trakt's own recommendations (rows.ts). Otherwise they
    are worked out here the way For you's "because you watched" is: TMDB's recommendations for the last SEEDS titles the person
-   watched (their Trakt, their MDBList and what they played here, as one list: watchedOf in rows.ts), a title from each in turn,
+   watched (their Trakt, their MDBList and what they finished here, as one list: watchedOf in rows.ts), a title from each in turn,
    less anything they watched or have on a watchlist. It blends them and names none. Nothing watched: nothing listed.
    Under a content limit a title is listed only once TMDB says it carries a US rating the limit lets through (CERTS in data.ts);
    one with no rating, or one not looked up yet, is left out, and so is anything TMDB marks adult, whatever the limit. That goes
@@ -61,13 +61,17 @@ const certOf = (ask: Ask, type: 'movie' | 'series', id: number) => type === 'mov
 export interface Scan {
   tops: Map<string, {rows: Row[]; defaults: Settings}>; groups: {hub: string; id: string; data: string}[]; people: {hub: string; id: string; grp: string; data: string}[];
   kept: Map<string, {hub: string; person: string; kind: string; at: number; made: string | null}>; linked: Set<string>;
+  // By hub and person: who keeps an MDBList key of their own, and whose Trakt sync is on (ahead.ts).
+  keyed: Set<string>; synced: Set<string>;
 }
 export async function scan(env: Env): Promise<Scan> {
-  const [hubs, groups, people, had, links] = await env.DB.batch([env.DB.prepare('SELECT id, data FROM hubs'), env.DB.prepare('SELECT hub, id, data FROM groups'), env.DB.prepare('SELECT hub, id, grp, data FROM people ORDER BY hub, created, id'),
-    env.DB.prepare("SELECT hub, person, kind, at, json_extract(items, '$.limit') AS made FROM rows_cache WHERE kind IN (?, ?)").bind(RECS, AHEAD), env.DB.prepare('SELECT hub, owner FROM secrets WHERE kind = ?').bind(LINK)]);
+  const [hubs, groups, people, had, links, syncs] = await env.DB.batch([env.DB.prepare('SELECT id, data FROM hubs'), env.DB.prepare('SELECT hub, id, data FROM groups'), env.DB.prepare('SELECT hub, id, grp, data FROM people ORDER BY hub, created, id'),
+    env.DB.prepare("SELECT hub, person, kind, at, json_extract(items, '$.limit') AS made FROM rows_cache WHERE kind IN (?, ?)").bind(RECS, AHEAD), env.DB.prepare("SELECT hub, owner, kind FROM secrets WHERE kind IN (?, 'mdblist')").bind(LINK), env.DB.prepare('SELECT hub, person FROM sync WHERE matching = 1')]);
+  const secrets = links.results as {hub: string; owner: string; kind: string}[];
   return {tops: new Map((hubs.results as {id: string; data: string}[]).map(row => [row.id, JSON.parse(row.data) as {rows: Row[]; defaults: Settings}])), groups: groups.results as Scan['groups'], people: people.results as Scan['people'],
     kept: new Map((had.results as {hub: string; person: string; kind: string; at: number; made: string | null}[]).map(row => [`${row.hub}/${row.person}/${row.kind}`, row])),
-    linked: new Set(env.TRAKT_CLIENT_ID ? (links.results as {hub: string; owner: string}[]).map(row => `${row.hub}/${row.owner}`) : [])};
+    linked: new Set(env.TRAKT_CLIENT_ID ? secrets.filter(row => row.kind === LINK).map(row => `${row.hub}/${row.owner}`) : []), keyed: new Set(secrets.filter(row => row.kind === 'mdblist').map(row => `${row.hub}/${row.owner}`)),
+    synced: new Set((syncs.results as {hub: string; person: string}[]).map(row => `${row.hub}/${row.person}`))};
 }
 /* The UTC hour from which the day's two steps run (RECS_HOUR, else 4). */
 export const dayHour = (env: Env) => Number(env.RECS_HOUR ?? HOUR);
@@ -98,7 +102,9 @@ export async function recommend(env: Env, when: number, all?: Scan): Promise<boo
     env.DB.prepare("SELECT kind, items FROM rows_cache WHERE hub = ? AND person = ? AND kind IN (?, 'movies', 'shows')").bind(hub, person, RECS)]);
   const of = (kind: string) => (mine.results as {kind: string; items: string}[]).find(row => row.kind === kind)?.items, before = read(of(RECS));
   const ask: Ask = {env, hub, key: key ?? '', held: new Map((cache.results as {kind: string; at: number; body: string}[]).map(row => [row.kind, row])), calls: {left: key ? CALLS : 0}, writes: []};
-  const watched = await watchedOf(env, hub, person, true).catch(() => [] as Item[]), seeds = watched.filter(item => item.tmdb).slice(0, SEEDS);
+  // What they watched (rows.ts, watchedOf). An account of theirs that has never answered: what is here is not all of it, so
+  // nothing is worked out from it (what was kept stays) and it is tried again sooner.
+  const theirs = await watchedOf(env, hub, person).catch(() => null), watched: Item[] = theirs?.known ? theirs.items : [], seeds = watched.filter(item => item.tmdb).slice(0, SEEDS);
   // Left out: what they watched, and what is on their watchlist already.
   const seen = seenSet([...watched, ...(seeds.length ? await listedOf(env, hub, person).catch(() => [] as Item[]) : [])]);
   const lists: Record<'movie' | 'series', Item[][]> = {movie: [], series: []};
@@ -109,7 +115,7 @@ export async function recommend(env: Env, when: number, all?: Scan): Promise<boo
     for (let n = 0; n < 20 && out.length < MOST; n++) for (const list of from) if (list[n] && !had.has(list[n].id) && out.length < MOST) {had.add(list[n].id); out.push(list[n]);}
     return out;
   };
-  const built: Built = {limit, movie: blend(lists.movie), series: blend(lists.series), certs: before.certs, ran: time};
+  const built: Built = theirs?.known === false ? {...before, limit, ran: time} : {limit, movie: blend(lists.movie), series: blend(lists.series), certs: before.certs, ran: time};
   let more = false;
   if (limit !== 'all') {
     // Ratings, for Trakt's own first and then these, a movie and a show in turn so neither row waits for the other.

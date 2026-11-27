@@ -1,13 +1,14 @@
 // The site's own API: managers' accounts, the hub they run, and what an invited person may change about themselves.
 // What reaches the streaming server goes through ./native.
 import {NO_ANSWER, carry, earlierPlays, mdblist, plan, sendingSince, synced} from './carry';
+import type {Earlier} from './carry';
 import {skip, skippedOf} from './drift';
 import {FOR_YOU_KINDS, PICKABLE, SHELF_TITLES, WAS, current as currentRows, defaultAddons, defaultRows, defaultSettings, isPlace, pickable, slug, traktRows} from '../src/data';
 import type {Addon, Hub, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
-import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncPlayers} from './native';
+import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncInTurn} from './native';
 import {forgetHub, forgetSeats} from './front';
-import {LINK, answered, brief, deliver, disconnect, forgetTrakt, keepLink, links, read, stopSending, syncOn, traktWait} from './trakt';
+import {EARLIER, LINK, answered, brief, deliver, disconnect, forgetTrakt, keepLink, links, read, stopSending, syncOn, traktWait} from './trakt';
 import type {Link} from './trakt';
 import {pass, turnEvery} from './sync';
 import {clearFound, forgetHearts, foundOf, heartsOn, mayHeart, noteHearts, turnHearts} from './hearts';
@@ -187,7 +188,7 @@ async function state(env: Env, who: Who) {
     env.DB.prepare(`SELECT (SELECT at FROM runs WHERE job = 'cron') AS last, (SELECT count FROM runs WHERE job = 'cron') AS runs, (SELECT since FROM runs WHERE job = 'cron') AS since,
       (SELECT max(at) FROM drift WHERE hub = ?1 AND work IS NULL AND result IS NOT NULL) AS ran, (SELECT count(*) FROM trakt_outbox WHERE hub = ?1) AS waiting,
       (SELECT max(day) FROM drift WHERE hub = ?1 AND work IS NULL) AS checked, (SELECT count(*) FROM drift WHERE hub = ?1 AND day = (SELECT max(day) FROM drift WHERE hub = ?1) AND work IS NULL) AS people, (SELECT count(*) FROM drift WHERE hub = ?1 AND work IS NOT NULL) AS checking,
-      (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing, (SELECT max(json_extract(items, '$.ran')) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recsAt, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recs, (SELECT min(at) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recsDue, (SELECT max(json_extract(items, '$.ran')) FROM rows_cache WHERE hub = ?1 AND kind = 'ahead') AS aheadAt, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'ahead') AS aheads, (SELECT min(at) FROM rows_cache WHERE hub = ?1 AND kind = 'ahead') AS aheadDue, (SELECT max(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelved, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelves, (SELECT max(good) FROM sync WHERE hub = ?1 AND matching = 1) AS matched, (SELECT count(*) FROM sync WHERE hub = ?1 AND matching = 1) AS matching, (SELECT max(good) FROM favs WHERE hub = ?1) AS hearted, (SELECT count(*) FROM favs f WHERE f.hub = ?1 AND EXISTS (SELECT 1 FROM secrets s WHERE s.hub = f.hub AND s.owner = f.person AND s.kind = ?3)) AS hearting, (SELECT count(*) FROM sync y JOIN secrets s ON s.hub = y.hub AND s.owner = y.person AND s.kind = ?3 WHERE y.matching = 1) AS syncAll, (SELECT max(lists_at) FROM drift WHERE hub = ?1) AS listed, (SELECT count(*) FROM people p JOIN secrets s ON s.hub = p.hub AND s.owner = p.id AND s.kind = 'mdblist' WHERE p.hub = ?1 AND json_extract(p.data, '$.lists') = 1) AS listers, (SELECT min(c.at) FROM rows_cache c JOIN people p ON p.hub = c.hub AND p.id = c.person WHERE c.hub = ?1 AND c.kind = 'shelf' AND EXISTS (SELECT 1 FROM json_each(p.data, '$.rows') r WHERE json_extract(r.value, '$.id') IN ('trakt-lists', 'trakt-liked-lists') AND json_extract(r.value, '$.on') = 1)) AS shelfDue`).bind(hub.id, new Date().toISOString().slice(0, 10), LINK),
+      (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing, (SELECT min(at) FROM foryou_sync WHERE hub = ?1) AS syncingSince, (SELECT max(json_extract(items, '$.ran')) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recsAt, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recs, (SELECT min(at) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recsDue, (SELECT max(json_extract(items, '$.ran')) FROM rows_cache WHERE hub = ?1 AND kind = 'ahead') AS aheadAt, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'ahead') AS aheads, (SELECT min(at) FROM rows_cache WHERE hub = ?1 AND kind = 'ahead') AS aheadDue, (SELECT max(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelved, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelves, (SELECT max(good) FROM sync WHERE hub = ?1 AND matching = 1) AS matched, (SELECT count(*) FROM sync WHERE hub = ?1 AND matching = 1) AS matching, (SELECT max(good) FROM favs WHERE hub = ?1) AS hearted, (SELECT count(*) FROM favs f WHERE f.hub = ?1 AND EXISTS (SELECT 1 FROM secrets s WHERE s.hub = f.hub AND s.owner = f.person AND s.kind = ?3)) AS hearting, (SELECT count(*) FROM sync y JOIN secrets s ON s.hub = y.hub AND s.owner = y.person AND s.kind = ?3 WHERE y.matching = 1) AS syncAll, (SELECT max(lists_at) FROM drift WHERE hub = ?1) AS listed, (SELECT count(*) FROM people p JOIN secrets s ON s.hub = p.hub AND s.owner = p.id AND s.kind = 'mdblist' WHERE p.hub = ?1 AND json_extract(p.data, '$.lists') = 1) AS listers, (SELECT min(c.at) FROM rows_cache c JOIN people p ON p.hub = c.hub AND p.id = c.person WHERE c.hub = ?1 AND c.kind = 'shelf' AND EXISTS (SELECT 1 FROM json_each(p.data, '$.rows') r WHERE json_extract(r.value, '$.id') IN ('trakt-lists', 'trakt-liked-lists') AND json_extract(r.value, '$.on') = 1)) AS shelfDue`).bind(hub.id, new Date().toISOString().slice(0, 10), LINK),
     // Who has played something here: their Recently Watched has something in it even without Trakt or MDBList.
     env.DB.prepare('SELECT DISTINCT person FROM plays WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
     // What each For you place holds today, by name and what it came from (the manager sees them on that person's Home tab), the
@@ -452,7 +453,7 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       if (!access || !refresh || (redirect && !/^https?:\/\/[^/]+\/api\/trakt\/callback$/.test(redirect))) bad(400, 'Trakt did not finish connecting. Try again.');
       // Whether it is synced is theirs to say, on their own page, and asked anew for each connection (the sync row goes, so it is
       // off): a person who signed in themselves is asked there at once; one connected by their manager sees "Turn on" there.
-      await keepLink(env, hub, id, {access, refresh, expires: Math.floor(Number(body.created) || now()) + Math.floor(Number(body.lasts) || 7 * 86400), username: text(body.username ?? '', 80, 'Name').trim(), ...(redirect ? {redirect} : {}), ...(who.person === id ? {ask: true} : {})});
+      await keepLink(env, hub, id, {access, refresh, expires: Math.floor(Number(body.created) || now()) + Math.floor(Number(body.lasts) || 7 * 86400), username: text(body.username ?? '', 80, 'Name').trim(), ...(text(body.slug ?? '', 80, 'Name').trim() ? {slug: text(body.slug ?? '', 80, 'Name').trim()} : {}), ...(redirect ? {redirect} : {}), ...(who.person === id ? {ask: true} : {})});
       // Favorites from the watchlist too (hearts.ts): off for a new connection, which may be another Trakt account, and its ledger with it.
       await env.DB.batch([env.DB.prepare('DELETE FROM sync WHERE hub = ? AND person = ?').bind(hub, id), ...forgetHearts(env, hub, id)]);
       forgetSeats(hub, id);
@@ -477,16 +478,28 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     if (!link) bad(409, 'Connect Trakt first.');
     // What the hub synced for them lately, for What was synced on the Trakt card.
     if (request.method === 'GET' && rest === 'synced') return {synced: await synced(env, hub, id)};
-    // What they watched here before sync was turned on (everything up to now, while it is off), for the tick that offers to send
-    // it too: how many, and each one (the newest hundred), from the plays kept here.
-    if (request.method === 'GET' && !rest) {const plays = await earlierPlays(env, hub, id, link!, await syncOn(env, hub, id) ? sendingSince(link!) : now(), await skippedOf(env, hub, id)); return {earlier: plays.length, plays: plays.slice(0, 100)};}
+    // What they finished here before sync was turned on, for the line that offers to send it too: how many, and each one (the
+    // newest hundred). With sync on (the only time their page asks, and shows it) every one Trakt already has is left out: Trakt
+    // is asked once, and what was found is kept an hour by hub and person (let go when sync is turned, Trakt is connected again,
+    // or some are sent or passed over). Trakt not answering: nothing is offered, and nothing is kept. With sync off (nothing
+    // of theirs is read from Trakt then) it is everything up to now, from the plays kept here alone.
+    if (request.method === 'GET' && !rest) {
+      const on = await syncOn(env, hub, id), since = on ? sendingSince(link!) : now(), time = now();
+      const kept = on ? await env.DB.prepare('SELECT at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, id, EARLIER).first<{at: number; items: string}>() : null;
+      let had: {since: number; plays: Earlier[]} | null = null;
+      try {had = kept && time - kept.at < 3600 ? JSON.parse(kept.items) as {since: number; plays: Earlier[]} : null;} catch {had = null;}
+      const plays = had?.since === since ? had.plays : await earlierPlays(env, hub, id, link!, since, await skippedOf(env, hub, id), on);
+      if (!plays) return {earlier: 0, plays: []};
+      if (on && had?.since !== since) await env.DB.prepare('INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, ?, ?) ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at, items = excluded.items').bind(hub, id, EARLIER, time, JSON.stringify({since, plays})).run();
+      return {earlier: plays.length, plays: plays.slice(0, 100)};
+    }
     // "Not now" to adding what they watched here before sync was turned on: kept against this turning on, so the same plays
     // are not offered again (a later turning on offers its own). Nothing is sent and nothing else changes.
-    if (request.method === 'POST' && rest === 'later') {await env.DB.prepare('UPDATE sync SET passed = ? WHERE hub = ? AND person = ?').bind(sendingSince(link!), hub, id).run(); return {};}
+    if (request.method === 'POST' && rest === 'later') {await env.DB.batch([env.DB.prepare('UPDATE sync SET passed = ? WHERE hub = ? AND person = ?').bind(sendingSince(link!), hub, id), forgetEarlier(env, hub, id)]); return {};}
     if (request.method === 'POST' && rest === 'pass') {
       const got = await pass(env, hub, id, (JSON.parse(row.data) as PersonData).lists);
       // Looked at again next time: what was just sent is on the other side now.
-      await forgetShown(env, hub, id).run();
+      await env.DB.batch([forgetShown(env, hub, id), forgetEarlier(env, hub, id)]);
       return 'error' in got ? refuse(env, hub, id, got) : got;
     }
     if (request.method === 'POST' && !rest) {
@@ -496,7 +509,7 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
       await answered(env, hub, id, on && !was);
       // Next Up starts over with it (sync.ts, nextUp: the latest episode of each show watched on Trakt lately; what was ticked
       // before is never ticked twice): what it kept goes, unless sync was on already.
-      await env.DB.batch([env.DB.prepare("DELETE FROM rows_cache WHERE hub = ?1 AND person = ?2 AND kind = 'backfill' AND NOT EXISTS (SELECT 1 FROM sync WHERE hub = ?1 AND person = ?2 AND matching = 1)").bind(hub, id),
+      await env.DB.batch([forgetEarlier(env, hub, id), env.DB.prepare("DELETE FROM rows_cache WHERE hub = ?1 AND person = ?2 AND kind = 'backfill' AND NOT EXISTS (SELECT 1 FROM sync WHERE hub = ?1 AND person = ?2 AND matching = 1)").bind(hub, id),
         env.DB.prepare(`INSERT INTO sync (hub, person, matching, earlier) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (hub, person) DO UPDATE SET matching = excluded.matching, earlier = excluded.earlier,
         stamps = CASE WHEN sync.matching = 0 THEN NULL ELSE sync.stamps END, checked = 0, failing = NULL, why = NULL`).bind(hub, id, on ? 1 : 0, earlier ? 1 : 0),
         // Off: what was still waiting to reach Trakt is dropped with it (trakt.ts, stopSending), in the same write.
@@ -739,6 +752,7 @@ async function ownLists(env: Env, hub: string, id: string): Promise<{lists: OwnL
 /* A My lists row to be worked out again on the next run (refreshShelf takes anything a day old): its time goes to 0, or one
    with nothing yet is made so. What it holds stays until then. */
 /* The same when their MDBList key is saved or removed, for a row worked out before: its MDBList lists come or go on the next run. */
+const forgetEarlier = (env: Env, hub: string, id: string) => env.DB.prepare('DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, id, EARLIER);
 const shelfDue = (env: Env, hub: string, id: string) => env.DB.prepare('UPDATE rows_cache SET at = 0 WHERE hub = ? AND person = ? AND kind = ?').bind(hub, id, SHELF);
 const shelfAgain = (env: Env, hub: string, id: string) => env.DB.prepare("INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, 0, '[]') ON CONFLICT (hub, person, kind) DO UPDATE SET at = 0").bind(hub, id, SHELF).run();
 
@@ -757,7 +771,7 @@ async function signUp(request: Request, env: Env, body: Body) {
   // Only a code the site itself issued is accepted back; nobody gets to choose theirs.
   if (body.hub !== undefined && !await same(String(body.proof ?? ''), await stamp(env, `hub:${String(body.hub)}`))) bad(400, 'That did not work. Refresh the page and try again.');
   const password = cleanPassword(body.password), id = newId(), hub = newId(), code = body.hub === undefined ? newCode() : String(body.hub);
-  const data: HubData = {host: 'ForTheWeak', hostUrl: '', services: [], addons: defaultAddons(), defaults: defaultSettings(), rows: defaultRows()};
+  const data: HubData = {host: 'ForTheWeak', hostUrl: '', services: [], addons: defaultAddons(), defaults: defaultSettings(), rows: defaultRows(env.FRONT === 'aiometadata')};
   const pass = await hashPassword(password);
   await env.DB.batch([
     env.DB.prepare('INSERT INTO accounts (id, username, name, pass, created) VALUES (?, ?, ?, ?, ?)').bind(id, code, '', pass, now()),
@@ -991,7 +1005,21 @@ async function removeHub(request: Request, env: Env, who: Who, body: Body) {
   return {};
 }
 
-export async function api(request: Request, env: Env, url: URL): Promise<Response> {
+/* A change to one person's accounts that changes their rows (Trakt connected or removed, an MDBList key saved or removed, their
+   Watchlist switch turned): the hub's setups are flagged to be saved again (foryou.ts, flag) before it is answered. A page that is
+   open saves them at once, as ever (POST /api/sync), and lets the flag go. With no page, the hub does it itself a few seconds
+   on (PUSH_AFTER, within the same request's time), if the flag is still there: no cron run needed. The setups are saved as one
+   piece of work for the hub (native.ts), which writes only a setup that changed, so this is that person's alone; within a few
+   calls (PUSH), the rest left to the cron (foryou.ts, resend), as is everything when other work on the setups is under way. */
+const PUSHED = /^(scrobble(\/link)?|mdblist(\/key)?|favorites)$/, PUSH = 16, PUSH_AFTER = 4000;
+async function pushed(env: Env, hub: string, origin: string, at: number) {
+  await new Promise(done => setTimeout(done, PUSH_AFTER));
+  const row = await env.DB.prepare('SELECT h.id, h.data FROM foryou_sync s JOIN hubs h ON h.id = s.hub WHERE s.hub = ?').bind(hub).first<{id: string; data: string}>();
+  if (!row) return;
+  const got = await syncInTurn(env, row, origin, PUSH).catch(() => null);
+  if (got?.state === 'ok' && !got.more) await env.DB.prepare('DELETE FROM foryou_sync WHERE hub = ? AND at <= ?').bind(hub, at).run();
+}
+export async function api(request: Request, env: Env, url: URL, ctx?: ExecutionContext): Promise<Response> {
   try {
     const path = url.pathname.slice(5).split('/').map(decodeURIComponent), [first, second, third, fourth] = path, method = request.method;
     // Anything that changes something must come from this site's own pages.
@@ -1042,7 +1070,12 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     if (!who) return reply({message: 'Sign in first'}, 401);
     // Anyone signed in may ask for the players to be brought in step; what is sent comes only from what the hub has stored.
     if (first === 'lists' && method === 'POST') return reply(await findList(env, who, body));
-    if (first === 'sync' && method === 'POST') return reply(await syncPlayers(env, who.hub, url.origin));
+    // (One piece of work on a hub's setups at a time; done, nothing is left for the hub to send by itself: pushed, above.)
+    if (first === 'sync' && method === 'POST') {
+      const at = now(), got = (await syncInTurn(env, who.hub, url.origin, 30, true))!;
+      if (got.state === 'ok' && !got.more && env.FRONT === 'aiometadata') await env.DB.prepare('DELETE FROM foryou_sync WHERE hub = ? AND at <= ?').bind(who.hub.id, at).run();
+      return reply(got);
+    }
     // An invited person gets their own rows; the manager can ask for anyone's.
     if (first === 'previews' && method === 'GET') {
       // A group's Home as someone in it starts with comes from the group's own setup (see homes in native.ts), for its manager.
@@ -1067,7 +1100,14 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
       return reply({now: time, sittings, downloads: downs.results});
     }
     if (first === 'state' && method === 'GET') return reply(await state(env, who) ?? bad(401, 'Sign in first'));
-    if (first === 'people' && second && third) return reply(await personAction(request, env, who, second, third, fourth, body, url.origin));
+    if (first === 'people' && second && third) {
+      const done = await personAction(request, env, who, second, third, fourth, body, url.origin);
+      if (ctx && env.FRONT === 'aiometadata' && method !== 'GET' && PUSHED.test([third, fourth].filter(Boolean).join('/'))) {
+        const at = now(); await setupsDue(env, who.hub.id).run();
+        ctx.waitUntil(pushed(env, who.hub.id, url.origin, at).catch(error => console.error('push', (error as Error).message)));
+      }
+      return reply(done);
+    }
     if (first === 'people' && second && method === 'PUT') return reply(await savePerson(env, who, second, body));
     if (who.person) bad(403, 'Not allowed');
     if (first === 'hub' && method === 'PUT') return reply(await saveHub(env, who, body));

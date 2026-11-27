@@ -12,12 +12,12 @@
    Trakt's history takes finished watches only: a part-watched title goes to Trakt as a paused point (/scrobble/pause, under 80%,
    dated when it is sent), unless Trakt already holds a point for it. */
 import type {Env} from './util';
-import {getSecret, now} from './util';
+import {FINISHED, getSecret, now} from './util';
 import {LINK, deliver, read, syncOn} from './trakt';
 import type {Link} from './trakt';
 import {SAME, traktPlays} from './drift';
 
-import {server} from './here';
+import {server, unpacked} from './here';
 import type {Ids, Via} from './here';
 export type Cell = 'has' | 'add' | 'none';
 // item: its id on their own server, which is also the play's id here.
@@ -109,30 +109,50 @@ export async function synced(env: Env, hub: string, person: string) {
    someone who turned it on before that was kept). A play here from before then is an earlier play. */
 export const sendingSince = (link: Link) => link.on ?? link.since ?? 0;
 /* A play Trakt was told of as it happened, under this connection: `scrobbled` is set ('held' is a start still held back,
-   front.ts, so nothing was sent), and it was played since the link was made (one from before may be from another account). */
+   front.ts, so nothing was sent), and it was played since the link was made (one from before may be from another account;
+   connecting the same Trakt account again keeps the earlier moment: trakt.ts, keepLink). */
 const toldLive = (play: {scrobbled: string | null; updated: number} | undefined, link: Link) => !!play?.scrobbled && play.scrobbled !== 'held' && (!link.since || play.updated >= link.since);
-/* What they watched here before sync was turned on (`since`: sendingSince, or now while it is off), newest first, as the
-   question lists it: from the plays kept here (title and
-   date), with no call to their server or to Trakt. The same plays a pass looks at (the newest 500, `plan`), less what was played
-   under 1%, what was marked unwatched in an app since (front.ts, unmarked), what Trakt was told of as it played (sync was on then), what was sent to Trakt before (by the play's id here, kept
-   with what was sent), and what is known to have been left
-   out. What is really sent can still be fewer: Trakt may already have a play, their server may no longer hold a title as watched,
-   and one left out before Trakt's ids for it were looked up is not known here. */
-export async function earlierPlays(env: Env, hub: string, person: string, link: Link, since: number, skip: Set<string>) {
-  const rows = (await env.DB.prepare('SELECT item, title, detail, position, duration, updated, ids, scrobbled FROM plays WHERE hub = ? AND person = ? AND unwatched = 0 ORDER BY updated DESC LIMIT 500').bind(hub, person).all<{item: string; title: string; detail: string; position: number; duration: number; updated: number; ids: string | null; scrobbled: string | null}>()).results;
-  const early = rows.filter(row => row.updated < since && row.duration > 0 && row.position * 100 >= row.duration && !toldLive(row, link));
+/* What they finished here before sync was turned on (`since`: sendingSince, or now while it is off), newest first, as the offer
+   lists it: from the plays kept here (title and date). The same plays a pass looks at (the newest 500, `plan`), and of them only
+   what was played to the end (util.ts, FINISHED: a spot it was left at is never offered as watched), less what was marked
+   unwatched in an app since (front.ts, unmarked), what Trakt was told of as it played (sync was on then), what was sent to Trakt
+   before (by the play's id here, kept with what was sent), and what is known to have been left out.
+   `check` (their Trakt sync is on, so the offer shows): Trakt is asked once what it has from the day before the oldest of them
+   on (its newest CHECKED plays, an answer over CHECK_MOST bytes left unparsed), and every one Trakt has any play of since then
+   is left out: a film by its ids, an episode by its show, season and number. One older than what that answer reaches back to
+   was not checked, and is left out too. null when Trakt did not answer: nothing is offered unchecked. A title known by no id
+   here cannot be checked and stays (a pass asks their server what it is).
+   What is really sent can still be fewer: their server may no longer hold a title as watched, and Trakt may have a play from
+   before the days looked at (a pass looks again and never sends a play Trakt has). */
+const CHECKED = 300, CHECK_MOST = 600_000;
+export interface Earlier {title: string; detail: string; at: number}
+type Had = {type?: string; watched_at?: string; movie?: {ids?: Ids}; show?: {ids?: Ids}; episode?: {season?: number; number?: number}};
+const hadKeys = (kind: 'movie' | 'show', ids: Ids | undefined, season?: number, episode?: number) => [...(ids?.tmdb ? [`tmdb:${ids.tmdb}`] : []), ...(ids?.imdb ? [`imdb:${ids.imdb}`] : [])].map(id => kind === 'movie' ? `m/${id}` : `s/${id}/${season}/${episode}`);
+export async function earlierPlays(env: Env, hub: string, person: string, link: Link, since: number, skip: Set<string>, check = false): Promise<Earlier[] | null> {
+  const rows = (await env.DB.prepare(`SELECT item, title, detail, updated, ids, scrobbled FROM plays WHERE hub = ? AND person = ? AND unwatched = 0 AND ${FINISHED} ORDER BY updated DESC LIMIT 500`).bind(hub, person).all<{item: string; title: string; detail: string; updated: number; ids: string | null; scrobbled: string | null}>()).results;
+  const early = rows.filter(row => row.updated < since && !toldLive(row, link));
   if (!early.length) return [];
   const sent = await ledger(env, hub, person, 'trakt'), gone = new Set((await env.DB.prepare("SELECT item FROM sent WHERE hub = ? AND person = ? AND place = 'trakt' AND item IS NOT NULL").bind(hub, person).all<{item: string}>()).results.map(row => row.item));
-  return early.filter(row => {
-    if (gone.has(row.item)) return false;
+  const left = early.flatMap(row => {
+    if (gone.has(row.item)) return [];
     let target: {movie?: {ids: Ids}; show?: {ids: Ids}; episode?: {season: number; number: number}} | null = null;
     try {target = row.ids ? JSON.parse(row.ids) : null;} catch {target = null;}
+    // Known by what Trakt was told it is, else by its id on their own server (here.ts), an episode by what its line says.
+    const known = unpacked(row.item), said = /Season (\d+) · Episode (\d+)/.exec(row.detail), own: Ids | undefined = known ? (/^tmdb:\d+$/.test(known.id) ? {tmdb: Number(known.id.slice(5))} : {imdb: known.id}) : undefined;
+    const keys = target?.movie ? hadKeys('movie', target.movie.ids) : target?.show ? hadKeys('show', target.show.ids, target.episode?.season, target.episode?.number) : !known ? [] : known.type === 'movie' ? hadKeys('movie', own) : said ? hadKeys('show', own, Number(said[1]), Number(said[2])) : [];
     const tmdb = target?.movie?.ids.tmdb ?? target?.show?.ids.tmdb;
-    if (!tmdb) return true;
     // Sent or left out before, as watched or as a spot (their server says which; here either counts).
-    const at = target!.movie ? `movie/${tmdb}` : `show/${tmdb}:${target!.episode?.season}:${target!.episode?.number}`;
-    return !['w', 'p'].some(as => sent.has(`${as}:${at}`) || skip.has(`${as}:${at}`));
-  }).map(row => ({title: row.title, detail: row.detail, at: row.updated}));
+    const at = tmdb ? (target!.movie ? `movie/${tmdb}` : `show/${tmdb}:${target!.episode?.season}:${target!.episode?.number}`) : '';
+    return at && ['w', 'p'].some(as => sent.has(`${as}:${at}`) || skip.has(`${as}:${at}`)) ? [] : [{play: {title: row.title, detail: row.detail, at: row.updated}, keys}];
+  });
+  if (!check || !left.length) return left.map(item => item.play);
+  const paging = {pages: 0, most: CHECK_MOST}, from = Math.min(...left.map(item => item.play.at)) - 86400;
+  const got = await read<Had[]>(env, hub, person, `/sync/history?start_at=${encodeURIComponent(new Date(from * 1000).toISOString())}&page=1&limit=${CHECKED}`, paging);
+  if (!Array.isArray(got)) return null;
+  const has = new Set(got.flatMap(entry => entry.type === 'movie' ? hadKeys('movie', entry.movie?.ids) : hadKeys('show', entry.show?.ids, entry.episode?.season, entry.episode?.number)));
+  // More than one answer holds: it reaches back only as far as its oldest play, and a day more is allowed for.
+  const reached = paging.pages > 1 ? Math.min(...got.map(entry => Math.floor(Date.parse(entry.watched_at ?? '') / 1000) || Infinity)) + 86400 : 0;
+  return left.filter(item => item.play.at >= reached && !item.keys.some(key => has.has(key))).map(item => item.play);
 }
 
 export const mdblist = (env: Env, key: string) => async (path: string, body?: unknown) => {

@@ -23,7 +23,7 @@ const KNOWN = new Map(Object.entries(FRANCHISES).flatMap(([row, keys]) => keys.m
    Trakt history and watchlist pages kept by the hub. */
 export async function because(env: Env, hub: string, person: string): Promise<Record<string, string>> {
   const rows = (await env.DB.prepare(`SELECT ids AS what, title FROM (SELECT ids, title FROM plays WHERE hub = ?1 AND person = ?2 AND ids IS NOT NULL AND ids != '' AND unwatched = 0 ORDER BY updated DESC LIMIT 300)
-    UNION ALL SELECT items AS what, '' AS title FROM (SELECT items FROM rows_cache WHERE hub = ?1 AND person = ?2 AND (kind = 'history' OR kind LIKE 'history.%' OR kind = 'watchlist' OR kind LIKE 'watchlist.%') ORDER BY kind)`)
+    UNION ALL SELECT items AS what, '' AS title FROM (SELECT items FROM rows_cache WHERE hub = ?1 AND person = ?2 AND (kind = 'history' OR kind LIKE 'history.%' OR kind = 'mdb_history' OR kind = 'watchlist' OR kind LIKE 'watchlist.%') ORDER BY kind)`)
     .bind(hub, person).all<{what: string; title: string}>()).results;
   const out: Record<string, string> = {};
   const note = (key: string, title: string) => {const row = KNOWN.get(key); if (row && !out[row] && title) out[row] = title.slice(0, 120);};

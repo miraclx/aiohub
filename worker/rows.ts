@@ -5,21 +5,20 @@
    Answers are kept in the database for a few minutes, and AIOMetadata keeps them as long again, so Trakt is asked rarely. While
    Trakt is not answering (it turns away the shared addresses Workers call from for a while at times), a row shows the last list
    Trakt gave rather than nothing. MDBList is read the same way, on demand only, and kept as long.
-   Recently Watched is one row whose source is picked each time it is asked for: their Trakt when it is connected to the hub (the
-   fullest record), else their MDBList, else what they played here (the plays table). Its address stays the same either way.
-   With Trakt connected and their Trakt sync off, Trakt does not hear of what they watch here, so what they finished or ticked
-   here joins Trakt's history in the row (recent, below); with sync on it is Trakt's history alone, which then has both.
+   What a person watched is one list, whoever asks (watchedOf, below): their Trakt history when Trakt is connected to the hub,
+   their MDBList's when they keep a key of their own, and what they finished or ticked here, newest first, each title once.
+   Recently Watched is that list. For you and Recommended leave out and start from it; Up Next and New for you follow its shows.
    The Watchlist is one row too: Trakt's, MDBList's, or both as one list. Recommended is Trakt's, or else worked out ahead from
-   what they watched (recs.ts). Up Next and New for you are Trakt's when it is connected, or else come from what they finished
-   here, their watchlist and what TMDB says has come out, looked up ahead (ahead.ts). */
+   what they watched (recs.ts). Up Next and New for you are Trakt's when it is connected, with the shows only their MDBList or
+   their watching here knows of added after (ahead.ts); without Trakt they come from the same list, looked up ahead (ahead.ts). */
 import type {Env} from './util';
 import {FINISHED, getSecret, newToken, now, putSecret, sha} from './util';
-import {LINK, read, syncOn} from './trakt';
+import {LINK, read} from './trakt';
 import {mdblist} from './carry';
 import {unpacked} from './here';
 import {FOR_YOU_SERVED, served as forYouServed} from './foryou';
-import {recommendedOf} from './recs';
-import {freshHere, nextHere} from './ahead';
+import {AHEAD, recommendedOf} from './recs';
+import {freshExtra, freshHere, nextHere} from './ahead';
 
 export const ROWS = 'rows';
 const MANIFEST = 'aiohub.rows', PAGE = 20;
@@ -52,7 +51,7 @@ const listServed = (whose: string, id: string): Served => ({id: `list_${whose}_$
    Trakt lists needs Trakt. */
 const EVERYONE = new Set(['recently-watched', 'recommended-movies', 'recommended-series', 'up-next', 'new-for-you']);
 export const fills = (rowId: string, has: {trakt: boolean; lists: boolean}) => has.trakt || EVERYONE.has(rowId) || (rowId === 'watchlist' && has.lists);
-/* Up Next and New for you as the hub works them out itself (ahead.ts), for someone without Trakt. */
+/* Up Next and New for you: off until switched on, for someone without Trakt (native.ts). */
 export const hubMade = (rowId: string) => rowId === 'up-next' || rowId === 'new-for-you';
 /* A For you pick the hub fills itself (foryou.ts). Its catalog id carries what fills it, so a row's name and its titles always
    come from the same write of the setup. */
@@ -88,7 +87,9 @@ export async function addressOf(env: Env, hub: string, person: string, origin: s
 
 /* ---------- reading Trakt ---------- */
 // `tmdb` and `at` (when it was watched, for what was watched) are kept for For you (foryou.ts); a row lists only id, type and name.
-export interface Item {id: string; type: 'movie' | 'series'; name: string; tmdb?: number; at?: number}
+// For a show someone watched outside Trakt: `ep`, the episode they finished most lately as one number (nth, below), and `epAt`,
+// when (else `at`). `told`: Trakt was told of that finish as it happened here.
+export interface Item {id: string; type: 'movie' | 'series'; name: string; tmdb?: number; at?: number; ep?: number; epAt?: number; told?: boolean}
 interface Media {title?: string; ids?: {imdb?: string | null; tmdb?: number | null}}
 const itemOf = (media: Media | undefined, type: Item['type'], when?: string): Item | null => {
   const ids = media?.ids ?? {}, id = /^tt\d+$/.test(ids.imdb ?? '') ? ids.imdb! : Number(ids.tmdb) > 0 ? `tmdb:${ids.tmdb}` : '', at = Math.floor(Date.parse(when ?? '') / 1000);
@@ -123,10 +124,11 @@ interface Held {at: number; items: Item[]}
    needed and what was kept of it is older than the row's time. Each page is kept on its own: `watchlist`, `watchlist.2`, …
    `told`, when given, hears whether what came back is the whole list (every page of it kept, up to the empty page that ends
    it), and how many pages were asked for just now. */
-async function itemsOf(env: Env, hub: string, person: string, row: Served, want: number, key = '', told?: {whole: boolean; reads: number}): Promise<Item[]> {
+async function itemsOf(env: Env, hub: string, person: string, row: Served, want: number, key = '', told?: {whole: boolean; reads: number}, had?: Map<string, Held>): Promise<Item[]> {
   const base = row.cache ?? row.kind, most = PAGES[row.kind] ?? 1, kinds = Array.from({length: most}, (_, n) => n ? `${base}.${n + 1}` : base);
-  const stored = await env.DB.prepare(`SELECT kind, at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind IN (${kinds.map(() => '?').join(', ')})`).bind(hub, person, ...kinds).all<{kind: string; at: number; items: string}>();
-  const held = new Map(stored.results.map(page => [page.kind, {at: page.at, items: JSON.parse(page.items) as Item[]}])), out: Item[] = [], seen = new Set<string>();
+  // `had`: the pages kept, read already by whoever asks (watchedOf); what is read now is put in it.
+  const held = had ?? heldOf((await env.DB.prepare(`SELECT kind, at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind IN (${kinds.map(() => '?').join(', ')})`).bind(hub, person, ...kinds).all<{kind: string; at: number; items: string}>()).results);
+  const out: Item[] = [], seen = new Set<string>();
   let reads = READS;
   for (let n = 0; n < most && (!n || out.length < want); n++) {
     let page = held.get(kinds[n]), failed = false;
@@ -136,7 +138,7 @@ async function itemsOf(env: Env, hub: string, person: string, row: Served, want:
       if (told) told.reads++;
       const got = await readPage(env, hub, person, row, n + 1, kinds, page, key);
       if (!got) break;
-      page = got; failed = !got.ok; if (got.end) held.set(kinds[n + 1], {at: got.at, items: []});
+      page = got; failed = !got.ok; held.set(kinds[n], got); if (got.end) held.set(kinds[n + 1], {at: got.at, items: []});
     }
     for (const item of page.items) if (!seen.has(item.id)) {seen.add(item.id); out.push(item);}
     // Past an empty page, or one Trakt did not answer for just now, nothing more is asked this time.
@@ -147,11 +149,13 @@ async function itemsOf(env: Env, hub: string, person: string, row: Served, want:
   }
   return out;
 }
+const heldOf = (pages: {kind: string; at: number; items: string}[]) => new Map<string, Held>(pages.flatMap(page => {try {return [[page.kind, {at: page.at, items: JSON.parse(page.items) as Item[]}]];} catch {return [];}}));
 /* One page from Trakt or MDBList, kept. When it does not answer: the last it gave, however old, kept to ask again in a minute rather
-   than on every scroll; null for a further page never read. */
+   than on every scroll; null for a page never read, and nothing is kept for it, so a list that was never answered for is never
+   taken for an empty one (watchedOf). */
 async function readPage(env: Env, hub: string, person: string, row: Served, page: number, kinds: string[], last?: Held, key = ''): Promise<Held & {ok: boolean; end: boolean} | null> {
   const next = kinds[page], got = await fetchPage(env, hub, person, row, page, key);
-  if (!got && page > 1 && !last) return null;
+  if (!got && !last) return null;
   const ok = !!got, at = ok ? now() : now() - row.ttl + RETRY, items = got ? got.items : last?.items ?? [];
   const keep = (kind: string, list: Item[]) => env.DB.prepare('INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, ?, ?) ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at, items = excluded.items')
     .bind(hub, person, kind, at, JSON.stringify(list));
@@ -174,10 +178,11 @@ async function fetchPage(env: Env, hub: string, person: string, row: Served, pag
 /* ---------- reading MDBList, with the person's own key ---------- */
 // `watchlist_at`: when it was added to the watchlist, where MDBList says (merged, below, does without it).
 interface Listed {id?: number; mediatype?: string; imdb_id?: string | null; title?: string; ids?: {imdb?: string | null; tmdb?: number | null}; watchlist_at?: string; added_at?: string}
-interface Watched {last_watched_at?: string; movie?: Media; show?: Media; episode?: {show?: Media}}
+interface Watched {last_watched_at?: string; movie?: Media; show?: Media; episode?: {season?: number; number?: number; show?: Media}}
 const MDB_PAGE = 100, MDB_KEPT = 300;
 /* Their watchlist, newest added first, a hundred at a time (a page short of that is the last); or what they watched, newest first,
-   a show once where its latest episode puts it. MDBList lists what was watched by kind, so it is read in one go and put in order here. */
+   a show once where its latest episode puts it, with that episode (`ep`: Up Next goes by it, ahead.ts). MDBList lists what was
+   watched by kind, so it is read in one go and put in order here. */
 async function fromMdblist(env: Env, key: string, kind: 'mdb_watchlist' | 'mdb_history', page: number): Promise<{items: Item[]; end: boolean} | null> {
   const ask = mdblist(env, key);
   if (kind === 'mdb_watchlist') {
@@ -189,7 +194,10 @@ async function fromMdblist(env: Env, key: string, kind: 'mdb_watchlist' | 'mdb_h
   const got = await ask('/sync/watched?limit=1000'), body = got.body as {movies?: Watched[]; shows?: Watched[]; episodes?: Watched[]} | null;
   if (got.status !== 200 || !body || Array.isArray(body)) return null;
   const all = [...(body.movies ?? []).map(entry => ({at: entry.last_watched_at, item: itemOf(entry.movie, 'movie', entry.last_watched_at)})), ...(body.shows ?? []).map(entry => ({at: entry.last_watched_at, item: itemOf(entry.show, 'series', entry.last_watched_at)})),
-    ...(body.episodes ?? []).map(entry => ({at: entry.last_watched_at, item: itemOf(entry.episode?.show, 'series', entry.last_watched_at)}))];
+    ...(body.episodes ?? []).map(entry => {
+      const item = itemOf(entry.episode?.show, 'series', entry.last_watched_at), season = Number(entry.episode?.season) || 0;
+      return {at: entry.last_watched_at, item: item && season > 0 ? {...item, ep: nth(season, Number(entry.episode?.number) || 0)} : item};
+    })];
   const when = (at?: string) => Date.parse(at ?? '') || 0;
   return {items: once(all.sort((a, b) => when(b.at) - when(a.at)).map(entry => entry.item)).slice(0, MDB_KEPT), end: true};
 }
@@ -197,47 +205,94 @@ async function fromMdblist(env: Env, key: string, kind: 'mdb_watchlist' | 'mdb_h
 /* ---------- what they played here ---------- */
 /* A title (a row of `plays`) finished here, in SQL: played to the end (util.ts, FINISHED), or ticked as watched in an app. */
 const DONE = `(${FINISHED} OR EXISTS (SELECT 1 FROM sittings s WHERE s.hub = plays.hub AND s.person = plays.person AND s.item = plays.item AND s.parts LIKE '%marked%'))`;
-/* Newest first, a show once. A title is known by what Trakt was told it is, or else by its id on their own server, which carries
-   its IMDb or TMDB id (here.ts); a play on any other server that Trakt was never told about is left out. */
-export async function played(env: Env, hub: string, person: string, done = false): Promise<Item[]> {
-  // `done`: only what was finished (played to 90% or more, as Activity says finished; util.ts, FINISHED, for a file that runs longer than listed) or ticked as watched in an app.
-  // One marked unwatched in an app since (front.ts, unmarked) is neither.
-  const got = await env.DB.prepare(`SELECT item, ids, title, updated FROM plays WHERE hub = ?1 AND person = ?2 AND unwatched = 0${done ? ` AND ${DONE}` : ''} ORDER BY updated DESC LIMIT 300`).bind(hub, person).all<{item: string; ids: string | null; title: string; updated: number}>();
-  return once(got.results.map(play => {
-    let target: {movie?: Media; show?: Media} | null = null;
+/* What someone played here, from one read of their latest 300 plays, less any marked unwatched in an app since (front.ts,
+   unmarked). A title is known by what Trakt was told it is, or else by its id on their own server, which carries its IMDb or
+   TMDB id (here.ts); a play on any other server that Trakt was never told about is left out.
+   - `watched`: what they finished (played to 90% or more, as Activity says finished; util.ts, FINISHED, for a file that runs
+     longer than listed) or ticked as watched in an app, newest first, a show once where its latest episode puts it.
+   - `shows`: the shows they played, the one played most lately first, each once: `at` when it was last played, `done` the episode
+     finished most lately (a special never counts) as one number, -1 for none, `doneAt` when, and `told` whether Trakt was told
+     of that finish as it happened.
+   - `started`: what they started (startedHere, below). */
+export interface Followed extends Item {at: number; done: number; doneAt: number; told: boolean}
+export interface Here {watched: Item[]; shows: Followed[]; started: Started}
+type Play = {item: string; ids: string | null; title: string; detail: string; position: number; parts: string | null; updated: number; scrobbled: string | null; done: number};
+const HERE = `SELECT item, ids, title, detail, position, parts, updated, scrobbled, ${DONE} AS done FROM plays WHERE hub = ? AND person = ? AND unwatched = 0 ORDER BY updated DESC LIMIT 300`;
+function hereOf(plays: Play[]): Here {
+  const shows = new Map<string, Followed & {seen: number}>(), films: Item[] = [], had = new Set<string>();
+  for (const play of plays) {
+    let target: {movie?: Media; show?: Media; episode?: {season?: number; number?: number}} | null = null;
     try {target = play.ids ? JSON.parse(play.ids) : null;} catch {target = null;}
-    const told = target?.movie || target?.show ? itemOf({...(target.movie ?? target.show), title: play.title}, target.movie ? 'movie' : 'series') : null;
-    if (told) return {...told, at: play.updated};
-    if (target?.movie || target?.show) return null;
-    const known = unpacked(play.item), tmdb = /^tmdb:(\d+)$/.exec(known?.id ?? '');
-    return known ? {...known, name: play.title.slice(0, 200), ...(tmdb ? {tmdb: Number(tmdb[1])} : {}), at: play.updated} : null;
-  }));
+    const known = unpacked(play.item), tmdb = /^tmdb:(\d+)$/.exec(known?.id ?? ''), said = /Season (\d+) · Episode (\d+)/.exec(play.detail), told = target?.movie || target?.show;
+    const title = told ? itemOf({...told, title: play.title}, target!.movie ? 'movie' : 'series') : known ? {...known, name: play.title.slice(0, 200), ...(tmdb ? {tmdb: Number(tmdb[1])} : {})} : null;
+    if (!title) continue;
+    if (title.type === 'movie') {if (play.done && !had.has(title.id)) {had.add(title.id); films.push({...title, at: play.updated});} continue;}
+    const entry = shows.get(title.id) ?? {...title, at: play.updated, done: -1, doneAt: 0, told: false, seen: 0}, season = Number(target?.episode?.season ?? said?.[1] ?? 0), episode = Number(target?.episode?.number ?? said?.[2] ?? 0);
+    if (play.done && !entry.seen) entry.seen = play.updated;
+    if (play.done && season > 0 && entry.done < 0) {entry.done = nth(season, episode); entry.doneAt = play.updated; entry.told = play.scrobbled === 'watched' || play.scrobbled === 'held-watched';}
+    shows.set(title.id, entry);
+  }
+  const all = [...shows.values()], watched = [...films, ...all.filter(show => show.seen).map(({seen, done, doneAt, told, ...show}) => ({...show, at: seen, ...(done >= 0 ? {ep: done, epAt: doneAt, told} : {})}))];
+  return {watched: watched.sort((a, b) => b.at! - a.at!), shows: all.map(({seen: _, ...show}) => show), started: startedHere(plays)};
 }
-/* Recently Watched for someone whose Trakt is connected while their Trakt sync is off: Trakt's history and what they finished or
-   ticked here as one list, newest first, each title once (a show once, where its latest episode puts it; a title in both by
-   whichever is later). Trakt names a title by its IMDb id and a play here sometimes only by TMDB's, so both count. */
-function recent(theirs: Item[], here: Item[]): Item[] {
-  const seen = new Set<string>(), out: Item[] = [];
-  for (const item of [...theirs, ...here].sort((a, b) => (b.at ?? 0) - (a.at ?? 0))) {const keys = keysOf(item); if (keys.some(key => seen.has(key))) continue; for (const key of keys) seen.add(key); out.push(item);}
-  return out;
+/* What they started here, alone (New for you leaves those out as it is read: ahead.ts). */
+export const startedOf = async (env: Env, hub: string, person: string) => startedHere((await env.DB.prepare('SELECT item, ids, detail, position, parts FROM plays WHERE hub = ? AND person = ? AND unwatched = 0 ORDER BY updated DESC LIMIT 300').bind(hub, person).all<Parameters<typeof startedHere>[0][number]>()).results);
+
+/* ---------- what they watched: one list, for every reader ---------- */
+/* What a person watched, newest first, each title once: their Trakt history when their Trakt is connected to the hub, their
+   MDBList's when they keep a key of their own (never the hub's key), and what they finished or ticked here. This is the only
+   place the three are put together, and every reader asks here: Recently Watched lists it, For you and Recommended leave out
+   and start from it (foryou.ts, recs.ts), Up Next and New for you follow its shows (ahead.ts).
+   - It is put together when asked for, from what is kept of each account (rows_cache: `history` and its further pages,
+     `mdb_history`) and their plays (read then, so a finish or an un-mark here counts at once). No copy of the whole is kept:
+     a copy would have to be made again at every play, tick, un-mark and account change, and a missed one would be a wrong row.
+   - One rule for how fresh: an account's list is read again, as far as its first `want` titles, where what is kept of it is
+     older than Recently Watched's time (five minutes), READS calls at most; while it does not answer, the last it gave stays.
+   - `known`: every account they have has answered at some time. An account never read (just connected, or what was kept of it
+     cleared) that does not answer now leaves it false: what is here is then not all they watched, and a reader that leaves
+     watched titles out must not take it for that (foryou.ts, served; recs.ts).
+   - A title in more than one place is listed once, where its latest watch puts it, as Trakt names it, else MDBList, else here
+     (Trakt names a title by its IMDb id and the others sometimes only by TMDB's, so both count). `by` says which have it.
+   - `since`: Trakt's history is read a page at a time and the others whole, so while Trakt has more to give than was read
+     (fewer than `want` titles and no end yet), nothing older than this is in its place for sure (Recently Watched stops there). */
+export type Source = 'trakt' | 'mdblist' | 'here';
+export interface Seen extends Item {at: number; by: Source[]}
+export interface Watching {items: Seen[]; known: boolean; trakt: boolean; mdblist: boolean; here: Here; since: number}
+const MDB_HISTORY: Served = {...SERVED['recently-watched'], kind: 'mdb_history'};
+export async function watchedOf(env: Env, hub: string, person: string, want = PAGE, link?: {again?: boolean} | null): Promise<Watching> {
+  const mine = link === undefined ? await linkOf(env, hub, person) : link, trakt = !!mine && !mine.again, key = (await getSecret<{key?: string}>(env, hub, person, 'mdblist'))?.key ?? '';
+  const [kept, plays] = await env.DB.batch([env.DB.prepare("SELECT kind, at, items FROM rows_cache WHERE hub = ? AND person = ? AND (kind = 'history' OR kind LIKE 'history.%' OR kind = 'mdb_history')").bind(hub, person), env.DB.prepare(HERE).bind(hub, person)]);
+  const held = heldOf(kept.results as {kind: string; at: number; items: string}[]), here = hereOf(plays.results as Play[]), told = {whole: false, reads: 0};
+  // Trakt wanting to be connected again cannot be read: what was kept of it still counts. Not connected: nothing of Trakt's.
+  const first = trakt ? await itemsOf(env, hub, person, SERVED['recently-watched'], want, '', told, held) : [];
+  const further = mine ? [...held].filter(([kind]) => kind === 'history' || kind.startsWith('history.')).sort((a, b) => Number(a[0].slice(8) || 1) - Number(b[0].slice(8) || 1)).flatMap(([, page]) => page.items) : [];
+  const theirs = key ? await itemsOf(env, hub, person, MDB_HISTORY, want, key, undefined, held) : [];
+  const since = trakt && first.length && first.length < want && !told.whole ? first[first.length - 1].at ?? 0 : 0;
+  return {items: stream([['trakt', once([...first, ...further])], ['mdblist', theirs], ['here', here.watched]]), known: (!trakt || held.has('history')) && (!key || held.has('mdb_history')), trakt, mdblist: !!key, here, since};
 }
-/* What a person watched, newest first, from what was read of their accounts and their plays here. `fresh`: Recently Watched is
-   read again first, as far as its first `want` titles, where what was kept of it is older than its time (READS calls at most);
-   otherwise only what is kept is used, unless nothing is kept at all. */
-export async function watchedOf(env: Env, hub: string, person: string, fresh: boolean, want = PAGE): Promise<Item[]> {
-  const kept = await env.DB.prepare("SELECT items FROM rows_cache WHERE hub = ? AND person = ? AND (kind = 'history' OR kind LIKE 'history.%' OR kind = 'mdb_history' OR kind LIKE 'mdb_history.%') ORDER BY kind").bind(hub, person).all<{items: string}>();
-  // Nothing kept of their history (their account was just connected, or what was kept was cleared with another account's): it
-  // is read now all the same, within the same few calls, so no reader takes "none kept" for "nothing watched". For someone
-  // with no account that asks nobody.
-  const lists = [...(fresh || !kept.results.length ? [await fill(env, hub, person, SERVED['recently-watched'], want)] : []), ...kept.results.map(row => JSON.parse(row.items) as Item[]), await played(env, hub, person)];
-  return once(lists.flat()).sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+/* The lists as one, newest first (a list's own order where two share a moment, Trakt's first). */
+function stream(lists: [Source, Item[]][]): Seen[] {
+  const all = lists.flatMap(([by, items], rank) => items.map(item => ({item, by, rank, at: item.at ?? 0}))).sort((a, b) => b.at - a.at), out: (Seen & {rank: number})[] = [], where = new Map<string, number>();
+  for (const {item, by, rank, at} of all) {
+    const keys = keysOf(item), n = keys.map(key => where.get(key)).find(found => found !== undefined);
+    if (n === undefined) {for (const key of keys) where.set(key, out.length); out.push({...item, at, by: [by], rank}); continue;}
+    const had = out[n], episode = had.ep !== undefined ? {ep: had.ep, epAt: had.epAt ?? had.at, told: had.told} : item.ep !== undefined ? {ep: item.ep, epAt: item.epAt ?? at, told: item.told} : {};
+    out[n] = {...(rank < had.rank ? item : had), at: had.at, by: had.by.includes(by) ? had.by : [...had.by, by], rank: Math.min(rank, had.rank), ...episode};
+    for (const key of keys) where.set(key, n);
+  }
+  return out.map(({rank: _, ...item}) => item);
 }
 
 /* Shows with an episode still to watch, as Trakt has them (Up Next), when their Trakt is connected to the hub: Trakt's alone,
-   never what the hub works out for someone without it (For you's Pick back up asks TMDB about those shows itself). */
+   never what the hub adds or works out itself (For you's Pick back up asks TMDB about those shows itself). */
 export const upNextOf = async (env: Env, hub: string, person: string) => await linkOf(env, hub, person) ? itemsOf(env, hub, person, SERVED['up-next'], 50) : [];
 /* What is on their watchlist, read again where what was kept is older than its time (recs.ts leaves these out). */
 export const listedOf = (env: Env, hub: string, person: string) => fill(env, hub, person, SERVED.watchlist, 100);
+/* The titles only their MDBList watchlist has (all of it, without Trakt): what New for you adds to Trakt's own (ahead.ts). */
+export async function listedApart(env: Env, hub: string, person: string): Promise<Item[]> {
+  const {mine, theirs} = await watchlists(env, hub, person, await linkOf(env, hub, person), 100), held = new Set(mine.flatMap(keysOf));
+  return theirs.filter(item => !keysOf(item).some(key => held.has(key)));
+}
 
 /* Their whole Trakt watchlist, newest added first, for Favorites (hearts.ts): the same kept pages the Watchlist row reads, through
    the same reader. A page is read again here only once it is half an hour old (the row itself reads one again after ten minutes,
@@ -321,35 +376,23 @@ export function startedHere(plays: {item: string; ids: string | null; detail: st
   }
   return found;
 }
-/* The shows someone played here, the one played most lately first, each once: `at` when it was last played, `done` the episode
-   finished most lately (played to the end or ticked, as Recently Watched counts it; a special never counts) as one number, -1
-   for none, and `doneAt` when. With them, what they started here (startedHere). From their latest 300 plays, less any marked
-   unwatched since. */
-export interface Followed extends Item {at: number; done: number; doneAt: number}
-export async function showsHere(env: Env, hub: string, person: string): Promise<{shows: Followed[]; here: Started}> {
-  const got = await env.DB.prepare(`SELECT item, ids, title, detail, position, parts, updated, ${DONE} AS done FROM plays WHERE hub = ?1 AND person = ?2 AND unwatched = 0 ORDER BY updated DESC LIMIT 300`).bind(hub, person)
-    .all<{item: string; ids: string | null; title: string; detail: string; position: number; parts: string | null; updated: number; done: number}>();
-  const shows = new Map<string, Followed>();
-  for (const play of got.results) {
-    let target: {movie?: Media; show?: Media; episode?: {season?: number; number?: number}} | null = null;
-    try {target = play.ids ? JSON.parse(play.ids) : null;} catch {target = null;}
-    const known = unpacked(play.item), tmdb = /^tmdb:(\d+)$/.exec(known?.id ?? ''), said = /Season (\d+) · Episode (\d+)/.exec(play.detail);
-    const show = target?.show ? itemOf({...target.show, title: play.title}, 'series') : !target?.movie && known?.type === 'series' ? {...known, name: play.title.slice(0, 200), ...(tmdb ? {tmdb: Number(tmdb[1])} : {})} : null;
-    if (!show) continue;
-    const entry = shows.get(show.id) ?? {...show, at: play.updated, done: -1, doneAt: 0}, season = Number(target?.episode?.season ?? said?.[1] ?? 0), episode = Number(target?.episode?.number ?? said?.[2] ?? 0);
-    if (play.done && season > 0 && entry.done < 0) {entry.done = nth(season, episode); entry.doneAt = play.updated;}
-    shows.set(show.id, entry);
-  }
-  return {shows: [...shows.values()], here: startedHere(got.results)};
-}
-async function freshOf(env: Env, hub: string, person: string, row: Served): Promise<Item[]> {
-  const [had, hid, plays] = await env.DB.batch([env.DB.prepare('SELECT at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, person, NEW),
+/* With Trakt connected: Trakt's own calendars, then what the hub found for the titles Trakt does not know of (ahead.ts, kept
+   by hub and person and read with the rest), each title once, newest first. With nothing found it is Trakt's list as it is. */
+async function freshOf(env: Env, hub: string, person: string, row: Served): Promise<Fresh[]> {
+  const [had, hid, plays, more] = await env.DB.batch([env.DB.prepare('SELECT at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, person, NEW),
     env.DB.prepare('SELECT at, items FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, person, HIDDEN),
-    env.DB.prepare('SELECT item, ids, detail, position, parts FROM plays WHERE hub = ? AND person = ? AND unwatched = 0 ORDER BY updated DESC LIMIT 300').bind(hub, person)]);
+    env.DB.prepare('SELECT item, ids, detail, position, parts FROM plays WHERE hub = ? AND person = ? AND unwatched = 0 ORDER BY updated DESC LIMIT 300').bind(hub, person),
+    env.DB.prepare('SELECT items FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, person, AHEAD)]);
   const before = had.results[0] as {at: number; items: string} | undefined, time = now(), here = startedHere(plays.results as Parameters<typeof startedHere>[0]);
+  const extra = freshExtra((more.results[0] as {items: string} | undefined)?.items).filter(item => !startedIn(here, item));
+  const added = (list: Fresh[]): Fresh[] => {
+    if (!extra.length) return list;
+    const held = new Set(list.flatMap(keysOf));
+    return [...list, ...extra.filter(item => !keysOf(item).some(key => held.has(key)))].sort((a, b) => b.at - a.at);
+  };
   let kept: Kept = {list: [], gone: {}};
   try {kept = before ? JSON.parse(before.items) as Kept : kept;} catch { /* kept as nothing */ }
-  if (before && time - before.at < row.ttl) return kept.list.filter(item => !startedIn(here, item));
+  if (before && time - before.at < row.ttl) return added(kept.list.filter(item => !startedIn(here, item)));
   // As many calendars back as the time since the last look needs.
   const months = Math.min(BACK, kept.full ? Math.max(1, Math.ceil((time - kept.full) / (WINDOW * DAY))) : BACK), found = new Map(kept.list.map(item => [item.id, item]));
   let answered = 0;
@@ -369,7 +412,7 @@ async function freshOf(env: Env, hub: string, person: string, row: Served): Prom
   }
   if (!answered) {
     await store(env, hub, person, NEW, time - row.ttl + RETRY, kept).run();
-    return kept.list.filter(item => !startedIn(here, item));
+    return added(kept.list.filter(item => !startedIn(here, item)));
   }
   // What Trakt has them as having watched lately, and the shows they dropped or hid there.
   const there: Started = {movies: new Set(), shows: new Map()}, since = new Date((time - months * WINDOW * DAY) * 1000).toISOString(), paging = {pages: 0};
@@ -387,7 +430,7 @@ async function freshOf(env: Env, hub: string, person: string, row: Served): Prom
   }).sort((a, b) => b.at - a.at).slice(0, NEW_MOST);
   // Every calendar asked for answered: the next look needs only what came out since. Else the same ones are asked for again.
   await store(env, hub, person, NEW, time, {list, gone, full: answered === months ? time : kept.full}).run();
-  return list;
+  return added(list);
 }
 const store = (env: Env, hub: string, person: string, kind: string, at: number, value: unknown) => env.DB.prepare('INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, ?, ?) ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at, items = excluded.items')
   .bind(hub, person, kind, at, JSON.stringify(value));
@@ -439,22 +482,19 @@ async function fill(env: Env, hub: string, person: string, row: Served, want: nu
   const link = await linkOf(env, hub, person);
   // Recommended: Trakt's when it is connected, as far as their content limit lets it through; else what was worked out for them (recs.ts).
   if (row.kind === 'movies' || row.kind === 'shows') return recommendedOf(env, hub, person, row.type as 'movie' | 'series', link ? await itemsOf(env, hub, person, row, want) : []);
-  // New for you and Up Next: Trakt's when it is connected; else from what they finished here and what was looked up ahead (ahead.ts).
+  // New for you and Up Next: Trakt's when it is connected, and what the hub found for the shows Trakt does not know of after;
+  // without Trakt, all of it from what they watched and what was looked up ahead (ahead.ts).
   if (row.kind === 'fresh') return link ? freshOf(env, hub, person, row) : freshHere(env, hub, person);
-  if (row.kind === 'next') return link ? itemsOf(env, hub, person, row, want) : nextHere(env, hub, person);
+  if (row.kind === 'next') return nextHere(env, hub, person, link ?? null, link ? await itemsOf(env, hub, person, row, want) : []);
   if (row.kind === 'list') return link ? itemsOf(env, hub, person, row, want) : [];
-  if (row.kind === 'history' && link && !link.again) {
-    // With their Trakt sync off, plays made here never reach Trakt: they join the row here instead (recent, above).
-    const theirs = await itemsOf(env, hub, person, row, want);
-    return await syncOn(env, hub, person) ? theirs : recent(theirs, await played(env, hub, person, true));
-  }
+  // Recently Watched: what they watched, wherever it is known from (watchedOf), as far as it is in order for sure.
+  if (row.kind === 'history') {const watched = await watchedOf(env, hub, person, want, link ?? null); return watched.since ? watched.items.filter(item => item.at >= watched.since) : watched.items;}
+  // Their MDBList watchlist alone (an address from before), or the Watchlist: Trakt's, MDBList's, or both as one.
+  const {mine, theirs} = await watchlists(env, hub, person, row.kind === 'mdb_watchlist' ? null : link, want);
+  return mine.length && theirs.length ? merged(mine, theirs) : mine.length ? mine : theirs;
+}
+/* The two watchlists, each as far as its first `want` titles: Trakt's when it is connected, MDBList's with their own key. */
+async function watchlists(env: Env, hub: string, person: string, link: unknown, want: number): Promise<{mine: Item[]; theirs: Item[]}> {
   const key = (await getSecret<{key?: string}>(env, hub, person, 'mdblist'))?.key ?? '';
-  if (row.kind === 'mdb_watchlist') return key ? itemsOf(env, hub, person, row, want, key) : [];
-  // The Watchlist: Trakt's, MDBList's, or both as one.
-  if (row.kind === 'watchlist') {
-    const mine = link ? await itemsOf(env, hub, person, row, want) : [], theirs = key ? await itemsOf(env, hub, person, MDB_WATCHLIST, want, key) : [];
-    return mine.length && theirs.length ? merged(mine, theirs) : mine.length ? mine : theirs;
-  }
-  // Recently Watched without Trakt: their MDBList, kept apart from Trakt's pages, else what they played here.
-  return key ? itemsOf(env, hub, person, {...row, kind: 'mdb_history'}, want, key) : played(env, hub, person);
+  return {mine: link ? await itemsOf(env, hub, person, SERVED.watchlist, want) : [], theirs: key ? await itemsOf(env, hub, person, MDB_WATCHLIST, want, key) : []};
 }

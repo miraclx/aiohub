@@ -20,8 +20,8 @@ itself and hosts no video.
 - **Rows from their own watching.** One Watchlist (from Trakt, MDBList or both), Recommended Movies and Recommended
   Shows, Recently Watched, Up Next (shows with a next episode out) and New for you (new episodes of shows they watch, and
   watchlist movies that are now out to stream). Every one of them works from whatever the person has. Without a Trakt
-  account the hub works them out from what they watched here and their MDBList watchlist; with Trakt connected they follow
-  Trakt, which also knows what was watched elsewhere. Only the Watchlist needs an account, Trakt or MDBList.
+  account the hub works them out from what they watched here and on their MDBList; with Trakt connected they follow
+  Trakt, which also knows what was watched elsewhere, and add what only MDBList or their watching here knows of. Only the Watchlist needs an account, Trakt or MDBList.
 - **For you rows.** Places on Home that the hub fills once a day for each person: because you watched, more films from a
   series, a show to pick back up, more from a director, their genres, something different, a seasonal set, a Top 10.
   Each pick says why it was made. A person can keep a pick, swap it for one of the day's other options, or ask never to be
@@ -195,6 +195,27 @@ Newest first. Dates are the commit dates on `main`.
 
 ### 2026-11-27
 
+- What you watched is one list for every row: your Trakt history, your MDBList and what you finished here, newest first, a
+  title in more than one of them once. Recently Watched is that list, For you and Recommended go by it, and connecting Trakt
+  no longer stops your MDBList from being read. "Watched here" means finished or ticked, never only begun.
+- Up Next and New for you add what Trakt does not know of: with Trakt connected, a show you finished an episode of here
+  while Trakt sync was off, or one only your MDBList has, comes after Trakt's own. Without Trakt, shows you watch on
+  MDBList count as well as the ones you watch here.
+- A row that leaves out what you watched lists nothing while one of your accounts has never answered, instead of listing
+  titles you may have seen.
+- The offer to add earlier plays to Trakt is checked first. It lists only what you finished, leaves out anything Trakt
+  already has, and does not show while Trakt is not answering. Connecting the same Trakt account again no longer offers
+  what Trakt was already told.
+- Right after connecting Trakt, the Trakt row in Sync carries a Recommended tag until you turn it on. The separate box that
+  asked the same thing is gone.
+- A change that alters someone's rows (connecting or removing Trakt or an MDBList key, the Watchlist switch) reaches their
+  apps within seconds with no page open, and a Home change left waiting is sent by the next background run or the one after,
+  ahead of the other background work. Hub, General, Background work says when one is waiting and since when.
+- The rows by service and by genre say what order they are in: most popular first.
+- A new hub's Home starts in a new order: New for you (on) and the Watchlist, a For you row and the Recommended rows,
+  Trending and a For you row, the rows by service and by genre, a For you row and the themed collections, Top Rated, then
+  Recently Watched. Up Next and the Popular rows start off. A Home saved before is left as it is;
+  `node scripts/default-home.mjs` prints the new default rows for bringing one to it by hand.
 - Up Next and New for you work without Trakt. Up Next lists the shows you watch here that have a next episode out. New for
   you lists new episodes of those shows and of shows on your MDBList watchlist, and watchlist movies now out to stream. The
   hub checks what has come out once a day. With Trakt connected both rows follow Trakt, as before.

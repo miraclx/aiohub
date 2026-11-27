@@ -496,14 +496,6 @@ label.sheet-sub { display: block; }
 :is(.accounts, .sync-card) .status-line .dot.off { background: transparent; border: 1.5px solid var(--muted); }
 :is(.accounts, .sync-card) .status-line .link { margin-left: 2px; }
 /* The question after connecting Trakt: what sync does, then Turn on or Not now, set apart like a note. */
-:is(.accounts, .sync-card) .consent p { margin: 0; }
-:is(.accounts, .sync-card) .consent .ask { font-size: 14px; color: var(--muted); line-height: 20px; }
-:is(.accounts, .sync-card) .consent .ask strong { color: var(--text); font-weight: 600; }
-:is(.accounts, .sync-card) .consent { display: grid; gap: 12px; padding: 14px; border-radius: 12px; background: var(--raised); }
-:is(.accounts, .sync-card) .consent .tick { display: flex; gap: 12px; align-items: flex-start; font-size: 14px; color: var(--muted); cursor: pointer; }
-:is(.accounts, .sync-card) .consent .tick strong { color: var(--text); font-weight: 600; }
-:is(.accounts, .sync-card) .consent .tick input { width: 20px; height: 20px; flex-shrink: 0; margin: 1px 0 0; accent-color: var(--accent); }
-:is(.accounts, .sync-card) .consent-actions { display: flex; align-items: center; gap: 16px; }
 /* The Sync card, a card of its own under the accounts, in the settings cards' language: a row a switch. Each row: its name on
    the left and the switch on the right, the sentence of what it does under the name across the row, and under that at most
    one quiet line (or a status line with its dot, when something is unusual). */
@@ -517,7 +509,7 @@ label.sheet-sub { display: block; }
 .sync-card .switch-row .switch { flex-shrink: 0; }
 .sync-card .quiet { font-size: 13px; }
 .sync-card .status-line { color: var(--text); }
-.sync-card .consent, .sync-card .offer { margin-top: 6px; }
+.sync-card .offer { margin-top: 6px; }
 .sync-card .sync-foot { gap: 8px; }
 .sync-card .sync-foot .link { color: var(--muted); }
 /* A one-off offer under a switch (earlier plays, saved titles Trakt lacks): one line of what it is, then what can be done. */

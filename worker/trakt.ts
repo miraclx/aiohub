@@ -19,7 +19,7 @@ const DAY = 86400, CLAIM = 60, QUIET = 1800, SWEEP = 4, CLEAR = 5, OOB = 'urn:ie
 // `since`: when it was connected. `on`: when sync was last turned on (not there for someone who turned it on before this was kept:
 // then `since` stands for it). A play here from before then never reached Trakt, and goes only if they tick earlier plays.
 // `ask`: the person signed in to Trakt themselves and has not yet said whether it is synced (sync.ts): their own page asks.
-export interface Link {access: string; refresh: string; expires: number; username: string; redirect?: string; again?: boolean; renewing?: number; since?: number; on?: number; ask?: boolean}
+export interface Link {access: string; refresh: string; expires: number; username: string; slug?: string; redirect?: string; again?: boolean; renewing?: number; since?: number; on?: number; ask?: boolean}
 type Ids = {tmdb?: number; imdb?: string};
 export type Target = {movie: {ids: Ids}} | {show: {ids: Ids}; episode: {season: number; number: number}};
 
@@ -38,8 +38,19 @@ export const taken = (status: number | null) => status !== null && status !== 0 
 /* ---------- connecting ---------- */
 /* A login finished on the person's page (see api.ts, 'link'). Anything left from the older code flow goes with it. */
 export async function keepLink(env: Env, hub: string, person: string, link: Link) {
-  await env.DB.batch([await putSecret(env, hub, person, LINK, {...link, since: link.since ?? now()}), drop(env, hub, person, PENDING)]);
+  // The same Trakt account as the connection before it (the one being replaced, or the last one disconnected: WAS): it keeps the
+  // moment that one was made, so what Trakt was told of under it still counts as told (carry.ts, toldLive). Another account, or
+  // one that cannot be told apart, starts now.
+  const before = await getSecret<Link>(env, hub, person, LINK) ?? await getSecret<Was>(env, hub, person, WAS), same = sameAccount(before, link) && !!before?.since;
+  await env.DB.batch([await putSecret(env, hub, person, LINK, {...link, since: link.since ?? (same ? before!.since : now())}), drop(env, hub, person, PENDING), drop(env, hub, person, WAS),
+    env.DB.prepare('DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, person, EARLIER)]);
 }
+/* Whether two connections are the same Trakt account: by slug (Trakt's own stable name for it) where the sign-in gave one both
+   times, else by username (a connection made before slugs were kept has only that). */
+interface Was {slug?: string; username?: string; since?: number}
+const WAS = 'trakt-was';
+export const EARLIER = 'earlier';
+const sameAccount = (a: Was | null | undefined, b: Was | null | undefined) => a?.slug && b?.slug ? a.slug.toLowerCase() === b.slug.toLowerCase() : !!a?.username && !!b?.username && a.username.toLowerCase() === b.username.toLowerCase();
 /* The person answered whether their Trakt is synced (sync.ts): their page stops asking. `turned`: it went from off to on just
    now, which is noted (`on`), so what was watched here before this moment stays off Trakt unless they tick earlier plays.
    Written only over exactly what was read, so a renewal at the same moment is never undone: it is read and tried once more. */
@@ -66,7 +77,9 @@ export const stopSending = (env: Env, hub: string, person: string) => [
 export async function disconnect(env: Env, hub: string, person: string) {
   const link = await getSecret<Link>(env, hub, person, LINK);
   if (link?.access) await signin(env, '/oauth/revoke', {token: link.access, client_id: env.TRAKT_CLIENT_ID});
-  await env.DB.batch([drop(env, hub, person, LINK), drop(env, hub, person, PENDING), ...forgetTrakt(env, hub, person), env.DB.prepare("UPDATE plays SET scrobbled = NULL WHERE hub = ? AND person = ? AND scrobbled IN ('playing', 'paused', 'held')").bind(hub, person)]);
+  // Which account it was and since when is kept (nothing else of it), for when the same account is connected again (keepLink).
+  const was = link && (link.slug || link.username) && link.since ? [await putSecret(env, hub, person, WAS, {slug: link.slug, username: link.username, since: link.since} satisfies Was)] : [];
+  await env.DB.batch([drop(env, hub, person, LINK), drop(env, hub, person, PENDING), ...was, ...forgetTrakt(env, hub, person), env.DB.prepare("UPDATE plays SET scrobbled = NULL WHERE hub = ? AND person = ? AND scrobbled IN ('playing', 'paused', 'held')").bind(hub, person)]);
 }
 /* What waits for or came from a person's Trakt, and whether it is synced: gone with the connection, the person, or the hub.
    What was sent where (`sent`) stays while the person does, so connecting again sends nothing twice. Favorites from the

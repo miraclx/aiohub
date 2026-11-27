@@ -12,7 +12,7 @@ import {LINK, brief, deliver, history, progressOf, soon} from './trakt';
 import {history as historyOf, remember, unmark} from './carry';
 import {heartKey, heartsOn, noteHeart} from './hearts';
 import {forgetWatchlist} from './rows';
-import {syncPlayers} from './native';
+import {syncInTurn} from './native';
 import {finished, unfinished} from './foryou';
 import {watchedMore} from './ahead';
 import {where as whereKey} from './places';
@@ -217,10 +217,10 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   // A tick that comes while a sitting is under way (heard in the last minute) is the app's own, as it moves on to the next.
   if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused, jumped, !!latest && stamp - latest.updated <= 60);
   // Once per title here in each running copy: the credits report every minute past 90%.
-  if (ended && !ends.has(`${hub}/${seat.person}/${ended}`)) {if (ends.size > 5000) ends.clear(); ends.add(`${hub}/${seat.person}/${ended}`); await finished(env, hub, seat.person, ended); if (!seat.trakt) await watchedMore(env, hub, seat.person);}
+  if (ended && !ends.has(`${hub}/${seat.person}/${ended}`)) {if (ends.size > 5000) ends.clear(); ends.add(`${hub}/${seat.person}/${ended}`); await finished(env, hub, seat.person, ended); if (!seat.trakt || !seat.scrobble) await watchedMore(env, hub, seat.person);}
   // Their first play here: Recently Watched now has something in it, so their Home gets it without waiting for the site to be opened.
   // Not for someone with Trakt connected to the hub: theirs was there already.
-  if (firstHere && !seat.trakt) {const found = await env.DB.prepare('SELECT id, data FROM hubs WHERE id = ?').bind(hub).first<{id: string; data: string}>(); if (found) await syncPlayers(env, found, origin).catch(() => null);}
+  if (firstHere && !seat.trakt) {const found = await env.DB.prepare('SELECT id, data FROM hubs WHERE id = ?').bind(hub).first<{id: string; data: string}>(); if (found) await syncInTurn(env, found, origin, undefined, true).catch(() => null);}
 }
 /* Which parts of a title were played, as merged "from-to" seconds. Nothing reports a seek or the playback speed, so a position
    that moved on by about the time that passed (up to twice it, plus 20 s, for faster playback and late reports) was played, and
@@ -462,7 +462,7 @@ async function marked(env: Env, hub: string, seat: Seat, item: string, where: {p
     env.DB.prepare(`INSERT OR IGNORE INTO sittings (hub, person, item, started, device, position, playing, paused, since, updated, place, net, parts)
       SELECT ?1, ?2, json_extract(e.value, '$.item'), ?3, ?4, json_extract(e.value, '$.length'), 0, 0, ?3, ?3, ?5, ?6, 'marked' FROM json_each(?7) e`).bind(hub, seat.person, stamp, seat.on, where.place, where.net, rows)]);
   // Their first plays here: Recently Watched has something in it now (as in note).
-  if (!any.results.length && !seat.trakt) {const found = await env.DB.prepare('SELECT id, data FROM hubs WHERE id = ?').bind(hub).first<{id: string; data: string}>(); if (found) await syncPlayers(env, found, origin).catch(() => null);}
+  if (!any.results.length && !seat.trakt) {const found = await env.DB.prepare('SELECT id, data FROM hubs WHERE id = ?').bind(hub).first<{id: string; data: string}>(); if (found) await syncInTurn(env, found, origin, undefined, true).catch(() => null);}
   if (got === 'kept') await soon(env, hub, seat.person);
 }
 /* A title marked unwatched in an app: the tick taken away (DELETE PlayedItems), once their own server took it. Three things follow,
