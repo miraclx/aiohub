@@ -19,7 +19,7 @@ import {because} from './suggest';
 import {STAND_INS, detailOf, flag as setupsDue, kindsOf, namesOf, pickFromAgain, pickHour, placeAsked} from './foryou';
 import {LIKED_ROW, SHELF, SHELF_ROW, likedList, mdbLists, shelfFrom, shelfId, shelved, wantsShelf} from './shelf';
 import type {Env} from './util';
-import {blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp, unseal} from './util';
+import {TESTING, blocked, checkPassword, failed, getSecret, guesses, hashPassword, hosted, newCode, newId, newPassword, newPin, newRecoveryCode, newToken, now, putSecret, same, sha, stamp, unseal, webPlayer} from './util';
 
 const TAKEN = 'Someone in this hub already has that name';
 class Bad extends Error {constructor(public status: number, message: string, public until = 0) {super(message);}}
@@ -247,6 +247,8 @@ async function state(env: Env, who: Who) {
     role: mine ? 'person' : 'owner', personId: mine ?? null,
     hub: {
       name: '', serverName: data.serverName ?? '', code: hub.code, host: mine ? '' : data.host, hostUrl: mine ? '' : data.hostUrl, metaUrl: mine ? '' : data.metaUrl ?? '', missing: data.missing ?? [], traktLink: env.AIOM_ORIGIN || data.metaUrl ? `${data.metaUrl || env.AIOM_ORIGIN}/api/auth/trakt/authorize` : '', services: data.services, addons: data.addons, defaults: data.defaults, rows: data.rows, v: hub.version, tmdb: keys.results.some(row => (row as {kind: string}).kind === 'key:tmdb'), mdblist: keys.results.some(row => (row as {kind: string}).kind === 'key:mdblist'), scrobble: !!env.TRAKT_CLIENT_ID, traktClient: env.TRAKT_CLIENT_ID ?? '', front: env.FRONT === 'aiometadata',
+      // The web player the Devices page links to (WEB_PLAYER, util.ts), '' for none.
+      webPlayer: webPlayer(env),
       // The address called when Home changes is read from the vault for the manager's own session only: never for a person's,
       // the manager's view of a person's page included.
       ...(mine ? {manager: !!who.manager} : {jobs: jobsOf(jobs.results[0] as Record<string, unknown>, pickHour(env), typeof (jobs.results[0] as {noticeHost?: unknown}).noticeHost === 'string' ? await getSecret<string>(env, hub.id, HUB_OWNER, NOTICE) ?? '' : '')}),
@@ -568,7 +570,8 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     await env.DB.batch([turnHearts(env, hub, id, on), ...(env.FRONT === 'aiometadata' ? [setupsDue(env, hub)] : [])]);
     return {};
   }
-  if (action === 'drift' && request.method === 'POST') {
+  // Only the tests ask this (no page does), so it is open only in the local test run (TEST_WHERE, util.ts).
+  if (action === 'drift' && request.method === 'POST' && TESTING(env)) {
     // Plays they leave out, from their own page: kept out for good, of every later look and of sync. (Copying what the day's look
     // found is the cron's alone now, for someone with sync on: drift.ts.)
     if (who.person !== id) bad(403, 'Only they can do this, from their own page');
@@ -623,6 +626,9 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     // goes the same way whoever does it (the person, or their manager with them): what is missing is copied first, then the
     // switch, and only counts come back.
     const pair = oneOf(rest, PAIRS, 'Pair'), moves = request.method === 'POST' && body.switch === true && (pair === 'here-mdblist' || pair === 'mdblist-here');
+    // The pages only ever ask for that switch. Looking at a pair, copying without switching and anything with Trakt in the pair
+    // are asked by the tests alone, so they are open only in the local test run (TEST_WHERE, util.ts).
+    if (!moves && !TESTING(env)) bad(404, 'Not found');
     if (who.person !== id && !moves) bad(403, 'Only they can do this, from their own page');
     // The switch itself (MDBList sync on or off) goes by the one rule for sync switches.
     if (moves) theirs();
@@ -658,7 +664,8 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     await forgetShown(env, hub, id).run();
     return {};
   }
-  if (action === 'carry') {
+  // Only the tests ask this (the cron does this work by itself: sync.ts), so it is open only in the local test run (TEST_WHERE, util.ts).
+  if (action === 'carry' && TESTING(env)) {
     // Someone's own watching: only they can look at it or move it, from their own page.
     if (who.person !== id) bad(403, 'Only they can do this, from their own page');
     if (request.method === 'POST') {

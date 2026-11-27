@@ -1,332 +1,108 @@
-# AIOHub
+<p align="center"><img src="public/favicon.svg" width="88" alt=""></p>
+<h1 align="center">AIOHub</h1>
+<p align="center"><b>One address for everyone you share streaming with.</b></p>
+<p align="center">
+  <a href="https://aiohub.miraclx.workers.dev/?sample">Try the preview</a> ·
+  <a href="docs/setup.md">Set up your own</a> ·
+  <a href="docs/features.md">Features</a> ·
+  <a href="CHANGELOG.md">What's new</a>
+</p>
 
-AIOHub gives a household, or a group of friends, one address to type into a Jellyfin player app. Everyone signs in there
-with their own name and password, and gets their own Home, watch history, playback settings and devices. It sits in front of
-[AIOStreams](https://github.com/Viren070/AIOStreams) (which finds the streams) and
-[AIOMetadata](https://github.com/cedya77/aiometadata) (which supplies titles, artwork and rows), and keeps each person's
-setup on both in step with what you choose on a small website. It is for the person who already runs streaming for the
-people around them and is tired of doing it one config at a time. It runs on Cloudflare's Free plan.
+You already run [AIOStreams](https://github.com/Viren070/AIOStreams) and
+[AIOMetadata](https://github.com/cedya77/aiometadata) for yourself. AIOHub puts a household or a group of friends on
+top of them: each person signs in to the same address from any Jellyfin player app and gets their own Home, watch
+history, playback settings and devices. You manage all of it from a small website instead of one config at a time.
 
-Jellyfin is an open media system with player apps for phones, TVs and desktops. AIOHub answers those apps the way a
-Jellyfin server would, so people keep using the app they like, such as Strand or Streamyfin. AIOHub is not a player
-itself and hosts no video.
+It is one Cloudflare Worker, and it runs on Cloudflare's Free plan.
+
+![A person's Home on the hub's website](docs/images/home.png)
+
+The [preview](https://aiohub.miraclx.workers.dev/?sample) is the whole site on made-up data. Nothing is saved.
 
 ## What you get
 
-### Each person
+**Each person**
 
-- **A Home of their own.** Trending, popular and top rated rows, collections by streaming service and by genre, and any
-  list added by its link. Each row can be renamed, reordered or switched off.
-- **Rows from their own watching.** One Watchlist (from Trakt, MDBList or both), Recommended Movies and Recommended
-  Shows, Recently Watched, Up Next (shows with a next episode out) and New for you (new episodes of shows they watch, and
-  watchlist movies that are now out to stream). Every one of them works from whatever the person has. Without a Trakt
-  account the hub works them out from what they watched here and on their MDBList; with Trakt connected they follow
-  Trakt, which also knows what was watched elsewhere, and add what only MDBList or their watching here knows of. Only the Watchlist needs an account, Trakt or MDBList.
-- **For you rows.** Places on Home that the hub fills once a day for each person: because you watched, more films from a
-  series, a show to pick back up, more from a director, their genres, something different, a seasonal set, a Top 10.
-  Each pick says why it was made. A person can keep a pick, swap it for one of the day's other options, or ask never to be
-  picked for from a given title again.
-- **Sign-in that suits a TV.** Quick Connect is the Jellyfin way to sign in without typing a password on a remote: the TV
-  shows a six-digit code, and you approve it from your page on the hub. Phones and laptops sign in with the hub address, a
-  name and a password.
-- **Their own Trakt and MDBList.** Trakt and MDBList are services that keep a record of what you watch, plus watchlists
-  and lists. A person can connect either or both. Connecting gives its rows on Home and sends nothing. Each has one
-  Sync switch, off until it is turned on: on, what is watched here goes there as it plays and what is watched elsewhere
-  comes back; off, nothing moves either way. Marking something unwatched in an app, with Trakt sync on, takes its plays
-  off Trakt too (if it was only marked as watched here, just that one play); unwatching on Trakt's own site or apps does
-  not reach the hub. One more switch, Watchlist, makes
-  the titles they save in the apps (the heart or Save button) and their watchlist one list: Trakt's watchlist when Trakt is
-  connected, with MDBList following, else MDBList's.
-  Their lists and liked lists, from Trakt and MDBList together, can be rows on Home: My lists and Lists I liked, a tile
-  for each list.
-- **Playback settings.** Quality (Data saver, Balanced or Best), a size limit, audio languages, subtitles, skipping intros and
-  credits where a title has them marked, and hiding what they have already watched.
-- **Devices.** Every signed-in app is listed with its name, when it was last seen and roughly where. Any of them can be
-  renamed or signed out.
+- A Home of their own: rows they can rename, reorder or switch off, plus rows worked out from what they watch.
+- Their own Trakt and MDBList, if they want them. Nothing is sent to either until they turn sync on.
+- Sign-in that suits a TV: the TV shows a code, they approve it from their phone.
+- Their own quality, languages and subtitles, and a list of their signed-in devices.
 
-### The manager
+**You, the manager**
 
-- **Invites.** Add a person, then send them a link or let them scan a code. They choose their own password.
-- **Groups.** Put people in groups such as Family or Friends. Settings and Home rows flow from the hub to a group to a
-  person, and each level can change anything for itself.
-- **Content limits.** Set a person or a group to Kids or Teens. Their rows then show only titles with a rating that
-  fits, and Kids get rows and folders made for children. The manager decides whether a person may change their own limit.
-- **Activity.** Who is watching what right now, and what was watched before: how far in, which parts were played, on
-  which device and from roughly where. Titles saved to a device to watch later show as downloaded.
-- **Background work.** A list, under Hub, General, of every job the hub runs by itself, when each last ran and when it
-  runs next.
-- **A call when Home changes.** Optional. Under Hub, General, the manager can enter a web address, and the hub sends it
-  an empty request after a Home change has reached the apps, at most once every five minutes.
-  Beside it the manager can put a page people can open to set the same thing up themselves; it shows as a link on their Devices page.
-- **Debrid accounts.** A debrid service is a paid account that fetches a file and hands back a direct link to stream it
-  from. The hub can hold several (TorBox, Real-Debrid, AllDebrid, Premiumize, Debrid-Link, EasyDebrid), and each group or
-  person uses the one you pick for them. People never see the keys.
-- **Control.** Pause playing for a person or a whole group (they can still browse), sign a device out, reset a forgotten
-  password, and choose how stream names are labelled in the apps.
-- **A safe account.** Passkeys (sign in with a fingerprint or face) and one-time recovery codes for the manager.
+- Invite people with a link. Put them in groups such as Family or Friends.
+- Set Kids or Teens limits for a person or a group.
+- See who is watching what, pause someone, or sign a device out.
+- Keep several debrid accounts and choose who uses which. Nobody else sees the keys.
 
-## How it works
+Any Jellyfin player app works: Strand, Streamyfin, Wholphin and others. AIOHub is not a player and holds no video.
 
-AIOHub is one Cloudflare Worker (a small program Cloudflare runs for you), one D1 database, and a React site served by
-the same Worker.
-
-- A player app points at `https://<your site>/h/<hub code>`. The Worker signs the person in and gives that app a token
-  of its own, which you can see and take away. The app never sees the keys behind it.
-- Video and artwork go straight from the device to where they are kept. They never pass through the hub.
-- When you change something on the site, the Worker updates that person's setup on AIOStreams and AIOMetadata. It only
-  touches setups it created itself, and deletes them when the hub is deleted.
-- Every five minutes a scheduled run does the slow work: the day's For you picks, Recommended rows, Trakt and MDBList
-  sync, and retries of anything Trakt turned away.
-
-The database holds people and groups, their settings, signed-in devices, what was played, each day's picks, and connected
-accounts. Keys are encrypted and passwords hashed or encrypted before they are stored. No ads, no analytics, nothing sold or shared. The full
-list of what a hub keeps, and what it does with a connected Trakt or MDBList account, is in [PRIVACY.md](PRIVACY.md).
+The full list is in [Features](docs/features.md).
 
 ## What you need
 
-- A Cloudflare account. The Free plan is enough.
-- An AIOStreams server and an AIOMetadata server. The defaults in `wrangler.jsonc` are the public ForTheWeak servers; you
-  can point at your own.
-- A key for at least one debrid service.
-- A free key from TMDB, the film and TV database that fills most rows. Optionally a free MDBList key for the hub, which
-  the collection rows (by service, by genre) need to reach the apps.
-- For the Trakt features, a Trakt API app of your own (see below). Without one, Trakt is not offered.
-- For the terminal route, Node 20 or newer.
+- A Cloudflare account. The Free plan is enough for a household; see [Cost and limits](docs/limits.md).
+- A key for a debrid service (TorBox, Real-Debrid, AllDebrid, Premiumize, Debrid-Link or EasyDebrid).
+- A free [TMDB](https://www.themoviedb.org/settings/api) key. A free [MDBList](https://mdblist.com/preferences/) key is
+  optional and fills the rows by streaming service and by genre.
+- An AIOStreams server and an AIOMetadata server. A new copy uses the public ForTheWeak servers until you point it at
+  your own.
 
 ## Run your own
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/miraclx/aiohub)
 
-The button copies this repository to your account, makes the database and asks for two secrets:
+The button copies this repository to your account, makes the database and asks for two secrets. Leave the build and
+deploy commands as they are.
 
-- `VAULT_KEY`: a long random text (40 characters or more) that locks every key and password the site stores. Keep a copy
-  and never change it. Without it, stored keys cannot be read again.
-- `CLAIM_CODE`: a code you make up. Afterwards, open `https://<your site>/#/setup/<that code>` to create your hub.
+- `VAULT_KEY`: a long random text, 40 characters or more. It locks every key and password the site stores. Keep a copy
+  and never change it.
+- `CLAIM_CODE`: a code you make up. It stops a stranger from claiming your copy.
 
-Or from a terminal:
+Then open `https://<your site>/#/setup/<your claim code>` and follow the steps on the page.
+
+Prefer a terminal? It takes three commands (Node 22 or newer):
 
 ```sh
 npm install
 npx wrangler login
-node setup.mjs            # or: node setup.mjs --aiostreams https://your.aiostreams.host --aiometadata https://your.aiometadata.host
+node setup.mjs
 ```
 
-The script makes the database, applies its tables, makes the two secrets (kept in `.instance.json`, which you should back
-up), builds and deploys the site, and prints the one-time link that creates your hub. It is safe to run again: it keeps
-what already exists.
+[Setting up](docs/setup.md) walks through both routes, the first sign-in, inviting people and turning on Trakt.
 
-Then, on the site:
+## More
 
-1. Open the one-time link and choose a password. The site makes a hub code for you. You sign in with the two together, so
-   save both.
-2. Follow the remaining steps: paste a debrid key, then your TMDB key (and an MDBList key if you have one), pick a
-   starting quality, and add your first group and person.
-3. Add more groups and people, and send each person their invite link.
-4. Each person opens their link, chooses a password, and finds the server address and their app password under Devices.
+- [Setting up](docs/setup.md)
+- [Updating](docs/updating.md)
+- [Settings](docs/configuration.md): every setting the Worker reads
+- [Features](docs/features.md)
+- [How it works](docs/how-it-works.md)
+- [Cost and limits](docs/limits.md)
+- [Working on it](docs/development.md)
+- [Privacy](PRIVACY.md): what a hub keeps, and what it does with a connected Trakt or MDBList account
+- [What's new](CHANGELOG.md)
 
-### Turning on Trakt
+## Good to know
 
-A fresh copy has Trakt switched off. To offer it, create an API app in your Trakt account with the redirect address
-`https://<your site>/api/trakt/callback`, then give the Worker its client ID as a secret named `TRAKT_CLIENT_ID`:
-
-```sh
-npx wrangler secret put TRAKT_CLIENT_ID
-```
-
-Only the client ID is needed. Each person then connects their own Trakt account from their own page.
-
-### Updating
-
-If you set up from a terminal:
-
-```sh
-git pull
-npm install
-npm run build
-npm run deploy       # applies new database tables, then deploys
-```
-
-### Settings in `wrangler.jsonc`
-
-- `MAX_HUBS`: how many hubs this copy of the site will carry. The default is 1.
-- `UP_ORIGIN` and `AIOM_ORIGIN`: the AIOStreams and AIOMetadata servers hubs use unless they choose their own under Hub,
-  General.
-
-## Working on it
-
-```sh
-npm run dev          # the site alone, with sample data at /?sample
-npm run typecheck
-npm test -- <path to a Chromium binary>
-```
-
-`npm run dev` needs no account or keys: the preview runs on made-up data and saves nothing.
-
-`npm test` builds the site, starts the Worker locally on a fresh database against stand-in servers, and runs the API
-tests, a browser walk-through, and the AIOMetadata tests. With the shipped test values (`tests/local.vars`) every outside
-address points at a stand-in on your own machine. If you keep a `.dev.vars` of your own, the run uses that instead. It
-needs a Chromium binary because the browser walk-through drives one.
-
-`src/` is the site (React, hand-written CSS). `worker/` is the Worker: the API, the sign-in front that player apps talk
-to, and the code that keeps AIOStreams and AIOMetadata in step. `migrations/` is the database. `formatter-preview/`
-renders the stream-label preview.
-
-## Limits and what it is not
-
-- **Not a player, not a media server.** AIOHub ships no app and stores no video. It answers player apps the way a Jellyfin
-  server would, and needs AIOStreams, AIOMetadata and a debrid account behind it.
-- **Free plan pace.** A Worker on the Free plan may make about fifty outside calls and database queries per run. So
-  background work goes one person at a time, every five minutes. For you and Recommended are worked out once a day per
-  person, and Trakt sync takes turns, so a play made elsewhere can take a while to show up. The Background work page shows
-  where things stand.
-- **Size.** A hub carries up to 20 people, which is what AIOStreams allows per setup by default. A copy of the site
-  carries one hub unless you raise `MAX_HUBS`.
-- **Trakt can be slow to answer.** Trakt sometimes turns away the shared addresses Workers call from. The hub waits and
-  tries again, and rows show the last list Trakt gave in the meantime.
-- **Real-Debrid allows one IP at a time.** People watching from different places can trip that. A proxy set in AIOStreams
-  avoids it.
-- **Content limits rely on ratings.** They use US ratings from TMDB. Under Kids, a title with no rating is left out.
+- **Run your own copy.** A copy carries one hub: yours. The author's site is a private household hub and takes no
+  sign-ups.
 - **Not affiliated.** AIOHub is an independent project. It is not part of, or endorsed by, AIOStreams, AIOMetadata,
-  Jellyfin, Cloudflare, TMDB, MDBList, any debrid service or any player app. It uses Trakt but is not endorsed or
-  certified by Trakt.
-- **Referral links.** The "Get an account" links for TorBox and Real-Debrid in `src/data.ts` are the original author's
-  referral links. Change or remove them in your copy if you prefer.
+  Jellyfin, Cloudflare, MDBList, any debrid service or any player app. It uses Trakt but is not endorsed or certified
+  by Trakt. This product uses the TMDB API but is not endorsed or certified by TMDB.
+- **Referral links.** The "Get an account" links for TorBox and Real-Debrid in `src/data.ts` are the author's referral
+  links. Change or remove them in your copy if you prefer.
 
-## What's new
+## Thanks
 
-Newest first. Dates are the commit dates on `main`.
+AIOHub stands on other people's work:
 
-### 2026-11-27
-
-- Trakt shows someone as watching as soon as they start, not two minutes in. Something opened and closed within two
-  minutes still never counts as watched: it ends on Trakt as paused, at the spot it had before where there was one.
-- A start, pause or stop that Trakt turns away for being asked too often is sent again when the wait Trakt asked for ends,
-  as the title is by then, and never a start after its stop. Several rows opening at once read the same Trakt list once.
-- New, under Hub, General: "Call this address when Home changes". After a Home change has reached the apps, the hub sends
-  one empty request to an address the manager entered, at most once every five minutes. Background work shows how the
-  last one went.
-- What you watched is one list for every row: your Trakt history, your MDBList and what you finished here, newest first, a
-  title in more than one of them once. Recently Watched is that list, For you and Recommended go by it, and connecting Trakt
-  no longer stops your MDBList from being read. "Watched here" means finished or ticked, never only begun.
-- Up Next and New for you add what Trakt does not know of: with Trakt connected, a show you finished an episode of here
-  while Trakt sync was off, or one only your MDBList has, comes after Trakt's own. Without Trakt, shows you watch on
-  MDBList count as well as the ones you watch here.
-- A row that leaves out what you watched lists nothing while one of your accounts has never answered, instead of listing
-  titles you may have seen.
-- The offer to add earlier plays to Trakt is checked first. It lists only what you finished, leaves out anything Trakt
-  already has, and does not show while Trakt is not answering. Connecting the same Trakt account again no longer offers
-  what Trakt was already told.
-- Right after connecting Trakt, the Trakt row in Sync carries a Recommended tag until you turn it on. The separate box that
-  asked the same thing is gone.
-- A change that alters someone's rows (connecting or removing Trakt or an MDBList key, the Watchlist switch) reaches their
-  apps within seconds with no page open, and a Home change left waiting is sent by the next background run or the one after,
-  ahead of the other background work. Hub, General, Background work says when one is waiting and since when.
-- The rows by service and by genre say what order they are in: most popular first.
-- A new hub's Home starts in a new order: New for you (on) and the Watchlist, a For you row and the Recommended rows,
-  Trending and a For you row, the rows by service and by genre, a For you row and the themed collections, Top Rated, then
-  Recently Watched. Up Next and the Popular rows start off. A Home saved before is left as it is;
-  `node scripts/default-home.mjs` prints the new default rows for bringing one to it by hand.
-- Up Next and New for you work without Trakt. Up Next lists the shows you watch here that have a next episode out. New for
-  you lists new episodes of those shows and of shows on your MDBList watchlist, and watchlist movies now out to stream. The
-  hub checks what has come out once a day. With Trakt connected both rows follow Trakt, as before.
-- My lists and Lists I liked hold your MDBList lists too, next to your Trakt ones, or by themselves without Trakt. They are
-  read with your own MDBList key only.
-- The rows by streaming service and by genre say what order their titles are in: each tile opens a public list, in that
-  list's own order. Under a content limit a service tile shows the most popular on TMDB first.
-- Unwatching something you had only marked as watched here removes just that one play from Trakt. A play Trakt had from
-  before stays. Unwatching something you really played here still removes every play of it, as before. If Trakt does not
-  answer when that one play is looked for, it is tried again like any other write, for up to a week.
-- A For you row of a film series is named "More from" the series, since what is left may be an earlier film. It no longer
-  lists a film you watched elsewhere after you mark something else unwatched.
-- The Trakt card says plainly what connecting does for For you: it also learns from what you watched on Trakt. The MDBList
-  card says the same of MDBList, which For you reads only while Trakt is not connected.
-- Activity shows what happened: marking something watched and then unwatched leaves nothing on it. If you had really played the title, the play
-  stays and a small line says it was marked unwatched.
-
-### 2026-11-26
-
-- Unwatch something in an app and, with Trakt sync on, its plays leave your Trakt history too (every play of that film or
-  episode; a season or show is each of its episodes, up to 60). It stays unwatched here: older plays Trakt or MDBList still
-  list are not brought back, and watching it again syncs as usual. Unwatching on Trakt's own site or apps does not reach
-  the hub.
-- Once a person has joined, their accounts are theirs alone: a manager sees whether Trakt and MDBList are connected, and
-  can no longer connect or disconnect them. A manager can still remove the person.
-- Home rows say where they come from by one rule: a row from your own account or watching has a pill ("Your Trakt",
-  "What you've watched"), and a row from a public source names it after its kind ("Movies · TMDB"). The two rows of your
-  Trakt lists are now called My lists and Lists I liked.
-- The Sync card is one row a switch: Trakt, MDBList and Watchlist, each with one sentence, and a status line only when
-  something is unusual. Watchlist follows one rule for everyone: off, the titles you save stay in the apps; on, they and your
-  watchlist are one list (Trakt's when connected, else MDBList's, which no longer happens by itself). A manager can set
-  MDBList sync and Watchlist only for someone who has not joined.
-- Accounts has one Sync card: a plain line of what is synced, a switch per account for your watching, and one switch that
-  shows your watchlist as Favorites, with or without MDBList. Trakt leads the watchlist and MDBList follows; a title that
-  leaves your Trakt watchlist loses its heart, and hearts that were never on Trakt are left alone. Earlier plays and hearts
-  you already had are offered once, never added by themselves. A whole season ticked in an app counts as its episodes, and
-  Recently Watched includes what you finished here while Trakt sync is off.
-- Accounts have one idea each: Connect gives the rows, and one Sync switch moves watching both ways. Trakt sends nothing
-  until its sync is on, and asks once right after you connect. MDBList's switch is called Sync too.
-- Each account-driven row says in one line what it is, where it is edited and in Add row.
-- Favorites: an opt-in switch on the Trakt card shows your Trakt watchlist as Favorites in the apps, and a heart added or removed in an app adds or removes the title on your watchlist.
-- New for you: a row of new episodes of shows you watch, and watchlist movies that are now out to stream (needs Trakt).
-- Recommended Movies and Recommended Shows work without Trakt, worked out from what you watched.
-- One Watchlist row, from Trakt, MDBList or both merged.
-- Your own Trakt lists and the lists you liked are separate rows.
-- Activity shows titles saved to a device to watch later as downloaded.
-- A TV's Quick Connect link opens a page on the hub where you approve the code.
-- A For you row is picked again within minutes of finishing something.
-- The Accounts page shows what was synced and where, and says when the hub is waiting on Trakt.
-- Next Up in the apps carries on with shows watched on Trakt: with Trakt sync on (and MDBList sync off), the latest
-  episode of each show from the last 120 days is ticked, with its Trakt date.
-
-### 2026-11-25
-
-- One switch syncs Trakt with your progress. It only adds, and a play you delete stays deleted. Plays from before you
-  connected are added only if you agree.
-- My Trakt lists: all of a person's Trakt lists as one Home row, with a pictured tile per list.
-- Each For you row says why it was picked and offers the day's other options. You can keep a pick, or see less from a
-  title or a kind of pick.
-- For you also draws on older watching, and can offer something different from your usual genres.
-- Add row groups its ready-made rows and marks what is already on Home.
-- Rows that refresh on a schedule say when they were last filled and when they are next.
-- Playback settings are a person's own to change by default. Their content limit stays the manager's unless opened up.
-
-### 2026-11-24
-
-- Activity shows which parts of a title were played, in the order watched, and tells a paused player from a playing one.
-- Something opened and closed within two minutes is not counted as a watch and is not sent to Trakt.
-- Each For you pick says what kind it is, and a person can add For you rows from their own page.
-- A privacy page, and a clear notice about what connecting Trakt does.
-
-### 2026-11-22 and 2026-11-23
-
-- For you rows arrive: places on Home filled every day from what each person watches.
-- Kids' Channels and Animation Studios collections, with a tile for each folder.
-- Any row can be renamed.
-- The site asks before removing a row, signing out a device, or disconnecting an account.
-
-### 2026-11-20 and 2026-11-21
-
-- Background work page: what the hub does by itself, when it last ran and when it runs next.
-- Trakt sign-in happens from the person's own page.
-- Recently Watched row, and a daily check that Trakt and MDBList agree on what was watched.
-- Kids and Teens limits fill their rows with rated titles only, and Kids get the rows and folders made for children.
-- A manager can open a person's page and see what they see.
-- Activity keeps roughly where each play's device was.
-
-### 2026-11-18 and 2026-11-19
-
-- Each person's apps are served by their own AIOMetadata setup, with no one signed out by the move.
-- The hub serves each person's Trakt rows itself.
-- The hub has a name that apps and Trakt show.
-- Quality choices (Data saver, Balanced, Best) pick streams by how heavy they are, with a size cap, and Data saver works
-  at any resolution.
-- A paused person sees a short, neutral message.
-
-### 2026-11-17
-
-- First release: hubs, groups and people on top of AIOStreams and AIOMetadata, with per-person Home, sign-in and history.
-- Rename a signed-in device. Pause a whole group. Put groups in any order.
-- Real posters on a person's own rows, and pictures on Activity.
+- [AIOStreams](https://github.com/Viren070/AIOStreams) by Viren070, which finds the streams and whose formatter the
+  stream-label preview reuses.
+- [AIOMetadata](https://github.com/cedya77/aiometadata) by cedya77, which builds the rows, artwork and search.
+- Yeb, who runs the ForTheWeak servers a new copy starts on.
+- [fusion-starter-kit](https://github.com/itsrenoria/fusion-starter-kit) by itsrenoria, for the collection artwork.
+- TMDB, MDBList and Trakt for the data, and Jellyfin for the protocol every player app here speaks.
 
 ## Licence
 

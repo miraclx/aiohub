@@ -118,6 +118,8 @@ const seenAt = (device: Device) => {
   const at = device.place ? [`in ${device.place}`, device.net].filter(Boolean).join(' · ') : device.net ? `on ${device.net}` : '';
   return at ? ` · ${device.seen === 'Now' ? '' : 'last seen '}${at}` : '';
 };
+/* AIOStreams' own web player: what the site links to unless it names another (WEB_PLAYER, worker/util.ts). */
+const AIOSTREAMS_PLAYER = 'https://web.aiostreams.org';
 function Devices({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
   const {update, toast, live} = page;
   const [code, setCode] = useState(''), [pin, setPin] = useState<string | null>(null);
@@ -137,9 +139,9 @@ function Devices({page, person, mine}: {page: PageProps; person: Person; mine: b
       <div><dt>Password</dt><dd><Secret value={creds?.password ?? ''} label="Password" onCopy={() => toast('Copied')}/></dd></div>
     </dl>
     <p className="muted small below">The username is {mine ? 'your' : 'their'} name; capitals and spaces don’t matter. This password is only for player apps{live ? `, separate from the one ${mine ? 'you use' : 'they use'} on this site` : ''}. Signing out everywhere replaces it.</p>
-    {live && <><h3 className="sub">In a browser</h3>
-    <div className="card settings"><Setting title="Watch in a browser" hint="Opens AIOStreams’ own web player. The first time, paste the server address above, then sign in with the username and password. Quick Connect works there too.">
-      <a className="ghost small button" href="https://web.aiostreams.org" target="_blank" rel="noreferrer" onClick={() => {void navigator.clipboard?.writeText(`${location.origin}/h/${page.hub.code}`).catch(() => {}); toast('Server address copied');}}>Watch</a></Setting></div></>}
+    {live && page.hub.webPlayer && <><h3 className="sub">In a browser</h3>
+    <div className="card settings"><Setting title="Watch in a browser" hint={page.hub.webPlayer === AIOSTREAMS_PLAYER ? 'Opens AIOStreams’ own web player. The first time, paste the server address above, then sign in with the username and password. Quick Connect works there too.' : 'Opens a web player. The first time, paste the server address above, then sign in with the username and password.'}>
+      <a className="ghost small button" href={page.hub.webPlayer} target="_blank" rel="noreferrer" onClick={() => {void navigator.clipboard?.writeText(`${location.origin}/h/${page.hub.code}`).catch(() => {}); toast('Server address copied');}}>Watch</a></Setting></div></>}
     <h3 className="sub">On a TV</h3>
     <form className="card quick" onSubmit={event => {event.preventDefault(); if (live) {act(live.call('POST', `${at}/quick`, {code}), 'TV approved. It signs in within a few seconds.'); setCode(''); return;} edit(target => {target.devices.unshift({id: `d${Date.now()}`, app: 'AIOStreams', name: 'New TV', seen: 'Now'});}, 'TV signed in'); setCode('');}}>
       <div><h3>Quick Connect</h3><p>Choose Quick Connect on the TV, then type the code it shows.</p></div>

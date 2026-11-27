@@ -6,6 +6,9 @@
   "d1_databases": [{"binding": "DB", "database_name": "aiohub", "migrations_dir": "migrations"}],
   // Every five minutes, Trakt calls still waiting are tried again and plays left running by a player that went quiet are stopped on Trakt (only once TRAKT_CLIENT_ID is set).
   "triggers": {"crons": ["*/5 * * * *"]},
-  // How many hubs this copy of the site will carry. UP_ORIGIN and AIOM_ORIGIN are the AIOStreams and AIOMetadata servers hubs use unless they choose their own. Secrets: VAULT_KEY, CLAIM_CODE; TRAKT_CLIENT_ID turns on Trakt history.
-  "vars": {"MAX_HUBS": "1", "UP_ORIGIN": "https://aiostreams.fortheweak.cloud", "AIOM_ORIGIN": "https://aiometadata.fortheweak.cloud", "FRONT": "aiometadata"}
+  // MAX_HUBS: how many hubs this copy of the site will carry. AIOSTREAMS_ORIGIN and AIOMETADATA_ORIGIN: the AIOStreams and AIOMetadata servers hubs use unless they choose their own
+  // (their earlier names, UP_ORIGIN and AIOM_ORIGIN, still work). FRONT "aiometadata": each person's apps get their own Home from AIOMetadata.
+  // Optional: WEB_PLAYER, the web player the Devices page links to (https://web.aiostreams.org when unset; "off" for no link).
+  // Secrets: VAULT_KEY, CLAIM_CODE; TRAKT_CLIENT_ID turns on Trakt history. Every setting is listed in worker/util.ts (Env).
+  "vars": {"MAX_HUBS": "1", "AIOSTREAMS_ORIGIN": "https://aiostreams.fortheweak.cloud", "AIOMETADATA_ORIGIN": "https://aiometadata.fortheweak.cloud", "FRONT": "aiometadata"}
 }

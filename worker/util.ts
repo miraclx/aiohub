@@ -1,23 +1,62 @@
 /// <reference types="@cloudflare/workers-types" />
 export interface Env {
   ASSETS: Fetcher; DB: D1Database;
-  UP_ORIGIN: string; VAULT_KEY: string; CLAIM_CODE?: string; TMDB_CHECK?: string; TMDB_API?: string; FLIXPATROL_API?: string; MDBLIST_API?: string; AIOM_ORIGIN?: string; MAX_HUBS?: string;
+  // The AIOStreams server hubs use unless they choose their own. No default: it must be set. Set in wrangler.jsonc (setup.mjs --aiostreams).
+  AIOSTREAMS_ORIGIN?: string;
+  // The AIOMetadata server hubs use unless they choose their own. Unset: Home rows are off. Set in wrangler.jsonc (setup.mjs --aiometadata).
+  AIOMETADATA_ORIGIN?: string;
+  // The earlier names of those two, still read when the new ones are unset (see `named`). The rest of the code reads these.
+  UP_ORIGIN: string; AIOM_ORIGIN?: string;
+  // How many hubs this copy of the site carries. Unset: 1. Set in wrangler.jsonc.
+  MAX_HUBS?: string;
+  // A code asked for when a hub is created, so a stranger cannot claim the site. Unset: none is asked. A secret, made by setup.mjs.
+  CLAIM_CODE?: string;
+  // Locks every key and password the site stores. No default: it must be set, and never changed. A secret, made by setup.mjs.
+  VAULT_KEY: string;
+  // Where a TMDB key is checked. Unset: https://api.themoviedb.org/3/configuration. Only the local test run sets it.
+  TMDB_CHECK?: string;
+  // Where TMDB is read. Unset: https://api.themoviedb.org/3. Only the local test run sets it.
+  TMDB_API?: string;
+  // Where the streaming charts are read. Unset: the public catalogs FLIX names in foryou.ts. Only the local test run sets it.
+  FLIXPATROL_API?: string;
+  // Where MDBList is read. Unset: https://api.mdblist.com. Only the local test run sets it.
+  MDBLIST_API?: string;
   // 'aiometadata': every person's player apps are served by their own AIOMetadata config (streams still come from AIOStreams).
+  // Unset or anything else: the apps talk to AIOStreams alone. Set in wrangler.jsonc.
   FRONT?: string;
-  // Trakt history (see trakt.ts). Without a client id it stays off: nothing offered, nothing sent.
-  TRAKT_CLIENT_ID?: string; TRAKT_API?: string; TRAKT_AUTH?: string;
-  // This site's own public address. AIOMetadata reads each person's Trakt rows from it (see rows.ts). Unset: the address the sync was asked on.
+  // The client id of the site's own Trakt app, for Trakt history (see trakt.ts). Unset: it stays off, nothing offered, nothing
+  // sent. Set by whoever runs the site, as a secret or a var.
+  TRAKT_CLIENT_ID?: string;
+  // Where Trakt is read. Unset: https://api.trakt.tv. Only the local test run sets it.
+  TRAKT_API?: string;
+  // Where Trakt sign-ins are exchanged. Unset: TRAKT_API if that is set, else https://auth.trakt.tv. Only the local test run sets it.
+  TRAKT_AUTH?: string;
+  // This site's own public address. AIOMetadata reads each person's Trakt rows from it (see rows.ts). Unset: the address the sync
+  // was asked on. Set by whoever runs the site, if it has an address of its own.
   SITE_ORIGIN?: string;
-  // The hour (UTC) the daily For you picking starts (foryou.ts). Unset: five.
+  // The hour (UTC) the daily For you picking starts (foryou.ts). Unset: 5. Set by whoever runs the site, if they want another.
   FORYOU_HOUR?: string;
-  // The UTC hour from which the day's Recommended rows are worked out (recs.ts); 4 when unset.
+  // The UTC hour from which the day's Recommended rows are worked out (recs.ts). Unset: 4. Set by whoever runs the site, if they want another.
   RECS_HOUR?: string;
-  // Only the local test run sets this: where a request came from, and when a playback report was made, are then read from test
-  // headers (see whereOf and whenOf in front.ts).
+  // The web player the Devices page links to. Unset: https://web.aiostreams.org. Empty or 'off': no link. Set by whoever runs
+  // the site, if they host a player of their own.
+  WEB_PLAYER?: string;
+  // '1': where a request came from, and when a playback report was made, are read from x-test-* headers (whereOf and whenOf in
+  // front.ts), and the routes and stand-ins only the tests use are open (TESTING, below). Unset: none of that. Only the local
+  // test run sets it (tests/run.sh); never set it on a real site.
   TEST_WHERE?: string;
-  // Only the local test run sets this: the Home change notice (notice.ts) goes to this stand-in address instead of the one kept.
+  // A stand-in address the Home change notice (notice.ts) goes to instead of the one kept. Unset: the one kept. Read only while
+  // TEST_WHERE is '1'. Only the local test run sets it.
   NOTICE_VIA?: string;
 }
+/* The settings as the rest of the code reads them: the two servers under their earlier names, from the new names when those are
+   set. Called once where the settings arrive (index.ts), so a site set up under either name keeps working; the new name wins. */
+export const named = (env: Env): Env => ({...env, UP_ORIGIN: env.AIOSTREAMS_ORIGIN || env.UP_ORIGIN, AIOM_ORIGIN: env.AIOMETADATA_ORIGIN || env.AIOM_ORIGIN});
+/* Whether this is the local test run. What only the tests use (routes in api.ts, the notice stand-in) is closed without it. */
+export const TESTING = (env: Env) => env.TEST_WHERE === '1';
+/* The web player's address, '' for none: only an http(s) address is ever handed to a page. */
+export const WEB_PLAYER = 'https://web.aiostreams.org';
+export const webPlayer = (env: Env) => {const at = (env.WEB_PLAYER ?? WEB_PLAYER).trim().replace(/\/+$/, ''); return /^https?:\/\/\S+$/i.test(at) ? at : '';};
 export const enc = new TextEncoder(), dec = new TextDecoder();
 /* The same settings, pointed at the servers this hub uses. A hub that has not chosen its own uses the site's. */
 export const hosted = (env: Env, data: {hostUrl?: string; metaUrl?: string}): Env => ({...env, UP_ORIGIN: data.hostUrl || env.UP_ORIGIN, AIOM_ORIGIN: data.metaUrl || env.AIOM_ORIGIN});

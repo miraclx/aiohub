@@ -12,7 +12,7 @@
    - A call that failed is tried once more at the next turn, then left until the next change.
    Everything here is kept by hub. Nothing here names what the address is for. */
 import type {Env} from './util';
-import {getSecret, now} from './util';
+import {TESTING, getSecret, now} from './util';
 
 export const NOTICE = 'key:notice', EVERY = 300;
 /* A page the manager may set beside the address (Hub, General): one people can open to set the same thing up for themselves.
@@ -65,8 +65,9 @@ async function call(env: Env, hub: string): Promise<void> {
   const address = await getSecret<string>(env, hub, HUB, NOTICE);
   let result = 'none';
   if (address) try {
-    // NOTICE_VIA: only the local test run sets it; the request then goes to that stand-in, with the address's own path.
-    const answer = await fetch(env.NOTICE_VIA ? `${env.NOTICE_VIA}${new URL(address).pathname}` : address, {method: 'POST', redirect: 'manual', headers: {'user-agent': AGENT}, signal: AbortSignal.timeout(WAIT)});
+    // NOTICE_VIA: only the local test run sets it, and only there is it read (TEST_WHERE, util.ts); the request then goes to
+    // that stand-in, with the address's own path.
+    const answer = await fetch(TESTING(env) && env.NOTICE_VIA ? `${env.NOTICE_VIA}${new URL(address).pathname}` : address, {method: 'POST', redirect: 'manual', headers: {'user-agent': AGENT}, signal: AbortSignal.timeout(WAIT)});
     result = answer.status >= 200 && answer.status < 300 ? 'ok' : answer.status >= 300 && answer.status < 600 ? `${Math.floor(answer.status / 100)}xx` : 'none';
     await answer.body?.cancel().catch(() => null);
   } catch { /* no answer in time, or none at all: 'none'. The error can name the address, so it is never logged. */ }

@@ -80,7 +80,7 @@ export interface Hub {
   manager?: boolean;
   // front: each person's apps sign in to their own AIOMetadata setup; only then are there For you places. forYouHour: the UTC hour
   // the day's For you picking starts.
-  front?: boolean; forYouHour?: number; v?: number; serverName?: string; tmdb?: boolean; mdblist?: boolean; scrobble?: boolean; traktClient?: string; metaUrl?: string; missing?: string[]; traktLink?: string; name: string; code: string; host: string; hostUrl: string; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; groups: Group[]; people: Person[];
+  front?: boolean; forYouHour?: number; v?: number; serverName?: string; tmdb?: boolean; mdblist?: boolean; scrobble?: boolean; webPlayer?: string; traktClient?: string; metaUrl?: string; missing?: string[]; traktLink?: string; name: string; code: string; host: string; hostUrl: string; services: string[]; addons: Addon[]; defaults: Settings; rows: Row[]; groups: Group[]; people: Person[];
   me: {name: string; theme: 'dark' | 'light' | 'auto'; passkeys: {id: string; name: string; added: string}[]};
 }
 

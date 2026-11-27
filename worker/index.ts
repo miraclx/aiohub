@@ -9,10 +9,12 @@ import {due} from './notice';
 import {nightly} from './ahead';
 import {sweep, waitOut} from './trakt';
 import type {Env} from './util';
-import {now} from './util';
+import {named, now} from './util';
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, site: Env, ctx: ExecutionContext): Promise<Response> {
+    // AIOSTREAMS_ORIGIN and AIOMETADATA_ORIGIN, or their earlier names: read once here (util.ts, named).
+    const env = named(site);
     const url = new URL(request.url), found = /^\/h\/([^/]+)(\/.*)?$/.exec(url.pathname);
     if (found) {
       try {return await front(request, env, ctx, url, found[1], found[2] ?? '/');}
@@ -31,7 +33,8 @@ export default {
   // person's MDBList what was watched here and it lacks (sync.ts, leftovers), once a day each: after those, so it never holds a pick
   // up. Last of all, a run with nothing else to do works out one person's Recommended rows (recs.ts), once a day each, from 4:00 UTC,
   // or with none of those to do looks up one person's Up Next and New for you (ahead.ts: for someone without Trakt), once a day each.
-  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
+  async scheduled(event: ScheduledController, site: Env, ctx: ExecutionContext) {
+    const env = named(site);
     // Each run is counted, for the Hub page. Every job below has its own row under Hub, General, Background work (Background in
     // src/pages.tsx): a job added here gets one there too.
     const counted = env.DB.prepare("INSERT INTO runs (job, at, count, since) VALUES ('cron', ?1, 1, ?1) ON CONFLICT (job) DO UPDATE SET at = excluded.at, count = CASE WHEN runs.since IS NULL THEN 1 ELSE runs.count + 1 END, since = coalesce(runs.since, excluded.at)").bind(now()).run().catch(() => null);

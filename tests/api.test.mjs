@@ -69,6 +69,15 @@ const owner = client(), stranger = client(), guest = client();
 const sql = command => JSON.parse(execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', '--json', '--command', command], {cwd: new URL('..', import.meta.url), encoding: 'utf8', env: {...process.env, WRANGLER_WRITE_LOGS: 'false'}, stdio: ['ignore', 'pipe', 'ignore']}))[0].results;
 let hub, link, password, offer;
 
+// The settings as the Worker reads them (worker/util.ts), loaded straight from the source where this Node can (22.18 and later).
+test('the servers are read under their new names, and under the earlier ones when those are all that is set; the web player link can be changed or turned off', {skip: !process.features.typescript}, async () => {
+  const {named, webPlayer} = await import('../worker/util.ts'), origins = env => {const got = named(env); return [got.UP_ORIGIN, got.AIOM_ORIGIN];};
+  assert.deepEqual(origins({UP_ORIGIN: 'https://old.example', AIOM_ORIGIN: 'https://oldmeta.example'}), ['https://old.example', 'https://oldmeta.example']);
+  assert.deepEqual(origins({AIOSTREAMS_ORIGIN: 'https://new.example', AIOMETADATA_ORIGIN: 'https://newmeta.example'}), ['https://new.example', 'https://newmeta.example']);
+  assert.deepEqual(origins({UP_ORIGIN: 'https://old.example', AIOM_ORIGIN: 'https://oldmeta.example', AIOSTREAMS_ORIGIN: 'https://new.example', AIOMETADATA_ORIGIN: 'https://newmeta.example'}), ['https://new.example', 'https://newmeta.example'], 'the new name wins');
+  assert.deepEqual(origins({UP_ORIGIN: 'https://old.example', AIOSTREAMS_ORIGIN: 'https://new.example'}), ['https://new.example', undefined]);
+  assert.deepEqual([undefined, 'https://play.example/', '', 'off', 'not an address'].map(WEB_PLAYER => webPlayer({WEB_PLAYER})), ['https://web.aiostreams.org', 'https://play.example', '', '', '']);
+});
 test('nothing is readable signed out', async () => {
   assert.equal((await stranger('GET', '/api/state')).status, 401);
   offer = (await stranger('GET', '/api/open')).body;
@@ -92,6 +101,7 @@ test('a write from another site is refused', async () => {
 });
 test('the manager builds a hub', async () => {
   hub = (await owner('GET', '/api/state')).body.hub;
+  assert.equal(hub.webPlayer, 'https://web.aiostreams.org', 'the web player the Devices page links to, unless the site names another');
   assert.equal(hub.groups.length, 0); assert.equal(hub.me.name, ''); assert.equal(hub.code, offer.hub);
   assert.equal((await owner('PUT', '/api/groups/family', {name: 'Family', rows: null, settings: {}})).status, 200);
   assert.equal((await owner('PUT', '/api/groups/family', {name: 'Family', rows: null, settings: {}})).status, 409);
