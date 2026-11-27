@@ -203,10 +203,12 @@ Newest first. Dates are the commit dates on `main`.
 - The rows by streaming service and by genre say what order their titles are in: each tile opens a public list, in that
   list's own order. Under a content limit a service tile shows the most popular on TMDB first.
 - Unwatching something you had only marked as watched here removes just that one play from Trakt. A play Trakt had from
-  before stays. Unwatching something you really played here still removes every play of it, as before.
+  before stays. Unwatching something you really played here still removes every play of it, as before. If Trakt does not
+  answer when that one play is looked for, it is tried again like any other write, for up to a week.
 - A For you row of a film series is named "More from" the series, since what is left may be an earlier film. It no longer
   lists a film you watched elsewhere after you mark something else unwatched.
-- The Trakt card says plainly what connecting does for For you: it also learns from what you watched on Trakt.
+- The Trakt card says plainly what connecting does for For you: it also learns from what you watched on Trakt. The MDBList
+  card says the same of MDBList, which For you reads only while Trakt is not connected.
 - Activity shows what happened: marking something watched and then unwatched leaves nothing on it. If you had really played the title, the play
   stays and a small line says it was marked unwatched.
 

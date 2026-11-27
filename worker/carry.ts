@@ -98,8 +98,9 @@ export const unmark = (env: Env, hub: string, person: string, keys: string[], at
 /* What the hub synced for a person lately, newest first, as their own page lists it: what it is called, where it went, and when.
    `spot`: a paused spot rather than a finished watch (by how its key starts). `updated`: a spot that took the place of an
    earlier one held there, rather than one added where there was none. `removed`: a title's plays taken off Trakt because they
-   marked it unwatched in an app (front.ts, kept as r:). `missed`: a tick made here and taken back whose play could not be
-   found on Trakt, so nothing was removed (kept as rn:); `unasked`: Trakt did not answer when it was looked for (rw:). */
+   marked it unwatched in an app (front.ts, kept as r:; for a tick taken back, written as the outbox delivers it: trakt.ts,
+   undo). `missed`: a tick made here and taken back whose play Trakt did not have, so nothing was removed (kept as rn:);
+   `unasked`: Trakt never answered while it was looked for, and the outbox let it go after a week (rw:). */
 export async function synced(env: Env, hub: string, person: string) {
   const rows = (await env.DB.prepare('SELECT place, play, at, title, detail FROM sent WHERE hub = ? AND person = ? AND title IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 30').bind(hub, person).all<{place: Place; play: string; at: number; title: string; detail: string | null}>()).results;
   return rows.map(row => ({title: row.title, detail: row.detail ?? '', to: row.place, spot: /^(x:)?(p|ip|ir|pm|pt):/.test(row.play), ...(row.play.startsWith('ir:') ? {updated: true} : {}), ...(row.play.startsWith('r:') ? {removed: true} : {}), ...(row.play.startsWith('rn:') ? {missed: true} : {}), ...(row.play.startsWith('rw:') ? {unasked: true} : {}), at: row.at}));

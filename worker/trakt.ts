@@ -56,9 +56,9 @@ export const syncOn = async (env: Env, hub: string, person: string) => !!(await 
    out days late if sync came back on, unasked, and meanwhile it would read as "waiting for Trakt" and hold their Favorites step
    up (hearts.ts looks at nobody with a call waiting). A play Trakt was mid-way through hearing of, or whose call was dropped
    here, counts as never sent (as on a disconnect), so it is among the earlier plays they can tick if they turn sync on again.
-   So is a removal still waiting, for a title they marked unwatched in an app ('unwatch': front.ts, unmarked): Trakt keeps those
-   plays. A heart waiting for Favorites stays. Rows here only: nothing on Trakt changes. */
-const WATCHING = "('start', 'pause', 'stop', 'mark', 'unwatch')";
+   So is a removal still waiting, for a title they marked unwatched in an app ('unwatch' and 'untick': front.ts, unmarked): Trakt
+   keeps those plays. A heart waiting for Favorites stays. Rows here only: nothing on Trakt changes. */
+const WATCHING = "('start', 'pause', 'stop', 'mark', 'unwatch', 'untick')";
 export const stopSending = (env: Env, hub: string, person: string) => [
   env.DB.prepare(`UPDATE plays SET scrobbled = CASE WHEN scrobbled = 'held-watched' THEN 'watched' ELSE NULL END WHERE hub = ?1 AND person = ?2 AND (scrobbled IN ('playing', 'paused', 'held', 'held-watched')
     OR item IN (SELECT item FROM trakt_outbox WHERE hub = ?1 AND person = ?2 AND kind IN ${WATCHING}))`).bind(hub, person),
@@ -201,11 +201,19 @@ export const progressOf = (position: number, duration: number) => Math.min(100, 
 // 'unwatch': a title's plays taken off their Trakt history, for a title they marked unwatched in an app (front.ts, unmarked, the
 // only place one is made). It tells of their watching, so it goes only for someone whose sync is on, like a tick. Its `item` is a
 // key of its own too.
-export interface Call {kind: 'start' | 'pause' | 'stop' | 'mark' | 'unwatch' | 'heart' | 'unheart'; path: string; body: Record<string, unknown>}
+// 'untick': the one play a tick made here added, taken off their Trakt history when that tick is taken back in an app (front.ts,
+// unmarked, the only place one is made, with the path it goes to). Trakt has to be read to find that play, so its `body` is not
+// what is sent but what finds it (Undo, below): delivering it is that read and then the removal of the one play found (undo).
+// Kept, tried again and let go like any other call here, and held by the same switch as a tick.
+export interface Call {kind: 'start' | 'pause' | 'stop' | 'mark' | 'unwatch' | 'untick' | 'heart' | 'unheart'; path: string; body: Record<string, unknown>}
+/* What an 'untick' keeps: the film or episode (`find`), when the hub sent its tick (`tick`), and what their list of what was
+   synced calls it (`note`: a key of its own, the title and which episode). `play`: the history id of the play, once found. */
+export interface Undo {find: Target; tick: number; note: {key: string; title: string; detail: string}; play?: number}
 interface Waiting {id: number; hub: string; person: string; kind: Call['kind']; path: string; body: string; made: number; tries: number; next: number; doubt: number; synced: number | null}
 /* A call that tells Trakt of watching (anything but a heart): only ever for someone whose sync is on. */
 const watching = (kind: Call['kind']) => kind !== 'heart' && kind !== 'unheart';
-const STALE = 300, WEEK = 7 * DAY, SOON = [2, 5], LATER = 240, BATCH = 8;
+// UNDOS: how many 'untick' calls one run tries. Each is a read and a write with their own queries, about twice any other call.
+const STALE = 300, WEEK = 7 * DAY, SOON = [2, 5], LATER = 240, BATCH = 8, UNDOS = 3;
 const wait = (tries: number, after: number) => Math.max(SOON[tries] ?? LATER, after);
 /* A finished watch that had to wait is added to history at the time it ended: a late stop would be stamped when it got through.
    Only when every refusal was a 429 (it never reached Trakt). After a fault that may have got through, it goes again as a stop,
@@ -233,11 +241,56 @@ export async function deliver(env: Env, hub: string, person: string, item: strin
     await env.DB.batch([ended, keep(0, 0, 0)]);
     return await flush(env, {hub, person}) ? 'kept' : 'sent';
   }
-  const got = await attempt(env, hub, person, call.path, call.body);
+  // (An 'untick' found its play and could not remove it: the play's id is kept with it, so the next try does not look again.)
+  const got = await once(env, hub, person, call.kind, call.path, call.body);
   if (got.status === null) return 'off';
   if (taken(got.status)) return 'sent';
   await keep(1, now() + wait(0, got.after), got.status === 429 ? 0 : 1).run();
   return 'kept';
+}
+/* One try of a call: sent as it is, or for an 'untick' found and then removed (undo). */
+const once = (env: Env, hub: string, person: string, kind: Call['kind'], path: string, body: Record<string, unknown>) =>
+  kind === 'untick' ? undo(env, hub, person, path, body as unknown as Undo) : attempt(env, hub, person, path, body);
+/* The play a tick made here added to their Trakt history, as its history id: the one of this film or episode watched within
+   TICK_NEAR seconds of when the hub sent the tick (the nearest, of that kind of history a minute and a half either side; GET
+   /sync/history/movies or /episodes with start_at and end_at, as Trakt's API reference gives it).
+   0 when Trakt has none; null when Trakt did not answer. */
+const TICK_NEAR = 30;
+type Played = {id?: number; watched_at?: string; type?: string; movie?: {ids?: {tmdb?: number | null; imdb?: string | null}}; show?: {ids?: {tmdb?: number | null; imdb?: string | null}}; episode?: {season?: number; number?: number}};
+async function ticked(env: Env, hub: string, person: string, target: Target, sent: number): Promise<number | null> {
+  const day = (at: number) => encodeURIComponent(new Date(at * 1000).toISOString()), film = 'movie' in target, ids = film ? target.movie.ids : target.show.ids;
+  const got = await read<Played[]>(env, hub, person, `/sync/history/${film ? 'movies' : 'episodes'}?start_at=${day(sent - 90)}&end_at=${day(sent + 90)}&limit=100`);
+  if (!Array.isArray(got)) return null;
+  const same = (theirs?: {tmdb?: number | null; imdb?: string | null}) => (!!ids.tmdb && theirs?.tmdb === ids.tmdb) || (!!ids.imdb && theirs?.imdb === ids.imdb), off = (play: Played) => Math.abs(Date.parse(play.watched_at ?? '') / 1000 - sent);
+  const plays = got.filter(play => Number.isSafeInteger(play.id) && off(play) <= TICK_NEAR && (film ? play.type === 'movie' && same(play.movie?.ids) : play.type === 'episode' && same(play.show?.ids) && play.episode?.season === target.episode.season && play.episode?.number === target.episode.number));
+  return plays.sort((a, b) => off(a) - off(b))[0]?.id ?? 0;
+}
+/* A line in their list of what was synced (the `sent` ledger, as carry.ts remembers one) for a tick taken back: r: its play was
+   removed from Trakt, rn: Trakt had no such play so nothing was removed, rw: Trakt never answered, so nothing was removed. */
+const said = (env: Env, hub: string, person: string, how: 'r' | 'rn' | 'rw', note: Undo['note']) => env.DB.prepare("INSERT INTO sent (hub, person, place, play, at, title, detail, item) VALUES (?, ?, 'trakt', ?, ?, ?, ?, NULL) ON CONFLICT DO NOTHING")
+  .bind(hub, person, `${how}:${note.key}`.slice(0, 200), now(), String(note.title).slice(0, 200), String(note.detail).slice(0, 120));
+/* One try of an 'untick', for someone whose sync is on (asked by whoever calls: deliver, flush). The play is looked for on Trakt
+   and its history id alone is sent to `path`, so a play Trakt had from before stays.
+   - Trakt did not answer the read: not done, so the outbox tries again like any call it did not take (after Trakt's own wait,
+     when it asked for one). Nothing is said meanwhile; only when the outbox lets the call go a week later (flush) does their
+     page say Trakt did not answer.
+   - Trakt answered and has no such play: final. Nothing is removed, rather than every play of the title, and their page says so.
+   - Found: its id is kept with the call (`play`), so a later try sends the same removal without looking again, and one that
+     got through unheard is never read afterwards as "no such play". Once Trakt takes it their page says removed, and
+     Recently Watched (Trakt's history, kept a few minutes) is due to be read again: marked due, never deleted, since what is
+     kept of their history is what For you leaves watched titles out by (foryou.ts, served).
+   Not connected any more, or Trakt wants connecting again: nothing is sent and the call is dropped, like any other. */
+async function undo(env: Env, hub: string, person: string, path: string, body: Undo): Promise<{status: number | null; after: number}> {
+  if (!body.play) {
+    const play = await ticked(env, hub, person, body.find, body.tick);
+    if (play === null) return await access(env, hub, person) === null ? {status: null, after: 0} : {status: 0, after: Math.max(0, await traktWait(env, hub, person) - now())};
+    if (!play) {await said(env, hub, person, 'rn', body.note).run(); return {status: 404, after: 0};}
+    body.play = play;
+  }
+  const got = await attempt(env, hub, person, path, {ids: [body.play]});
+  if (taken(got.status)) await env.DB.batch([said(env, hub, person, 'r', body.note),
+    env.DB.prepare("UPDATE rows_cache SET at = 0 WHERE hub = ? AND person = ? AND (kind = 'history' OR kind LIKE 'history.%') AND items != '[]'").bind(hub, person)]);
+  return got;
 }
 /* Twice more soon after a call was kept, within the request it came with (the app has its answer already). */
 export async function soon(env: Env, hub: string, person: string) {
@@ -251,6 +304,7 @@ export async function flush(env: Env, only?: {hub: string; person: string}) {
   const due = only ? env.DB.prepare(`SELECT t.*, ${synced} FROM trakt_outbox t WHERE hub = ?2 AND person = ?3 AND ${first} ORDER BY id LIMIT ?4`).bind(now(), only.hub, only.person, BATCH)
     : env.DB.prepare(`SELECT t.*, ${synced} FROM trakt_outbox t WHERE ${first} ORDER BY id LIMIT ?2`).bind(now(), BATCH);
   const stuck = new Set<string>(), last = new Map<string, number>();
+  let undos = 0;
   for (const row of (await due.all<Waiting>()).results) {
     const who = `${row.hub}/${row.person}`;
     // Their sync is off: a call telling of watching is dropped untried (see stopSending), whenever it was kept.
@@ -259,17 +313,24 @@ export async function flush(env: Env, only?: {hub: string; person: string}) {
     // Trakt asked for a wait before more of theirs is sent: their line stays as it is until then (asked once per person a run).
     const until = await sendWait(env, row.hub, row.person);
     if (until) {stuck.add(who); await env.DB.prepare('UPDATE trakt_outbox SET next = ? WHERE id = ? AND next = ?').bind(until, row.id, row.next).run(); continue;}
+    // Only so many ticks taken back a run (UNDOS): the rest of theirs wait for the next, in order.
+    if (row.kind === 'untick' && ++undos > UNDOS) {stuck.add(who); continue;}
     // Claimed first, so the cron and a request at the same moment never both send it.
     if (!(await env.DB.prepare('UPDATE trakt_outbox SET next = ? WHERE id = ? AND next = ?').bind(now() + CLAIM, row.id, row.next).run()).meta.changes) {stuck.add(who); continue;}
     const done = env.DB.prepare('DELETE FROM trakt_outbox WHERE id = ?').bind(row.id), age = now() - row.made;
-    if ((row.kind === 'start' && age > STALE) || age > WEEK) {if (row.kind !== 'start') console.error('trakt outbox let go', row.kind, row.tries); await done.run(); continue;}
+    // Let go. A tick taken back that Trakt never answered for says so on their page, this once: nothing was removed.
+    if ((row.kind === 'start' && age > STALE) || age > WEEK) {
+      if (row.kind !== 'start') console.error('trakt outbox let go', row.kind, row.tries);
+      await env.DB.batch([...(row.kind === 'untick' ? [said(env, row.hub, row.person, 'rw', (JSON.parse(row.body) as Undo).note)] : []), done]); continue;
+    }
     const gap = 1.1 - (Date.now() - (last.get(who) ?? 0)) / 1000;
     if (gap > 0) await sleep(gap);
-    const [path, body] = late({...row, body: JSON.parse(row.body) as Record<string, unknown>}), got = await attempt(env, row.hub, row.person, path, body);
+    const [path, body] = late({...row, body: JSON.parse(row.body) as Record<string, unknown>}), got = await once(env, row.hub, row.person, row.kind, path, body as Record<string, unknown>);
     last.set(who, Date.now());
     if (got.status === null || taken(got.status)) {await done.run(); continue;}
     stuck.add(who);
-    await env.DB.prepare('UPDATE trakt_outbox SET tries = tries + 1, next = ?, doubt = max(doubt, ?) WHERE id = ?').bind(now() + wait(row.tries, got.after), got.status === 429 ? 0 : 1, row.id).run();
+    // (`body` again: an 'untick' that found its play keeps the play's id.)
+    await env.DB.prepare('UPDATE trakt_outbox SET tries = tries + 1, next = ?, doubt = max(doubt, ?), body = ? WHERE id = ?').bind(now() + wait(row.tries, got.after), got.status === 429 ? 0 : 1, row.kind === 'untick' ? JSON.stringify(body) : row.body, row.id).run();
   }
   const left = only ? env.DB.prepare('SELECT 1 FROM trakt_outbox WHERE hub = ? AND person = ? LIMIT 1').bind(only.hub, only.person) : env.DB.prepare('SELECT 1 FROM trakt_outbox LIMIT 1');
   return !!await left.first();

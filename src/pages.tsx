@@ -415,8 +415,8 @@ function useListsSync(page: PageProps, person: Person, sets: boolean) {
    did for them lately (the `sent` ledger: what it is called, where it went, when), newest first; a paused spot that took the
    place of an earlier one reads as updated rather than added. Asked for only when opened, and
    only on their own page. A title they marked unwatched in an app reads "removed from Trakt"; a tick taken back whose play
-   Trakt did not have reads "not found on Trakt, so nothing was removed", and one Trakt did not answer for "Trakt didn’t answer, so
-   nothing was removed". */
+   Trakt did not have reads "not found on Trakt, so nothing was removed". One Trakt does not answer for is tried again and says
+   nothing meanwhile; only if it is given up on a week later does it read "Trakt didn’t answer, so nothing was removed". */
 interface Sync {title: string; detail: string; to: 'trakt' | 'here' | 'mdblist'; spot: boolean; updated?: boolean; removed?: boolean; missed?: boolean; unasked?: boolean; at: number}
 function Synced({page, person}: {page: PageProps; person: Person}) {
   const {live, hub} = page, whose = `${hub.code}/${person.id}`;
@@ -559,7 +559,10 @@ function MdbList({page, person, mine, sync}: {page: PageProps; person: Person; m
   // What connecting gives: their MDBList watchlist in the Watchlist row (rows.ts, fill) and their own MDBList lists to add as
   // rows (api.ts, ownLists). Hiding what was watched is said too, with what it needs (native.ts, hideWatchedMdblist).
   // rows (api.ts, ownLists); with apps on their own setup, also as tiles in My lists and Lists I liked (shelf.ts).
-  const gains = [`Adds ${their} MDBList watchlist to Watchlist, and ${their} MDBList lists to ${hub.front ? 'My lists and ' : ''}Add row.`, `Rows can hide what ${mine ? 'you’ve' : 'they’ve'} watched, once MDBList sync is on.`];
+  // For you: what they watched on MDBList is read with their own key only while Trakt is not connected to the hub (rows.ts,
+  // fill: Recently Watched is Trakt's then, and MDBList's history is not asked for), whether MDBList sync is on or off.
+  const gains = [`Adds ${their} MDBList watchlist to Watchlist, and ${their} MDBList lists to ${hub.front ? 'My lists and ' : ''}Add row.`,
+    ...(hub.front ? [`For you also learns from what ${mine ? 'you’ve' : 'they’ve'} watched on MDBList, while Trakt isn’t connected.`] : []), `Rows can hide what ${mine ? 'you’ve' : 'they’ve'} watched, once MDBList sync is on.`];
   // Once they have joined, their accounts are theirs alone: their manager sees who it is connected as, and no buttons.
   if (live && !mine && person.joined) return <li className="stacked"><div className="account-row"><div><h3>MDBList <span className="free">Free</span></h3>{connected ? <Who name={person.listsName ?? ''}/> : <p className="who">Not connected</p>}</div></div></li>;
   if (!live) {

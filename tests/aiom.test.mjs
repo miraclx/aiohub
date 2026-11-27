@@ -154,6 +154,8 @@ function traktAnswer(request, path, body, send, answer) {
   const kind = request.method === 'GET' && /^\/sync\/history\/(movies|episodes)$/.exec(where);
   if (kind) {
     trakt.reads.push({where, query, auth}); if (trakt.refuseReads) return send(429, {});
+    // `failReads`: that many of these reads meet a fault on Trakt's side first (a 503, which sets no wait).
+    if (trakt.failReads > 0) {trakt.failReads--; return send(503, {});}
     const ask = new URLSearchParams(query ?? ''), from = Date.parse(ask.get('start_at') ?? '') || 0, to = Date.parse(ask.get('end_at') ?? '') || Infinity;
     return send(200, trakt.added.filter(play => play.type === (kind[1] === 'movies' ? 'movie' : 'episode') && Date.parse(play.watched_at) >= from && Date.parse(play.watched_at) <= to).sort((a, b) => Date.parse(b.watched_at) - Date.parse(a.watched_at)));
   }
@@ -2968,11 +2970,26 @@ test('undoing a tick made here takes only that tick’s play off Trakt: a play T
   assert.equal((await tick(TWICE.id, 'DELETE')).status, 200); for (let n = 0; n < 40 && !playOf(TWICE.id).unwatched; n++) await pause(100); await pause(1200);
   assert.deepEqual(removalsOf(), []); assert.deepEqual(theirs(), [older]); assert.equal(trakt.removals.length, removalsMade); assert.deepEqual(waiting(), []);
   assert.deepEqual((await listed()).filter(item => item[3]), [['Movie', 'trakt', false, true]]);
-  // Trakt not answering when the play is looked for: nothing is removed either, and her page says that instead.
-  trakt.calls.length = 0; assert.equal((await tick(TWICE.id)).status, 200); await ticked(1); assert.equal(theirs().length, 2); trakt.refuseReads = true;
-  assert.equal((await tick(TWICE.id, 'DELETE')).status, 200); for (let n = 0; n < 40 && !playOf(TWICE.id).unwatched; n++) await pause(100); await pause(1200); trakt.refuseReads = false; waited();
-  assert.deepEqual(removalsOf(), []); assert.equal(theirs().length, 2); assert.equal(trakt.removals.length, removalsMade); assert.deepEqual(waiting(), []);
-  assert.equal((await adaSite('GET', '/api/people/ada/matching/synced')).body.synced.filter(item => item.title === 'Seen Before' && item.unasked && !item.removed && !item.missed).length, 1);
+  // Trakt not answering when the play is looked for, twice, and then answering: the undo waits in the outbox and is tried again
+  // like any other write. Exactly the tick's play is removed, the older play stays, and her page never says Trakt didn't answer.
+  const unasked = async () => (await adaSite('GET', '/api/people/ada/matching/synced')).body.synced.filter(item => item.title === 'Seen Before' && item.unasked).length;
+  const historyReads = () => trakt.reads.filter(read => read.where === '/sync/history/movies').length;
+  trakt.calls.length = 0; assert.equal((await tick(TWICE.id)).status, 200); await ticked(1); assert.equal(theirs().length, 2); const made = theirs().find(play => play !== older);
+  trakt.reads = []; trakt.failReads = 2; assert.equal((await tick(TWICE.id, 'DELETE')).status, 200);
+  for (let n = 0; n < 40 && !waiting().length; n++) await pause(100);
+  assert.deepEqual(waiting(), [{kind: 'untick', path: '/sync/history/remove'}], 'kept to try again'); assert.deepEqual(removalsOf(), []); assert.equal(await unasked(), 0, 'nothing is said while it waits');
+  for (let n = 0; n < 200 && removalsOf().length < 1; n++) await pause(100); await pause(500);
+  assert.deepEqual(removalsOf(), [{ids: [made.id]}], 'one removal, of the tick’s own play'); removalsMade += 1; assert.equal(trakt.removals.length, removalsMade);
+  assert.deepEqual(theirs(), [older], 'exactly one play removed, the older play kept'); assert.equal(historyReads(), 3, 'two reads that failed, and the one that answered'); assert.equal(trakt.failReads, 0);
+  assert.deepEqual(waiting(), []); assert.equal(await unasked(), 0); assert.equal((await listed()).filter(item => item[2]).length, 2, 'listed as removed, like the first');
+  // Trakt never answering: nothing is removed and nothing is said until the outbox lets the call go a week on. Then her page
+  // says so, once.
+  trakt.calls.length = 0; assert.equal((await tick(TWICE.id)).status, 200); await ticked(1); assert.equal(theirs().length, 2); trakt.failReads = 1000;
+  assert.equal((await tick(TWICE.id, 'DELETE')).status, 200); for (let n = 0; n < 40 && !waiting().length; n++) await pause(100); await pause(11000);
+  assert.deepEqual(waiting(), [{kind: 'untick', path: '/sync/history/remove'}]); assert.equal(await unasked(), 0);
+  sql(`UPDATE trakt_outbox SET made = made - ${8 * 86400}, next = 0 WHERE person = 'ada' AND kind = 'untick'`); await cron(); await pause(300); trakt.failReads = 0;
+  assert.deepEqual(waiting(), []); await cron(); assert.deepEqual(removalsOf(), []); assert.equal(theirs().length, 2); assert.equal(trakt.removals.length, removalsMade);
+  assert.equal((await adaSite('GET', '/api/people/ada/matching/synced')).body.synced.filter(item => item.title === 'Seen Before' && item.unasked && !item.removed && !item.missed).length, 1, 'said once');
   // Really played here, then un-marked: every play of the film leaves Trakt, as before, by the film's ids.
   sql(`UPDATE sittings SET started = started - 7200, updated = updated - 7200 WHERE person = 'ada' AND item = '${TWICE.id}'; UPDATE plays SET updated = updated - 7200 WHERE person = 'ada' AND item = '${TWICE.id}'`); trakt.calls.length = 0;
   await say('/Sessions/Playing', {ItemId: TWICE.id, PositionTicks: 0}, 700); await pause(600);
@@ -3054,7 +3071,7 @@ test('strictly off: with her Trakt sync off an un-mark queues nothing, and one s
   // A film ticked with sync on, whose removal Trakt keeps turning away: it waits in the outbox.
   assert.equal((await tick(KEPT.id)).status, 200); await landed('Kept Film', 1); for (let n = 0; n < 50 && historyCalls().length < 1; n++) await pause(100); await pause(300);
   trakt.refuse = 50; assert.equal((await tick(KEPT.id, 'DELETE')).status, 200); for (let n = 0; n < 50 && !waiting().length; n++) await pause(100);
-  assert.deepEqual(waiting(), [{kind: 'unwatch', path: '/sync/history/remove'}]);
+  assert.deepEqual(waiting(), [{kind: 'untick', path: '/sync/history/remove'}]);
   // She turns sync off: it is dropped, as a play waiting would be.
   assert.equal((await adaSite('POST', '/api/people/ada/matching', {on: false})).status, 200); assert.deepEqual(waiting(), []); trakt.refuse = 0;
   // With sync off: a film ticked and then un-marked in the app. Nothing reaches Trakt or waits to, by either cron run after.
@@ -3083,7 +3100,9 @@ test('a play is only ever taken off Trakt from the hook that hears an app’s ow
   const {readFileSync, readdirSync} = await import('node:fs'), dir = new URL('../worker/', import.meta.url), files = readdirSync(dir), text = name => readFileSync(new URL(name, dir), 'utf8');
   assert.deepEqual(files.filter(name => text(name).includes('history/remove')), ['front.ts']);
   const source = text('front.ts'); assert.equal(source.split("'/sync/history/remove'").length, 2, 'built in one place'); assert.equal(source.split('unmarked(env, ').length, 2, 'called from one place');
-  assert.equal(files.filter(name => text(name).includes("kind: 'unwatch'")).join(), 'front.ts');
+  assert.equal(files.filter(name => text(name).includes("kind: 'unwatch'")).join(), 'front.ts'); assert.equal(files.filter(name => text(name).includes("kind: 'untick'")).join(), 'front.ts');
+  // A tick taken back is found on Trakt and removed as the outbox delivers it (trakt.ts), to the path the hook gave it and no other.
+  assert.ok(!text('trakt.ts').includes('/remove'));
   // That one place is the answer to a DELETE an app sent, once her own server took it.
   assert.match(source, /const unticked = live && upstream\.ok && request\.method === 'DELETE' \? PLAYED\.exec\(path\) : null;\n\s*if \(live && unticked\) ctx\.waitUntil\(unmarked\(env, hub, live, unticked\[1\]\)/);
   // Nothing the hub does on a person's server un-marks anything, so nothing of its own could set this off.

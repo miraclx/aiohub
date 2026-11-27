@@ -137,6 +137,8 @@ export function aboutRow(row: {id: string; source: string}, mine = true, limit: 
     case 'movies-by-service': case 'shows-by-service': return limit === 'all' ? `A tile for each streaming service. Each opens a public list of ${row.id === 'movies-by-service' ? 'movies' : 'shows'} on that service, in that list’s own order.`
       : `A tile for each streaming service. Each opens the ${row.id === 'movies-by-service' ? 'movies' : 'shows'} on that service that fit the content limit, the most popular on TMDB first.`;
     case 'movies-by-genre': case 'shows-by-genre': return `A tile for each genre. Each opens a public list of ${row.id === 'movies-by-genre' ? 'movies' : 'shows'} in that genre, in that list’s own order.`;
+    // Themes rather than genres, movies and shows together: public lists too (Letterboxd's, and one of MDBList's), each as it comes.
+    case 'mixed-genre': return 'A tile for each theme, each opening a public list of movies and shows on that theme, in that list’s own order.';
   }
   return undefined;
 }

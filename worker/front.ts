@@ -7,8 +7,8 @@
 import {slug} from '../src/data';
 import type {Env} from './util';
 import {FINISHED, NEAR_END, blocked, failed, getSecret, guesses, newId, newToken, now, pastListed, putSecret, same, sha, unseal} from './util';
-import type {Target} from './trakt';
-import {LINK, brief, deliver, history, progressOf, read as readTrakt, soon} from './trakt';
+import type {Call, Target, Undo} from './trakt';
+import {LINK, brief, deliver, history, progressOf, soon} from './trakt';
 import {history as historyOf, remember, unmark} from './carry';
 import {heartKey, heartsOn, noteHeart} from './hearts';
 import {forgetWatchlist} from './rows';
@@ -479,11 +479,13 @@ async function marked(env: Env, hub: string, seat: Seat, item: string, where: {p
      Trakt takes every play of the title or episode away, not only the latest (its /sync/history/remove).
      One case takes away a single play instead: the latest thing here for a film or an episode was a tick the hub itself sent
      to Trakt (never a play, never a whole season or show). Undoing that tick removes only the play it added, so a play Trakt
-     had from before stays: the hub reads that title's kind of history around the moment it sent the tick (GET
-     /sync/history/movies or /episodes with start_at and end_at, as Trakt's API reference gives it), finds the play by the
-     title's ids and that moment (ticked, below), and sends its history id alone (`ids` in /sync/history/remove). A tick still
-     waiting to be sent is simply dropped. When the play cannot be found (Trakt did not answer, or has no play at that
-     moment), nothing is removed, and their page says which under What was synced. Not covered: an episode ticked as part
+     had from before stays: the hub reads that title's kind of history around the moment it sent the tick, finds the play by
+     the title's ids and that moment, and sends its history id alone (`ids` in the removal). That read and removal are one
+     call in the outbox ('untick': trakt.ts, undo), so when Trakt does not answer the read it is tried again like any other
+     write, and dropped like one when sync goes off. A tick still waiting to be sent is simply dropped. When Trakt answers
+     and has no play at that moment, nothing is removed and it is not tried again, and their page says so under What was
+     synced. Only if the outbox lets the call go after a week of Trakt not answering does their page say that, once; until
+     then nothing is said. Not covered: an episode ticked as part
      of a whole season or show whose one history add is still waiting to be sent when it is un-ticked; that add then goes
      out with the episode in it. Each episode is named
      by its show's ids, its season and its number, and nothing is ever sent without them: a show alone would take every episode
@@ -508,19 +510,6 @@ function removal(targets: Target[]) {
   return {...(movies.length ? {movies} : {}), ...(shows.size ? {shows: [...shows.values()].map(show => ({ids: show.ids, seasons: [...show.seasons].map(([number, episodes]) => ({number, episodes: [...episodes].map(episode => ({number: episode}))}))}))} : {})};
 }
 const keyOf = (target: Target) => 'movie' in target ? (target.movie.ids.tmdb ? whereKey('movie', target.movie.ids.tmdb) : '') : target.show.ids.tmdb ? whereKey('show', target.show.ids.tmdb, target.episode.season, target.episode.number) : '';
-/* The play a tick made here added to their Trakt history, as its history id: the one of this film or episode watched within
-   TICK_NEAR seconds of when the hub sent the tick (the nearest, of that kind of history a minute and a half either side).
-   0 when Trakt has none; null when Trakt did not answer. */
-const TICK_NEAR = 30;
-type Played = {id?: number; watched_at?: string; type?: string; movie?: {ids?: {tmdb?: number | null; imdb?: string | null}}; show?: {ids?: {tmdb?: number | null; imdb?: string | null}}; episode?: {season?: number; number?: number}};
-async function ticked(env: Env, hub: string, person: string, target: Target, sent: number): Promise<number | null> {
-  const day = (at: number) => encodeURIComponent(new Date(at * 1000).toISOString()), film = 'movie' in target, ids = film ? target.movie.ids : target.show.ids;
-  const got = await readTrakt<Played[]>(env, hub, person, `/sync/history/${film ? 'movies' : 'episodes'}?start_at=${day(sent - 90)}&end_at=${day(sent + 90)}&limit=100`);
-  if (!Array.isArray(got)) return null;
-  const same = (theirs?: {tmdb?: number | null; imdb?: string | null}) => (!!ids.tmdb && theirs?.tmdb === ids.tmdb) || (!!ids.imdb && theirs?.imdb === ids.imdb), off = (play: Played) => Math.abs(Date.parse(play.watched_at ?? '') / 1000 - sent);
-  const plays = got.filter(play => Number.isSafeInteger(play.id) && off(play) <= TICK_NEAR && (film ? play.type === 'movie' && same(play.movie?.ids) : play.type === 'episode' && same(play.show?.ids) && play.episode?.season === target.episode.season && play.episode?.number === target.episode.number));
-  return plays.sort((a, b) => off(a) - off(b))[0]?.id ?? 0;
-}
 async function unmarked(env: Env, hub: string, seat: Seat, item: string) {
   // With the title: what Trakt was last told of it and when, and the latest thing here for it (a tick alone is parts "marked").
   const at = now(), row = await env.DB.prepare(`SELECT title, detail, art, ids, scrobbled, scrobbled_at, (SELECT s.parts || '@' || s.updated FROM sittings s WHERE s.hub = plays.hub AND s.person = plays.person AND s.item = plays.item AND s.undone = 0 ORDER BY s.updated DESC LIMIT 1) AS last
@@ -557,27 +546,25 @@ async function unmarked(env: Env, hub: string, seat: Seat, item: string) {
   const ended = art || item; ends.delete(`${hub}/${seat.person}/${ended}`);
   await unfinished(env, hub, seat.person, ended);
   if (!targets.length) return;
-  // A tick made here, undone: only the play it added leaves Trakt (see above). Only with their sync on, asked before Trakt is read.
-  let body: Record<string, unknown> = removal(targets);
-  if (tick && targets.length === 1) {
+  // A tick made here, undone: only the play it added leaves Trakt (see above). Only with their sync on, asked before anything else.
+  const single = !!tick && targets.length === 1, key = `${keys[0] || item}${items.length > 1 ? `:${detail}` : ''}@${at}`;
+  if (single) {
     if (!(await env.DB.prepare('SELECT matching FROM sync WHERE hub = ? AND person = ?').bind(hub, seat.person).first<{matching: number}>())?.matching) return;
     // Still waiting to be sent: dropped, and Trakt never hears of it.
     if ((await env.DB.prepare("DELETE FROM trakt_outbox WHERE hub = ? AND person = ? AND item = ? AND kind = 'mark'").bind(hub, seat.person, item).run()).meta.changes) return;
-    const play = await ticked(env, hub, seat.person, targets[0], tick);
-    // Not found, or Trakt did not answer: nothing is removed, rather than every play of it, and it is not tried again (the
-    // title is unwatched here by now, so there is nothing left to take back). Their page says which (carry.ts, synced: kept
-    // as rn: for no such play, rw: for no answer).
-    if (!play) {await env.DB.batch(remember(env, hub, seat.person, 'trakt', [{key: `${play === null ? 'rw' : 'rn'}:${keys[0] || item}@${at}`, title: title || 'Untitled', detail}])); return;}
-    body = {ids: [play]};
   }
   // Their Trakt, only with sync on: deliver asks, each time. Kept under a key of its own, never a play's id.
-  const got = await deliver(env, hub, seat.person, `unwatch:${item}`, {kind: 'unwatch', path: '/sync/history/remove', body});
+  // 'untick': the play is found on Trakt and removed alone as the call is delivered, and tried again if Trakt does not answer;
+  // what their page says of it is written there, once it is known (trakt.ts, undo). 'unwatch': every play of each title.
+  const to = '/sync/history/remove', call: Call = single ? {kind: 'untick', path: to, body: {find: targets[0], tick, note: {key, title: title || 'Untitled', detail}} satisfies Undo} : {kind: 'unwatch', path: to, body: removal(targets)};
+  const got = await deliver(env, hub, seat.person, `${call.kind}:${item}`, call);
   if (got === 'off') return;
+  if (single) {if (got === 'kept') await soon(env, hub, seat.person); return;}
   // Listed under What was synced, and Recently Watched (Trakt's history, kept a few minutes) is read again.
   // Marked due, never deleted: what is kept of her history is what For you leaves watched titles out by (foryou.ts, served),
   // and a reader that finds none kept must not take it for nothing watched.
   const again = env.DB.prepare("UPDATE rows_cache SET at = 0 WHERE hub = ? AND person = ? AND (kind = 'history' OR kind LIKE 'history.%') AND items != '[]'").bind(hub, seat.person);
-  await env.DB.batch([...remember(env, hub, seat.person, 'trakt', [{key: `r:${keys[0] || item}${items.length > 1 ? `:${detail}` : ''}@${at}`, title: title || 'Untitled', detail}]), again]);
+  await env.DB.batch([...remember(env, hub, seat.person, 'trakt', [{key: `r:${key}`, title: title || 'Untitled', detail}]), again]);
   if (got === 'kept') {await soon(env, hub, seat.person); await again.run();}
 }
 interface About {Id?: string; Name?: string; Type?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; RunTimeTicks?: number; SeriesId?: string}
