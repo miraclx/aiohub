@@ -5,7 +5,7 @@ import {drift} from './drift';
 import {leftovers, match} from './sync';
 import {hearts} from './hearts';
 import {forYou} from './foryou';
-import {recommend} from './recs';
+import {nightly} from './ahead';
 import {sweep} from './trakt';
 import type {Env} from './util';
 import {now} from './util';
@@ -27,7 +27,8 @@ export default {
   // agree (drift.ts), each on its own so it never holds those up. A run those left alone takes a step of the day's For you picks
   // (foryou.ts): each makes a few dozen calls, and a run may make only about fifty. A run with none of that to do sends one
   // person's MDBList what was watched here and it lacks (sync.ts, leftovers), once a day each: after those, so it never holds a pick
-  // up. Last of all, a run with nothing else to do works out one person's Recommended rows (recs.ts), once a day each, from 4:00 UTC.
+  // up. Last of all, a run with nothing else to do works out one person's Recommended rows (recs.ts), once a day each, from 4:00 UTC,
+  // or with none of those to do looks up one person's Up Next and New for you (ahead.ts: for someone without Trakt), once a day each.
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
     // Each run is counted, for the Hub page. Every job below has its own row under Hub, General, Background work (Background in
     // src/pages.tsx): a job added here gets one there too.
@@ -38,6 +39,6 @@ export default {
       .then(busy => busy || drift(env, event.scheduledTime)).catch(error => {console.error('drift', (error as Error).message); return true;})
       .then(busy => busy || forYou(env, event.scheduledTime)).catch(error => {console.error('foryou', (error as Error).message); return true;})
       .then(busy => busy || leftovers(env, event.scheduledTime)).catch(error => {console.error('leftovers', (error as Error).message); return true;})
-      .then(busy => busy ? null : recommend(env, event.scheduledTime)).catch(error => console.error('recommend', (error as Error).message)));
+      .then(busy => busy ? null : nightly(env, event.scheduledTime)).catch(error => console.error('nightly', (error as Error).message)));
   },
 } satisfies ExportedHandler<Env>;

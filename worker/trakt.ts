@@ -304,7 +304,7 @@ export async function sweep(env: Env) {
     const target = row.ids ? JSON.parse(row.ids) as Target : null, progress = row.duration ? progressOf(row.position, row.duration) : 0;
     // Dated by when it was last seen, which a finished watch is added to history at if it has to wait (see `late`).
     // The latest sitting with it: one with too little played is let go without a word to Trakt (see brief).
-    const sat = await env.DB.prepare('SELECT parts, started, updated FROM sittings WHERE hub = ? AND person = ? AND item = ? ORDER BY updated DESC LIMIT 1').bind(row.hub, row.person, row.item).first<{parts: string | null; started: number; updated: number}>();
+    const sat = await env.DB.prepare('SELECT parts, started, updated FROM sittings WHERE hub = ? AND person = ? AND item = ? AND undone = 0 ORDER BY updated DESC LIMIT 1').bind(row.hub, row.person, row.item).first<{parts: string | null; started: number; updated: number}>();
     if (target && progress >= 1 && !(sat && brief(sat, row.duration))) await deliver(env, row.hub, row.person, row.item, {kind: 'stop', path: '/scrobble/stop', body: {...target, progress}}, row.updated);
     await env.DB.prepare("UPDATE plays SET scrobbled = 'stopped', scrobbled_at = ? WHERE hub = ? AND person = ? AND item = ?").bind(now(), row.hub, row.person, row.item).run();
   }

@@ -270,10 +270,12 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
   // What connecting gives. Nothing here needs sync, and only what truly needs Trakt is said:
   // - For you works without Trakt, from what was watched here (or their MDBList); with it, their whole Trakt history is read too
   //   (foryou.ts, gather).
-  // - The rows only Trakt fills are Up Next, New for you and their Trakt lists (rows.ts, fill; data.ts, reaches). The Watchlist
-  //   comes with MDBList alone too, Recommended is worked out from what was watched, and Recently Watched from MDBList or here.
-  const gains = [...(hub.front ? [`For you gets better: it sees everything ${mine ? 'you’ve' : 'they’ve'} watched on Trakt, not only what ${mine ? 'you' : 'they'} watched here.`] : []),
-    `Adds Up Next, New for you and ${their} Trakt lists to Home.`];
+  // - Up Next and New for you work without Trakt, from what was watched here (ahead.ts); with it they are Trakt's own (rows.ts,
+  //   fill), which knows what was watched anywhere.
+  // - Only their Trakt lists need Trakt. The Watchlist comes with MDBList alone too, Recommended is worked out from what was
+  //   watched, and Recently Watched from MDBList or here.
+  const gains = [...(hub.front ? [`For you also learns from what ${mine ? 'you’ve' : 'they’ve'} watched on Trakt.`] : []),
+    `Up Next and New for you follow ${their} Trakt, so they count what ${mine ? 'you' : 'they'} watch anywhere.`, `Adds ${their} Trakt lists to Home.`];
   // Once they have joined, their accounts are theirs alone: their manager sees who it is connected as, and no buttons.
   const on = !!link && !link.again, shown = !mine && !!live && person.joined;
   if (!live) {
@@ -412,8 +414,10 @@ function useListsSync(page: PageProps, person: Person, sets: boolean) {
 /* What was synced: the Sync card offers one short list of what the hub
    did for them lately (the `sent` ledger: what it is called, where it went, when), newest first; a paused spot that took the
    place of an earlier one reads as updated rather than added. Asked for only when opened, and
-   only on their own page. A title they marked unwatched in an app reads "removed from Trakt". */
-interface Sync {title: string; detail: string; to: 'trakt' | 'here' | 'mdblist'; spot: boolean; updated?: boolean; removed?: boolean; at: number}
+   only on their own page. A title they marked unwatched in an app reads "removed from Trakt"; a tick taken back whose play
+   Trakt did not have reads "not found on Trakt, so nothing was removed", and one Trakt did not answer for "Trakt didn’t answer, so
+   nothing was removed". */
+interface Sync {title: string; detail: string; to: 'trakt' | 'here' | 'mdblist'; spot: boolean; updated?: boolean; removed?: boolean; missed?: boolean; unasked?: boolean; at: number}
 function Synced({page, person}: {page: PageProps; person: Person}) {
   const {live, hub} = page, whose = `${hub.code}/${person.id}`;
   const [open, setOpen] = useState(false), [got, setGot] = useState<{who: string; list: Sync[] | null; failed: boolean}>({who: '', list: null, failed: false});
@@ -426,7 +430,7 @@ function Synced({page, person}: {page: PageProps; person: Person}) {
   const list = got.who === whose ? got.list : null, to = {trakt: ['to Trakt', 'on Trakt'], here: ['here', 'here'], mdblist: ['to your MDBList', 'in your MDBList']};
   return <div className="synced">
     <button type="button" className="link small" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Hide what was synced' : 'What was synced'}</button>
-    {open && (list ? list.length ? <div className="listed">{list.map((item, n) => <p key={n}><strong>{item.title}</strong> · {item.detail ? `${item.detail} · ` : ''}{item.spot ? 'paused spot ' : ''}{item.removed ? 'removed from Trakt' : item.updated ? `updated ${to[item.to][1]}` : `added ${to[item.to][0]}`} · {dateOf(item.at * 1000)}</p>)}</div>
+    {open && (list ? list.length ? <div className="listed">{list.map((item, n) => <p key={n}><strong>{item.title}</strong> · {item.detail ? `${item.detail} · ` : ''}{item.spot ? 'paused spot ' : ''}{item.missed ? 'not found on Trakt, so nothing was removed' : item.unasked ? 'Trakt didn’t answer, so nothing was removed' : item.removed ? 'removed from Trakt' : item.updated ? `updated ${to[item.to][1]}` : `added ${to[item.to][0]}`} · {dateOf(item.at * 1000)}</p>)}</div>
       : <p className="muted small">Nothing has needed syncing yet.</p> : <p className="muted small">{got.failed && got.who === whose ? 'Couldn’t load the list just now.' : 'Loading…'}</p>)}
   </div>;
 }
@@ -537,7 +541,7 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
       </div>}
       {sure === 'saves' && <Confirm plain title={`Add ${extra} ${extra === 1 ? 'title' : 'titles'} to your watchlist?`} body="They go on your Trakt watchlist. You can take any of them off later." action="Add them" onYes={() => {setSure(''); ask('/add', {}, got => got.more ? `Adding ${got.added} to your watchlist. The rest are offered after the next check.` : `Adding ${got.added} to your watchlist`);}} onClose={() => setSure('')}/>}
     </div>}
-    {anySync && <div className="setting column sync-foot"><p>{mine ? 'Unwatch something in an app and it’s unwatched everywhere.' : 'When they unwatch something in an app, it’s unwatched everywhere.'}{watching && ' Unwatching on Trakt’s own site or apps doesn’t reach here.'}</p>
+    {anySync && <div className="setting column sync-foot"><p>{mine ? 'Unwatch something in an app and it’s unwatched everywhere.' : 'When they unwatch something in an app, it’s unwatched everywhere.'}{watching && (mine ? ' If you only marked it watched here, just that one play leaves Trakt.' : ' If they only marked it watched here, just that one play leaves Trakt.')}{watching && ' Unwatching on Trakt’s own site or apps doesn’t reach here.'}</p>
       {!!live && mine && on && matching?.on && <Synced page={page} person={person}/>}
     </div>}
   </div>;
@@ -548,13 +552,14 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
    For someone who has joined, their manager sees only who it is connected as.
    Another MDBList account is Disconnect, then Connect. */
 function MdbList({page, person, mine, sync}: {page: PageProps; person: Person; mine: boolean; sync: ReturnType<typeof useListsSync>}) {
-  const {update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
+  const {hub, update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
   const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [dropping, setDropping] = useState(false), [anyway, setAnyway] = useState(false);
   const their = mine ? 'your' : 'their', moving = person.moving ?? null, connected = person.lists || (!!live && (!!person.listsKept || !!moving));
   const {busy, setBusy, copying, setStopped, done, move} = sync;
   // What connecting gives: their MDBList watchlist in the Watchlist row (rows.ts, fill) and their own MDBList lists to add as
   // rows (api.ts, ownLists). Hiding what was watched is said too, with what it needs (native.ts, hideWatchedMdblist).
-  const gains = [`Adds ${their} MDBList watchlist to Watchlist, and ${their} MDBList lists to Add row.`, `Rows can hide what ${mine ? 'you’ve' : 'they’ve'} watched, once MDBList sync is on.`];
+  // rows (api.ts, ownLists); with apps on their own setup, also as tiles in My lists and Lists I liked (shelf.ts).
+  const gains = [`Adds ${their} MDBList watchlist to Watchlist, and ${their} MDBList lists to ${hub.front ? 'My lists and ' : ''}Add row.`, `Rows can hide what ${mine ? 'you’ve' : 'they’ve'} watched, once MDBList sync is on.`];
   // Once they have joined, their accounts are theirs alone: their manager sees who it is connected as, and no buttons.
   if (live && !mine && person.joined) return <li className="stacked"><div className="account-row"><div><h3>MDBList <span className="free">Free</span></h3>{connected ? <Who name={person.listsName ?? ''}/> : <p className="who">Not connected</p>}</div></div></li>;
   if (!live) {
@@ -608,10 +613,10 @@ function PersonSections({page, person, tab, mine, base = `/person/${person.id}`}
   const canArrange = !mine || person.can.arrange, canAdd = !mine || person.can.arrange && person.can.add;
   // Work their Home asks the hub for on the next run; the page reads again either way, so the row says where it stands.
   const ask = (action: string, note: string) => void page.live!.call('POST', `/api/people/${person.id}/${action}`, {}).then(() => toast(note), fail(toast)).then(() => page.live!.reload());
-  // What they would gain with an account: their own rows that wait for one, for Add row to list greyed. The rows of their Trakt
-  // lists are collections, which only apps on their own AIOMetadata setup show.
+  // What they would gain with an account: their own rows that wait for one (the Watchlist and the rows of their lists), for Add
+  // row to list greyed. The rows of their lists are collections, which only apps on their own AIOMetadata setup show.
   const has = linkedOf(hub, person), needs = [...traktRows().map(row => ({id: row.id, title: row.title, needs: needOf(row.id, has)})),
-    ...(hub.front ? [{id: 'trakt-lists', title: SHELF_TITLES['trakt-lists'], needs: has.trakt ? '' : 'Trakt'}, {id: 'trakt-liked-lists', title: SHELF_TITLES['trakt-liked-lists'], needs: has.trakt ? '' : 'Trakt'}] : [])].filter(item => item.needs);
+    ...(hub.front ? [{id: 'trakt-lists', title: SHELF_TITLES['trakt-lists'], needs: has.trakt || has.lists ? '' : 'Trakt or MDBList'}, {id: 'trakt-liked-lists', title: SHELF_TITLES['trakt-liked-lists'], needs: has.trakt || has.lists ? '' : 'Trakt or MDBList'}] : [])].filter(item => item.needs);
   return <>
     {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} mine={mine} person={person.id} level="own" rows={rows} front={!!hub.front} canAdd={canAdd} canArrange={canArrange}
       // Their own page, without the permission: said where the button would be, rather than nothing there.
@@ -857,14 +862,19 @@ function Background({hub}: {hub: Hub}) {
     {name: 'Plays missing from MDBList', every: `For everyone with MDBList sync on, every day from ${time(start)}`, last: jobs.listers ? ran(jobs.listed ?? null) : 'Nobody has MDBList sync on yet',
       next: jobs.listers ? `next run ${day(jobs.listed && new Date(jobs.listed * 1000).toISOString().slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? start + DAY_MS : Math.max(start, next))}` : 'once someone does'},
     ...(hub.front && jobs.forYouHour !== undefined ? [forYouJob(jobs, now, time, day, ran)] : []),
-    // Each row of someone's Trakt lists (their own, the ones they liked): its lists and pictures looked at again a day after the last time (shelf.ts), one person a run, and
+    // Each row of someone's own lists on Trakt or MDBList (the ones they made, the ones they liked): its lists and pictures looked at again a day after the last time (shelf.ts), one person a run, and
     // sooner when someone asks or their lists changed. One due now (asked for, at 0) is under way, not due in 1970.
-    ...(hub.front ? [{name: 'Trakt lists rows', every: 'For everyone every day; for one person when their lists change or they press Check now', last: `${ran(jobs.shelved ?? null)}${jobs.shelves ? ` · ${jobs.shelves} ${jobs.shelves === 1 ? 'person' : 'people'}` : ''}`,
+    ...(hub.front ? [{name: 'My lists rows', every: 'For everyone every day; for one person when their lists change or they press Check now', last: `${ran(jobs.shelved ?? null)}${jobs.shelves ? ` · ${jobs.shelves} ${jobs.shelves === 1 ? 'person' : 'people'}` : ''}`,
       next: typeof jobs.shelfDue === 'number' ? (jobs.shelfDue + 86_400) * 1000 > now ? `next run ${day((jobs.shelfDue + 86_400) * 1000)}` : 'under way' : 'once someone adds one'}] : []),
     // Recommended Movies and Shows where Trakt does not fill them, or under a content limit (worker/recs.ts): worked out from what
     // each person watched, one person a run and once a day each, in a run with nothing else to do. It asks TMDB with the hub's key.
     {name: 'Recommended rows', every: `For everyone with a Recommended row on Home, every day from ${time(start)}`, last: `${ran(jobs.recsAt ?? null)}${jobs.recs ? ` · ${jobs.recs} ${jobs.recs === 1 ? 'person' : 'people'}` : ''}`,
       next: !hub.tmdb ? 'once the hub has a TMDB key' : typeof jobs.recsDue === 'number' ? (jobs.recsDue + 86_400) * 1000 > now ? `next run ${day((jobs.recsDue + 86_400) * 1000)}` : 'under way' : hub.people.length ? `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'once someone is added'},
+    // Up Next and New for you for people without Trakt (worker/ahead.ts): which episodes and watchlist films have come out, looked
+    // up one person a run and once a day each, in a run with nothing else to do, and again after they finish something. It asks
+    // TMDB with the hub's key. With Trakt connected the two rows are Trakt's and need none of this.
+    {name: 'Up Next and New for you', every: `For everyone without Trakt who has either row on Home, every day from ${time(start)}; for one person after they finish something, from that hour`, last: `${ran(jobs.aheadAt ?? null)}${jobs.aheads ? ` · ${jobs.aheads} ${jobs.aheads === 1 ? 'person' : 'people'}` : ''}`,
+      next: !hub.tmdb ? 'once the hub has a TMDB key' : typeof jobs.aheadDue === 'number' ? (jobs.aheadDue + 86_400) * 1000 > now ? `next run ${day((jobs.aheadDue + 86_400) * 1000)}` : 'under way' : 'once someone turns one on'},
   ];
   return <section>
     <div className="section-head"><div><h2>Background work</h2><p className="muted">The hub does these by itself for everyone, one person at a time. Buttons on a person’s own page act for that person only, right away.</p></div></div>

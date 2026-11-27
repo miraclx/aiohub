@@ -150,7 +150,7 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
 /* What each kind picks, in a line, for whoever is looking (foryou.ts, candidates, is what this says). */
 type Words = {you: string; your: string; youve: string};
 const ABOUT: Record<string, (w: Words) => string> = {
-  series: w => `The next films in a series ${w.youve} started, from ${w.your} four latest films.`,
+  series: w => `The other films of a series ${w.youve} started, from ${w.your} four latest films.`,
   pickup: w => `Shows ${w.you} left partway, last watched between three weeks and a year ago.`,
   because: w => `Titles like one ${w.you} watched. From lately: ${w.your} four latest and two older ones. From any time: ${w.your} two latest and four older.`,
   crew: w => `Films by the directors of ${w.your} two latest films.`,

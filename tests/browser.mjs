@@ -113,7 +113,7 @@ await owner.locator('.rows .row.later', {hasText: 'Recently Watched'}).getByText
 // All six, Recently Watched among those on Home (it is on by default); the Not on Home ones keep Show at the right edge.
 assert.deepEqual(await owner.locator('.rows .row.later h3').allTextContents(), ['Watchlist', 'Recommended Movies', 'Recommended Shows', 'Recently Watched']);
 assert.deepEqual(await owner.locator('.off li.later h3').allTextContents(), ['Up Next', 'New for you']);
-await owner.locator('.off li.later', {hasText: 'New for you'}).getByText('Trakt · Appears once someone connects Trakt').waitFor();
+await owner.locator('.off li.later', {hasText: 'New for you'}).getByText('Fills for each person from Trakt, or from what they watch here and their watchlist').waitFor();
 // Any row can be renamed from its Edit sheet: only the name changes, and it can be put back.
 const rename = async (from, to) => {
   await owner.locator('.rows .row', {has: owner.locator('h3', {hasText: new RegExp(`^${from}$`)})}).getByRole('button', {name: 'Edit'}).click();
@@ -148,11 +148,11 @@ assert.equal(await guest.getByRole('link', {name: 'People'}).count(), 0);
 await guest.goto(BASE + '/#/me/home'); await guest.getByRole('button', {name: '+ Add row'}).click();
 const wanting = guest.getByRole('dialog', {name: 'Add a row'}); await wanting.getByRole('heading', {name: 'With an account'}).waitFor();
 assert.deepEqual(await wanting.locator('li.needs').evaluateAll(lines => lines.map(line => [line.querySelector('strong').textContent, line.querySelector('small').textContent, line.querySelector('a').textContent, line.querySelector('a').getAttribute('href')])),
-  [['Watchlist', 'Your Trakt or MDBList watchlist, newest added first. Needs Trakt or MDBList.', 'Connect', '#/me/accounts'], ['Up Next', 'From your Trakt: shows with an episode you haven’t watched yet, the ones you watched most lately first. Needs Trakt.', 'Connect', '#/me/accounts'],
-    ['New for you', 'From your Trakt: new episodes of shows you watch and watchlist movies now out to stream, newest first. A title leaves once you start it. Needs Trakt.', 'Connect', '#/me/accounts']]);
+  // Only the Watchlist waits for an account: Up Next and New for you work from what she watches here, so they are not among them.
+  [['Watchlist', 'Your Trakt or MDBList watchlist, newest added first. Needs Trakt or MDBList.', 'Connect', '#/me/accounts']]);
 assert.equal(await wanting.locator('li.needs button').count(), 0); assert.ok(Number(await wanting.locator('li.needs > span').first().evaluate(node => getComputedStyle(node).opacity)) < 1, 'greyed');
 if (shots) {await wanting.locator('li.needs').first().scrollIntoViewIfNeeded(); await guest.waitForTimeout(300); await guest.screenshot({path: `${shots}/real-sync-8-add-row-about-phone.png`}); await guest.setViewportSize({width: 1280, height: 900}); await guest.waitForTimeout(300); await guest.screenshot({path: `${shots}/real-sync-8-add-row-about-wide.png`}); await guest.setViewportSize({width: 390, height: 844});}
-await wanting.locator('li.needs', {hasText: 'Up Next'}).getByRole('link', {name: 'Connect Trakt, for Up Next'}).click(); await guest.getByRole('heading', {name: 'Trakt Free', exact: true}).waitFor();
+await wanting.locator('li.needs', {hasText: 'Watchlist'}).getByRole('link', {name: 'Connect Trakt or MDBList, for Watchlist'}).click(); await guest.getByRole('heading', {name: 'Trakt Free', exact: true}).waitFor();
 await guest.goto(BASE + '/#/me/playback'); await guest.getByText('Set for you by whoever runs the hub.').waitFor();
 await guest.goto(BASE + '/#/me/devices'); await guest.locator('.creds code').filter({hasText: /^Ada$/}).waitFor(); await guest.getByRole('button', {name: 'Show'}).click();
 await guest.getByLabel('Password', {exact: true}).filter({hasText: password}).waitFor(); // the player password, not the one just chosen
@@ -168,7 +168,7 @@ const both = async (page, name, part) => {const calm = await page.addStyleTag({c
 await guest.goto(BASE + '/#/me/accounts'); const trakt = guest.locator('.accounts > li', {has: guest.getByRole('heading', {name: 'Trakt Free', exact: true})});
 await guest.getByText('Connect your own accounts. Connecting only reads from them. Sync, below, is what writes.', {exact: true}).waitFor();
 // What Connect gives, and nothing about sync: that is the Sync card's, once something is connected.
-assert.deepEqual(await trakt.locator('.gains p').allTextContents(), ['Adds Up Next, New for you and your Trakt lists to Home.']); assert.equal(await guest.getByText('Trakt history').count(), 0);
+assert.deepEqual(await trakt.locator('.gains p').allTextContents(), ['Up Next and New for you follow your Trakt, so they count what you watch anywhere.', 'Adds your Trakt lists to Home.']); assert.equal(await guest.getByText('Trakt history').count(), 0);
 assert.equal(await guest.getByText('as it plays', {exact: false}).count(), 0);
 // MDBList is an account like Trakt, optional, and says what it is for before anything else; with none connected there is no switch.
 const mdb = guest.locator('.accounts > li', {has: guest.getByRole('heading', {name: 'MDBList Free', exact: true})}).first();
@@ -181,7 +181,7 @@ const sync = guest.locator('.sync-card'), syncRow = (page, name) => page.locator
 const saidOn = async page => {const text = await page.locator('.sync-card').innerText(); assert.ok(!BANNED.test(text), text); return text.split('\n').map(part => part.trim()).filter(Boolean);}, said = () => saidOn(guest), rows = (page = guest) => page.locator('.sync-card .switch-row h3').allTextContents();
 const SENTENCE = {trakt: 'Keep what I watch the same here and on Trakt.', mdblist: 'Keep what I watch the same here and on MDBList.', list: 'Saved titles and my watchlist are one list.', heart: 'Save a title in an app (the heart, in some apps) and it’s on my watchlist. Add one to my watchlist and it shows as saved in the apps.'};
 // The line at the foot, only while a sync is on: what unwatching does. Its second sentence only with Trakt sync on.
-const FOOT = {one: 'Unwatch something in an app and it’s unwatched everywhere.', trakt: 'Unwatch something in an app and it’s unwatched everywhere. Unwatching on Trakt’s own site or apps doesn’t reach here.', never: 'Sync never marks anything as unwatched.'};
+const FOOT = {one: 'Unwatch something in an app and it’s unwatched everywhere.', trakt: 'Unwatch something in an app and it’s unwatched everywhere. If you only marked it watched here, just that one play leaves Trakt. Unwatching on Trakt’s own site or apps doesn’t reach here.', never: 'Sync never marks anything as unwatched.'};
 const traktSwitch = sync.getByRole('switch', {name: TRAKT_SYNC});
 assert.equal(await guest.getByRole('heading', {name: 'Your progress'}).count(), 0); assert.equal(await sync.count(), 0, 'no Sync card until something is connected'); assert.equal(await guest.locator('ul.accounts').count(), 1);
 await both(guest, 'simple-01-nothing-connected', guest.locator('ul.accounts'));
@@ -542,8 +542,8 @@ await owner.route('**/api/state', forChi); await owner.route('**/api/people/chi/
 const WAITS = 'Only Chi can turn this on, after they join.';
 assert.deepEqual(await saidOn(owner), ['Sync', 'Trakt', they.trakt, WAITS, 'MDBList', they.mdblist, 'Watchlist', they.list, they.heart]); assert.equal(await owner.getByText('manages their own', {exact: false}).count(), 0);
 await owner.getByText('Chi can connect their own accounts, or you can do it here with them. Connecting only reads from them. Sync, below, is what writes.', {exact: true}).waitFor();
-await owner.getByText('Adds Up Next, New for you and their Trakt lists to Home.', {exact: true}).waitFor(); await owner.getByText('For you gets better: it sees everything they’ve watched on Trakt, not only what they watched here.', {exact: true}).waitFor();
-await owner.getByText('Adds their MDBList watchlist to Watchlist, and their MDBList lists to Add row.', {exact: true}).waitFor(); await owner.getByText('Rows can hide what they’ve watched, once MDBList sync is on.').waitFor();
+await owner.getByText('Up Next and New for you follow their Trakt, so they count what they watch anywhere.', {exact: true}).waitFor(); await owner.getByText('Adds their Trakt lists to Home.', {exact: true}).waitFor(); await owner.getByText('For you also learns from what they’ve watched on Trakt.', {exact: true}).waitFor();
+await owner.getByText('Adds their MDBList watchlist to Watchlist, and their MDBList lists to My lists and Add row.', {exact: true}).waitFor(); await owner.getByText('Rows can hide what they’ve watched, once MDBList sync is on.').waitFor();
 assert.equal(await cardOf('Trakt').getByRole('button', {name: 'Disconnect', exact: true}).count(), 1); assert.equal(await cardOf('MDBList').getByRole('button', {name: 'Disconnect'}).count(), 1);
 assert.ok(await switchOf(TRAKT_SYNC).isDisabled()); assert.ok(await switchOf(MDB_SYNC).isEnabled()); assert.ok(await switchOf(LIST_SYNC).isEnabled());
 // The manager's MDBList switch goes the same way as theirs would: copied first, then switched; nothing to paste. Then Watchlist.
@@ -720,6 +720,29 @@ assert.equal(await places.count(), 3); await guest.unroute('**/api/state');
 for (let i = 0; i < 40 && !(await placesSaved()); i++) await owner.waitForTimeout(150);
 assert.ok(await placesSaved(), 'the place shown again is saved'); await owner.reload(); await owner.getByRole('switch', {name: 'Add their own rows'}).waitFor(); await toggle('Add their own rows'); for (let i = 0; i < 40 && !(await can()).add; i++) await owner.waitForTimeout(150);
 assert.deepEqual(await can(), was);
+// Someone with no account at all who has watched something here (the page is told so): Up Next and New for you are theirs too,
+// under Not on Home as they start, each saying it comes from what they watched here and how it is put together. With an MDBList
+// key, New for you says the watchlist counts too. The rows by service and by genre say what order their titles are in: the
+// public list's own, or under a content limit the most popular on TMDB.
+const plainly = (extra = {}) => async route => {const response = await route.fetch(), body = await response.json(), me = body.hub.people[0];
+  Object.assign(me, {history: null, trakt: false, lists: false, listsKept: false, played: true, matching: null, hearts: null, rows: null, picks: {}, ...extra}); await route.fulfill({response, json: body}).catch(() => {});};
+const offRow = name => guest.locator('.off li', {hasText: name}), saidOff = async name => [await offRow(name).locator('h3 .tag').textContent(), await offRow(name).locator('.about-row').textContent()];
+const saidIn = async name => {await guest.locator('.rows li', {hasText: name}).first().getByRole('button', {name: 'Edit'}).click(); const text = await guest.locator('dialog.sheet .about-row').textContent(); await closeSheet(); return text;};
+await guest.route('**/api/state', plainly()); await guest.goto(BASE + '/#/me/home'); await guest.reload(); await guest.locator('.rows li').first().waitFor(); await guest.locator('.off').evaluate(list => {list.open = true;});
+assert.deepEqual(await saidOff('Up Next'), ['What you’ve watched here', 'Shows you watch here that have a next episode out, the ones you watched most lately first.']);
+assert.deepEqual(await saidOff('New for you'), ['What you’ve watched here', 'New episodes of shows you watch here, newest first, checked once a day. A show leaves once you start the new episode.']);
+if (shots) {await guest.locator('.off').scrollIntoViewIfNeeded(); await guest.waitForTimeout(300); await guest.screenshot({path: `${shots}/real-21-no-account-rows-phone.png`});}
+assert.equal(await saidIn('Movies by Service'), 'A tile for each streaming service. Each opens a public list of movies on that service, in that list’s own order.');
+assert.equal(await saidIn('Shows by Service'), 'A tile for each streaming service. Each opens a public list of shows on that service, in that list’s own order.');
+assert.equal(await saidIn('Movies by Genre'), 'A tile for each genre. Each opens a public list of movies in that genre, in that list’s own order.');
+assert.equal(await saidIn('Shows by Genre'), 'A tile for each genre. Each opens a public list of shows in that genre, in that list’s own order.');
+if (shots) {await guest.locator('.rows li', {hasText: 'Movies by Service'}).first().getByRole('button', {name: 'Edit'}).click(); await guest.waitForTimeout(300); await guest.screenshot({path: `${shots}/real-21b-by-service-about-phone.png`}); await closeSheet();}
+await guest.unroute('**/api/state'); await guest.route('**/api/state', plainly({listsKept: true, settings: {limit: 'teen'}})); await guest.reload(); await guest.locator('.rows li').first().waitFor(); await guest.locator('.off').evaluate(list => {list.open = true;});
+assert.deepEqual(await saidOff('New for you'), ['Your MDBList and watched here', 'New episodes of shows you watch here or have on your MDBList watchlist, and watchlist movies now out to stream. Newest first, checked once a day. A title leaves once you start it.']);
+assert.deepEqual(await saidOff('Up Next'), ['What you’ve watched here', 'Shows you watch here that have a next episode out, the ones you watched most lately first.']);
+assert.equal(await saidIn('Movies by Service'), 'A tile for each streaming service. Each opens the movies on that service that fit the content limit, the most popular on TMDB first.');
+assert.equal(await saidIn('Movies by Genre'), 'A tile for each genre. Each opens a public list of movies in that genre, in that list’s own order.');
+await guest.unroute('**/api/state'); await guest.reload(); await guest.locator('.rows li').first().waitFor();
 // On her own Home the rows that change on their own say when (times made here, an hour ago, as this hub picks nothing): For you
 // places when they change next, or that they are kept; My Trakt lists when it was checked; rows always current say nothing.
 // Each one's Edit sheet asks the hub for something now, answered here too. Nothing is saved while these made-up rows are shown.
@@ -728,7 +751,7 @@ const hourAgo = Math.floor(Date.now() / 1000) - 3600, seen = Math.floor(Date.now
 const likedRow = {id: 'trakt-liked-lists', title: 'Trakt lists I liked', kind: 'Collection · 1 list', source: 'Trakt · lists you liked', origin: 'own', on: true}, shelfTiles = [{title: 'Heist nights', image: '/covers/00.jpg'}, {title: 'Rainy days', image: '/covers/01.jpg'}, {title: 'Sunday westerns', image: '/covers/02.jpg', liked: true}];
 // Her For you today, as the hub tells it: each place's pick and what it came from, six other options, two kinds with nothing.
 const forYouDetail = {places: {'for-you-1': {key: 'because:m27205', kind: 'because', name: 'Because you watched Inception', why: {title: 'Inception', seen}, seed: 'm27205'},
-    'for-you-2': {key: 'series:263', kind: 'series', name: 'Next in The Dark Knight', why: {title: 'The Dark Knight', seen, more: 2}, seed: 'm155', keep: true}, 'for-you-3': {key: 'popular:movie', kind: 'popular', name: 'Popular movies lately'}},
+    'for-you-2': {key: 'series:263', kind: 'series', name: 'More from The Dark Knight', why: {title: 'The Dark Knight', seen, more: 2}, seed: 'm155', keep: true}, 'for-you-3': {key: 'popular:movie', kind: 'popular', name: 'Popular movies lately'}},
   options: [{key: 'crew:525', kind: 'crew', name: 'More from Christopher Nolan', why: {title: 'Inception', seen, who: 'Christopher Nolan'}, seed: 'm27205'}, {key: 'genres:18', kind: 'genres', name: 'Drama movies for you', why: {title: 'Drama'}},
     {key: 'different:37', kind: 'different', name: 'Something different: Western movies', why: {title: 'Western'}}, {key: 'top10:movie', kind: 'top10', name: 'Top 10 movies on Netflix in Nigeria', why: {title: 'Nigeria'}},
     {key: 'because:s1396', kind: 'because', name: 'Because you watched Breaking Bad', why: {title: 'Breaking Bad', seen: seen - 3 * 86400}, seed: 's1396'}, {key: 'because:m550', kind: 'because', name: 'Because you watched Fight Club', why: {title: 'Fight Club', seen: seen - 9 * 86400}, seed: 'm550'}],
@@ -754,7 +777,7 @@ await guest.locator('.rows').scrollIntoViewIfNeeded(); await both(guest, 'unwatc
 await both(guest, '18f-home-new-rows', rowOf('New for you'));
 // A For you row is headed For you; its line says what it holds today and when it picks again, or that it is kept.
 await rowOf('Because you watched Inception').getByText(/^Today: Because you watched Inception · picks again (at \d.+|tomorrow at \d.+|soon)$/).waitFor();
-await rowOf('Next in The Dark Knight').getByText('Today: Next in The Dark Knight · kept', {exact: true}).waitFor();
+await rowOf('More from The Dark Knight').getByText('Today: More from The Dark Knight · kept', {exact: true}).waitFor();
 await rowOf('Popular movies lately').getByText('Today: Popular movies lately · until there’s more to go on', {exact: true}).waitFor();
 assert.deepEqual(await guest.locator('.rows .row', {has: guest.locator('p', {hasText: /^Today: /})}).locator('h3').allTextContents(), ['For you', 'For you', 'For you']);
 assert.ok(!/picked|checked|changes/.test(await rowOf('Trending Movies').locator('p').first().textContent()), 'a row always current says nothing of times');
@@ -780,8 +803,8 @@ await placeSheet.getByRole('button', {name: /^Drama movies for you/}).click(); a
 await rowOf('Because you watched Inception').getByRole('button', {name: 'Edit'}).click(); await placeSheet.getByRole('button', {name: 'Keep “Because you watched Inception”'}).click(); await toast(guest).filter({hasText: 'Kept. It stays until you let it change.'}).waitFor();
 // The kept row offers to let it change again; a title left out goes for good.
 const keptSheet = guest.getByRole('dialog', {name: 'For you'});
-await rowOf('Next in The Dark Knight').getByRole('button', {name: 'Edit'}).click(); await keptSheet.getByRole('button', {name: 'Let it change again'}).waitFor();
-await story.getByText('Kept: it stays “Next in The Dark Knight” until you let it change.', {exact: true}).waitFor(); await story.getByText(/^You watched The Dark Knight on [A-Z][a-z]+day\. 2 more films in the series are out\.$/).waitFor();
+await rowOf('More from The Dark Knight').getByRole('button', {name: 'Edit'}).click(); await keptSheet.getByRole('button', {name: 'Let it change again'}).waitFor();
+await story.getByText('Kept: it stays “More from The Dark Knight” until you let it change.', {exact: true}).waitFor(); await story.getByText(/^You watched The Dark Knight on [A-Z][a-z]+day\. 2 more films in the series are out\.$/).waitFor();
 if (shots) await guest.screenshot({path: `${shots}/real-18d-for-you-kept-phone.png`}); await keptSheet.getByRole('button', {name: 'Not from The Dark Knight again'}).click(); await toast(guest).filter({hasText: 'Nothing more from “The Dark Knight”. Your apps have it in a few minutes.'}).waitFor();
 // A pick made before reasons were kept says only what it is and when it picks again, never its kind a second time.
 const inception = forYouDetail.places['for-you-1']; forYouDetail.places['for-you-1'] = {key: 'because:s60574', kind: 'because', name: 'Because you watched Peaky Blinders', seed: 's60574'};
@@ -806,10 +829,10 @@ await toast(guest).filter({hasText: 'Because you watched moves down. Picks chang
 await saved(got => got.forYouOrder?.join() === 'series,pickup,crew,because,genres,seasonal,top10,different', 'one step down');
 const kinds = guest.locator('ol.kinds'), kindNames = () => kinds.locator('li strong').allTextContents(), kindsCard = guest.locator('.setting', {hasText: 'Kinds of pick'});
 // Folded to a line until opened: which kind comes first, and how many are on.
-await kindsCard.getByText('Next in a movie series first · 8 of 8 on', {exact: true}).waitFor(); assert.equal(await kinds.count(), 0);
+await kindsCard.getByText('More from a movie series first · 8 of 8 on', {exact: true}).waitFor(); assert.equal(await kinds.count(), 0);
 if (shots) for (const [width, height] of [[390, 844], [1280, 900]]) {await guest.setViewportSize({width, height}); await kindsCard.scrollIntoViewIfNeeded(); await guest.waitForTimeout(300); await kindsCard.screenshot({path: `${shots}/real-19a-kinds-folded-${width < 600 ? 'phone' : 'wide'}.png`});}
 await guest.setViewportSize({width: 390, height: 844}); await kindsCard.getByRole('button', {name: 'Change'}).click();
-await kinds.scrollIntoViewIfNeeded(); assert.deepEqual(await kindNames(), ['Next in a movie series', 'Pick back up', 'More from a director', 'Because you watched', 'Your genres', 'Seasonal', 'Top 10', 'Something different']);
+await kinds.scrollIntoViewIfNeeded(); assert.deepEqual(await kindNames(), ['More from a movie series', 'Pick back up', 'More from a director', 'Because you watched', 'Your genres', 'Seasonal', 'Top 10', 'Something different']);
 await guest.locator('.setting', {hasText: 'Not picked from'}).getByText('Pulp Fiction').waitFor();
 // Each kind says what it picks, in her words.
 await kinds.locator('li', {hasText: 'Pick back up'}).getByText('Shows you left partway, last watched between three weeks and a year ago.', {exact: true}).waitFor();
@@ -817,7 +840,7 @@ await kinds.locator('li', {hasText: 'Top 10'}).getByText('What’s most watched 
 // If picked now, from today's options: each row from the next kind in her order with something (the kept row stays), redone at
 // once as she drags or switches.
 const ifNow = () => kindsCard.locator('.if-now li').evaluateAll(lines => lines.map(line => [line.querySelector('strong').textContent, line.querySelector('small').textContent]));
-assert.deepEqual(await ifNow(), [['More from a director', 'More from Christopher Nolan'], ['Next in a movie series', 'Next in The Dark Knight · kept'], ['Because you watched', 'Inception']]);
+assert.deepEqual(await ifNow(), [['More from a director', 'More from Christopher Nolan'], ['More from a movie series', 'More from The Dark Knight · kept'], ['Because you watched', 'Inception']]);
 // Dragged by its handle, Something different goes to the top.
 // (A tall window, so the whole list, with each kind's line, is on screen at once.)
 await guest.setViewportSize({width: 390, height: 2000}); await kinds.scrollIntoViewIfNeeded();
@@ -827,7 +850,7 @@ await guest.mouse.move(from.x + from.width / 2, from.y + from.height / 2); await
 for (let step = 1; step <= 12; step++) {await guest.mouse.move(from.x + from.width / 2, from.y + (to.y + 4 - from.y) * step / 12); await guest.waitForTimeout(30);}
 await guest.mouse.up(); await guest.setViewportSize({width: 390, height: 844});
 await saved(got => got.forYouOrder?.[0] === 'different', 'dragged to the top'); assert.equal((await kindNames())[0], 'Something different');
-assert.deepEqual(await ifNow(), [['Something different', 'Western movies'], ['Next in a movie series', 'Next in The Dark Knight · kept'], ['More from a director', 'More from Christopher Nolan']]);
+assert.deepEqual(await ifNow(), [['Something different', 'Western movies'], ['More from a movie series', 'More from The Dark Knight · kept'], ['More from a director', 'More from Christopher Nolan']]);
 await kinds.getByRole('switch', {name: 'More from a director'}).click(); await saved(got => got.forYouOff?.includes('crew'), 'crew off');
 assert.deepEqual((await ifNow())[2], ['Because you watched', 'Inception']); await kinds.getByRole('switch', {name: 'More from a director'}).click(); await saved(got => !got.forYouOff?.includes('crew'), 'crew on');
 await kinds.getByRole('switch', {name: 'Top 10'}).click(); await saved(got => got.forYouOff?.includes('top10'), 'Top 10 off');
@@ -841,7 +864,7 @@ await guest.unrouteAll({behavior: 'wait'}); await guest.reload(); await guest.lo
 // The manager's Background work: a Trakt lists row asked for again (0) is under way, never "next run 1 Jan 1970". (Going to the
 // page and reloading cancels the first read, whose answer is then left unsent.)
 await owner.route('**/api/state', async route => {const response = await route.fetch(), body = await response.json(); body.hub.front = true; Object.assign(body.hub.jobs, {shelfDue: 0, shelves: 1, shelved: hourAgo}); await route.fulfill({response, json: body}).catch(() => {});});
-await owner.goto(BASE + '/#/hub/general'); await owner.reload(); const listsJob = owner.locator('.jobs li', {hasText: 'Trakt lists rows'});
+await owner.goto(BASE + '/#/hub/general'); await owner.reload(); const listsJob = owner.locator('.jobs li', {hasText: 'My lists rows'});
 await listsJob.getByText('under way').waitFor(); await listsJob.getByText('For everyone every day; for one person when their lists change or they press Check now', {exact: true}).waitFor();
 await owner.locator('.jobs li', {hasText: 'For you picks'}).getByText(/^For everyone every day at .+; for one person when they change their rows or kinds, or finish something$/).waitFor(); await listsJob.scrollIntoViewIfNeeded(); await shot(owner, '16d-background-under-way');
 await owner.unroute('**/api/state');

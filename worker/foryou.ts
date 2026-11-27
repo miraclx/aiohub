@@ -5,7 +5,7 @@
    (native.ts), which this cron starts for their hub once its people are picked.
    A pick names its row and says what fills it in the same catalog: a TMDB search AIOMetadata runs (seasonal, a director, a genre,
    something different, the no-history fallbacks), a FlixPatrol Top 10 chart AIOMetadata reads, or a row the hub serves itself
-   (rows.ts) whose catalog id carries what fills it (because you watched, the next films in a series, shows to pick back up). Nothing looks up "today's pick"
+   (rows.ts) whose catalog id carries what fills it (because you watched, the other films of a series, shows to pick back up). Nothing looks up "today's pick"
    when a row is read, so a setup that failed to save never shows a new name over an old list.
    TMDB is asked with the hub's own key, and its answers are kept a day per hub (rows_cache, person '#tmdb'): they are not personal.
    Workers Free allows about fifty outside calls and database queries per run, so a person's picking makes at most CALLS of them. */
@@ -111,8 +111,15 @@ const film = (ask: Ask, id: number) => tmdb<Film>(ask, `movie/${id}?append_to_re
 });
 interface Series {n: string; parts: Title[]}
 const series = (ask: Ask, id: number) => tmdb<Series>(ask, `collection/${id}`, body => {const b = body as {name?: string; parts?: unknown[]}; return {n: String(b.name ?? '').slice(0, 120), parts: listed({results: b.parts ?? []}).sort((a, b) => a.d.localeCompare(b.d))};});
-interface Show {t: string; g: number[]; last: [number, number] | null}
-const show = (ask: Ask, id: number) => tmdb<Show>(ask, `tv/${id}`, body => {const b = body as {name?: string; genres?: {id: number}[]; last_episode_to_air?: {season_number?: number; episode_number?: number} | null}; return {t: String(b.name ?? '').slice(0, 120), g: (b.genres ?? []).map(g => g.id), last: b.last_episode_to_air ? [Number(b.last_episode_to_air.season_number), Number(b.last_episode_to_air.episode_number)] : null};});
+// `a`: the day its newest episode came out; `n`: the next one to come, with its day (ahead.ts reads both). An answer kept from
+// before they were has neither, for the day it is kept.
+export interface Show {t: string; g: number[]; last: [number, number] | null; a?: string; n?: [number, number, string] | null}
+type Episode = {season_number?: number; episode_number?: number; air_date?: string | null} | null;
+export const show = (ask: Ask, id: number) => tmdb<Show>(ask, `tv/${id}`, body => {
+  const b = body as {name?: string; genres?: {id: number}[]; last_episode_to_air?: Episode; next_episode_to_air?: Episode}, day = (episode: Episode | undefined) => /^\d{4}-\d\d-\d\d$/.test(episode?.air_date ?? '') ? episode!.air_date! : '';
+  return {t: String(b.name ?? '').slice(0, 120), g: (b.genres ?? []).map(g => g.id), last: b.last_episode_to_air ? [Number(b.last_episode_to_air.season_number), Number(b.last_episode_to_air.episode_number)] : null,
+    a: day(b.last_episode_to_air), n: b.next_episode_to_air && day(b.next_episode_to_air) ? [Number(b.next_episode_to_air.season_number), Number(b.next_episode_to_air.episode_number), day(b.next_episode_to_air)] : null};
+});
 /* A TMDB search as AIOMetadata will run it, with today's date where it reads one, to see what it holds. */
 const concrete = (params: Record<string, string>, day: string) => Object.fromEntries(Object.entries(params).filter(([, value]) => !value.startsWith('__tmdb_date__:') || value === TODAY).map(([key, value]) => [key, value === TODAY ? day : value]));
 const discover = (ask: Ask, type: 'movie' | 'series', params: Record<string, string>, day: string) => tmdb(ask, `discover/${type === 'movie' ? 'movie' : 'tv'}?${new URLSearchParams(concrete(params, day)).toString()}`, listed);
@@ -204,7 +211,7 @@ async function candidates(ask: Ask, watched: Item[], plays: {item: string; detai
     if (!open('series') || !about?.c || collections.has(about.c[0]) || collections.size >= 2) continue;
     collections.add(about.c[0]);
     const parts = (await series(ask, about.c[0]))?.parts.filter(part => part.d && part.d <= day) ?? [], left = unseen(parts, 'movie', seen);
-    if (left.length && left.length < parts.length) out.push({pick: {kind: 'series', key: `series:${about.c[0]}`, name: `Next in ${about.c[1].replace(/ Collection$/, '')}`, type: 'movie', serve: `foryou_series_${about.c[0]}`, why: {title: item.name, seen: item.at, more: left.length}, seed: tagOf(item)}, seed: item.at, titles: left.length, quality: mean(left)});
+    if (left.length && left.length < parts.length) out.push({pick: {kind: 'series', key: `series:${about.c[0]}`, name: `More from ${about.c[1].replace(/ Collection$/, '')}`, type: 'movie', serve: `foryou_series_${about.c[0]}`, why: {title: item.name, seen: item.at, more: left.length}, seed: tagOf(item)}, seed: item.at, titles: left.length, quality: mean(left)});
   }
   if (open('pickup')) {
     // Shows last watched more than three weeks ago (within the year) with an episode still to watch: Trakt says so (Up Next), or the

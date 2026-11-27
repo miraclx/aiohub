@@ -20,9 +20,10 @@ import {getSecret, now} from './util';
 import {listedOf, watchedOf} from './rows';
 import type {Item} from './rows';
 import {TMDB_OWNER, limitOf, recommended, seenSet, tagOf, tmdb, unseen} from './foryou';
+import {LINK} from './trakt';
 import type {Ask} from './foryou';
 
-export const RECS = 'recs';
+export const RECS = 'recs', AHEAD = 'ahead';
 // Tried again this long after a run with nothing watched to go on (or no TMDB key yet), and after one with ratings still to look up.
 // A run reads their watching and watchlist first (a page of each), so it asks TMDB less than a For you run does.
 const CALLS = 16, DAY = 86400, HOUR = 4, SEEDS = 10, MOST = 60, CERTS_KEPT = 800, RETRY = 6 * 3600, SOON = 600, HUB = '#hub';
@@ -55,22 +56,34 @@ export async function recommendedOf(env: Env, hub: string, person: string, type:
 const certOf = (ask: Ask, type: 'movie' | 'series', id: number) => type === 'movie'
   ? tmdb(ask, `movie/${id}/release_dates`, body => [...new Set(((body as {results?: {iso_3166_1?: string; release_dates?: {certification?: string}[]}[]}).results ?? []).filter(item => item.iso_3166_1 === 'US').flatMap(item => item.release_dates ?? []).map(item => String(item.certification ?? '').trim()).filter(Boolean))].join('|'))
   : tmdb(ask, `tv/${id}/content_ratings`, body => String(((body as {results?: {iso_3166_1?: string; rating?: string}[]}).results ?? []).find(item => item.iso_3166_1 === 'US')?.rating ?? '').trim());
+/* Everyone, with their hub's and group's Home and settings, and what the day's two steps kept for each (this one, and ahead.ts):
+   read once a run for both. `kept` goes by hub, person and kind; `linked`, whose Trakt is connected to the hub, by hub and person. */
+export interface Scan {
+  tops: Map<string, {rows: Row[]; defaults: Settings}>; groups: {hub: string; id: string; data: string}[]; people: {hub: string; id: string; grp: string; data: string}[];
+  kept: Map<string, {hub: string; person: string; kind: string; at: number; made: string | null}>; linked: Set<string>;
+}
+export async function scan(env: Env): Promise<Scan> {
+  const [hubs, groups, people, had, links] = await env.DB.batch([env.DB.prepare('SELECT id, data FROM hubs'), env.DB.prepare('SELECT hub, id, data FROM groups'), env.DB.prepare('SELECT hub, id, grp, data FROM people ORDER BY hub, created, id'),
+    env.DB.prepare("SELECT hub, person, kind, at, json_extract(items, '$.limit') AS made FROM rows_cache WHERE kind IN (?, ?)").bind(RECS, AHEAD), env.DB.prepare('SELECT hub, owner FROM secrets WHERE kind = ?').bind(LINK)]);
+  return {tops: new Map((hubs.results as {id: string; data: string}[]).map(row => [row.id, JSON.parse(row.data) as {rows: Row[]; defaults: Settings}])), groups: groups.results as Scan['groups'], people: people.results as Scan['people'],
+    kept: new Map((had.results as {hub: string; person: string; kind: string; at: number; made: string | null}[]).map(row => [`${row.hub}/${row.person}/${row.kind}`, row])),
+    linked: new Set(env.TRAKT_CLIENT_ID ? (links.results as {hub: string; owner: string}[]).map(row => `${row.hub}/${row.owner}`) : [])};
+}
+/* The UTC hour from which the day's two steps run (RECS_HOUR, else 4). */
+export const dayHour = (env: Env) => Number(env.RECS_HOUR ?? HOUR);
 /* One step, from HOUR (RECS_HOUR, else 4): the next person whose Recommended rows are on a Home of theirs and were not worked out
    in the last day (or under the limit they have now) has them worked out and kept. `when` is when the run was due. True when
-   there was one. */
-export async function recommend(env: Env, when: number): Promise<boolean> {
-  if (new Date(when).getUTCHours() < Number(env.RECS_HOUR ?? HOUR)) return false;
-  const [hubs, groups, people, had] = await env.DB.batch([env.DB.prepare('SELECT id, data FROM hubs'), env.DB.prepare('SELECT hub, id, data FROM groups'), env.DB.prepare('SELECT hub, id, grp, data FROM people ORDER BY hub, created, id'),
-    env.DB.prepare("SELECT hub, person, at, json_extract(items, '$.limit') AS made FROM rows_cache WHERE kind = ?").bind(RECS)]);
-  const tops = new Map((hubs.results as {id: string; data: string}[]).map(row => [row.id, JSON.parse(row.data) as {rows: Row[]; defaults: Settings}]));
-  const kept = new Map((had.results as {hub: string; person: string; at: number; made: string | null}[]).map(row => [`${row.hub}/${row.person}`, row])), time = now();
+   there was one, or when rows kept for Homes that no longer have them were let go (so the run does nothing more). */
+export async function recommend(env: Env, when: number, all?: Scan): Promise<boolean> {
+  if (new Date(when).getUTCHours() < dayHour(env)) return false;
+  const {tops, groups, people, kept} = all ?? await scan(env), time = now();
   let next: {hub: string; person: string; limit: Limit} | undefined;
   const off: D1PreparedStatement[] = [];
-  for (const row of people.results as {hub: string; id: string; grp: string; data: string}[]) {
-    const top = tops.get(row.hub), group = (groups.results as {hub: string; id: string; data: string}[]).find(item => item.hub === row.hub && item.id === row.grp);
+  for (const row of people) {
+    const top = tops.get(row.hub), group = groups.find(item => item.hub === row.hub && item.id === row.grp);
     if (!top || !group) continue;
     const theirs = JSON.parse(group.data) as {rows: Row[] | null; settings: Partial<Settings>}, own = JSON.parse(row.data) as {rows: Row[] | null; picks?: Record<string, boolean>; settings: Partial<Settings>};
-    const limit = {...top.defaults, ...theirs.settings, ...own.settings}.limit ?? 'all', before = kept.get(`${row.hub}/${row.id}`);
+    const limit = {...top.defaults, ...theirs.settings, ...own.settings}.limit ?? 'all', before = kept.get(`${row.hub}/${row.id}/${RECS}`);
     // Whether either row is on their Home, whatever accounts they have: without anything watched there is simply nothing to keep.
     const on = rowsOf(own.rows, theirs.rows ?? top.rows, {trakt: true, lists: true, watched: true}, own.picks).some(item => item.on && (item.id === 'recommended-movies' || item.id === 'recommended-series'));
     if (on && (!before || time - before.at >= DAY || (before.made ?? 'all') !== limit)) {next = {hub: row.hub, person: row.id, limit}; break;}
@@ -78,7 +91,7 @@ export async function recommend(env: Env, when: number): Promise<boolean> {
     if (!on && before) off.push(env.DB.prepare('DELETE FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(row.hub, row.id, RECS));
   }
   if (off.length) await env.DB.batch(off.slice(0, 20));
-  if (!next) return false;
+  if (!next) return off.length > 0;
   const {hub, person, limit} = next, key = await getSecret<string>(env, hub, HUB, 'key:tmdb');
   const [cache, mine] = await env.DB.batch([env.DB.prepare('SELECT kind, at, items AS body FROM rows_cache WHERE hub = ? AND person = ? AND at > ?').bind(hub, TMDB_OWNER, time - 3 * DAY),
     // What was kept for them before (its ratings stay), and Trakt's own recommendations as last read, to rate under a limit.

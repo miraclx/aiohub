@@ -8,12 +8,13 @@ import {slug} from '../src/data';
 import type {Env} from './util';
 import {FINISHED, NEAR_END, blocked, failed, getSecret, guesses, newId, newToken, now, pastListed, putSecret, same, sha, unseal} from './util';
 import type {Target} from './trakt';
-import {LINK, brief, deliver, history, progressOf, soon} from './trakt';
+import {LINK, brief, deliver, history, progressOf, read as readTrakt, soon} from './trakt';
 import {history as historyOf, remember, unmark} from './carry';
 import {heartKey, heartsOn, noteHeart} from './hearts';
 import {forgetWatchlist} from './rows';
 import {syncPlayers} from './native';
 import {finished, unfinished} from './foryou';
+import {watchedMore} from './ahead';
 import {where as whereKey} from './places';
 
 const MOUNT = '/jellyfin', SEEN_EVERY = 600, REMEMBER = 20_000, MOST_DEVICES = 30;
@@ -154,7 +155,7 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   let firstHere = false;
   // The title as last noted, and this device's latest sitting with it, in one trip.
   const [found, sat] = await env.DB.batch([env.DB.prepare('SELECT art, duration, position, playing, paused, since, updated, parts, pauses, idle, over FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item),
-    env.DB.prepare('SELECT started, position, playing, paused, since, updated, parts, pauses, idle, reached FROM sittings WHERE hub = ? AND person = ? AND item = ? AND device = ? ORDER BY started DESC LIMIT 1').bind(hub, seat.person, item, seat.on)]);
+    env.DB.prepare('SELECT started, position, playing, paused, since, updated, parts, pauses, idle, reached FROM sittings WHERE hub = ? AND person = ? AND item = ? AND device = ? AND undone = 0 ORDER BY started DESC LIMIT 1').bind(hub, seat.person, item, seat.on)]);
   const known = (found.results[0] ?? null) as Noted | null, latest = (sat.results[0] ?? null) as (Noted & {started: number; reached: number}) | null;
   // A tick leaves a title at its end: the listed one, or the furthest point reached for a file that runs longer than listed.
   const position = kind === 'mark' ? (known?.over || known?.duration) ?? 0 : Math.max(0, Math.round(Number(report.PositionTicks ?? 0) / 1e7)), playing = kind === 'stop' || kind === 'mark' ? 0 : 1;
@@ -192,7 +193,7 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
     // A new sitting holds the empty part where it began (see watched). Not if another report opened one since this one looked:
     // two can arrive at once.
     // It keeps how far the title had been reached before it began (`reached`), which is what says whether it got to the end.
-    return [env.DB.prepare('INSERT OR IGNORE INTO sittings (hub, person, item, started, device, position, playing, paused, since, updated, place, net, parts, reached) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?4, ?4, ?9, ?10, ?11, ?13 WHERE NOT EXISTS (SELECT 1 FROM sittings WHERE hub = ?1 AND person = ?2 AND item = ?3 AND device = ?5 AND started > ?12)')
+    return [env.DB.prepare('INSERT OR IGNORE INTO sittings (hub, person, item, started, device, position, playing, paused, since, updated, place, net, parts, reached) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?4, ?4, ?9, ?10, ?11, ?13 WHERE NOT EXISTS (SELECT 1 FROM sittings WHERE hub = ?1 AND person = ?2 AND item = ?3 AND device = ?5 AND undone = 0 AND started > ?12)')
       .bind(hub, seat.person, item, stamp, seat.on, at, playing, pausedNow, where.place, where.net, kind === 'mark' ? 'marked' : `${at}-${at}`, latest?.started ?? -1, had)];
   };
   // Sittings not heard from in 180 days go, now and then (and what is left of the starts once kept, migration 0010).
@@ -216,7 +217,7 @@ async function note(env: Env, hub: string, seat: Seat, kind: 'start' | 'progress
   // A tick that comes while a sitting is under way (heard in the last minute) is the app's own, as it moves on to the next.
   if (seat.scrobble) await scrobble(env, hub, seat, kind, item, position, paused, jumped, !!latest && stamp - latest.updated <= 60);
   // Once per title here in each running copy: the credits report every minute past 90%.
-  if (ended && !ends.has(`${hub}/${seat.person}/${ended}`)) {if (ends.size > 5000) ends.clear(); ends.add(`${hub}/${seat.person}/${ended}`); await finished(env, hub, seat.person, ended);}
+  if (ended && !ends.has(`${hub}/${seat.person}/${ended}`)) {if (ends.size > 5000) ends.clear(); ends.add(`${hub}/${seat.person}/${ended}`); await finished(env, hub, seat.person, ended); if (!seat.trakt) await watchedMore(env, hub, seat.person);}
   // Their first play here: Recently Watched now has something in it, so their Home gets it without waiting for the site to be opened.
   // Not for someone with Trakt connected to the hub: theirs was there already.
   if (firstHere && !seat.trakt) {const found = await env.DB.prepare('SELECT id, data FROM hubs WHERE id = ?').bind(hub).first<{id: string; data: string}>(); if (found) await syncPlayers(env, found, origin).catch(() => null);}
@@ -325,7 +326,7 @@ async function scrobble(env: Env, hub: string, seat: Seat, kind: 'start' | 'prog
   if (kind === 'progress' && !skipped && !held && (row.scrobbled === want || !live)) return;
   // Whether this device's sitting has too little played to count yet. A tick from the episode list a while later is no sitting.
   if (kind !== 'mark' || during) {
-    const sat = await env.DB.prepare('SELECT parts, started, updated FROM sittings WHERE hub = ? AND person = ? AND item = ? AND device = ? ORDER BY started DESC LIMIT 1').bind(hub, seat.person, item, seat.on).first<{parts: string | null; started: number; updated: number}>();
+    const sat = await env.DB.prepare('SELECT parts, started, updated FROM sittings WHERE hub = ? AND person = ? AND item = ? AND device = ? AND undone = 0 ORDER BY started DESC LIMIT 1').bind(hub, seat.person, item, seat.on).first<{parts: string | null; started: number; updated: number}>();
     if (sat && brief(sat, row.duration)) {
       const set = (state: string, stamped: boolean) => env.DB.prepare(`UPDATE plays SET scrobbled = ?${stamped ? ', scrobbled_at = ?' : ''} WHERE hub = ? AND person = ? AND item = ?`).bind(...(stamped ? [state, now()] : [state]), hub, seat.person, item);
       // Still brief as it starts or carries on: held, unless Trakt knows of a play of this title still going (on another device):
@@ -467,11 +468,24 @@ async function marked(env: Env, hub: string, seat: Seat, item: string, where: {p
 /* A title marked unwatched in an app: the tick taken away (DELETE PlayedItems), once their own server took it. Three things follow,
    all by hub and person:
    - The hub's own record stops counting it as watched, sync or no sync (`plays.unwatched`, migration 0032): Recently Watched, the
-     earlier plays offered for Trakt and For you leave it out, and a finish of it counts afresh. Activity keeps its sittings.
+     earlier plays offered for Trakt and For you leave it out, and a finish of it counts afresh.
+   - Activity shows what happened, and an undo leaves no trace of what it undid: a tick of it made here goes from Activity (a
+     sitting that was only a tick is deleted; one that was a play loses the tick and keeps what was played). Where it was
+     really played here, the un-mark is a quiet line of its own ("marked unwatched", with the device and time: a sitting with
+     `undone` 1), once for each time it was played and then un-marked. Nothing played and nothing ticked here: nothing shown.
    - It is noted as un-marked, with when (carry.ts, unmark), so no pass ever ticks it back from Trakt's or MDBList's older history;
      watched again later, it is copied like anything new.
    - With their Trakt sync on, the title's plays are taken off their Trakt history, through the outbox like a tick ('unwatch').
-     Trakt takes every play of the title or episode away, not only the latest (its /sync/history/remove). Each episode is named
+     Trakt takes every play of the title or episode away, not only the latest (its /sync/history/remove).
+     One case takes away a single play instead: the latest thing here for a film or an episode was a tick the hub itself sent
+     to Trakt (never a play, never a whole season or show). Undoing that tick removes only the play it added, so a play Trakt
+     had from before stays: the hub reads that title's kind of history around the moment it sent the tick (GET
+     /sync/history/movies or /episodes with start_at and end_at, as Trakt's API reference gives it), finds the play by the
+     title's ids and that moment (ticked, below), and sends its history id alone (`ids` in /sync/history/remove). A tick still
+     waiting to be sent is simply dropped. When the play cannot be found (Trakt did not answer, or has no play at that
+     moment), nothing is removed, and their page says which under What was synced. Not covered: an episode ticked as part
+     of a whole season or show whose one history add is still waiting to be sent when it is un-ticked; that add then goes
+     out with the episode in it. Each episode is named
      by its show's ids, its season and its number, and nothing is ever sent without them: a show alone would take every episode
      off, a season alone that whole season.
    THE ONLY PLACE the hub takes a play off someone's Trakt: in answer to their own app's DELETE passing through here. Never from
@@ -494,8 +508,26 @@ function removal(targets: Target[]) {
   return {...(movies.length ? {movies} : {}), ...(shows.size ? {shows: [...shows.values()].map(show => ({ids: show.ids, seasons: [...show.seasons].map(([number, episodes]) => ({number, episodes: [...episodes].map(episode => ({number: episode}))}))}))} : {})};
 }
 const keyOf = (target: Target) => 'movie' in target ? (target.movie.ids.tmdb ? whereKey('movie', target.movie.ids.tmdb) : '') : target.show.ids.tmdb ? whereKey('show', target.show.ids.tmdb, target.episode.season, target.episode.number) : '';
+/* The play a tick made here added to their Trakt history, as its history id: the one of this film or episode watched within
+   TICK_NEAR seconds of when the hub sent the tick (the nearest, of that kind of history a minute and a half either side).
+   0 when Trakt has none; null when Trakt did not answer. */
+const TICK_NEAR = 30;
+type Played = {id?: number; watched_at?: string; type?: string; movie?: {ids?: {tmdb?: number | null; imdb?: string | null}}; show?: {ids?: {tmdb?: number | null; imdb?: string | null}}; episode?: {season?: number; number?: number}};
+async function ticked(env: Env, hub: string, person: string, target: Target, sent: number): Promise<number | null> {
+  const day = (at: number) => encodeURIComponent(new Date(at * 1000).toISOString()), film = 'movie' in target, ids = film ? target.movie.ids : target.show.ids;
+  const got = await readTrakt<Played[]>(env, hub, person, `/sync/history/${film ? 'movies' : 'episodes'}?start_at=${day(sent - 90)}&end_at=${day(sent + 90)}&limit=100`);
+  if (!Array.isArray(got)) return null;
+  const same = (theirs?: {tmdb?: number | null; imdb?: string | null}) => (!!ids.tmdb && theirs?.tmdb === ids.tmdb) || (!!ids.imdb && theirs?.imdb === ids.imdb), off = (play: Played) => Math.abs(Date.parse(play.watched_at ?? '') / 1000 - sent);
+  const plays = got.filter(play => Number.isSafeInteger(play.id) && off(play) <= TICK_NEAR && (film ? play.type === 'movie' && same(play.movie?.ids) : play.type === 'episode' && same(play.show?.ids) && play.episode?.season === target.episode.season && play.episode?.number === target.episode.number));
+  return plays.sort((a, b) => off(a) - off(b))[0]?.id ?? 0;
+}
 async function unmarked(env: Env, hub: string, seat: Seat, item: string) {
-  const at = now(), row = await env.DB.prepare('SELECT title, detail, art, ids FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(hub, seat.person, item).first<{title: string; detail: string; art: string; ids: string | null}>();
+  // With the title: what Trakt was last told of it and when, and the latest thing here for it (a tick alone is parts "marked").
+  const at = now(), row = await env.DB.prepare(`SELECT title, detail, art, ids, scrobbled, scrobbled_at, (SELECT s.parts || '@' || s.updated FROM sittings s WHERE s.hub = plays.hub AND s.person = plays.person AND s.item = plays.item AND s.undone = 0 ORDER BY s.updated DESC LIMIT 1) AS last
+    FROM plays WHERE hub = ? AND person = ? AND item = ?`).bind(hub, seat.person, item).first<{title: string; detail: string; art: string; ids: string | null; scrobbled: string | null; scrobbled_at: number | null; last: string | null}>();
+  // A tick the hub sent to Trakt and nothing since: the latest sitting is that tick alone, made as Trakt was told (within a minute).
+  // `tick`: when the tick was made here, which is the moment its play on Trakt is dated (the call is made up as the tick is noted).
+  const [lastParts, lastAt] = (row?.last ?? '').split('@'), tick = row?.scrobbled === 'watched' && !!row.scrobbled_at && lastParts === 'marked' && Math.abs(Number(lastAt) - row.scrobbled_at) <= 60 ? Number(lastAt) : 0;
   // A title with a play here is a film or an episode; anything else is asked of their server.
   const called = row ? null : await calledBy(seat, item), type = called?.about.Type;
   let items = [item], targets: Target[] = [], title = row?.title ?? called?.title ?? '', detail = row?.detail ?? called?.detail ?? '', art = row?.art ?? called?.art ?? '';
@@ -515,15 +547,36 @@ async function unmarked(env: Env, hub: string, seat: Seat, item: string) {
   const keys = targets.map(keyOf).filter(Boolean), list = JSON.stringify(items);
   // Here first: not watched any more, Trakt no longer counted as told of it (so a tick straight after is sent), and the note
   // that holds its older plays back.
-  await env.DB.batch([env.DB.prepare('UPDATE plays SET unwatched = ?1, scrobbled = NULL WHERE hub = ?2 AND person = ?3 AND item IN (SELECT value FROM json_each(?4))').bind(at, hub, seat.person, list), ...(keys.length ? unmark(env, hub, seat.person, keys, at) : [])]);
+  await env.DB.batch([env.DB.prepare('UPDATE plays SET unwatched = ?1, scrobbled = NULL WHERE hub = ?2 AND person = ?3 AND item IN (SELECT value FROM json_each(?4))').bind(at, hub, seat.person, list), ...(keys.length ? unmark(env, hub, seat.person, keys, at) : []),
+    // Activity (above): the ticks go, then each title with a play since it was last un-marked gets its line.
+    env.DB.prepare("DELETE FROM sittings WHERE hub = ?1 AND person = ?2 AND parts = 'marked' AND item IN (SELECT value FROM json_each(?3))").bind(hub, seat.person, list),
+    env.DB.prepare("UPDATE sittings SET parts = trim(replace(parts, 'marked', '')) WHERE hub = ?1 AND person = ?2 AND undone = 0 AND parts LIKE '%marked%' AND item IN (SELECT value FROM json_each(?3))").bind(hub, seat.person, list),
+    env.DB.prepare(`INSERT OR IGNORE INTO sittings (hub, person, item, started, device, position, playing, paused, since, updated, parts, undone)
+      SELECT ?1, ?2, e.value, ?3, ?4, 0, 0, 0, ?3, ?3, '', 1 FROM json_each(?5) e WHERE EXISTS (SELECT 1 FROM sittings s WHERE s.hub = ?1 AND s.person = ?2 AND s.item = e.value AND s.undone = 0
+        AND s.updated > coalesce((SELECT max(u.started) FROM sittings u WHERE u.hub = ?1 AND u.person = ?2 AND u.item = e.value AND u.undone = 1), 0))`).bind(hub, seat.person, at, seat.on, list)]);
   const ended = art || item; ends.delete(`${hub}/${seat.person}/${ended}`);
   await unfinished(env, hub, seat.person, ended);
   if (!targets.length) return;
+  // A tick made here, undone: only the play it added leaves Trakt (see above). Only with their sync on, asked before Trakt is read.
+  let body: Record<string, unknown> = removal(targets);
+  if (tick && targets.length === 1) {
+    if (!(await env.DB.prepare('SELECT matching FROM sync WHERE hub = ? AND person = ?').bind(hub, seat.person).first<{matching: number}>())?.matching) return;
+    // Still waiting to be sent: dropped, and Trakt never hears of it.
+    if ((await env.DB.prepare("DELETE FROM trakt_outbox WHERE hub = ? AND person = ? AND item = ? AND kind = 'mark'").bind(hub, seat.person, item).run()).meta.changes) return;
+    const play = await ticked(env, hub, seat.person, targets[0], tick);
+    // Not found, or Trakt did not answer: nothing is removed, rather than every play of it, and it is not tried again (the
+    // title is unwatched here by now, so there is nothing left to take back). Their page says which (carry.ts, synced: kept
+    // as rn: for no such play, rw: for no answer).
+    if (!play) {await env.DB.batch(remember(env, hub, seat.person, 'trakt', [{key: `${play === null ? 'rw' : 'rn'}:${keys[0] || item}@${at}`, title: title || 'Untitled', detail}])); return;}
+    body = {ids: [play]};
+  }
   // Their Trakt, only with sync on: deliver asks, each time. Kept under a key of its own, never a play's id.
-  const got = await deliver(env, hub, seat.person, `unwatch:${item}`, {kind: 'unwatch', path: '/sync/history/remove', body: removal(targets)});
+  const got = await deliver(env, hub, seat.person, `unwatch:${item}`, {kind: 'unwatch', path: '/sync/history/remove', body});
   if (got === 'off') return;
   // Listed under What was synced, and Recently Watched (Trakt's history, kept a few minutes) is read again.
-  const again = env.DB.prepare("DELETE FROM rows_cache WHERE hub = ? AND person = ? AND (kind = 'history' OR kind LIKE 'history.%')").bind(hub, seat.person);
+  // Marked due, never deleted: what is kept of her history is what For you leaves watched titles out by (foryou.ts, served),
+  // and a reader that finds none kept must not take it for nothing watched.
+  const again = env.DB.prepare("UPDATE rows_cache SET at = 0 WHERE hub = ? AND person = ? AND (kind = 'history' OR kind LIKE 'history.%') AND items != '[]'").bind(hub, seat.person);
   await env.DB.batch([...remember(env, hub, seat.person, 'trakt', [{key: `r:${keys[0] || item}${items.length > 1 ? `:${detail}` : ''}@${at}`, title: title || 'Untitled', detail}]), again]);
   if (got === 'kept') {await soon(env, hub, seat.person); await again.run();}
 }

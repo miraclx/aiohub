@@ -18,10 +18,11 @@ itself and hosts no video.
 - **A Home of their own.** Trending, popular and top rated rows, collections by streaming service and by genre, and any
   list added by its link. Each row can be renamed, reordered or switched off.
 - **Rows from their own watching.** One Watchlist (from Trakt, MDBList or both), Recommended Movies and Recommended
-  Shows, and Recently Watched. Recommended works without a Trakt account: the hub works it out from what they watched.
-  With Trakt connected there are also Up Next and New for you (new episodes of shows they watch, and watchlist movies that
-  are now out to stream).
-- **For you rows.** Places on Home that the hub fills once a day for each person: because you watched, the next film in a
+  Shows, Recently Watched, Up Next (shows with a next episode out) and New for you (new episodes of shows they watch, and
+  watchlist movies that are now out to stream). Every one of them works from whatever the person has. Without a Trakt
+  account the hub works them out from what they watched here and their MDBList watchlist; with Trakt connected they follow
+  Trakt, which also knows what was watched elsewhere. Only the Watchlist needs an account, Trakt or MDBList.
+- **For you rows.** Places on Home that the hub fills once a day for each person: because you watched, more films from a
   series, a show to pick back up, more from a director, their genres, something different, a seasonal set, a Top 10.
   Each pick says why it was made. A person can keep a pick, swap it for one of the day's other options, or ask never to be
   picked for from a given title again.
@@ -32,10 +33,12 @@ itself and hosts no video.
   and lists. A person can connect either or both. Connecting gives its rows on Home and sends nothing. Each has one
   Sync switch, off until it is turned on: on, what is watched here goes there as it plays and what is watched elsewhere
   comes back; off, nothing moves either way. Marking something unwatched in an app, with Trakt sync on, takes its plays
-  off Trakt too; unwatching on Trakt's own site or apps does not reach the hub. One more switch, Watchlist, makes
+  off Trakt too (if it was only marked as watched here, just that one play); unwatching on Trakt's own site or apps does
+  not reach the hub. One more switch, Watchlist, makes
   the titles they save in the apps (the heart or Save button) and their watchlist one list: Trakt's watchlist when Trakt is
   connected, with MDBList following, else MDBList's.
-  Their lists and liked lists can be rows on Home.
+  Their lists and liked lists, from Trakt and MDBList together, can be rows on Home: My lists and Lists I liked, a tile
+  for each list.
 - **Playback settings.** Quality (Data saver, Balanced or Best), a size limit, audio languages, subtitles, skipping intros and
   credits where a title has them marked, and hiding what they have already watched.
 - **Devices.** Every signed-in app is listed with its name, when it was last seen and roughly where. Any of them can be
@@ -189,6 +192,23 @@ renders the stream-label preview.
 ## What's new
 
 Newest first. Dates are the commit dates on `main`.
+
+### 2026-11-27
+
+- Up Next and New for you work without Trakt. Up Next lists the shows you watch here that have a next episode out. New for
+  you lists new episodes of those shows and of shows on your MDBList watchlist, and watchlist movies now out to stream. The
+  hub checks what has come out once a day. With Trakt connected both rows follow Trakt, as before.
+- My lists and Lists I liked hold your MDBList lists too, next to your Trakt ones, or by themselves without Trakt. They are
+  read with your own MDBList key only.
+- The rows by streaming service and by genre say what order their titles are in: each tile opens a public list, in that
+  list's own order. Under a content limit a service tile shows the most popular on TMDB first.
+- Unwatching something you had only marked as watched here removes just that one play from Trakt. A play Trakt had from
+  before stays. Unwatching something you really played here still removes every play of it, as before.
+- A For you row of a film series is named "More from" the series, since what is left may be an earlier film. It no longer
+  lists a film you watched elsewhere after you mark something else unwatched.
+- The Trakt card says plainly what connecting does for For you: it also learns from what you watched on Trakt.
+- Activity shows what happened: marking something watched and then unwatched leaves nothing on it. If you had really played the title, the play
+  stays and a small line says it was marked unwatched.
 
 ### 2026-11-26
 

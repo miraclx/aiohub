@@ -5,11 +5,11 @@ import {CERTS, folderFits, isPlace, rowsOf, serviceOf, suggestionOf, withKids} f
 import type {Addon, Limit, Part, Row, Settings} from '../src/data';
 import type {Env} from './util';
 import {gate, getSecret, hosted, inTurn, newToken, now, putSecret, sha, unseal} from './util';
-import {CUSTOM, ROWS, addressOf, catalogFor, catalogOf, customId, fills, forYouRow, servedOf} from './rows';
+import {CUSTOM, ROWS, addressOf, catalogFor, catalogOf, customId, fills, forYouRow, hubMade, servedOf} from './rows';
 import {placePick} from './foryou';
 import type {Pick} from './foryou';
 import {LINK} from './trakt';
-import {LIKED_ROW, SHELF, SHELF_ROW, shelfFrom, shelfOn} from './shelf';
+import {LIKED_ROW, SHELF, SHELF_ROW, mdbOf, shelfFrom, shelfOn} from './shelf';
 import type {Shelf} from './shelf';
 import shipped from './collections.json';
 
@@ -280,8 +280,9 @@ const TRENDING_RATED: Record<string, Extract<Part, {discover: string}>> = {
   'trending-series': {discover: 'trending', type: 'series', params: {sort_by: 'popularity.desc', 'air_date.gte': '__tmdb_date__:last_month:from', 'vote_count.gte': '10'}},
 };
 /* A person's rows address on the hub, and whether the hub reads their Trakt and has their MDBList key (else it serves only the
-   rows that need neither: fills in rows.ts). */
-interface Served {at: string; trakt: boolean; lists?: boolean}
+   rows that need neither: fills in rows.ts). `own`: their setup carries their own MDBList key (never while only the hub's
+   shared key reads lists for it), so it can open their own MDBList lists. */
+interface Served {at: string; trakt: boolean; lists?: boolean; own?: boolean}
 /* A Home row that is one catalog: its catalog, or null when it is not one (a collection, or a row this Home cannot fill). `lists`:
    MDBList can be read for this Home; `trakt`: AIOMetadata's own Trakt fills the Trakt rows; `served`: the hub serves its rows. */
 function plainOf(row: Row, lists: boolean, trakt: boolean, served: Served | null, limit: Limit = 'all', picks?: Record<string, Pick>, off?: string[]): Catalog | null {
@@ -300,6 +301,9 @@ function plainOf(row: Row, lists: boolean, trakt: boolean, served: Served | null
   if (TMDB_ROW[row.id]) return {...TMDB_ROW[row.id], ...at, source: 'tmdb'};
   // Trakt connected on AIOMetadata only: its own Trakt rows, as before. Else whatever the hub fills for them.
   if (trakt && !served?.trakt && TRAKT_ROW[row.id]) return {...TRAKT_ROW[row.id], ...at, source: 'trakt'};
+  // Up Next and New for you as the hub works them out for someone without Trakt (ahead.ts) are sent only while on, so a setup
+  // gains nothing for a row nobody switched on. With Trakt connected to the hub they are sent as they always were.
+  if (served && !served.trakt && hubMade(row.id) && !row.on) return null;
   if (served && servedOf(row.id) && fills(row.id, {trakt: served.trakt, lists: !!served.lists})) return catalogOf(served.at, row.id, row.title, row.on);
   const list = /^mdblist\.(\d+)\.(movie|series|all)$/.exec(row.id);
   if (list) return lists ? {id: `mdblist.${list[1]}`, type: list[2], ...at, source: 'mdblist', sort: 'default'} : null;
@@ -351,14 +355,18 @@ export function homeOf(rows: Row[], lists: boolean, trakt = false, served: Serve
       collections.push({kind: 'collection', id: item.id, title: row.title, hideTitle: false, backdropImageUrl: '', pinToTop: false, viewMode: item.viewMode, showAllTab: true, focusGlowEnabled: true, ...(above ? {after: above} : {}),
         folders: made.map(({folder, title, source}) => ({id: folder.id, title, shape: folder.shape, hideTitle: folder.hideTitle, coverImageUrl: folder.cover, coverEmoji: '', sources: [source]}))});
       for (const {catalog} of made) sources.set(`${catalog.id}/${catalog.type}`, {...catalog, enabled: true, showInHome: false});
-    } else if ((row.id === SHELF_ROW || row.id === LIKED_ROW) && row.on && served?.trakt && shelf.length) {
-      // Their own Trakt lists, or the ones they liked (shelf.ts): a wide tile for each, pictured by its best-known title, opening
-      // the list as the hub serves it.
-      const id = `${MINE}${row.id}`, made = shelfOn(row.id, shelf).flatMap(list => {const of = servedOf(list.id); return of ? [{list, of}] : [];});
+    } else if ((row.id === SHELF_ROW || row.id === LIKED_ROW) && row.on && served && shelf.length) {
+      // The lists they made, or the ones they liked (shelf.ts): a wide tile for each, pictured by its best-known title. A Trakt
+      // list opens as the hub serves it; an MDBList list is read by this setup itself, only when it carries their own key.
+      const id = `${MINE}${row.id}`, made = shelfOn(row.id, shelf).flatMap(list => {
+        const theirs = mdbOf(list.id), of = theirs || !served.trakt ? undefined : servedOf(list.id);
+        if (theirs) return served.own ? [{list, type: theirs.type, at: `mdblist.${theirs.list}`, catalog: {id: `mdblist.${theirs.list}`, type: theirs.type, name: list.title, enabled: true, showInHome: false, source: 'mdblist', sort: 'default'} as Catalog}] : [];
+        return of ? [{list, type: of.type as string, at: customId(of), catalog: {...catalogFor(served.at, of, list.title, true), showInHome: false} as Catalog}] : [];
+      });
       if (!made.length) continue;
       collections.push({kind: 'collection', id, title: row.title, hideTitle: false, backdropImageUrl: '', pinToTop: false, viewMode: 'TABBED_GRID', showAllTab: false, focusGlowEnabled: true, ...(above ? {after: above} : {}),
-        folders: made.map(({list, of}) => ({id: `${id}-${list.id.replace(/[^a-z0-9-]/g, '-')}`, title: list.title, shape: 'LANDSCAPE', hideTitle: false, coverImageUrl: list.cover, coverEmoji: '', sources: [{name: list.title, type: of.type, genre: 'None', baseType: of.type, catalogId: customId(of)}]}))});
-      for (const {list, of} of made) sources.set(`${customId(of)}/${of.type}`, {...catalogFor(served.at, of, list.title, true), showInHome: false});
+        folders: made.map(({list, type, at}) => ({id: `${id}-${list.id.replace(/[^a-z0-9-]/g, '-')}`, title: list.title, shape: 'LANDSCAPE', hideTitle: false, coverImageUrl: list.cover, coverEmoji: '', sources: [{name: list.title, type, genre: 'None', baseType: type, catalogId: at}]}))});
+      for (const {catalog} of made) sources.set(`${catalog.id}/${catalog.type}`, catalog);
     } else if (picked && row.on) {
       // A suggested row with tabs: a collection, one tab per part. Without MDBList only its TMDB tabs come; with none left, nothing.
       const parts = picked.parts.filter(({part}) => lists || !('mdblist' in part)).map(({title, part, cover}) => ({title, cover, catalog: partOf(part, `${picked.title}: ${title}`, limit)}));
@@ -603,7 +611,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
     // their own setup (AIOMetadata in front). Without that, a kept key would only make them a setup of their own for nothing.
     const at = served.get(row.id), hubTrakt = viaHub.has(row.id) && !!at, trakt = !hubTrakt && own.trakt ? linked.get(row.id) ?? null : null, lists = own.lists ? watching.get(row.id) ?? null : null, reads = own.lists || env.FRONT !== 'aiometadata' ? null : watching.get(row.id) ?? null;
     // Someone with Trakt or MDBList connected and no Home of their own gets those rows above the shared ones.
-    return {id: row.id, name: row.name, group, above, want: {rows: rowsOf(own.rows, above.rows, {trakt: !!(trakt || hubTrakt), lists: keyed.has(row.id), watched: hubTrakt || keyed.has(row.id) || played.has(row.id), kids: {...above.settings, ...own.settings}.limit === 'kids', front: env.FRONT === 'aiometadata'}, own.picks), settings: {...above.settings, ...own.settings}, saves: saving.has(row.id), trakt, lists, reads, served: at ? {at, trakt: hubTrakt, lists: keyed.has(row.id)} : null, picks: forYou.get(row.id), shelf: shelves.get(row.id)} as Want, tracks: !!lists, home: null as string | null, variants: [] as string[]};
+    return {id: row.id, name: row.name, group, above, want: {rows: rowsOf(own.rows, above.rows, {trakt: !!(trakt || hubTrakt), lists: keyed.has(row.id), watched: hubTrakt || keyed.has(row.id) || played.has(row.id), kids: {...above.settings, ...own.settings}.limit === 'kids', front: env.FRONT === 'aiometadata'}, own.picks), settings: {...above.settings, ...own.settings}, saves: saving.has(row.id), trakt, lists, reads, served: at ? {at, trakt: hubTrakt, lists: keyed.has(row.id), own: !!(lists || reads)} : null, picks: forYou.get(row.id), shelf: shelves.get(row.id)} as Want, tracks: !!lists, home: null as string | null, variants: [] as string[]};
   });
 
   // Home. The hub has one setup on AIOMetadata; a group or a person gets their own only while theirs differs from the one above.

@@ -6,7 +6,9 @@ import {Avatar, Posters, Segments, Sheet} from './ui';
 
 /* What the hub noted as players reported it, put into the words the screen uses: one entry each time someone sat down to watch a
    title (a sitting, front.ts). Times are shown in this device's own time zone. */
-interface Noted {art?: string; person: string; item: string; started: number; title: string; detail: string; position: number; duration: number; device: string; playing: number; paused?: number; since?: number; updated: number; place?: string | null; net?: string | null; parts?: string; pauses?: number; idle?: number; over?: number; reached?: number}
+interface Noted {art?: string; person: string; item: string; started: number; title: string; detail: string; position: number; duration: number; device: string; playing: number; paused?: number; since?: number; updated: number; place?: string | null; net?: string | null; parts?: string; pauses?: number; idle?: number; over?: number; reached?: number;
+  /* A line of its own for a title marked unwatched after it was played here (worker/front.ts, unmarked): nothing was played in it. */
+  undone?: number}
 /* A title whose file runs longer than its listing (`over`: the furthest second any report of it reached; worker/util.ts): its
    listed length says nothing about how far in a sitting is. Its bar is drawn against the furthest point reached, where it is is
    said as a time, never a share, and it is finished only when an app ticked it as watched during the sitting, or the sitting got
@@ -18,6 +20,9 @@ const finishedLong = (row: Noted) => (ticked(row) && partsOf(row).length > 0) ||
 function told(row: Noted, now: number, code: string): Play | null {
   const at = new Date(row.updated * 1000), today = new Date(now * 1000), days = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() - new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime()) / 86400000);
   if (days > 6) return null;
+  // Marked unwatched in an app, after it was played here: said quietly, with the device and time, like a tick as watched.
+  if (row.undone) return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}/${row.started}`, stamp: row.updated, personId: row.person, title: row.title, detail: `${row.detail} · marked unwatched`, on: row.device || 'A player app',
+    when: days > 1 ? at.toLocaleDateString(undefined, {weekday: 'long'}) : at.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'}), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
   // `updated` is when the player was last heard from: a player left open keeps reporting, paused or not. One that went quiet
   // without saying it stopped is shown with when it was last heard, and, if it sat paused, when that pause began. Where it was
   // paused is said only when there is no bar of parts played to show it (its mark, and the times on hover); since when, only
@@ -113,7 +118,7 @@ function inARow(mine: Noted[], now: number) {
 }
 function weeks(rows: Noted[], now: number): Week[] {
   const by = new Map<string, Noted[]>();
-  for (const row of rows) if (now - row.updated < 7 * 86400) by.set(row.person, [...(by.get(row.person) ?? []), row]);
+  for (const row of rows) if (!row.undone && now - row.updated < 7 * 86400) by.set(row.person, [...(by.get(row.person) ?? []), row]);
   return [...by].map(([person, list]) => {
     const count = new Map<string, number>(); for (const row of list) count.set(row.device || 'A player app', (count.get(row.device || 'A player app') ?? 0) + 1);
     const done = (row: Noted) => row.over ? finishedLong(row) : row.duration > 0 && row.position / row.duration >= 0.9;

@@ -15,6 +15,7 @@ const LATER: Record<string, string> = {
   'recently-watched': 'Fills for each person from Trakt, MDBList or what they play here',
   'watchlist': 'Appears once someone connects Trakt or MDBList. With both, it is one list',
   'recommended-movies': 'Fills for each person from Trakt, or from what they watch', 'recommended-series': 'Fills for each person from Trakt, or from what they watch',
+  'up-next': 'Fills for each person from Trakt, or from what they watch here', 'new-for-you': 'Fills for each person from Trakt, or from what they watch here and their watchlist',
 };
 const laterOf = (row: Row) => isPlace(row.id) ? 'For you · Picked daily for each person, from what they watch' : LATER[row.id] ?? `${row.source} · Appears once someone connects Trakt`;
 // On a hub or group Home a For you place is kept for each person too: what fills it is picked for them every day.
@@ -22,7 +23,7 @@ const laterOf = (row: Row) => isPlace(row.id) ? 'For you · Picked daily for eac
    picking starts, when they were last picked for, and when their My lists row was last worked out (0 while it waits to be
    again). Unix seconds. */
 export interface Times {hour: number; pickedAt?: number; shelfAt?: number; tiles?: {title: string; image: string; liked?: boolean}[]}
-// The two rows of a person's Trakt lists: their own, and the ones they liked (shelf.ts on the Worker).
+// The two rows of a person's own lists, from Trakt, MDBList or both: the ones they made, and the ones they liked (shelf.ts on the Worker).
 const DAY_MS = 86_400_000, LIKED_ROW = 'trakt-liked-lists', isShelf = (id: string) => id === 'trakt-lists' || id === LIKED_ROW;
 // A day in the viewer's own words, and a time with its day when that is not today ("yesterday at 6:04 AM").
 const dayOf = (ms: number) => {const days = Math.round((new Date(ms).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / DAY_MS); return days === 0 ? 'today' : days === 1 ? 'tomorrow' : days === -1 ? 'yesterday' : new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'});};
@@ -101,7 +102,7 @@ function RowCard({row, index, tag, pill, locked, later, person, limit = 'all', t
   // Rows that are always current (the watchlist, lists, Recently Watched) say nothing of times.
   // A For you place is headed "For you", as on a hub's Home, and says what it holds today: the pick is today's, not the row's.
   // A row whose pill says where it comes from ("Your Trakt") does not say it twice (lineOf).
-  const line = row.pick ? pickOf(row.title, row.pick, times, kept) : times && isPlace(row.id) && !times.pickedAt ? 'For you · Picked soon' : times && isShelf(row.id) ? `${pill ? '' : 'Trakt · '}${listsOf(times.shelfAt)}` : lineOf(row, limit, pill);
+  const line = row.pick ? pickOf(row.title, row.pick, times, kept) : times && isPlace(row.id) && !times.pickedAt ? 'For you · Picked soon' : times && isShelf(row.id) ? `${pill ? '' : `${row.source.split(' · ')[0]} · `}${listsOf(times.shelfAt)}` : lineOf(row, limit, pill);
   const said = later ? undefined : pill ?? tag;
   return <li ref={sortable.ref} className={`row${sortable.isDragging ? ' dragging' : ''}${locked ? ' locked' : ''}${later ? ' later' : ''}`}>
     {!locked && <Grip handleRef={sortable.handleRef} label={`Move ${row.title}`}/>}
@@ -179,7 +180,7 @@ export function HomeEditor({rows, level, onChange, tag, pill, lists = [], listsH
   // Anything already on this Home stays where it is in Add row, dimmed, saying where it is: groups never shift.
   // An account-driven row (the two rows of their Trakt lists) says what it is instead of its kind (aboutRow, data.ts).
   const choice = (item: Pick, note: string) => {
-    const row = rows.find(each => each.id === item.id), at = row && (row.on ? 'On Home' : 'Not on Home'), about = aboutRow(item, mine), own = level === 'own' ? pillOf(item, mine) : undefined;
+    const row = rows.find(each => each.id === item.id), at = row && (row.on ? 'On Home' : 'Not on Home'), about = aboutRow(item, mine, limit), own = level === 'own' ? pillOf(item, mine) : undefined;
     if (about && !at) note = about;
     return <li key={item.id}><button type="button" disabled={!!at} onClick={() => add({id: item.id, title: item.title, kind: item.kind, source: item.source})}><span><strong>{item.title}{own && <em className="tag own">{own}</em>}</strong><small>{at || note}</small></span></button></li>;
   };
@@ -205,7 +206,7 @@ export function HomeEditor({rows, level, onChange, tag, pill, lists = [], listsH
     {!!off.length && <details className="off" open={off.length <= 4}><summary>Not on Home <span className="count">{off.length}</span></summary>
       <ul>{off.map(row => {const place = placeHeld(row, level);
         const said = place ? undefined : pill?.(row) ?? tag(row);
-        return <li key={row.id} className={place ? 'later' : undefined}><div><h3>{row.title}{said && <em className="tag own">{said}</em>}</h3><p>{place ? laterOf(row) : lineOf(row, limit, place ? undefined : pill?.(row))}</p>{/* Off Home there is no Edit to say it in: what the row is, here. */}{!place && aboutRow(row, mine) && <p className="about-row">{aboutRow(row, mine)}</p>}</div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>;})}</ul>
+        return <li key={row.id} className={place ? 'later' : undefined}><div><h3>{row.title}{said && <em className="tag own">{said}</em>}</h3><p>{place ? laterOf(row) : lineOf(row, limit, place ? undefined : pill?.(row))}</p>{/* Off Home there is no Edit to say it in: what the row is, here. */}{!place && aboutRow(row, mine, limit) && <p className="about-row">{aboutRow(row, mine, limit)}</p>}</div>{canArrange && <button type="button" className="ghost small" onClick={() => set(row.id, {on: true}, `“${row.title}” is on Home`)}>Show</button>}</li>;})}</ul>
     </details>}
     {adding && <Sheet title="Add a row" onClose={() => setAdding(false)}>
       <form className="link-form" onSubmit={event => {
@@ -244,10 +245,10 @@ export function HomeEditor({rows, level, onChange, tag, pill, lists = [], listsH
     {folder && <Sheet title={folder.title} onClose={() => setArranging(null)}>
       {/* The name shown on Home and in the apps; what fills the row stays the same. */}
       {/* What the row is and how it is put together, for the rows that follow a person's accounts (aboutRow, data.ts). */}
-      {aboutRow(folder, mine) && <p className="muted sheet-lead about-row">{aboutRow(folder, mine)}</p>}
+      {aboutRow(folder, mine, limit) && <p className="muted sheet-lead about-row">{aboutRow(folder, mine, limit)}</p>}
       <h3 className="sheet-sub first">Name</h3><NameField label="Name of this row" value={folder.title} onSave={title => set(folder.id, {title}, `Renamed to “${title}”`)}/>
       {/* Checked once a day; a list added or renamed since can be brought in at once. */}
-      {isShelf(folder.id) && onCheckLists && <><h3 className="sheet-sub">Lists</h3><p className="sheet-lead">Checked once a day for lists added, removed or renamed on Trakt.</p>
+      {isShelf(folder.id) && onCheckLists && <><h3 className="sheet-sub">Lists</h3><p className="sheet-lead">Checked once a day for lists added, removed or renamed on {['MDBList', 'Trakt and MDBList'].find(name => name === folder.source.split(' · ')[0]) ?? 'Trakt'}.</p>
         <button type="button" className="ghost" onClick={() => {setArranging(null); onCheckLists();}}>{mine ? 'Check my lists now' : 'Check their lists now'}</button></>}
       {!find && <><h3 className="sheet-sub">Titles already watched</h3>
       <Segments label="Titles already watched" value={folder.watched ?? 'follow'} onChange={value => set(folder.id, {watched: value === 'follow' ? undefined : value}, 'Saved')} options={[{value: 'follow', label: 'Default'}, {value: 'hide', label: 'Hide here'}, {value: 'show', label: 'Show here'}]}/>

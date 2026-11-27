@@ -52,7 +52,9 @@ export interface Hub {
   // Trakt/MDBList check finished, for how many people, and how many are part way through.
   jobs?: {shelved?: number | null; shelves?: number; shelfDue?: number | null;
     /* Recommended rows worked out by the hub (worker/recs.ts): the last time for anyone here, for how many people, and the oldest still kept. */
-    recsAt?: number | null; recs?: number; recsDue?: number | null; last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number;
+    recsAt?: number | null; recs?: number; recsDue?: number | null;
+    /* Up Next and New for you looked up by the hub for people without Trakt (worker/ahead.ts): the same three. */
+    aheadAt?: number | null; aheads?: number; aheadDue?: number | null; last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number;
     /* For you (each person's apps on their own AIOMetadata only): people picked for today of everyone, the last pick, whether the
        hub's apps are waiting to be brought in step, and the UTC hour picking starts. */
     picked?: number; pickedAt?: number | null; everyone?: number; syncing?: number; forYouHour?: number;
@@ -93,7 +95,8 @@ export const defaultRows = (): Row[] => [
 // A person's own rows, from their accounts and their watching, sit above the shared ones: saved first, then picked for them.
 // Up Next and New for you start off: the player's own Continue watching and Next Up cover most of it.
 // One Watchlist, from Trakt, MDBList or both merged. Recommended is Trakt's, or without Trakt worked out from what they watched
-// (recs.ts on the Worker). Recently Watched is one row whose source follows their accounts (sourceOf, below).
+// (recs.ts on the Worker). Up Next and New for you are Trakt's, or without Trakt worked out from what they watch here and their
+// watchlist (ahead.ts). Recently Watched is one row whose source follows their accounts (sourceOf, below).
 export const traktRows = (): Row[] => [
   {id: 'watchlist', title: 'Watchlist', kind: 'Movies & shows, newest first', source: 'Trakt', origin: 'own', on: true, core: true},
   {id: 'recommended-movies', title: 'Recommended Movies', kind: 'Movies', source: 'Trakt', origin: 'own', on: true, core: true},
@@ -111,18 +114,29 @@ export const TRAKT_IDS = new Set(traktRows().map(row => row.id));
    their Home has it (personRows, below): it says which form a row with more than one takes. `mine`: said to the person
    themselves. A row read from Trakt says so, which keeps the line true with their Trakt sync on or off: with it off Trakt does
    not hear of what is watched here, so such a row goes by what Trakt has from elsewhere. */
-export function aboutRow(row: {id: string; source: string}, mine = true): string | undefined {
+export function aboutRow(row: {id: string; source: string}, mine = true, limit: Limit = 'all'): string | undefined {
   const you = mine ? 'you' : 'they', your = mine ? 'your' : 'their', Your = mine ? 'Your' : 'Their', kind = row.id === 'recommended-movies' ? 'Movies' : 'Shows';
+  // The account or accounts a row of their lists is filled from ("Trakt", "MDBList", "Trakt and MDBList"; "Trakt or MDBList" while it waits for one).
+  const where = ['Trakt', 'MDBList', 'Trakt and MDBList', 'Trakt or MDBList'].find(name => name === row.source.split(' · ')[0]) ?? 'Trakt';
   switch (row.id) {
-    case 'new-for-you': return `From ${your} Trakt: new episodes of shows ${you} watch and watchlist movies now out to stream, newest first. A title leaves once ${you} start it.`;
+    case 'new-for-you': return row.source === HERE_AND_LISTS ? `New episodes of shows ${you} watch here or have on ${your} MDBList watchlist, and watchlist movies now out to stream. Newest first, checked once a day. A title leaves once ${you} start it.`
+      : row.source === 'Played here' ? `New episodes of shows ${you} watch here, newest first, checked once a day. A show leaves once ${you} start the new episode.`
+      : `From ${your} Trakt: new episodes of shows ${you} watch and watchlist movies now out to stream, newest first. A title leaves once ${you} start it.`;
     case 'recommended-movies': case 'recommended-series': return row.source === 'What was watched'
       ? `${kind} like the ones ${you} watched lately, a few from each in turn, worked out once a day. What ${you} watched or have on a watchlist is left out.`
       : `${kind} Trakt recommends for ${mine ? 'you' : 'them'}, from ${your} whole Trakt history. What is on ${your} watchlist is left out.`;
-    case 'up-next': return `From ${your} Trakt: shows with an episode ${you} haven’t watched yet, the ones ${you} watched most lately first.`;
+    case 'up-next': return row.source === 'Played here' ? `Shows ${you} watch here that have a next episode out, the ones ${you} watched most lately first.`
+      : `From ${your} Trakt: shows with an episode ${you} haven’t watched yet, the ones ${you} watched most lately first.`;
     case 'watchlist': return row.source === 'Trakt and MDBList' ? `${Your} Trakt and MDBList watchlists as one list, newest added first. A title on both shows once.` : `${Your} ${['MDBList', 'Trakt or MDBList'].includes(row.source) ? row.source : 'Trakt'} watchlist, newest added first.`;
     case 'recently-watched': return `What ${you} watched lately, newest first, each show once. From ${row.source === 'MDBList' ? `${your} MDBList` : row.source === 'Played here' ? `what ${you} played here` : row.source === TRAKT_AND_HERE ? `${your} Trakt history and what ${you} finished here` : `${your} Trakt history`}.`;
-    case 'trakt-lists': return `${Your} own Trakt lists, a tile for each. Opening a tile shows that list. Checked once a day.`;
-    case 'trakt-liked-lists': return `Trakt lists ${you} liked, a tile for each. Opening a tile shows that list. Checked once a day.`;
+    case 'trakt-lists': return `${Your} own ${where} lists, a tile for each. Opening a tile shows that list. Checked once a day.`;
+    case 'trakt-liked-lists': return `${where} lists ${you} liked, a tile for each. Opening a tile shows that list. Checked once a day.`;
+    // The shared rows of folders (worker/native.ts, homeOf): each folder is a public list, asked for in the list's own order
+    // (sort 'default'), so the hub does not choose the order. Under a content limit a service's folder is a TMDB search
+    // instead, sorted by popularity (serviceOf, below).
+    case 'movies-by-service': case 'shows-by-service': return limit === 'all' ? `A tile for each streaming service. Each opens a public list of ${row.id === 'movies-by-service' ? 'movies' : 'shows'} on that service, in that list’s own order.`
+      : `A tile for each streaming service. Each opens the ${row.id === 'movies-by-service' ? 'movies' : 'shows'} on that service that fit the content limit, the most popular on TMDB first.`;
+    case 'movies-by-genre': case 'shows-by-genre': return `A tile for each genre. Each opens a public list of ${row.id === 'movies-by-genre' ? 'movies' : 'shows'} in that genre, in that list’s own order.`;
   }
   return undefined;
 }
@@ -130,24 +144,21 @@ export function aboutRow(row: {id: string; source: string}, mine = true): string
    the hub can show something they watched (Trakt connected to the hub, an MDBList key, or a play here). */
 export interface Linked {trakt: boolean; lists: boolean; watched: boolean; kids?: boolean; front?: boolean}
 /* Whether a person's own row can be filled for them: the Watchlist with Trakt or MDBList, Recently Watched once there is something
-   to put in it (from Trakt, else MDBList, else what they played here), Recommended with Trakt or once they watched something,
-   the rest with Trakt. */
-export const reaches = (id: string, has: Linked) => id === 'recently-watched' ? has.watched : id === 'watchlist' ? has.trakt || has.lists
-  : id === 'recommended-movies' || id === 'recommended-series' ? has.trakt || has.watched : has.trakt;
-/* The account a row waits for, for Add row to say ("Needs Trakt."): '' when it is filled already, or waits for watching rather
-   than an account. */
-export const needOf = (id: string, has: Linked) => reaches(id, has) || !TRAKT_IDS.has(id) || id === 'recently-watched' || id.startsWith('recommended-') ? '' : id === 'watchlist' ? 'Trakt or MDBList' : 'Trakt';
+   to put in it (from Trakt, else MDBList, else what they played here), and Recommended, Up Next and New for you with Trakt or
+   once they watched something. None of them needs Trakt. */
+export const reaches = (id: string, has: Linked) => id === 'recently-watched' ? has.watched : id === 'watchlist' ? has.trakt || has.lists : has.trakt || has.watched;
+/* The account a row waits for, for Add row to say ("Needs Trakt or MDBList."): '' when it is filled already, or waits for
+   watching rather than an account. Only the Watchlist waits for an account. */
+export const needOf = (id: string, has: Linked) => id === 'watchlist' && !reaches(id, has) ? 'Trakt or MDBList' : '';
 /* Rows kept under an id from before: Recently Aired became New for you, and the MDBList watchlist folded into the one Watchlist.
    Nothing kept is rewritten for it. A Home is read as what its rows are now, each in its place and on or off as it was: an old
    row whose new one is on the same Home too joins it (on if either was), and a name nobody changed becomes the new one. A Home
    saved again is saved under the new ids. */
 export const WAS: Record<string, string> = {'recently-aired': 'new-for-you', 'mdblist-watchlist': 'watchlist'};
-/* The two rows of a person's Trakt lists (shelf.ts on the Worker), as they are called now: "My lists" and "Lists I liked". Their
-   pill says they come from the person's Trakt ("Your Trakt", pillOf), so the name no longer needs to. A row saved under the name
-   it had before (SHELF_WAS) is read as the name it has now, the same way and with nothing rewritten; one the person renamed
-   keeps their name. Ids, addresses and catalogs are as they were.
-   (No clash today: MDBList lists are added one by one, each under its own name. A row of all someone's MDBList lists, if there
-   ever is one, would need a name that tells the two apart.) */
+/* The two rows of a person's own lists (shelf.ts on the Worker): "My lists" and "Lists I liked", from their Trakt, their MDBList
+   or both in one row. Their pill says which ("Your Trakt", "Your Trakt and MDBList": pillOf), so the name does not need to. A
+   row saved under the name it had before (SHELF_WAS) is read as the name it has now, the same way and with nothing rewritten;
+   one the person renamed keeps their name. Ids, addresses and catalogs are as they were when only Trakt filled them. */
 export const SHELF_TITLES: Record<string, string> = {'trakt-lists': 'My lists', 'trakt-liked-lists': 'Lists I liked'};
 const SHELF_WAS: Record<string, string> = {'trakt-lists': 'My Trakt lists', 'trakt-liked-lists': 'Trakt lists I liked'};
 export function current(rows: Row[]): Row[] {
@@ -262,7 +273,7 @@ export function withForYou(rows: Row[], front: boolean): Row[] {
 /* The kinds of For you pick, in the order they are offered. `discover`: AIOMetadata fills it from a TMDB search, so it suits a content
    limit; the others are filled by the hub and are left out under one. */
 export const FOR_YOU_KINDS: {id: string; title: string; discover: boolean}[] = [
-  {id: 'because', title: 'Because you watched', discover: false}, {id: 'series', title: 'Next in a movie series', discover: false},
+  {id: 'because', title: 'Because you watched', discover: false}, {id: 'series', title: 'More from a movie series', discover: false},
   {id: 'pickup', title: 'Pick back up', discover: false}, {id: 'crew', title: 'More from a director', discover: true},
   {id: 'genres', title: 'Your genres', discover: true}, {id: 'different', title: 'Something different', discover: true}, {id: 'seasonal', title: 'Seasonal', discover: true},
   {id: 'top10', title: 'Top 10', discover: false},
@@ -298,15 +309,18 @@ export const pickable = (id: string) => PICKABLE.has(id) || isPlace(id);
    the row's `source` as their Home has it (personRows, below):
    - Watchlist: Trakt, MDBList, or both. Recommended: Trakt, or what they watched. Recently Watched: Trakt (with what they
      watched here while their Trakt sync is off), else MDBList, else what they watched here.
-   - Up Next, New for you, My lists, Lists I liked and each Trakt list of their own or that they liked: Trakt.
+   - Up Next: Trakt, else what they watched here. New for you: Trakt, else what they watched here, with their MDBList watchlist
+     when they have one. My lists and Lists I liked: Trakt, MDBList, or both.
+   - Each Trakt list of their own or that they liked: Trakt.
    - A list of their own on MDBList, added from Add row ("MDBList · your list"): MDBList. One added by its link is public.
    A For you row has no source: its line says why it was picked. */
-const FOLLOWS = new Set(['watchlist', 'recommended-movies', 'recommended-series', 'recently-watched']);
+const FOLLOWS = new Set(['watchlist', 'recommended-movies', 'recommended-series', 'recently-watched', 'up-next', 'new-for-you']);
 export function pillOf(row: {id: string; source: string}, mine = true): string | undefined {
   const Your = mine ? 'Your' : 'Their', you = mine ? 'you' : 'they';
-  const from = FOLLOWS.has(row.id) ? row.source : row.id === 'up-next' || row.id === 'new-for-you' || SHELF_TITLES[row.id] || /^trakt-(mine|liked)\./.test(row.id) ? 'Trakt' : / · your list$/.test(row.source) ? row.source.split(' · ')[0] : '';
+  // A row of their lists says its accounts ahead of anything else ("Trakt and MDBList · your lists" in Add row; on Home, fromOf).
+  const from = FOLLOWS.has(row.id) ? row.source : SHELF_TITLES[row.id] ? (['MDBList', 'Trakt and MDBList'].find(name => name === row.source.split(' · ')[0]) ?? 'Trakt') : /^trakt-(mine|liked)\./.test(row.id) ? 'Trakt' : / · your list$/.test(row.source) ? row.source.split(' · ')[0] : '';
   return from === 'Trakt' || from === 'MDBList' || from === 'Trakt and MDBList' ? `${Your} ${from}` : from === 'What was watched' ? `What ${you}’ve watched` : from === 'Played here' ? `What ${you}’ve watched here`
-    : from === TRAKT_AND_HERE ? `${Your} Trakt and watched here` : undefined;
+    : from === TRAKT_AND_HERE ? `${Your} Trakt and watched here` : from === HERE_AND_LISTS ? `${Your} MDBList and watched here` : undefined;
 }
 export const sourceShown = (row: Row, limit: Limit = 'all') => (row.id === 'trending-movies' || row.id === 'trending-series') && limit === 'all' ? 'Trakt' : row.source;
 export const isTrakt = (item: Row) => item.source === 'Trakt' || item.source.startsWith('Trakt ·');
@@ -415,15 +429,22 @@ export const hasLists = (person: Person) => person.lists || !!person.listsKept;
    older Trakt link through AIOMetadata does not count: the hub cannot read it. With Trakt connected and their Trakt sync off,
    Trakt does not hear of what is watched here, so the row is Trakt's history and what they finished here together (rows.ts). */
 export const TRAKT_AND_HERE = 'Trakt and played here';
+/* Where New for you comes from without Trakt, for someone with an MDBList key: the shows they play here and their MDBList watchlist. */
+export const HERE_AND_LISTS = 'Played here and MDBList';
+/* Whether the hub itself reads their Trakt (the older link through AIOMetadata does not count: the hub cannot read it). */
+const hubTrakt = (person: Person) => person.history ? !person.history.again : SAMPLE && person.trakt;
 export const sourceOf = (person: Person) => (person.history ? !person.history.again : SAMPLE && person.trakt) ? (person.history && !person.matching?.on ? TRAKT_AND_HERE : 'Trakt') : hasLists(person) ? 'MDBList' : 'Played here';
 /* What can be filled for a person, from their accounts and their watching. */
 export const linkedOf = (hub: Hub, person: Person): Linked => ({trakt: hasTrakt(person), lists: hasLists(person), watched: SAMPLE || hasLists(person) || !!person.history && !person.history.again || !!person.played,
   kids: resolve(hub, hub.groups.find(item => item.id === person.groupId), person).values.limit === 'kids', front: !!hub.front});
 /* Where each of a person's own rows comes from, as their Home says it: the one Watchlist from whichever of Trakt and MDBList they
-   have, Recommended from Trakt or else from what they watched. */
+   have, Recommended from Trakt or else from what they watched, Up Next and New for you from Trakt or else from what they watch
+   here (New for you with their MDBList watchlist too), and the rows of their lists from whichever accounts the hub reads. */
 const fromOf = (id: string, person: Person): string | undefined => id === 'recently-watched' ? sourceOf(person)
   : id === 'watchlist' ? (hasTrakt(person) ? hasLists(person) ? 'Trakt and MDBList' : 'Trakt' : 'MDBList')
-  : id === 'recommended-movies' || id === 'recommended-series' ? (hasTrakt(person) ? 'Trakt' : 'What was watched') : undefined;
+  : id === 'recommended-movies' || id === 'recommended-series' ? (hasTrakt(person) ? 'Trakt' : 'What was watched')
+  : id === 'up-next' ? (hasTrakt(person) ? 'Trakt' : 'Played here') : id === 'new-for-you' ? (hasTrakt(person) ? 'Trakt' : hasLists(person) ? HERE_AND_LISTS : 'Played here')
+  : SHELF_TITLES[id] ? (hubTrakt(person) ? hasLists(person) ? 'Trakt and MDBList' : 'Trakt' : hasLists(person) ? 'MDBList' : 'Trakt') : undefined;
 export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), linkedOf(hub, person), person.picks)
   .map(row => fromOf(row.id, person) ? {...row, source: fromOf(row.id, person)!} : isPlace(row.id) && person.forYou?.[row.id] ? {...row, title: person.forYou[row.id], pick: person.forYouKinds?.[row.id] ?? 'popular'} : row);
 
