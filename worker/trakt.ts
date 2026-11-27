@@ -31,6 +31,24 @@ const post = (env: Env, path: string, body: unknown, access = '') => fetch(api(e
 const signin = (env: Env, path: string, body: unknown) => fetch(auth(env) + path, {method: 'POST', headers: {'content-type': 'application/json', accept: 'application/json', 'user-agent': 'AIOHub/1.0'}, body: JSON.stringify(body)}).catch(() => null);
 const drop = (env: Env, hub: string, person: string, kind: string) => env.DB.prepare('DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(hub, person, kind);
 const sleep = (seconds: number) => new Promise(resolve => setTimeout(resolve, seconds * 1000));
+/* How many calls this running copy of the Worker has made to Trakt for a hub in the current five minutes (by the clock: :00,
+   :05, ...). Kept in memory only, so it costs nothing and counts one copy's calls, not every copy's. */
+const made = new Map<string, {from: number; calls: number}>();
+function counted(hub: string) {
+  const from = Math.floor(now() / 300) * 300, kept = made.get(hub);
+  if (kept?.from === from) return ++kept.calls;
+  if (made.size > 500) made.clear();
+  made.set(hub, {from, calls: 1}); return 1;
+}
+/* Trakt said too many requests (429): what tells who refused is noted, and nothing that tells whose call it was. Trakt's own
+   limiter names its limit in x-ratelimit and says how long to wait; a refusal made in front of it (Trakt is behind Cloudflare)
+   may say neither. Headers that could name anyone are noted only as there or not. */
+const where = (path: string) => path.split('?')[0].replace(/^\/shows\/[^/]+/, '/shows/:id').replace(/\/\d+(?=\/|$)/g, '/:n');
+function refused(verb: string, path: string, answer: Response, hub: string) {
+  const has = (name: string) => answer.headers.has(name) ? 'yes' : 'no';
+  console.error('trakt 429', verb, where(path), `retry-after=${answer.headers.get('retry-after') ?? ''}`, `x-ratelimit=${answer.headers.get('x-ratelimit') ?? ''}`, `server=${answer.headers.get('server') ?? ''}`,
+    `cf-mitigated=${has('cf-mitigated')}`, `cf-ray=${has('cf-ray')}`, `calls=${made.get(hub)?.calls ?? 0}`);
+}
 /* Whether Trakt is done with a call: taken, already had (409), or refused for good (it does not know the title). Not done: no
    answer, too many calls (429) or a fault on its side; the outbox tries again. */
 export const taken = (status: number | null) => status !== null && status !== 0 && status !== 401 && status !== 429 && status < 500;
@@ -132,8 +150,9 @@ async function access(env: Env, hub: string, person: string, failed = ''): Promi
 async function attempt(env: Env, hub: string, person: string, path: string, body: unknown): Promise<{status: number | null; after: number}> {
   let token = await access(env, hub, person);
   if (!token) return {status: token === null ? null : 0, after: 0};
-  let answer = await post(env, path, body, token);
-  if (answer?.status === 401) {token = await access(env, hub, person, token); if (!token) return {status: token === null ? null : 0, after: 0}; answer = await post(env, path, body, token);}
+  counted(hub); let answer = await post(env, path, body, token);
+  if (answer?.status === 401) {token = await access(env, hub, person, token); if (!token) return {status: token === null ? null : 0, after: 0}; counted(hub); answer = await post(env, path, body, token);}
+  if (answer?.status === 429) refused('POST', path, answer, hub);
   // Only the path and Trakt's answer are noted, never who or what.
   if (!taken(answer?.status ?? 0)) console.error('trakt send', path, answer?.status ?? 0, answer?.headers.get('retry-after') ?? '');
   const after = Math.min(3600, Number(answer?.headers.get('retry-after')) || 0);
@@ -179,19 +198,38 @@ export async function traktWait(env: Env, hub: string, person: string): Promise<
    bytes (by what Trakt says its length is, else by its text) is not parsed: null, with `over` set. A Worker on the Free plan
    has about ten milliseconds of processor time a run, and parsing megabytes would end the run. */
 export async function read<T>(env: Env, hub: string, person: string, path: string, paging?: {pages: number; most?: number; over?: boolean}): Promise<T | null> {
+  // The same read of the same person's asked for again while it is under way (a Home opening asks for several rows at once, and
+  // each finds the same kept page stale) is one call to Trakt: the others wait for its answer. Within one running copy of the
+  // Worker; another copy asking at the same moment still makes its own.
+  const key = `${hub}/${person}/${paging?.most ?? 0}/${path}`, under = reading.get(key);
+  // (A request waiting on a read another request began gives it a few seconds, then reads for itself: Workers tie a call to
+  // the request that made it, and one given up on by its asker may never answer the others.)
+  const mine = () => {const made = readOnce<T>(env, hub, person, path, paging?.most).finally(() => {if (reading.get(key) === made) reading.delete(key);}); return made;};
+  const share = () => {const made = mine(); reading.set(key, made); return made;};
+  const got = (under ? await Promise.race([under.catch(() => null), new Promise<null>(done => setTimeout(() => done(null), SHARED))]) ?? await mine() : await share()) as Read<T>;
+  if (paging) {paging.pages = got.pages; if (got.over) paging.over = true;}
+  return got.value;
+}
+interface Read<T> {value: T | null; pages: number; over: boolean}
+const reading = new Map<string, Promise<Read<unknown>>>(), SHARED = 4000;
+async function readOnce<T>(env: Env, hub: string, person: string, path: string, most?: number): Promise<Read<T>> {
+  const paging = {pages: 0, most, over: false}, value = await reads<T>(env, hub, person, path, paging);
+  return {value, pages: paging.pages, over: paging.over};
+}
+async function reads<T>(env: Env, hub: string, person: string, path: string, paging: {pages: number; most?: number; over?: boolean}): Promise<T | null> {
   if (await traktWait(env, hub, person)) return null;
   let token = await access(env, hub, person);
   if (!token) return null;
-  const get = (access: string) => fetch(api(env) + path, {headers: head(env, access)}).catch(() => null);
+  const get = (access: string) => {counted(hub); return fetch(api(env) + path, {headers: head(env, access)}).catch(() => null);};
   let answer = await get(token);
   if (answer?.status === 401) {token = await access(env, hub, person, token); if (!token) return null; answer = await get(token);}
   if (!answer?.ok) console.error('trakt read', path.split('?')[0].replace(/^\/shows\/[^/]+/, '/shows/:id'), answer?.status ?? 0, answer?.headers.get('x-ratelimit') ?? '', answer?.headers.get('retry-after') ?? '');
   // Told to wait: nothing of theirs is read again before then, whoever asks.
-  if (answer?.status === 429) clear.delete(`${hub}/${person}`);
+  if (answer?.status === 429) {clear.delete(`${hub}/${person}`); refused('GET', path, answer, hub);}
   if (answer?.status === 429) await env.DB.prepare("INSERT INTO rows_cache (hub, person, kind, at, items) VALUES (?, ?, ?, ?, '') ON CONFLICT (hub, person, kind) DO UPDATE SET at = excluded.at")
     .bind(hub, person, WAITING, now() + Math.min(3600, Math.max(30, Number(answer.headers.get('retry-after')) || 120))).run();
-  if (paging && answer?.ok) paging.pages = Number(answer.headers.get('x-pagination-page-count')) || 0;
-  if (paging?.most && answer?.ok) {
+  if (answer?.ok) paging.pages = Number(answer.headers.get('x-pagination-page-count')) || 0;
+  if (paging.most && answer?.ok) {
     if (Number(answer.headers.get('content-length')) > paging.most) {paging.over = true; await answer.body?.cancel().catch(() => null); return null;}
     const text = await answer.text().catch(() => '');
     if (text.length > paging.most) {paging.over = true; return null;}
@@ -206,8 +244,10 @@ export const progressOf = (position: number, duration: number) => Math.min(100, 
 /* ---------- the outbox ---------- */
 /* A call Trakt did not take is kept and tried again: twice within the next seconds, then by the cron every five minutes, for up
    to a week. When Trakt said how long to wait (429 with Retry-After), nothing of that person's is sent before then (sendWait). Per title, any newer call ends a start or pause still waiting (a newer one replaces it, a stop or tick makes it
-   pointless); stops and ticks are kept until Trakt has them. A start still waiting after a few minutes is let go: by then it
-   would say something is playing that likely is not. Trakt takes one write a second per person, so a person's calls go one at
+   pointless); stops and ticks are kept until Trakt has them. A start or pause that has waited over a minute is sent as the title is
+   by then, if it is still being watched, and let go if it is not (flush): a start is never sent after its stop. When the wait
+   Trakt asked for is short it is sat out within the request (soon); a longer one ends at a cron run, which sends starts, pauses
+   and stops before anything else. Trakt takes one write a second per person, so a person's calls go one at
    a time, in order. */
 // 'heart' and 'unheart': a watchlist add or remove for a heart made or taken away in an app (front.ts, hearted), kept and tried
 // like a tick. Their `item` is the title's ledger key, never a play's id, so nothing here mistakes one for a start or pause.
@@ -222,11 +262,13 @@ export interface Call {kind: 'start' | 'pause' | 'stop' | 'mark' | 'unwatch' | '
 /* What an 'untick' keeps: the film or episode (`find`), when the hub sent its tick (`tick`), and what their list of what was
    synced calls it (`note`: a key of its own, the title and which episode). `play`: the history id of the play, once found. */
 export interface Undo {find: Target; tick: number; note: {key: string; title: string; detail: string}; play?: number}
-interface Waiting {id: number; hub: string; person: string; kind: Call['kind']; path: string; body: string; made: number; tries: number; next: number; doubt: number; synced: number | null}
+interface Waiting {id: number; hub: string; person: string; item: string; kind: Call['kind']; path: string; body: string; made: number; tries: number; next: number; doubt: number; synced: number | null}
 /* A call that tells Trakt of watching (anything but a heart): only ever for someone whose sync is on. */
 const watching = (kind: Call['kind']) => kind !== 'heart' && kind !== 'unheart';
 // UNDOS: how many 'untick' calls one run tries. Each is a read and a write with their own queries, about twice any other call.
-const STALE = 300, WEEK = 7 * DAY, SOON = [2, 5], LATER = 240, BATCH = 8, UNDOS = 3;
+// NEAR: the longest wait Trakt asks for that is sat out within the request (soon). FRESH: a start or pause that has waited longer
+// is sent as the title is by then (flush). HEARD: how lately a title must have been heard from to still count as being watched.
+const STALE = 300, WEEK = 7 * DAY, SOON = [2, 5], LATER = 240, BATCH = 8, UNDOS = 3, NEAR = 20, FRESH = 60, HEARD = 900;
 const wait = (tries: number, after: number) => Math.max(SOON[tries] ?? LATER, after);
 /* A finished watch that had to wait is added to history at the time it ended: a late stop would be stamped when it got through.
    Only when every refusal was a 429 (it never reached Trakt). After a fault that may have got through, it goes again as a stop,
@@ -307,15 +349,24 @@ async function undo(env: Env, hub: string, person: string, path: string, body: U
 }
 /* Twice more soon after a call was kept, within the request it came with (the app has its answer already). */
 export async function soon(env: Env, hub: string, person: string) {
+  // Trakt said how long to wait (sendWait). A request lives about thirty seconds past its answer (Workers end waitUntil work
+  // then), so only a short wait can be sat out here: one try a second after it ends. A longer one is the cron's (sweep), which
+  // sends what is still being watched first.
+  const until = await sendWait(env, hub, person);
+  if (until) {if (until - now() <= NEAR) {await sleep(Math.max(0, until - now()) + 1); await flush(env, {hub, person});} return;}
   for (const seconds of SOON) {await sleep(seconds + 1); if (!await flush(env, {hub, person})) return;}
 }
 /* Tries what is waiting and due, oldest first: one person's, or everyone's (the cron). Whether anything is left waiting. */
 export async function flush(env: Env, only?: {hub: string; person: string}) {
   // A call waits while one before it for the same person is not due yet, or is being sent: their calls stay in order.
-  const first = 'next <= ?1 AND NOT EXISTS (SELECT 1 FROM trakt_outbox o WHERE o.hub = t.hub AND o.person = t.person AND o.id < t.id AND o.next > ?1)';
+  // Not behind a tick being taken back, though, when it is a start, pause or stop: that one reads Trakt first, so it can wait
+  // as long as Trakt holds reads off (undo), and what is being watched now is told apart from it.
+  const LIVE = "('start', 'pause', 'stop')";
+  const first = `next <= ?1 AND NOT EXISTS (SELECT 1 FROM trakt_outbox o WHERE o.hub = t.hub AND o.person = t.person AND o.id < t.id AND o.next > ?1 AND NOT (o.kind = 'untick' AND t.kind IN ${LIVE}))`;
   const synced = '(SELECT matching FROM sync y WHERE y.hub = t.hub AND y.person = t.person) AS synced';
-  const due = only ? env.DB.prepare(`SELECT t.*, ${synced} FROM trakt_outbox t WHERE hub = ?2 AND person = ?3 AND ${first} ORDER BY id LIMIT ?4`).bind(now(), only.hub, only.person, BATCH)
-    : env.DB.prepare(`SELECT t.*, ${synced} FROM trakt_outbox t WHERE ${first} ORDER BY id LIMIT ?2`).bind(now(), BATCH);
+  // What is being watched now goes first, whoever's it is: it is what shows on Trakt this minute. The rest in the order it came.
+  const due = only ? env.DB.prepare(`SELECT t.*, ${synced} FROM trakt_outbox t WHERE hub = ?2 AND person = ?3 AND ${first} ORDER BY kind IN ${LIVE} DESC, id LIMIT ?4`).bind(now(), only.hub, only.person, BATCH)
+    : env.DB.prepare(`SELECT t.*, ${synced} FROM trakt_outbox t WHERE ${first} ORDER BY kind IN ${LIVE} DESC, id LIMIT ?2`).bind(now(), BATCH);
   const stuck = new Set<string>(), last = new Map<string, number>();
   let undos = 0;
   for (const row of (await due.all<Waiting>()).results) {
@@ -332,13 +383,27 @@ export async function flush(env: Env, only?: {hub: string; person: string}) {
     if (!(await env.DB.prepare('UPDATE trakt_outbox SET next = ? WHERE id = ? AND next = ?').bind(now() + CLAIM, row.id, row.next).run()).meta.changes) {stuck.add(who); continue;}
     const done = env.DB.prepare('DELETE FROM trakt_outbox WHERE id = ?').bind(row.id), age = now() - row.made;
     // Let go. A tick taken back that Trakt never answered for says so on their page, this once: nothing was removed.
-    if ((row.kind === 'start' && age > STALE) || age > WEEK) {
-      if (row.kind !== 'start') console.error('trakt outbox let go', row.kind, row.tries);
+    if (age > WEEK) {
+      console.error('trakt outbox let go', row.kind, row.tries);
       await env.DB.batch([...(row.kind === 'untick' ? [said(env, row.hub, row.person, 'rw', (JSON.parse(row.body) as Undo).note)] : []), done]); continue;
+    }
+    // A start that has waited a while says where the title was then. It is sent as the title is now, if it is still being
+    // watched (told as playing or paused, and heard from lately): playing or paused, and how far in. One whose title has
+    // stopped since, or gone quiet, is let go: its stop is a call of its own, and a start is never sent after it. A start whose
+    // title cannot be looked up is let go after five minutes, as it always was.
+    // A pause is never let go for that: it may be the one that ends a sitting too short to count (briefEnd), or a paused spot
+    // copied across (carry.ts, places.ts), and a stop that followed it has already taken its place (deliver). It is sent as it
+    // was kept, with how far in brought up to date only while the title is still paused.
+    let sent = JSON.parse(row.body) as Record<string, unknown>, to = row.path;
+    if ((row.kind === 'start' || row.kind === 'pause') && age > FRESH) {
+      const play = await env.DB.prepare('SELECT scrobbled, position, duration, over, updated FROM plays WHERE hub = ? AND person = ? AND item = ?').bind(row.hub, row.person, row.item).first<{scrobbled: string | null; position: number; duration: number; over: number; updated: number}>();
+      const told = play?.scrobbled === 'playing' || play?.scrobbled === 'paused', going = !!play && told && now() - play.updated <= HEARD && play.duration > 0;
+      if (row.kind === 'start' && !going && (play || age > STALE)) {await done.run(); continue;}
+      if (going && typeof sent.progress === 'number' && (row.kind === 'start' || play!.scrobbled === 'paused')) {const progress = progressOf(play!.position, play!.duration), stays = play!.scrobbled === 'paused'; to = stays ? '/scrobble/pause' : '/scrobble/start'; sent = {...sent, progress: stays && play!.over ? Math.min(79.99, progress) : progress};}
     }
     const gap = 1.1 - (Date.now() - (last.get(who) ?? 0)) / 1000;
     if (gap > 0) await sleep(gap);
-    const [path, body] = late({...row, body: JSON.parse(row.body) as Record<string, unknown>}), got = await once(env, row.hub, row.person, row.kind, path, body as Record<string, unknown>);
+    const [path, body] = late({...row, path: to, body: sent}), got = await once(env, row.hub, row.person, row.kind, path, body as Record<string, unknown>);
     last.set(who, Date.now());
     if (got.status === null || taken(got.status)) {await done.run(); continue;}
     stuck.add(who);
@@ -350,8 +415,9 @@ export async function flush(env: Env, only?: {hub: string; person: string}) {
 }
 
 /* A sitting with too little played to count: under two minutes (under half, for anything shorter than four), as when an episode
-   is opened, run to the end and left on realising it was seen. It goes neither to Trakt (nothing at all: its start is held
-   until it counts, front.ts; nor a stop, a tick from the app, or the sweep below) nor on Activity once over. Real finishes are not lost: one resumed from 80% or more was counted when it stopped there,
+   is opened, run to the end and left on realising it was seen. It is no watch on Trakt (its start goes as it begins, so Trakt
+   shows it as being watched, and it ends with a pause: briefEnd, below; never a stop, a tick from the app, or a stop from the
+   sweep below) and is not on Activity once over. Real finishes are not lost: one resumed from 80% or more was counted when it stopped there,
    and getting to 80% from below takes over two minutes of anything longer than ten. An app that says only start and stop leaves
    no parts played (front.ts), so for it the time between the two is what was played. A tick with nothing played (parts
    "marked", from the library) is not a sitting of this kind. */
@@ -360,6 +426,31 @@ export function brief(sitting: {parts?: string | null; started: number; updated:
   if (!held.length) return false;
   const spans = held.map(part => part.split('-').map(Number)).filter(([a, b]) => b > a), least = duration > 0 ? Math.min(120, duration / 2) : 120;
   return (spans.length ? spans.reduce((sum, [a, b]) => sum + b - a, 0) : sitting.updated - sitting.started) < least;
+}
+/* The cron's last step: a start, pause or stop held back by a wait Trakt asked for that ends within the next few minutes
+   (OUT) is sent a second after it ends, in this run, not five minutes on in the next. A scheduled run may live fifteen minutes
+   (a request only thirty seconds past its answer: soon, above), and waiting uses no processor time. One wait a run, the
+   soonest to end; left alone if anything else has seen to the call meanwhile. */
+const OUT = 240;
+export async function waitOut(env: Env) {
+  if (!env.TRAKT_CLIENT_ID) return;
+  const row = await env.DB.prepare("SELECT id, hub, person, next FROM trakt_outbox WHERE kind IN ('start', 'pause', 'stop') AND next > ?1 AND next <= ?1 + ?2 ORDER BY next LIMIT 1").bind(now(), OUT).first<{id: number; hub: string; person: string; next: number}>();
+  if (!row) return;
+  await sleep(row.next - now() + 1);
+  if (await env.DB.prepare('SELECT 1 FROM trakt_outbox WHERE id = ? AND next = ?').bind(row.id, row.next).first()) await flush(env, {hub: row.hub, person: row.person});
+}
+/* How far in Trakt is told a title is when a sitting of it ends with too little played to count (brief): the sitting's start was
+   sent as it began, so Trakt shows it as being watched and has let go of any spot it kept. It ends with a pause, never a stop
+   (a stop from 80% is a watch on Trakt), which takes "watching now" away and counts as nothing. The pause says where the title
+   was on this hub before the sitting began, when the hub knows (the latest earlier sitting that counted, left partway), so an
+   earlier spot is put back rather than replaced by a peek. Else 1%, the lowest Trakt's stop takes (its pause is documented with
+   no bounds, so the same floor is kept): never where the sitting itself got to, since one this short only gets far by jumping,
+   and a spot near the end would be offered to carry on from on a title that was only looked at. */
+export async function briefEnd(env: Env, hub: string, person: string, item: string, started: number, position: number, duration: number): Promise<number> {
+  const earlier = (await env.DB.prepare('SELECT parts, started, updated, position FROM sittings WHERE hub = ? AND person = ? AND item = ? AND undone = 0 AND started < ? ORDER BY started DESC LIMIT 5').bind(hub, person, item, started)
+    .all<{parts: string | null; started: number; updated: number; position: number}>()).results.find(sat => !brief(sat, duration));
+  const was = earlier ? progressOf(earlier.position, duration) : 0;
+  return was >= 1 && was < 80 ? was : 1;
 }
 /* Players that went quiet without saying stop (closed, crashed, out of battery). After half an hour Trakt is told it stopped where
    it was last seen: from 80% that counts as watched, and below that Trakt keeps the spot (not for a sitting with too little
@@ -371,16 +462,24 @@ export function brief(sitting: {parts?: string | null; started: number; updated:
 export async function sweep(env: Env) {
   if (!env.TRAKT_CLIENT_ID) return;
   await env.DB.prepare(`DELETE FROM trakt_outbox WHERE kind IN ${WATCHING} AND NOT EXISTS (SELECT 1 FROM sync y WHERE y.hub = trakt_outbox.hub AND y.person = trakt_outbox.person AND y.matching = 1)`).run();
-  const rows = (await env.DB.prepare("SELECT hub, person, item, position, duration, ids, updated, (SELECT matching FROM sync y WHERE y.hub = plays.hub AND y.person = plays.person) AS synced FROM plays WHERE scrobbled IN ('playing', 'paused') AND updated < ? ORDER BY updated LIMIT ?").bind(now() - QUIET, SWEEP)
-    .all<{hub: string; person: string; item: string; position: number; duration: number; ids: string | null; updated: number; synced: number | null}>()).results;
+  const rows = (await env.DB.prepare("SELECT hub, person, item, position, duration, ids, updated, scrobbled_was, (SELECT matching FROM sync y WHERE y.hub = plays.hub AND y.person = plays.person) AS synced FROM plays WHERE scrobbled IN ('playing', 'paused') AND updated < ? ORDER BY updated LIMIT ?").bind(now() - QUIET, SWEEP)
+    .all<{hub: string; person: string; item: string; position: number; duration: number; ids: string | null; updated: number; scrobbled_was: number | null; synced: number | null}>()).results;
+  let before = '';
   for (const row of rows) {
+    // (Trakt takes one write a second from a person.)
+    if (row.synced && before === `${row.hub}/${row.person}`) await sleep(1.1);
+    before = `${row.hub}/${row.person}`;
     if (!row.synced) {await env.DB.prepare('UPDATE plays SET scrobbled = NULL WHERE hub = ? AND person = ? AND item = ?').bind(row.hub, row.person, row.item).run(); continue;}
     const target = row.ids ? JSON.parse(row.ids) as Target : null, progress = row.duration ? progressOf(row.position, row.duration) : 0;
     // Dated by when it was last seen, which a finished watch is added to history at if it has to wait (see `late`).
     // The latest sitting with it: one with too little played is let go without a word to Trakt (see brief).
     const sat = await env.DB.prepare('SELECT parts, started, updated FROM sittings WHERE hub = ? AND person = ? AND item = ? AND undone = 0 ORDER BY updated DESC LIMIT 1').bind(row.hub, row.person, row.item).first<{parts: string | null; started: number; updated: number}>();
-    if (target && progress >= 1 && !(sat && brief(sat, row.duration))) await deliver(env, row.hub, row.person, row.item, {kind: 'stop', path: '/scrobble/stop', body: {...target, progress}}, row.updated);
-    await env.DB.prepare("UPDATE plays SET scrobbled = 'stopped', scrobbled_at = ? WHERE hub = ? AND person = ? AND item = ?").bind(now(), row.hub, row.person, row.item).run();
+    // One with too little played ends as any such sitting does (briefEnd): no stop, a pause that takes "watching now" away.
+    const short = !!sat && brief(sat, row.duration);
+    if (target && short && row.duration) await deliver(env, row.hub, row.person, row.item, {kind: 'pause', path: '/scrobble/pause', body: {...target, progress: await briefEnd(env, row.hub, row.person, row.item, sat!.started, row.position, row.duration)}}, row.updated);
+    else if (target && progress >= 1) await deliver(env, row.hub, row.person, row.item, {kind: 'stop', path: '/scrobble/stop', body: {...target, progress}}, row.updated);
+    if (short && row.scrobbled_was) await env.DB.prepare("UPDATE plays SET scrobbled = 'watched', scrobbled_at = ? WHERE hub = ? AND person = ? AND item = ?").bind(row.scrobbled_was, row.hub, row.person, row.item).run();
+    else await env.DB.prepare("UPDATE plays SET scrobbled = 'stopped', scrobbled_at = ? WHERE hub = ? AND person = ? AND item = ?").bind(now(), row.hub, row.person, row.item).run();
   }
   await flush(env);
 }

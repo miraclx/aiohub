@@ -675,6 +675,23 @@ if (shots) {
 }
 await credit(owner); assert.equal(await owner.getByText('Test build').count(), 0, 'no test-build banner');
 await owner.goto(BASE + '/#/hub/general'); await owner.getByRole('heading', {name: 'Background work'}).waitFor(); await shot(owner, '16c-general-wide'); await owner.setViewportSize({width: 390, height: 844});
+// The address to call when Home changes (Hub, General): typed like a key, refused unless it is https, then only its host name is
+// shown, with Replace and Remove; Background work says how the last call went. (.example names exist nowhere; nothing is called.)
+{
+  const item = owner.locator('.accounts li', {hasText: 'Call this address when Home changes'}), noticeJob = owner.locator('.jobs li', {hasText: 'Home change notice'}), field = owner.getByLabel('Address to call when Home changes');
+  await item.getByText('After a Home change has reached the apps, the hub sends an empty request here. Leave empty for nothing.', {exact: true}).waitFor();
+  await noticeJob.getByText('Not set', {exact: true}).waitFor(); await noticeJob.getByText('After a Home change has reached the apps, at most once every 5 min', {exact: true}).waitFor();
+  assert.equal(await field.getAttribute('type'), 'password'); await item.scrollIntoViewIfNeeded(); await shot(owner, '16e-notice-empty-phone'); if (shots) await item.screenshot({path: `${shots}/real-16e-notice-empty-item-phone.png`});
+  await field.fill('http://hooks.one.example/in/browser-token'); await item.getByRole('button', {name: 'Save'}).click(); await toast(owner).filter({hasText: 'The address must start with https://.'}).waitFor();
+  await field.fill('https://hooks.one.example/in/browser-token'); await item.getByRole('button', {name: 'Save'}).click(); await toast(owner).filter({hasText: 'Address saved'}).waitFor();
+  await item.getByText('An address at hooks.one.example is set.', {exact: true}).waitFor(); await noticeJob.getByText('Nothing sent yet', {exact: true}).waitFor(); assert.equal(await field.count(), 0);
+  assert.ok(!(await owner.content()).includes('browser-token'), 'the address is not on the page once saved');
+  if (shots) {await item.scrollIntoViewIfNeeded(); await owner.waitForTimeout(300); await owner.screenshot({path: `${shots}/real-16e-notice-set-phone.png`}); await item.screenshot({path: `${shots}/real-16e-notice-set-item-phone.png`}); await noticeJob.screenshot({path: `${shots}/real-16e-notice-job-phone.png`});}
+  await item.getByRole('button', {name: 'Replace', exact: true}).click(); await field.fill('https://other.two.example/x/browser-token'); if (shots) await item.screenshot({path: `${shots}/real-16e-notice-replace-item-phone.png`});
+  await item.getByRole('button', {name: 'Save'}).click(); await toast(owner).filter({hasText: 'Address replaced'}).waitFor(); await item.getByText('An address at other.two.example is set.', {exact: true}).waitFor();
+  await item.getByRole('button', {name: 'Remove', exact: true}).click(); const sure = owner.getByRole('dialog', {name: 'Remove the address?'}); await sure.getByText('The hub stops calling it when Home changes.', {exact: true}).waitFor();
+  await sure.getByRole('button', {name: 'Remove', exact: true}).click(); await toast(owner).filter({hasText: 'Address removed'}).waitFor(); await field.waitFor(); await noticeJob.getByText('Not set', {exact: true}).waitFor();
+}
 
 // Back as the manager: Ada shows as joined, and the playback change stuck.
 await owner.goto(BASE + '/#/person/ada/settings'); await owner.reload(); await owner.getByText(/Family · joined/).waitFor();

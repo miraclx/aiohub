@@ -15,6 +15,8 @@ export interface Env {
   // Only the local test run sets this: where a request came from, and when a playback report was made, are then read from test
   // headers (see whereOf and whenOf in front.ts).
   TEST_WHERE?: string;
+  // Only the local test run sets this: the Home change notice (notice.ts) goes to this stand-in address instead of the one kept.
+  NOTICE_VIA?: string;
 }
 export const enc = new TextEncoder(), dec = new TextDecoder();
 /* The same settings, pointed at the servers this hub uses. A hub that has not chosen its own uses the site's. */

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import http from 'node:http';
 import {execFileSync} from 'node:child_process';
+import {existsSync, readFileSync} from 'node:fs';
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8799', UP = 'http://127.0.0.1:8798';
 function client() {
   let cookie = '';
@@ -49,6 +50,7 @@ const TMDB = {
   'collection/2344': {name: 'The Matrix Collection', parts: [{id: 603, title: 'The Matrix', release_date: '1999-03-30', vote_average: 8.2}, {id: 604, title: 'The Matrix Reloaded', release_date: '2003-05-15', vote_average: 7.0}]},
 };
 const fake = {favs: new Map(), hearts: [], favReads: 0, unfiltered: false, tmdb: [], flix: [], configs: new Map(), homes: new Map(), made: 0, signIns: 0, watched: [], pauses: [], ticks: [], positions: [], unticks: [], slow: 0, busy: 0, most: 0, catalogs: []};
+const notice = {calls: [], status: 204};
 const uuidOf = n => `${String(n).padStart(8, '0')}-0000-4000-8000-0000000000aa`, ITEM = 'a1110100-0000-eaf7-78ff-ffffff010000';
 // What Ada's own server holds: a film she watched, an episode she is partway through, one MDBList already has, and their show.
 const FILM = 'a1110100-0000-eaf7-78ff-ffffff050000', LEFT = 'a1110100-0000-eaf7-78ff-ffffff060000', EP3 = 'a1110100-0000-eaf7-78ff-ffffff070000';
@@ -207,6 +209,13 @@ http.createServer(async (request, answer) => {
   let raw = ''; for await (const chunk of request) raw += chunk; const body = raw ? JSON.parse(raw) : {};
   const [id, pass] = request.headers.authorization?.startsWith('Basic ') ? atob(request.headers.authorization.slice(6)).split(':') : [];
   const mine = () => fake.configs.get(id)?.password === pass ? fake.configs.get(id) : null;
+  // The address a hub calls when Home changes (worker/notice.ts; the test run sends every such call here, with the address's own
+  // path). Each call is kept as it came. `status`: what it answers; 0 hangs up without answering; 302 sends it elsewhere.
+  if (request.url.startsWith('/notice/')) {
+    notice.calls.push({method: request.method, path: request.url, body: raw, headers: request.headers});
+    if (!notice.status) return request.socket.destroy();
+    answer.writeHead(notice.status, notice.status === 302 ? {location: `${UP}/notice/followed`} : {}); return answer.end();
+  }
   if (request.url.startsWith('/trakt/')) return traktAnswer(request, request.url.slice(6), body, send, answer);
   if (request.url.startsWith('/mdblist/')) lists.all.push(`${request.method} ${request.url.split('?')[0]}`);
   // TMDB's public lists, by number: one with titles, one empty.
@@ -638,14 +647,14 @@ test('connecting Trakt alone sends nothing: a film played through, a tick and th
   // She turns it on: from here what she watches goes to Trakt as it plays (the tests that follow).
   await syncOn(); assert.equal((await matchingOf()).on, true); assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').matching.on, true);
 });
-test('with sync on, a film played, paused, carried on, skipped ahead and finished reaches Trakt as start (once enough has played), pause, start, start, stop', async () => {
+test('with sync on, a film played, paused, carried on, skipped ahead and finished reaches Trakt as start (at once), pause, start, start, stop', async () => {
   const film = {movie: {ids: {tmdb: 27205, imdb: 'tt1375666'}}};
   // Its first ten minutes play over ten minutes (reports dated back), so the stop at the end counts (see brief in trakt.ts).
-  // Trakt hears nothing as it starts, nor half a minute in: only once two minutes have played, with how far in it is by then.
-  await say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}, 700); await pause(600);
+  // Trakt hears of it as it starts, so it shows her as watching at once; the reports that follow add nothing.
+  await say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0}, 700);
+  assert.deepEqual(await heard(1), [{path: '/scrobble/start', body: {...film, progress: 0}}], 'the start, at once'); assert.equal(sql(`SELECT scrobbled FROM plays WHERE item = '${FILM}'`)[0].scrobbled, 'playing');
   await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 30e7, IsPaused: false}, 670); await pause(600);
-  assert.deepEqual(trakt.calls, [], 'nothing yet'); assert.equal(sql(`SELECT scrobbled FROM plays WHERE item = '${FILM}'`)[0].scrobbled, 'held');
-  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 150e7, IsPaused: false}, 550); await heard(1);
+  await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 150e7, IsPaused: false}, 550); await pause(400); assert.equal(trakt.calls.length, 1);
   // Plain progress is not passed on; a pause is, at once, and only once however often the app says it is still paused.
   await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 180e7, IsPaused: false}, 520);
   await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: true}, 100); await heard(2);
@@ -656,7 +665,7 @@ test('with sync on, a film played, paused, carried on, skipped ahead and finishe
   await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 2400e7, IsPaused: false}); await heard(4);
   await say('/Sessions/Playing/Stopped', {ItemId: FILM, PositionTicks: 5400e7});
   assert.deepEqual(await heard(5), [
-    {path: '/scrobble/start', body: {...film, progress: 2.5}}, {path: '/scrobble/pause', body: {...film, progress: 10}},
+    {path: '/scrobble/start', body: {...film, progress: 0}}, {path: '/scrobble/pause', body: {...film, progress: 10}},
     {path: '/scrobble/start', body: {...film, progress: 10}}, {path: '/scrobble/start', body: {...film, progress: 40}},
     {path: '/scrobble/stop', body: {...film, progress: 90}},
   ]);
@@ -668,27 +677,30 @@ test('with sync on, a film played, paused, carried on, skipped ahead and finishe
 test('an episode goes by its show’s ids with its season and number, and a repeated stop (409) counts as done', async () => {
   trakt.calls = []; trakt.stop = 409;
   const episode = {show: {ids: {tmdb: 1399}}, episode: {season: 1, number: 3}};
-  // (Its start goes with the first report after two minutes have played.)
-  await say('/Sessions/Playing', {ItemId: EP3, PositionTicks: 0}, 300); await pause(400); assert.deepEqual(trakt.calls, []);
-  await say('/Sessions/Playing/Progress', {ItemId: EP3, PositionTicks: 280e7, IsPaused: false}, 20); await heard(1);
+  await say('/Sessions/Playing', {ItemId: EP3, PositionTicks: 0}, 300); await heard(1);
+  await say('/Sessions/Playing/Progress', {ItemId: EP3, PositionTicks: 280e7, IsPaused: false}, 20); await pause(400);
   await say('/Sessions/Playing/Stopped', {ItemId: EP3, PositionTicks: 5700e7});
-  assert.deepEqual(await heard(2), [{path: '/scrobble/start', body: {...episode, progress: 4.67}}, {path: '/scrobble/stop', body: {...episode, progress: 95}}]);
+  assert.deepEqual(await heard(2), [{path: '/scrobble/start', body: {...episode, progress: 0}}, {path: '/scrobble/stop', body: {...episode, progress: 95}}]);
   trakt.stop = 201;
 });
-test('an episode opened, run to the end and left (seen it already) is no watch: nothing to Trakt, and not on Activity', async () => {
+test('an episode opened, run to the end and left within two minutes (seen it already) is no watch: Trakt hears it start and then pause, never a stop or a tick, and it is not on Activity', async () => {
   // A sitting of its own (the one above was over an hour ago), and Trakt not yet told this one was watched.
   const data = HELD[EP3].UserData, ticks = fake.ticks.length, was = sql(`SELECT position, playing, updated, scrobbled, scrobbled_at, parts FROM plays WHERE item = '${EP3}'`)[0], value = v => v == null ? 'NULL' : typeof v === 'number' ? v : `'${v}'`;
   sql(`UPDATE sittings SET started = started - 7200, updated = updated - 7200 WHERE item = '${EP3}'`); sql(`UPDATE plays SET scrobbled = NULL WHERE item = '${EP3}'`);
   trakt.calls = [];
-  await say('/Sessions/Playing', {ItemId: EP3, PositionTicks: 0}); await pause(400);
-  await say('/Sessions/Playing/Progress', {ItemId: EP3, PositionTicks: 5600e7, IsPaused: false}); await pause(400);
-  assert.equal(sql(`SELECT scrobbled FROM plays WHERE item = '${EP3}'`)[0].scrobbled, 'held');
-  // Its start, its stop, the app's tick as it moves on, and the cron after: none of it reaches Trakt, which never shows it as
-  // being watched.
-  await say('/Sessions/Playing/Stopped', {ItemId: EP3, PositionTicks: 5700e7}); await pause(400);
+  const episode = {show: {ids: {tmdb: 1399}}, episode: {season: 1, number: 3}};
+  await say('/Sessions/Playing', {ItemId: EP3, PositionTicks: 0}); await heard(1);
+  await say('/Sessions/Playing/Progress', {ItemId: EP3, PositionTicks: 5600e7, IsPaused: false}); await heard(2);
+  assert.equal(sql(`SELECT scrobbled FROM plays WHERE item = '${EP3}'`)[0].scrobbled, 'playing');
+  // Trakt shows it as being watched from the start, and where she skipped to. Its stop at 95% is not sent as a stop, which Trakt
+  // would count as watched: a pause goes instead, under 80%, so "watching now" ends and nothing is added to her history. The
+  // app's tick as it moves on, and the cron after, send nothing.
+  await say('/Sessions/Playing/Stopped', {ItemId: EP3, PositionTicks: 5700e7}); await heard(3);
   await say(`/Users/${jf}/PlayedItems/${EP3}`, {}); await pause(400);
   sql(`UPDATE plays SET updated = updated - 3600 WHERE item = '${EP3}'`); await cron(); await pause(400);
-  assert.deepEqual(trakt.calls, []); assert.deepEqual(waiting(), []); assert.equal(sql(`SELECT scrobbled FROM plays WHERE item = '${EP3}'`)[0].scrobbled, 'stopped');
+  assert.deepEqual(trakt.calls.map(({path, body}) => ({path, body})), [{path: '/scrobble/start', body: {...episode, progress: 0}}, {path: '/scrobble/start', body: {...episode, progress: 93.33}}, {path: '/scrobble/pause', body: {...episode, progress: 1}}]);
+  assert.ok(!trakt.calls.some(call => call.path === '/scrobble/stop' || call.path === '/sync/history'), 'not counted as watched');
+  assert.deepEqual(waiting(), []); assert.equal(sql(`SELECT scrobbled FROM plays WHERE item = '${EP3}'`)[0].scrobbled, 'stopped');
   // Activity keeps the earlier sitting, where a few minutes were played, and leaves this one out.
   const shown = (await owner('GET', '/api/activity')).body.sittings.filter(row => row.item === EP3);
   assert.deepEqual(shown.map(row => row.parts), ['0-280']);
@@ -696,46 +708,67 @@ test('an episode opened, run to the end and left (seen it already) is no watch: 
   sql(`DELETE FROM sittings WHERE item = '${EP3}' AND parts != '0-280'`); sql(`UPDATE sittings SET started = started + 7200, updated = updated + 7200 WHERE item = '${EP3}'`);
   sql(`UPDATE plays SET ${Object.entries(was).map(([key, v]) => `${key} = ${value(v)}`).join(', ')} WHERE item = '${EP3}'`); HELD[EP3].UserData = data; fake.ticks.length = ticks;
 });
-test('Trakt hears nothing of a sitting until enough of it has played: a brief open says nothing and disturbs nothing; past two minutes one start goes, with how far in', async () => {
+test('a peek is no watch: a title opened for half a minute shows on Trakt as being watched and ends with a pause, never a stop; an earlier spot is put back; a title Trakt counted as watched stays so; a real sitting goes as it always did', async () => {
   const BLADE = pack('movie', 'tt0083658'), film = {movie: {ids: {tmdb: 78, imdb: 'tt0083658'}}}, state = () => sql(`SELECT scrobbled, scrobbled_at FROM plays WHERE item = '${BLADE}'`)[0];
   // Each part below is a sitting of its own: the one before is made to have ended two hours ago.
   const later = () => sql(`UPDATE sittings SET started = started - 7200, updated = updated - 7200 WHERE item = '${BLADE}'`);
   HELD[BLADE] = {Id: BLADE, Type: 'Movie', Name: 'Blade Runner', ProviderIds: {Tmdb: '78', Imdb: 'tt0083658'}, RunTimeTicks: 6000e7, UserData: {}};
   trakt.calls = []; trakt.refused = [];
-  // Opened, thirty seconds played, paused, closed: Trakt gets no call at all, then or from the cron after, so it never shows her
-  // as watching it. Anything of this sitting still waiting to be sent goes with it.
-  await say('/Sessions/Playing', {ItemId: BLADE, PositionTicks: 0}, 40); await pause(400); assert.equal(state().scrobbled, 'held');
+  // Opened and closed thirty seconds in: Trakt hears the start at once, and at the end one pause in place of the stop (from 1%,
+  // the least Trakt keeps), so "watching now" ends. No stop, nothing in her history, nothing left waiting, and nothing from the
+  // cron after.
+  await say('/Sessions/Playing', {ItemId: BLADE, PositionTicks: 0}, 40); assert.deepEqual(await heard(1), [{path: '/scrobble/start', body: {...film, progress: 0}}]); assert.equal(state().scrobbled, 'playing');
   await say('/Sessions/Playing/Progress', {ItemId: BLADE, PositionTicks: 30e7, IsPaused: false}, 10); await pause(300);
-  await say('/Sessions/Playing/Progress', {ItemId: BLADE, PositionTicks: 30e7, IsPaused: true}, 5); await pause(300);
+  await say('/Sessions/Playing/Stopped', {ItemId: BLADE, PositionTicks: 30e7});
+  assert.deepEqual(await heard(2), [{path: '/scrobble/start', body: {...film, progress: 0}}, {path: '/scrobble/pause', body: {...film, progress: 1}}]);
+  assert.deepEqual(trakt.refused, []); assert.deepEqual(waiting(), []); assert.equal(state().scrobbled, 'stopped');
+  sql(`UPDATE plays SET updated = updated - 3600 WHERE item = '${BLADE}'`); await cron(); await pause(400); assert.equal(trakt.calls.length, 2);
+  // Again, paused in between, with a start of it still waiting to be sent from a moment Trakt was not answering: the pause
+  // goes as it happens, and the pause at the end takes the waiting start's place.
+  later(); trakt.calls = [];
+  await say('/Sessions/Playing', {ItemId: BLADE, PositionTicks: 0}, 40); await heard(1);
+  await say('/Sessions/Playing/Progress', {ItemId: BLADE, PositionTicks: 30e7, IsPaused: false}, 10); await pause(300);
+  await say('/Sessions/Playing/Progress', {ItemId: BLADE, PositionTicks: 30e7, IsPaused: true}, 5); await heard(2); assert.equal(state().scrobbled, 'paused');
   sql(`INSERT INTO trakt_outbox (hub, person, item, kind, path, body, made, tries, next, doubt) SELECT id, 'ada', '${BLADE}', 'start', '/scrobble/start', '{}', unixepoch(), 1, unixepoch() + 9000, 0 FROM hubs`);
-  await say('/Sessions/Playing/Stopped', {ItemId: BLADE, PositionTicks: 30e7}); await pause(800);
-  assert.deepEqual(trakt.calls, []); assert.deepEqual(trakt.refused, []); assert.deepEqual(waiting(), []); assert.equal(state().scrobbled, 'stopped');
-  sql(`UPDATE plays SET updated = updated - 3600 WHERE item = '${BLADE}'`); await cron(); await pause(400); assert.deepEqual(trakt.calls, []);
+  await say('/Sessions/Playing/Stopped', {ItemId: BLADE, PositionTicks: 30e7});
+  assert.deepEqual((await heard(3)).map(call => [call.path, call.body.progress]), [['/scrobble/start', 0], ['/scrobble/pause', 0.5], ['/scrobble/pause', 1]]);
+  assert.deepEqual(waiting(), []); assert.equal(state().scrobbled, 'stopped'); trakt.calls = [];
   // The hub's own Activity is as it was: the sitting is there while it is under way, and left out once over (too little played).
   assert.deepEqual((await owner('GET', '/api/activity')).body.sittings.filter(row => row.item === BLADE), []);
-  // Played past two minutes: nothing at one minute, then exactly one start, with how far in it is by then. From there on a
-  // pause, carrying on and the stop go as they always did.
-  later(); await say('/Sessions/Playing', {ItemId: BLADE, PositionTicks: 30e7}, 200); await pause(300);
-  await say('/Sessions/Playing/Progress', {ItemId: BLADE, PositionTicks: 90e7, IsPaused: false}, 140); await pause(400); assert.deepEqual(trakt.calls, []);
+  // A real sitting, played past two minutes: one start as it begins and none for the reports after. A pause, carrying on and
+  // the stop go as they always did, and Trakt keeps the spot the stop left (5%).
+  later(); await say('/Sessions/Playing', {ItemId: BLADE, PositionTicks: 30e7}, 200);
+  assert.deepEqual(await heard(1), [{path: '/scrobble/start', body: {...film, progress: 0.5}}]); assert.equal(state().scrobbled, 'playing');
+  await say('/Sessions/Playing/Progress', {ItemId: BLADE, PositionTicks: 90e7, IsPaused: false}, 140); await pause(400);
   await say('/Sessions/Playing/Progress', {ItemId: BLADE, PositionTicks: 180e7, IsPaused: false}, 50);
-  assert.deepEqual(await heard(1), [{path: '/scrobble/start', body: {...film, progress: 3}}]); assert.equal(state().scrobbled, 'playing');
   await say('/Sessions/Playing/Progress', {ItemId: BLADE, PositionTicks: 240e7, IsPaused: false}); await pause(400); assert.equal(trakt.calls.length, 1, 'one start, not one a report');
   await say('/Sessions/Playing/Progress', {ItemId: BLADE, PositionTicks: 240e7, IsPaused: true}); await heard(2);
   await say('/Sessions/Playing/Progress', {ItemId: BLADE, PositionTicks: 240e7, IsPaused: false}); await heard(3);
   await say('/Sessions/Playing/Stopped', {ItemId: BLADE, PositionTicks: 300e7});
-  assert.deepEqual((await heard(4)).map(call => [call.path, call.body.progress]), [['/scrobble/start', 3], ['/scrobble/pause', 4], ['/scrobble/start', 4], ['/scrobble/stop', 5]]);
+  assert.deepEqual((await heard(4)).map(call => [call.path, call.body.progress]), [['/scrobble/start', 0.5], ['/scrobble/pause', 4], ['/scrobble/start', 4], ['/scrobble/stop', 5]]);
+  // Hours later a peek at it, skipped far ahead and closed within the minute: the start wiped the spot Trakt kept, so the pause
+  // at the end puts back where she had left it (5%), not where the peek got to.
+  later(); trakt.calls = [];
+  await say('/Sessions/Playing', {ItemId: BLADE, PositionTicks: 300e7}, 30); await heard(1);
+  await say('/Sessions/Playing/Progress', {ItemId: BLADE, PositionTicks: 5500e7, IsPaused: false}, 10); await heard(2);
+  await say('/Sessions/Playing/Stopped', {ItemId: BLADE, PositionTicks: 5520e7});
+  assert.deepEqual((await heard(3)).map(call => [call.path, call.body.progress]), [['/scrobble/start', 5], ['/scrobble/start', 91.67], ['/scrobble/pause', 5]]);
+  assert.equal(state().scrobbled, 'stopped'); assert.deepEqual(waiting(), []);
+  // (That peek is taken away again: the sitting carried on below is the real one.)
+  sql(`DELETE FROM sittings WHERE item = '${BLADE}' AND started = (SELECT max(started) FROM sittings WHERE item = '${BLADE}')`); sql(`UPDATE sittings SET started = started + 7200, updated = updated + 7200 WHERE item = '${BLADE}' AND started = (SELECT max(started) FROM sittings WHERE item = '${BLADE}')`);
   // Carried on a few minutes later (the same sitting, which already counts): it starts at once, as before.
   trakt.calls = []; await say('/Sessions/Playing', {ItemId: BLADE, PositionTicks: 300e7});
   assert.deepEqual(await heard(1), [{path: '/scrobble/start', body: {...film, progress: 5}}]);
   await say('/Sessions/Playing/Stopped', {ItemId: BLADE, PositionTicks: 4800e7}); await heard(2); assert.equal(state().scrobbled, 'watched');
-  // Hours later she opens it for a moment and closes it. Trakt hears nothing, so the spot and the watch it holds stay as they
-  // are; and it still counts as watched here, so the app's tick from the list soon after is not sent as a second play.
+  // Hours later she opens it for a moment and closes it: a start and a pause, no stop. The watch Trakt holds stays, and the
+  // title still counts as watched here from when it was, so the app's tick from the list soon after is not sent as a second play.
   const told = state(); later(); trakt.calls = [];
-  await say('/Sessions/Playing', {ItemId: BLADE, PositionTicks: 0}, 20); await pause(400); assert.equal(state().scrobbled, 'held-watched');
-  await say('/Sessions/Playing/Stopped', {ItemId: BLADE, PositionTicks: 15e7}); await pause(600);
-  assert.deepEqual(state(), told, 'as Trakt last knew it'); assert.deepEqual(trakt.calls, []);
+  await say('/Sessions/Playing', {ItemId: BLADE, PositionTicks: 0}, 20); await heard(1); assert.equal(state().scrobbled, 'playing');
+  await say('/Sessions/Playing/Stopped', {ItemId: BLADE, PositionTicks: 15e7});
+  assert.deepEqual((await heard(2)).map(call => [call.path, call.body.progress]), [['/scrobble/start', 0], ['/scrobble/pause', 1]]);
+  assert.deepEqual(state(), told, 'as Trakt last knew it');
   sql(`UPDATE sittings SET updated = updated - 120 WHERE item = '${BLADE}'`); await say(`/Users/${jf}/PlayedItems/${BLADE}`, {}); await pause(800);
-  assert.deepEqual(trakt.calls, []); assert.deepEqual(waiting(), []);
+  assert.equal(trakt.calls.length, 2); assert.deepEqual(waiting(), []);
   // Blade Runner is taken away again, for the tests after.
   sql(`DELETE FROM plays WHERE item = '${BLADE}'; DELETE FROM sittings WHERE item = '${BLADE}'`);
 });
@@ -754,7 +787,7 @@ test('a file that runs longer than listed: Trakt gets the listed episode as watc
   await say('/Sessions/Playing/Progress', {ItemId: LONG, PositionTicks: 6400e7, IsPaused: false}); await heard(4);
   await say('/Sessions/Playing/Stopped', {ItemId: LONG, PositionTicks: 6400e7});
   assert.deepEqual(await heard(5), [
-    {path: '/scrobble/start', body: {...film, progress: 2.5}}, {path: '/scrobble/start', body: {...film, progress: 100}},
+    {path: '/scrobble/start', body: {...film, progress: 0}}, {path: '/scrobble/start', body: {...film, progress: 100}},
     {path: '/scrobble/pause', body: {...film, progress: 79.99}}, {path: '/scrobble/start', body: {...film, progress: 100}},
     {path: '/scrobble/stop', body: {...film, progress: 100}},
   ]);
@@ -790,7 +823,7 @@ test('a call Trakt turns away (429) is kept and goes through a few seconds later
   assert.deepEqual(trakt.refused.map(call => call.path), ['/scrobble/start']); assert.deepEqual(trakt.calls.map(call => call.path), ['/scrobble/start']);
   await pause(300); assert.deepEqual(waiting(), []);
 });
-test('while Trakt keeps refusing, calls wait in order: a stop ends a waiting pause, a tick stays, a start gone stale is let go', async () => {
+test('while Trakt keeps refusing, calls wait in order: a stop ends a waiting pause, a tick stays, a start whose title has gone quiet is let go', async () => {
   trakt.calls = []; trakt.refused = []; trakt.refuse = 1000;
   await say('/Sessions/Playing/Progress', {ItemId: FILM, PositionTicks: 600e7, IsPaused: true}); await pause(400);
   sql(`UPDATE sittings SET parts = '0-600' WHERE item = '${FILM}'`); // ten minutes played, so its stop counts (see brief in trakt.ts)
@@ -801,8 +834,8 @@ test('while Trakt keeps refusing, calls wait in order: a stop ends a waiting pau
   assert.deepEqual(waiting().map(row => row.kind), ['stop', 'mark', 'start']); assert.equal(trakt.calls.length, 0);
   assert.ok(trakt.refused.every(call => ['/scrobble/pause', '/scrobble/stop'].includes(call.path)), 'only the first in line is tried');
   // Trakt takes calls again an hour on. The finished film goes to history at the time it was stopped; the tick keeps its own
-  // time; the start from an hour ago would be wrong by now, so it is let go.
-  sql("UPDATE trakt_outbox SET next = 0, made = made - 3600"); trakt.refuse = 0;
+  // time; the start from an hour ago, of a film not heard from since, would be wrong by now, so it is let go.
+  sql("UPDATE trakt_outbox SET next = 0, made = made - 3600"); sql(`UPDATE plays SET updated = updated - 3600 WHERE item = '${LEFT}'`); trakt.refuse = 0;
   const ticked = JSON.parse(sql("SELECT body FROM trakt_outbox WHERE kind = 'mark'")[0].body);
   await cron(); const sent = await heard(2);
   assert.deepEqual(sent.map(call => call.path), ['/sync/history', '/sync/history']);
@@ -810,14 +843,73 @@ test('while Trakt keeps refusing, calls wait in order: a stop ends a waiting pau
   assert.deepEqual(sent[1].body, ticked); assert.deepEqual(sent[1].body.shows[0].seasons, [{number: 1, episodes: [{number: 2, watched_at: ticked.shows[0].seasons[0].episodes[0].watched_at}]}]);
   assert.deepEqual(waiting(), []); await cron(); await pause(500); assert.equal(trakt.calls.length, 2);
 });
+test('a start that had to wait is sent as the title is by then: still playing, with how far in it has got; paused since, as a pause; stopped since, not at all; a short wait is sat out without the cron', async () => {
+  const film = {movie: {ids: {tmdb: 550, imdb: 'tt0137523'}}}, held = () => sql("SELECT at FROM rows_cache WHERE person = 'ada' AND kind = 'trakt-wait-send'");
+  const state = () => sql(`SELECT scrobbled FROM plays WHERE item = '${LEFT}'`)[0].scrobbled;
+  // Trakt says to wait five minutes as she starts a film. Nothing is tried meanwhile; the film plays on.
+  sql(`UPDATE plays SET scrobbled = 'stopped' WHERE item = '${LEFT}'`); trakt.calls = []; trakt.refused = []; trakt.refuse = 1; trakt.retryAfter = 300;
+  await say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 600e7});
+  for (let i = 0; i < 100 && !trakt.refused.length; i++) await pause(100);
+  await pause(400); assert.deepEqual(waiting().map(row => row.kind), ['start']); assert.equal(held().length, 1); trakt.refuse = 0;
+  await say('/Sessions/Playing/Progress', {ItemId: LEFT, PositionTicks: 780e7, IsPaused: false}); await pause(400); assert.deepEqual(trakt.calls, []);
+  // The wait over, minutes later, the cron sends it first of all: as a start from where the film is now (13%), not where it began.
+  sql('UPDATE trakt_outbox SET made = made - 200'); resumed(); await cron();
+  assert.deepEqual(await heard(1), [{path: '/scrobble/start', body: {...film, progress: 13}}]); assert.deepEqual(waiting(), []); assert.equal(state(), 'playing');
+  // The same, paused by the time the wait is over: Trakt is told it is paused there.
+  trakt.calls = []; trakt.refused = []; trakt.refuse = 1;
+  await say('/Sessions/Playing/Progress', {ItemId: LEFT, PositionTicks: 4000e7, IsPaused: false});
+  for (let i = 0; i < 100 && !trakt.refused.length; i++) await pause(100);
+  await pause(400); trakt.refuse = 0; assert.deepEqual(waiting().map(row => row.kind), ['start']);
+  await say('/Sessions/Playing/Progress', {ItemId: LEFT, PositionTicks: 4200e7, IsPaused: true}); await pause(400); assert.deepEqual(waiting().map(row => row.kind), ['pause']);
+  sql('UPDATE trakt_outbox SET made = made - 200'); resumed(); await cron();
+  assert.deepEqual(await heard(1), [{path: '/scrobble/pause', body: {...film, progress: 70}}]); assert.deepEqual(waiting(), []);
+  // Stopped by the time the wait is over (the stop itself already let go here, as if Trakt had taken it): the start is never sent.
+  trakt.calls = []; trakt.refused = []; trakt.refuse = 1;
+  await say('/Sessions/Playing/Progress', {ItemId: LEFT, PositionTicks: 4200e7, IsPaused: false});
+  for (let i = 0; i < 100 && !trakt.refused.length; i++) await pause(100);
+  await pause(400); trakt.refuse = 0; assert.deepEqual(waiting().map(row => row.kind), ['start']);
+  sql(`UPDATE plays SET scrobbled = 'stopped' WHERE item = '${LEFT}'`); sql('UPDATE trakt_outbox SET made = made - 200'); resumed(); await cron(); await pause(600);
+  assert.deepEqual(trakt.calls, [], 'no start after its stop'); assert.deepEqual(waiting(), []);
+  // A wait of a few seconds is sat out within the request: the call goes a second after it ends, with no cron run.
+  trakt.calls = []; trakt.refused = []; trakt.refuse = 1; trakt.retryAfter = 3;
+  await say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 4200e7});
+  for (let i = 0; i < 150 && !trakt.calls.length; i++) await pause(100);
+  assert.deepEqual(trakt.refused.map(call => call.path), ['/scrobble/start']); assert.deepEqual(trakt.calls.map(call => call.path), ['/scrobble/start']); await pause(300); assert.deepEqual(waiting(), []);
+  // A wait of half a minute is too long for the request and ends before the next cron run would come: the run under way when
+  // Trakt said so waits it out and sends the call a second after, with no run after it.
+  await say('/Sessions/Playing/Stopped', {ItemId: LEFT, PositionTicks: 4200e7}); await heard(2);
+  trakt.calls = []; trakt.refused = []; trakt.refuse = 1; trakt.retryAfter = 30;
+  await say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 4200e7});
+  for (let i = 0; i < 100 && !trakt.refused.length; i++) await pause(100);
+  const refusedAt = Date.now(); await pause(400); assert.deepEqual(waiting().map(row => row.kind), ['start']); trakt.refuse = 0; await cron();
+  for (let i = 0; i < 400 && !trakt.calls.length; i++) await pause(100);
+  assert.deepEqual(trakt.calls.map(call => call.path), ['/scrobble/start']); assert.ok(Date.now() - refusedAt >= 29_000, 'not before the wait ends'); await pause(300); assert.deepEqual(waiting().map(row => row.kind), []);
+  // The pause that ends a peek (a sitting too short to count) is never let go while it waits, though the title has stopped by
+  // then: it is what takes "watching now" away and puts her earlier spot back (70%, where she had paused it above).
+  await say('/Sessions/Playing/Stopped', {ItemId: LEFT, PositionTicks: 4200e7}); await heard(2);
+  sql(`UPDATE sittings SET started = started - 7200, updated = updated - 7200 WHERE item = '${LEFT}'`); trakt.calls = []; trakt.refused = []; trakt.retryAfter = 0;
+  await say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 5000e7}, 20); await heard(1); trakt.refuse = 1; trakt.retryAfter = 300;
+  await say('/Sessions/Playing/Stopped', {ItemId: LEFT, PositionTicks: 5020e7});
+  for (let i = 0; i < 100 && !trakt.refused.length; i++) await pause(100);
+  await pause(400); trakt.refuse = 0; assert.deepEqual(trakt.refused.map(call => [call.path, call.body.progress]), [['/scrobble/pause', 70]]); assert.deepEqual(waiting().map(row => row.kind), ['pause']); assert.equal(state(), 'stopped');
+  sql('UPDATE trakt_outbox SET made = made - 400'); resumed(); await cron();
+  assert.deepEqual((await heard(2)).map(call => [call.path, call.body.progress]), [['/scrobble/start', 83.33], ['/scrobble/pause', 70]]); assert.deepEqual(waiting(), []);
+  sql(`DELETE FROM sittings WHERE item = '${LEFT}' AND started = (SELECT max(started) FROM sittings WHERE item = '${LEFT}')`); sql(`UPDATE sittings SET started = started + 7200, updated = updated + 7200 WHERE item = '${LEFT}'`);
+  // Trakt holding her reads off holds no start up: reads have their own wait.
+  sql("INSERT INTO rows_cache (hub, person, kind, at, items) SELECT id, 'ada', 'trakt-wait', unixepoch() + 600, '' FROM hubs"); trakt.calls = []; trakt.retryAfter = 0; trakt.refuse = 0;
+  await say('/Sessions/Playing', {ItemId: LEFT, PositionTicks: 4200e7}); await heard(1);
+  await say('/Sessions/Playing/Progress', {ItemId: LEFT, PositionTicks: 4200e7, IsPaused: true}); assert.deepEqual((await heard(2)).map(call => call.path), ['/scrobble/start', '/scrobble/pause']);
+  waited(); sql(`UPDATE plays SET scrobbled = 'stopped' WHERE item = '${LEFT}'`); trakt.calls = []; trakt.refused = [];
+});
 test('told how long to wait on a write (429 with Retry-After), new calls are kept untried, in order, until the wait is over', async () => {
-  trakt.calls = []; trakt.refused = []; trakt.refuse = 1; trakt.retryAfter = 200;
+  // (Longer than the cron itself would wait out: trakt.ts, waitOut.)
+  trakt.calls = []; trakt.refused = []; trakt.refuse = 1; trakt.retryAfter = 280;
   const time = Math.floor(Date.now() / 1000), held = () => sql("SELECT at FROM rows_cache WHERE person = 'ada' AND kind = 'trakt-wait-send'");
   await say('/Sessions/Playing', {ItemId: FILM, PositionTicks: 0});
   for (let i = 0; i < 100 && !trakt.refused.length; i++) await pause(100);
   assert.deepEqual(trakt.refused.map(call => call.path), ['/scrobble/start']);
   // The wait is kept by hub and person, apart from the one for reads, and her page can say until when.
-  await pause(300); assert.equal(held().length, 1); assert.ok(held()[0].at > time + 150 && held()[0].at <= time + 215, JSON.stringify(held()));
+  await pause(300); assert.equal(held().length, 1); assert.ok(held()[0].at > time + 230 && held()[0].at <= time + 295, JSON.stringify(held()));
   assert.deepEqual(sql("SELECT 1 AS n FROM rows_cache WHERE kind = 'trakt-wait'"), [], 'reads are not held up');
   assert.ok((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada').matching.until > time + 150);
   // Trakt would take calls again, but it said to wait: what she does meanwhile is kept, not tried. A pause takes the place of the
@@ -2945,13 +3037,13 @@ test('watched again after an un-mark, it syncs as anything new: a tick straight 
   assert.deepEqual(trakt.calls.map(call => call.path), ['/sync/history', '/sync/history', '/sync/history/remove', '/sync/history']);
   assert.equal(playOf(UNW.id).unwatched, 0); assert.equal(playOf(UNW.id).scrobbled, 'watched'); assert.equal(trakt.removals.length, removalsMade); assert.deepEqual(waiting(), []);
   // Un-marked again, then played through an hour later (the ticks above are sittings of their own by then): Trakt hears the
-  // start once enough has played and the stop at the end, which it counts as a watch, and it is watched here again.
+  // start as it begins and the stop at the end, which it counts as a watch, and it is watched here again.
   assert.equal((await tick(UNW.id, 'DELETE')).status, 200); assert.equal((await removedTo(2)).length, 2); removalsMade += 1; assert.ok(playOf(UNW.id).unwatched > 0);
   sql(`UPDATE sittings SET started = started - 7200, updated = updated - 7200 WHERE person = 'ada' AND item = '${UNW.id}'; UPDATE plays SET updated = updated - 7200 WHERE person = 'ada' AND item = '${UNW.id}'`); trakt.calls.length = 0;
   await say('/Sessions/Playing', {ItemId: UNW.id, PositionTicks: 0}, 700); await pause(600);
   await say('/Sessions/Playing/Progress', {ItemId: UNW.id, PositionTicks: 300e7, IsPaused: false}, 400); await heard(1);
   await say('/Sessions/Playing/Stopped', {ItemId: UNW.id, PositionTicks: 5700e7}); const film = {movie: {ids: {tmdb: 7711, imdb: 'tt7710001'}}};
-  assert.deepEqual(await heard(2), [{path: '/scrobble/start', body: {...film, progress: 5}}, {path: '/scrobble/stop', body: {...film, progress: 95}}]);
+  assert.deepEqual(await heard(2), [{path: '/scrobble/start', body: {...film, progress: 0}}, {path: '/scrobble/stop', body: {...film, progress: 95}}]);
   assert.equal(playOf(UNW.id).unwatched, 0); assert.equal(playOf(UNW.id).scrobbled, 'watched'); assert.equal(trakt.removals.length, removalsMade); assert.deepEqual(waiting(), []);
 });
 test('a season or a show un-marked is each of its episodes in one removal, never the show or the season alone; over sixty episodes nothing is sent or noted; a burst of single un-marks is a removal each, sent one at a time', async () => {
@@ -3436,6 +3528,114 @@ test('Home changes reach the apps without a page open: a hub flagged for it is s
   await connect(); assert.equal(await settled(true), true, 'and came back the same way'); for (let n = 0; n < 60 && flagged().length; n++) await pause(100); assert.deepEqual(flagged(), [], 'nothing left for the cron');
   if (linked) await syncOn(); else assert.equal((await adaSite('DELETE', '/api/people/ada/scrobble')).status, 200);
   await setPerson('ada', () => ({rows: mine.rows, picks: mine.picks})); assert.deepEqual(await syncAll(), {state: 'ok'});
+});
+// The address a hub calls when Home changes (worker/notice.ts). Hosts under .example exist nowhere, and the test run sends every
+// call to the stand-in above instead, so nothing real is ever called.
+const TOKEN = 'tok-7Yq2-keep-me-out-of-sight', ADDRESS = `https://hooks.one.example/in/${TOKEN}?k=${TOKEN}`;
+const noticeOf = async () => (await owner('GET', '/api/state')).body.hub.jobs.notice, noticeRow = () => sql('SELECT host, called, result, wanted, retry FROM notices')[0];
+// The time between calls is five minutes: a test lets it pass by moving the last call back.
+const windowOver = () => sql('UPDATE notices SET called = called - 300');
+const called = async (count, why) => {for (let n = 0; n < 60 && notice.calls.length < count; n++) await pause(100); await pause(300); assert.equal(notice.calls.length, count, why);};
+test('the address to call when Home changes: the manager sets, replaces and removes it; it is kept in the vault and never sent back; an address that is not public https is refused; nobody else can read or set it', async () => {
+  const said = [], put = async (who, address) => {const got = await who('PUT', '/api/notice', {address}); said.push(JSON.stringify(got.body)); return got;};
+  assert.equal(await noticeOf(), null); assert.deepEqual(sql('SELECT hub FROM notices'), []);
+  // Refused, each for its own reason, and nothing is kept: not https, a username or password in it, this site's own host, a
+  // number however it is written, a name inside a private network, no address at all, too long.
+  const refused = {
+    [`http://hooks.one.example/in/${TOKEN}`]: /must start with https/, [`ftp://hooks.one.example/in/${TOKEN}`]: /must start with https/,
+    [`https://someone:${TOKEN}@hooks.one.example/in`]: /username or password/, [`https://${TOKEN}@hooks.one.example/in`]: /username or password/,
+    [`https://127.0.0.1/in/${TOKEN}`]: /this site’s own address/, [`https://127.0.0.1:8799/in/${TOKEN}`]: /this site’s own address/,
+    [`https://localhost/in/${TOKEN}`]: /public website name/, [`https://10.0.0.5/in/${TOKEN}`]: /public website name/, [`https://192.168.1.4/in/${TOKEN}`]: /public website name/, [`https://172.16.0.9/in/${TOKEN}`]: /public website name/,
+    [`https://169.254.169.254/in/${TOKEN}`]: /public website name/, [`https://127.0.0.2/in/${TOKEN}`]: /public website name/, [`https://[::1]/in/${TOKEN}`]: /public website name/, [`https://[fd00::1]/in/${TOKEN}`]: /public website name/, [`https://[fe80::1]/in/${TOKEN}`]: /public website name/,
+    [`https://2130706434/in/${TOKEN}`]: /public website name/, [`https://0x7f.2/in/${TOKEN}`]: /public website name/, [`https://8.8.8.8/in/${TOKEN}`]: /public website name/,
+    [`https://printer.local/in/${TOKEN}`]: /public website name/, [`https://nas.lan/in/${TOKEN}`]: /public website name/, [`https://box.internal/in/${TOKEN}`]: /public website name/, [`https://thing.localhost/in/${TOKEN}`]: /public website name/, [`https://intranet/in/${TOKEN}`]: /public website name/, [`https://hooks.one.example./in/${TOKEN}`]: /public website name/,
+    [`hooks.one.example/in/${TOKEN}`]: /not a web address/, [`${TOKEN}`]: /not a web address/, ['   ']: /Paste the address/, [`https://hooks.one.example/in/${TOKEN}${'a'.repeat(300)}`]: /too long/,
+  };
+  for (const [address, why] of Object.entries(refused)) {const got = await put(owner, address); assert.equal(got.status, 400, address.replaceAll(TOKEN, '…')); assert.match(got.body.message, why, address.replaceAll(TOKEN, '…'));}
+  assert.equal((await owner('PUT', '/api/notice', {address: 7})).status, 400); assert.equal((await owner('PUT', '/api/notice', {})).status, 400);
+  assert.deepEqual(sql('SELECT hub FROM notices'), []); assert.deepEqual(sql("SELECT kind FROM secrets WHERE kind = 'key:notice'"), []);
+  // Someone who is not the manager can neither set nor remove it, signed in or not.
+  assert.equal((await put(adaSite, ADDRESS)).status, 403); assert.equal((await adaSite('DELETE', '/api/notice')).status, 403); assert.equal((await put(client(), ADDRESS)).status, 401);
+  assert.deepEqual(sql('SELECT hub FROM notices'), []);
+  // Set: the answer is empty, the vault holds it sealed, and the manager is shown that one is set and its host name, no more.
+  const set = await put(owner, `  ${ADDRESS} `); assert.equal(set.status, 200); assert.deepEqual(set.body, {});
+  assert.deepEqual(await noticeOf(), {host: 'hooks.one.example', at: 0, result: null, waiting: false, again: false});
+  const kept = sql("SELECT hub, owner, value FROM secrets WHERE kind = 'key:notice'"); assert.equal(kept.length, 1); assert.equal(kept[0].owner, '#hub'); assert.equal(kept[0].hub, sql('SELECT id FROM hubs')[0].id); assert.match(kept[0].value, /^v1\./);
+  assert.ok(!JSON.stringify(sql('SELECT * FROM notices')).includes(TOKEN) && !kept[0].value.includes(TOKEN), 'in the database only sealed');
+  const pages = async () => [await owner('GET', '/api/state'), await adaSite('GET', '/api/state'), await owner('POST', '/api/sync', {}), await adaSite('POST', '/api/sync', {})].map(got => JSON.stringify(got.body));
+  for (const text of [...await pages(), ...said]) {assert.ok(!text.includes(TOKEN), 'the address is in no answer'); assert.ok(!text.includes('/in/'));}
+  // Her own page says nothing of it at all, not even that one is set.
+  const hers = JSON.stringify((await adaSite('GET', '/api/state')).body); assert.ok(!hers.includes('hooks.one.example') && !hers.includes('notice'));
+  // Replaced: the new host shows, and one address is kept. Removed: nothing is left of it.
+  assert.equal((await put(owner, `https://other.two.example:8443/x/${TOKEN}`)).status, 200); assert.equal((await noticeOf()).host, 'other.two.example'); assert.equal(sql("SELECT value FROM secrets WHERE kind = 'key:notice'").length, 1);
+  assert.notEqual(sql("SELECT value FROM secrets WHERE kind = 'key:notice'")[0].value, kept[0].value);
+  const gone = await owner('DELETE', '/api/notice'); assert.equal(gone.status, 200); assert.deepEqual(gone.body, {}); assert.equal(await noticeOf(), null);
+  assert.deepEqual(sql('SELECT hub FROM notices'), []); assert.deepEqual(sql("SELECT kind FROM secrets WHERE kind = 'key:notice'"), []);
+});
+test('it is called once after a resend that changed a setup, from a page, from the hub by itself after an account change, and from the cron; never after one that changed nothing; a burst inside five minutes is one call when they are up; a failed call is tried once more', async () => {
+  const hubId = sql('SELECT id FROM hubs')[0].id, flagFor = () => sql(`DELETE FROM foryou_sync; INSERT INTO foryou_sync (hub, at, tries) VALUES ('${hubId}', unixepoch() - 600, 0)`);
+  const linked = sql("SELECT 1 AS n FROM secrets WHERE owner = 'ada' AND kind = 'trakt-scrobble'").length > 0; if (!linked) {await connect(); assert.deepEqual(await syncAll(), {state: 'ok'});}
+  const mine = (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada'), watchedOn = () => rowsOf(playerOf('Ada')[1].config).find(([id]) => id === 'custom.aiohub_rows.all.history')?.[3];
+  await setPerson('ada', () => ({rows: null, picks: {}})); assert.deepEqual(await syncAll(), {state: 'ok'}); sql('DELETE FROM foryou_sync');
+  // One Home change, saved as the site saves it (nothing is sent until someone resends): her Recently Watched switched over.
+  const change = async () => {const was = watchedOn(); await setPerson('ada', () => ({rows: null, picks: {'recently-watched': !was}})); return was;};
+  // (The cron first does whatever it still has to: picks for anyone not picked for yet, and the resend after them. From here a
+  // cron run changes no Home by itself.)
+  const picked = () => JSON.stringify(sql('SELECT person, at FROM foryou ORDER BY person')) + sql('SELECT hub FROM foryou_sync').length;
+  for (let n = 0, quiet = 0, was = picked(); n < 16 && quiet < 2; n++) {await cron(); const now = picked(); quiet = now === was ? quiet + 1 : 0; was = now;}
+  notice.calls.length = 0; notice.status = 204;
+  assert.equal((await owner('PUT', '/api/notice', {address: ADDRESS})).status, 200);
+  // Nothing changed: a page's resend, the cron's and a plain cron run call nothing, and nothing is left waiting.
+  assert.deepEqual(await syncAll(), {state: 'ok'}); flagFor(); await cron(); for (let n = 0; n < 8 && sql('SELECT hub FROM foryou_sync').length; n++) await cron(); assert.deepEqual(sql('SELECT hub FROM foryou_sync'), []);
+  await called(0, 'a resend that wrote nothing calls nothing'); assert.deepEqual(await noticeOf(), {host: 'hooks.one.example', at: 0, result: null, waiting: false, again: false});
+  // From a page: one call, after the page had its answer (which says nothing of it). An empty POST to the address as it was typed,
+  // its query left off by the stand-in's path only; nothing of the hub or anyone in it, no cookie, no sign-in, a plain user agent.
+  let was = await change(); const before = Math.floor(Date.now() / 1000); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(watchedOn(), !was);
+  await called(1, 'one call after a page’s resend that changed her setup');
+  const [first] = notice.calls; assert.equal(first.method, 'POST'); assert.equal(first.path, `/notice/in/${TOKEN}`); assert.equal(first.body, ''); assert.equal(first.headers['content-length'] ?? '0', '0');
+  assert.deepEqual(Object.keys(first.headers).filter(name => /cookie|authorization|origin|referer|content-type|^x-/.test(name)), []); assert.equal(first.headers['user-agent'], 'Mozilla/5.0 (compatible)');
+  // (Cloudflare itself adds `cf-worker`, the domain the site runs on, to every request a Worker makes; the local run does too.
+  // The hub cannot leave it off, and PRIVACY.md says so. Nothing else goes that the hub did not choose.)
+  assert.deepEqual(Object.keys(first.headers).filter(name => !['host', 'content-length', 'user-agent', 'cf-worker', 'accept-encoding', 'connection'].includes(name)), []);
+  const {'cf-worker': _, ...chosen} = first.headers, sent = JSON.stringify(chosen).toLowerCase(); for (const word of [hub.code, hubId, 'ada', 'aiohub', '8799']) assert.ok(!sent.includes(String(word).toLowerCase()), `nothing of the hub goes with it (${word}): ${sent}`);
+  let shown = await noticeOf(); assert.equal(shown.result, 'ok'); assert.ok(shown.at >= before); assert.equal(shown.waiting, false);
+  // A burst inside the five minutes: three more changes, each resent, call nothing; the mark waits, and so does the cron while
+  // the time is not up. Once it is, the cron makes the one call, and no more after it.
+  for (let n = 0; n < 3; n++) {await change(); assert.deepEqual(await syncAll(), {state: 'ok'});}
+  await cron(); await called(1, 'nothing more inside five minutes'); shown = await noticeOf(); assert.equal(shown.waiting, true); assert.equal(shown.again, false);
+  windowOver(); await cron(); await called(2, 'the burst is one call, made by the cron once the five minutes are up');
+  await cron(); windowOver(); await cron(); await called(2, 'and only one'); assert.equal((await noticeOf()).waiting, false);
+  // From the cron's own resend (a change with no page left open to send it): one call, in the same run.
+  windowOver(); was = await change(); flagFor(); await cron(); for (let n = 0; n < 2 && watchedOn() === was; n++) await cron(); assert.equal(watchedOn(), !was);
+  await called(3, 'one call after the cron’s resend'); for (let n = 0; n < 8 && sql('SELECT hub FROM foryou_sync').length; n++) await cron(); windowOver(); await cron(); await called(3, 'and no second one for it');
+  // From the hub by itself a few seconds after an account change (her Trakt disconnected, no page and no cron run): one call.
+  const listed = () => rowsOf(playerOf('Ada')[1].config).some(([id]) => id === 'custom.aiohub_rows.series.up_next'), settled = async want => {for (let n = 0; n < 80 && listed() !== want; n++) await pause(100); return listed();};
+  await setPerson('ada', () => ({rows: null, picks: {}})); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.equal(listed(), true);
+  await pause(600); windowOver(); const sofar = notice.calls.length;
+  assert.equal((await adaSite('DELETE', '/api/people/ada/scrobble')).status, 200); assert.equal(await settled(false), false); await called(sofar + 1, 'one call after the hub’s own resend');
+  // Connected again inside the five minutes: her setup changes back at once, the call waits for the cron.
+  await connect(); assert.equal(await settled(true), true); for (let n = 0; n < 60 && sql('SELECT hub FROM foryou_sync').length; n++) await pause(100);
+  await called(sofar + 1, 'inside five minutes: marked, not called'); assert.equal((await noticeOf()).waiting, true);
+  windowOver(); await cron(); await called(sofar + 2, 'made by the cron');
+  // A call that fails is recorded by its kind only and tried once more at the next turn, then left alone until the next change.
+  notice.status = 404; windowOver(); await change(); assert.deepEqual(await syncAll(), {state: 'ok'}); await called(sofar + 3, 'the call that is refused');
+  shown = await noticeOf(); assert.equal(shown.result, '4xx'); assert.equal(shown.waiting, true); assert.equal(shown.again, true);
+  await cron(); await called(sofar + 3, 'the second try waits its five minutes'); windowOver(); await cron(); await called(sofar + 4, 'one second try');
+  shown = await noticeOf(); assert.equal(shown.result, '4xx'); assert.equal(shown.waiting, false); windowOver(); await cron(); windowOver(); await cron(); await called(sofar + 4, 'and no third');
+  // Sent elsewhere (302): not followed, one request. Hung up on: no answer. Answered again: sent.
+  notice.status = 302; windowOver(); await change(); assert.deepEqual(await syncAll(), {state: 'ok'}); await called(sofar + 5, 'a redirect is not followed'); assert.equal((await noticeOf()).result, '3xx'); assert.ok(!notice.calls.some(call => call.path.includes('followed')));
+  notice.status = 0; windowOver(); await change(); assert.deepEqual(await syncAll(), {state: 'ok'}); await called(sofar + 6, 'hung up on'); assert.equal((await noticeOf()).result, 'none');
+  notice.status = 500; windowOver(); await change(); assert.deepEqual(await syncAll(), {state: 'ok'}); await called(sofar + 7, 'an error there'); assert.equal((await noticeOf()).result, '5xx');
+  notice.status = 204; windowOver(); await change(); assert.deepEqual(await syncAll(), {state: 'ok'}); await called(sofar + 8, 'answered again'); shown = await noticeOf(); assert.equal(shown.result, 'ok'); assert.equal(shown.waiting, false); assert.equal(shown.again, false);
+  // Every call was the same empty POST to the same path, one at a time.
+  assert.deepEqual([...new Set(notice.calls.map(call => `${call.method} ${call.path} ${call.body.length}`))], [`POST /notice/in/${TOKEN} 0`]);
+  // The address is in nothing the site answers, and in no line the Worker logged (the test run's log, where there is one).
+  for (const got of [await owner('GET', '/api/state'), await adaSite('GET', '/api/state'), await owner('POST', '/api/sync', {})]) assert.ok(!JSON.stringify(got.body).includes(TOKEN));
+  const log = existsSync('/tmp/aiohub-dev.log') ? readFileSync('/tmp/aiohub-dev.log', 'utf8') : ''; assert.ok(!log.includes(TOKEN), 'not in the log'); assert.ok(!log.includes('hooks.one.example'), 'nor its host');
+  // Removed: a change resent calls nothing. Her Home and her sync go back as they were.
+  assert.equal((await owner('DELETE', '/api/notice')).status, 200); windowOver(); await change(); assert.deepEqual(await syncAll(), {state: 'ok'}); await cron(); await called(sofar + 8, 'removed, nothing is called');
+  if (linked) await syncOn(); else assert.equal((await adaSite('DELETE', '/api/people/ada/scrobble')).status, 200);
+  await setPerson('ada', () => ({rows: mine.rows, picks: mine.picks})); assert.deepEqual(await syncAll(), {state: 'ok'}); for (let n = 0; n < 60 && sql('SELECT hub FROM foryou_sync').length; n++) await pause(100); sql('DELETE FROM foryou_sync');
 });
 test('pictures go to the hub’s own Home setup, never to a person’s', async () => {
   const [home] = [...fake.homes.entries()].find(([, item]) => !item.config.jellyfinAppPassword);

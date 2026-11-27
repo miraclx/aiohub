@@ -28,7 +28,9 @@ interface HubData {hostUrl?: string; metaUrl?: string; missing?: string[]; servi
 interface Persona {id: string; name: string; [key: string]: unknown}
 interface Preset {type: string; instanceId: string; enabled: boolean; options: Record<string, unknown>}
 interface Stored {services?: unknown; presets?: Preset[]; formatter?: unknown; jellyfin?: {primary?: unknown; personas?: Persona[]; segments?: boolean}; [key: string]: unknown}
-export interface Synced {state: 'ok' | 'partial' | 'needs-key' | 'stuck' | 'error'; message?: string; more?: boolean}
+// `changed`: at least one setup was written (made or saved again) on AIOStreams or AIOMetadata. For the hub itself (notice.ts);
+// never part of what a page is answered.
+export interface Synced {state: 'ok' | 'partial' | 'needs-key' | 'stuck' | 'error'; message?: string; more?: boolean; changed?: boolean}
 
 const basic = (home: Home) => ({authorization: `Basic ${btoa(`${home.uuid}:${home.password}`)}`, accept: 'application/json', 'user-agent': 'AIOHub/1.0'});
 const short = () => [...crypto.getRandomValues(new Uint8Array(2))].map(n => n.toString(16).padStart(2, '0')).join('').slice(0, 3);
@@ -429,7 +431,7 @@ async function shapeOf(wanted: Wanted): Promise<Record<string, string>> {
 // so this stays small.
 const AIOM_AT_ONCE = 2;
 /* One Home setup on AIOMetadata: the hub's, or a group's or a person's own when theirs differs. Made once per owner, then kept in step. */
-async function syncHome(env: Env, vault: Vault, hub: string, owner: string, wanted: Wanted, keys: Keys, budget: {left: number}, kind = 'catalogs', keep: Record<string, unknown> = {}): Promise<{address: string; made: Catalogs} | {message: string; more?: boolean}> {
+async function syncHome(env: Env, vault: Vault, hub: string, owner: string, wanted: Wanted, keys: Keys, budget: Budget, kind = 'catalogs', keep: Record<string, unknown> = {}): Promise<{address: string; made: Catalogs} | {message: string; more?: boolean}> {
   const {$trakt, $lists, $reads, ...rest} = wanted as Wanted & {$trakt?: string | null; $lists?: string | null; $reads?: string | null};
   const apiKeys = {tmdb: keys.tmdb, ...($lists || $reads || keys.mdblist ? {mdblist: ($lists || $reads || keys.mdblist) as string} : {}), ...($trakt ? {traktTokenId: $trakt} : {})}, sent = await sha(JSON.stringify([apiKeys, wanted]));
   let made = await held<Catalogs>(env, vault, hub, owner, kind);
@@ -457,6 +459,7 @@ async function syncHome(env: Env, vault: Vault, hub: string, owner: string, want
       return {message: 'AIOMetadata refused the Home setup. Check the TMDB and MDBList keys under Hub, Sources.'};
     }
     made = {uuid: body.userUUID, password, v: now(), sent, at: env.AIOM_ORIGIN, shape: await shapeOf(wanted), charts: (rest.catalogs as Catalog[]).filter(item => item.id.startsWith('flixpatrol.')).map(item => `${item.id}/${item.type}`), ...keep};
+    budget.wrote++;
     await env.DB.batch([await putSecret(env, hub, owner, kind, made), env.DB.prepare("UPDATE ops SET state = 'done', updated = ? WHERE hub = ? AND kind = ? AND target = ?").bind(now(), hub, `create-${kind}`, owner), env.DB.prepare('DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(hub, owner, `${kind}-pending`)]);
     return {address: address(env, made), made};
   }
@@ -479,6 +482,7 @@ async function syncHome(env: Env, vault: Vault, hub: string, owner: string, want
   stored.apiKeys = {...others, ...apiKeys};
   const write = await fetch(`${env.AIOM_ORIGIN}/api/config/update/${made.uuid}`, {method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({config: stored, password: made.password, baseVersion: stored.configVersion})}).catch(() => null);
   if (write?.status !== 200) return {message: LATER};
+  budget.wrote++;
   made = {...made, v: now() <= made.v ? made.v + 1 : now(), sent, shape: await shapeOf(wanted), charts, ...keep};
   await (await putSecret(env, hub, owner, kind, made)).run();
   return {address: address(env, made), made};
@@ -576,6 +580,12 @@ export async function syncInTurn(env: Env, hub: {id: string; data: string}, orig
 /* Brings the hub's setups in step with the site: the debrid account, sources, stream label, who can sign in, everyone's Home, and
    what each group and person has changed for themselves. */
 export async function syncPlayers(site: Env, hub: {id: string; data: string}, origin = '', most = 30): Promise<Synced> {
+  // `wrote` counts the setups written, wherever the work below ends.
+  const budget: Budget = {left: most, wrote: 0}, got = await setups(site, hub, origin, budget);
+  return budget.wrote ? {...got, changed: true} : got;
+}
+interface Budget {left: number; wrote: number}
+async function setups(site: Env, hub: {id: string; data: string}, origin: string, budget: Budget): Promise<Synced> {
   const data = JSON.parse(hub.data) as HubData, service = data.defaults.debrid, env = hosted(site, data);
   // The vault, the groups and the people in one trip to the database: each trip costs as much as a call to AIOStreams.
   const [secretRows, groupRows, personRows, playRows, pickRows, shelfRows, saveRows] = await env.DB.batch([env.DB.prepare('SELECT owner, kind, value FROM secrets WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, name, data FROM groups WHERE hub = ?').bind(hub.id), env.DB.prepare('SELECT id, grp, name, data FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
@@ -628,7 +638,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
   });
 
   // Home. The hub has one setup on AIOMetadata; a group or a person gets their own only while theirs differs from the one above.
-  const known = await held<string>(env, vault, hub.id, HUB_OWNER, 'key:tmdb'), tmdb = env.AIOM_ORIGIN ? known : null, budget = {left: most};
+  const known = await held<string>(env, vault, hub.id, HUB_OWNER, 'key:tmdb'), tmdb = env.AIOM_ORIGIN ? known : null;
   let note = !env.AIOM_ORIGIN ? 'Home rows are not set up on this site.' : !tmdb ? 'Add a TMDB key under Hub, Sources, so Home has rows in the player apps.' : '', more = false, base: string | null = null;
   const keys: Keys | null = tmdb ? {tmdb, mdblist: await held<string>(env, vault, hub.id, HUB_OWNER, 'key:mdblist')} : null, front = env.FRONT === 'aiometadata';
   // The hub's own Home setup (and, without AIOMetadata in front, each group's and person's that differ) is brought in step. With
@@ -707,7 +717,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
       const first = fresh(); patch(first, data, key, staying, front ? null : hubReach, variants, known, front);
       const made = await create(env, hub.id, first, service);
       if ('state' in made) return made;
-      players = made;
+      players = made; budget.wrote++;
     } else {
       const read = await fetch(`${env.UP_ORIGIN}/api/v1/user?raw=true`, {headers: basic(players)}).catch(() => null);
       const stored = read?.status === 200 ? ((await read.json().catch(() => null)) as {data?: {userData?: Stored}} | null)?.data?.userData : null;
@@ -719,6 +729,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
           const why = (((await write?.json().catch(() => null)) as {error?: {message?: string}} | null)?.error?.message ?? '').replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, '').replace(/https?:\/\/\S+/g, 'a link').slice(0, 160);
           return {state: 'error', message: `AIOStreams did not accept the change${why ? `: ${why}` : '.'} Your changes are saved here and will be sent on the next try.`};
         }
+        budget.wrote++;
       }
     }
     // Each person signs in upstream under this setup with their own name. The kept sign-in answer, if any, is left in place.
@@ -757,7 +768,7 @@ export async function syncPlayers(site: Env, hub: {id: string; data: string}, or
 /* Each person's own Jellyfin server on AIOMetadata. Worked out again on every sync from the hub, their group and themselves, and
    saved only when the result changed, so a change at the hub reaches everyone who has not changed that setting for themselves.
    Their streams come from the hub's one AIOStreams setup, through their own variant. */
-async function syncFronts(env: Env, vault: Vault, hub: string, people: {id: string; name: string; want: Want}[], players: Home, variants: Variant[], keys: Keys, budget: {left: number}, aiom: ReturnType<typeof gate>): Promise<{note: string; more: boolean; moved: Set<string>}> {
+async function syncFronts(env: Env, vault: Vault, hub: string, people: {id: string; name: string; want: Want}[], players: Home, variants: Variant[], keys: Keys, budget: Budget, aiom: ReturnType<typeof gate>): Promise<{note: string; more: boolean; moved: Set<string>}> {
   let note = '', more = false, streams = players.enc ? players : null;
   if (!streams) {
     // The stream address carries AIOStreams' own form of the setup's password, which only AIOStreams can make. Asked for once.

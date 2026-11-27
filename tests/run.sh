@@ -14,7 +14,8 @@ fresh() {
   stop; rm -rf .wrangler/state
   npx wrangler d1 migrations apply aiohub --local >/dev/null 2>&1
   # TEST_WHERE: where a request came from is read from made-up test headers, never this machine's real location.
-  (npx wrangler dev --local --port 8799 --var TEST_WHERE:1 --var SITE_ORIGIN:http://127.0.0.1:8799 "$@" > /tmp/aiohub-dev.log 2>&1 &)
+  # NOTICE_VIA: the address a hub calls when Home changes is never called; the call goes to the tests' stand-in instead.
+  (npx wrangler dev --local --port 8799 --var TEST_WHERE:1 --var SITE_ORIGIN:http://127.0.0.1:8799 --var NOTICE_VIA:http://127.0.0.1:8798/notice "$@" > /tmp/aiohub-dev.log 2>&1 &)
   for i in $(seq 1 60); do curl -s -o /dev/null http://localhost:8799/api/open && return; sleep 0.5; done
 }
 npx vite build >/dev/null 2>&1

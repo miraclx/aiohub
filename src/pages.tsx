@@ -770,7 +770,7 @@ export function HubPage(page: PageProps & {tab: string}) {
     {tab === 'home' && <><HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} level="hub" limit={hub.defaults.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} front={!!hub.front} rows={withForYou(placed(hub.rows), !!hub.front)} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{page.live && !hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p><ForYouEditor {...props}/></>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
-    {tab === 'general' && page.live && <><ServerName hub={hub} update={update} toast={toast}/><Servers hub={hub} live={page.live} toast={toast}/><Advanced live={page.live} toast={toast}/><Background hub={hub}/></>}
+    {tab === 'general' && page.live && <><ServerName hub={hub} update={update} toast={toast}/><Servers hub={hub} live={page.live} toast={toast}/><Notice hub={hub} live={page.live} toast={toast}/><Advanced live={page.live} toast={toast}/><Background hub={hub}/></>}
     {tab === 'general' && SAMPLE && <section>
       <div className="card settings">
         <Setting column title="AIOStreams server" hint="Where the players connect behind the scenes. Changing it moves every group; watch history moves with it.">
@@ -851,6 +851,14 @@ function Background({hub}: {hub: Hub}) {
     // run or the one after, ahead of everything else here. While one waits, since when.
     ...(hub.front ? [{name: 'Home changes to the apps', every: 'When a Home changes with nobody on the site to send it, within 10 min', last: jobs.syncing && jobs.syncingSince ? `Home changes waiting to reach the apps, since ${time(jobs.syncingSince * 1000)}` : 'Nothing waiting',
       next: jobs.syncing ? `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'when a Home changes'}] : []),
+    // The address the manager set to be called when Home changes (worker/notice.ts): when the last call went out and how it went.
+    // At most one every five minutes; one that waits its turn is made by the first run after that.
+    (notice => {
+      const when = (s: number) => day(s * 1000) === 'today' ? time(s * 1000) : `${day(s * 1000)} at ${time(s * 1000)}`, turn = notice ? Math.max(next, Math.ceil((notice.at + 300) * 1000 / FIVE) * FIVE) : next;
+      return {name: 'Home change notice', every: 'After a Home change has reached the apps, at most once every 5 min',
+        last: !notice ? 'Not set' : !notice.result || !notice.at ? 'Nothing sent yet' : notice.result === 'ok' ? `Sent ${when(notice.at)}` : notice.result === 'none' ? `No answer · ${when(notice.at)}` : `Refused (${notice.result}) · ${when(notice.at)}`,
+        next: !notice ? 'once an address is set' : notice.waiting ? `${notice.again ? 'one more try' : 'next one'} in ${Math.max(1, Math.ceil((turn - now) / 60_000))} min` : 'when a Home changes'};
+    })(jobs.notice ?? null),
     {name: 'Trakt sync: here to Trakt', every: 'For everyone with Trakt sync on, every 5 min; for one person as they play', last: `${ran(jobs.last)}${jobs.waiting ? ` · ${jobs.waiting} waiting to send` : ''}`, next: `next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min`},
     {name: 'Trakt and MDBList check', every: `For everyone with both Trakt and MDBList sync on, every day at ${time(start)}`, last: ran(jobs.ran), next: jobs.checking ? 'under way' : `next run ${day(daily)}`},
     // Trakt sync (worker/sync.ts): in the same five-minute run, one person each run, so each is looked at about every 20 minutes,
@@ -914,6 +922,23 @@ function Servers({hub, live, toast}: {hub: Hub; live: Live; toast: (text: string
       <Setting column title="Moving" hint="Changing a server makes fresh setups on the new one and removes the old ones. Apps stay signed in and everything set here carries over. What has been watched so far stays behind on the old AIOStreams server.">
         <button className="primary" disabled={busy || !changed}>{busy ? 'Checking…' : 'Check and save'}</button></Setting>
     </form>
+  </section>;
+}
+
+/* An address the hub calls after a Home change has reached the apps (worker/notice.ts): optional, the manager's to set. It
+   carries a token, so it is typed like a key, never shown again, and the site sends back only its host name. Laid out like the
+   hub's keys under Sources: what it does, then Replace and Remove once one is set. */
+function Notice({hub, live, toast}: {hub: Hub; live: Live; toast: (text: string) => void}) {
+  const set = hub.jobs?.notice ?? null, [draft, setDraft] = useState(''), [replacing, setReplacing] = useState(false), [busy, setBusy] = useState(false), [asking, setAsking] = useState(false);
+  const save = () => {setBusy(true); void live.call('PUT', '/api/notice', {address: draft}).then(() => {setDraft(''); setReplacing(false); toast(set ? 'Address replaced' : 'Address saved'); return live.reload();}, (error: Error) => toast(error.message)).finally(() => setBusy(false));};
+  const field = <form className="field-row" onSubmit={event => {event.preventDefault(); save();}}><input type="password" aria-label="Address to call when Home changes" placeholder={set ? 'New address' : 'https://'} autoComplete="off" autoFocus={!!set} value={draft} onChange={event => setDraft(event.target.value)}/><button className="ghost small" disabled={busy || !draft.trim()}>Save</button></form>;
+  return <section>
+    {asking && <Confirm title="Remove the address?" body="The hub stops calling it when Home changes." action="Remove" onClose={() => setAsking(false)} onYes={() => {setAsking(false); void live.call('DELETE', '/api/notice').then(() => {toast('Address removed'); return live.reload();}, (error: Error) => toast(error.message));}}/>}
+    {/* Always one under the other: beside two buttons the words have no room on a phone. */}
+    <ul className="accounts"><li className="stacked">
+      <div><h3>Call this address when Home changes</h3><p>After a Home change has reached the apps, the hub sends an empty request here. Leave empty for nothing.</p>{set && <p>An address at {set.host} is set.</p>}</div>
+      {!set || replacing ? field : <div className="field-row"><button type="button" className="ghost small" onClick={() => {setReplacing(true); setDraft('');}}>Replace</button><button type="button" className="ghost small" onClick={() => setAsking(true)}>Remove</button></div>}
+    </li></ul>
   </section>;
 }
 

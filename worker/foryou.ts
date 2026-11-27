@@ -16,6 +16,7 @@ import {getSecret, now} from './util';
 import {upNextOf, watchedOf} from './rows';
 import type {Item} from './rows';
 import {syncInTurn} from './native';
+import {changed as homeChanged} from './notice';
 import {refreshShelf} from './shelf';
 import type {Synced} from './native';
 
@@ -357,6 +358,8 @@ export async function resend(env: Env, time: number, early: boolean): Promise<bo
   // (Other work on its setups under way, a page's or the hub's own: left for the next run.)
   const got: Synced | null = pending.data ? await syncInTurn(env, {id: pending.hub, data: pending.data}, '', SYNC_BUDGET).catch(error => ({state: 'error', message: (error as Error).message})) : {state: 'ok'};
   if (!got) return true;
+  // A change that reached the apps is told to the address the hub's manager set, if any (notice.ts).
+  if (pending.data) await homeChanged(env, pending.hub, got);
   if (got.state !== 'ok') console.error('foryou sync', got.state, got.more ? 'more' : '');
   // Still more to do (a few setups a run) is not a failed try; anything else short of done is, and is let go after a few. A flag
   // made again meanwhile (`at` moved on) stays for the next run.

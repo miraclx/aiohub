@@ -22,7 +22,7 @@ While their sync is off, nothing they watch here is sent to Trakt, nothing they 
 
 While their sync is on, the hub:
 
-- adds to their Trakt history what they watch in their apps, as it plays, with where they paused. Trakt is told nothing about something opened and closed again within a couple of minutes;
+- adds to their Trakt history what they watch in their apps, as it plays, with where they paused. Trakt shows them as watching from the moment something starts. Something opened and closed again within a couple of minutes is never counted as watched: it ends on Trakt as paused, at the spot it had here before if there was one;
 - brings back what they watch in other Trakt apps: plays and paused spots missing on either side are added, a paused spot gives way to a later one from Trakt, and nothing is removed. Coming from Trakt, that covers what they watched there in the last 14 days and everything after. Unless they also sync with MDBList, the latest episode of each show they watched on Trakt in the last 120 days is ticked on their own setup too, with the date Trakt has for it, so Next Up in their apps carries on. Shows they dropped or hid on Trakt are left out, and none of that is sent back to Trakt or to MDBList;
 - adds what they watched here before turning sync on only if they ask for it. Their page offers it once, with the list to look at first; if they say not now, those plays are not offered again;
 - takes a tick on a whole season or show in an app as each of its episodes ticked, up to 60 at a time;
@@ -70,6 +70,12 @@ Connecting saves the person's own MDBList key, which reads their watchlist, thei
 While their MDBList sync is on, what they play, tick as watched or pause in their apps is written to their MDBList, what their MDBList has is what their apps show as watched, and, with Trakt sync on too, plays and paused spots from their Trakt are added to it. Turning it on first adds what they watched here that their MDBList lacks, and once a day the hub adds anything that still never got there. Turning it off first copies back what only their MDBList has, so nothing is lost; after that nothing they watch is sent to MDBList and nothing comes back.
 
 Removing the key stops all of it; nothing in their MDBList account is removed.
+
+## The address called when Home changes
+
+A manager can enter one web address under Hub, General. After a Home change has reached the apps, the hub sends that address one empty request, at most once every five minutes. The request has no content and says nothing about the hub or anyone in it: no names, no titles, no ids, no sign-in. It goes only to the address the manager entered, and nowhere if none is set. As with any request the site makes, the receiving server can see that it came from Cloudflare, and Cloudflare adds a header naming the domain the site runs on.
+
+The address is encrypted before it is stored, like a key. It is never shown again, not even to the manager, who sees only its host name. The hub keeps when it last called the address and whether that worked.
 
 ## Where it lives
 

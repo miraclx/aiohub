@@ -51,6 +51,10 @@ export interface Hub {
   // The five-minute background work (manager only): last run (unix seconds), runs counted, calls waiting for Trakt, the last day the
   // Trakt/MDBList check finished, for how many people, and how many are part way through.
   jobs?: {shelved?: number | null; shelves?: number; shelfDue?: number | null;
+    /* The address called when Home changes (worker/notice.ts), as a manager is shown it: its host name, when it was last called
+       (unix seconds, 0 for never) and how that went ('ok', 'none' for no answer, or '3xx', '4xx', '5xx'), and whether a call is
+       waiting its turn (`again`: the one second try after a call that failed). null: none set. The address itself is never sent. */
+    notice?: {host: string; at: number; result: string | null; waiting: boolean; again: boolean} | null;
     /* Recommended rows worked out by the hub (worker/recs.ts): the last time for anyone here, for how many people, and the oldest still kept. */
     recsAt?: number | null; recs?: number; recsDue?: number | null;
     /* Up Next and New for you looked up by the hub for people without Trakt (worker/ahead.ts): the same three. */

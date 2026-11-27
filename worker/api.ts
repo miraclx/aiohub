@@ -7,6 +7,7 @@ import {FOR_YOU_KINDS, PICKABLE, SHELF_TITLES, WAS, current as currentRows, defa
 import type {Addon, Hub, Overrides, Row, Settings} from '../src/data';
 import {challenge, created, signed} from './passkeys';
 import {HUB_OWNER, MOST_PEOPLE, previews, removePlayers, syncInTurn} from './native';
+import {NOTICE, cleanAddress, changed as homeChanged} from './notice';
 import {forgetHub, forgetSeats} from './front';
 import {EARLIER, LINK, answered, brief, deliver, disconnect, forgetTrakt, keepLink, links, read, stopSending, syncOn, traktWait} from './trakt';
 import type {Link} from './trakt';
@@ -169,7 +170,10 @@ async function newSession(env: Env, subject: {account: string} | {hub: string; p
 /* ---------- what a page loads ---------- */
 /* The background work as the manager's page gets it. Trakt sync takes one person each run whichever hub they are in, so how often
    a person's turn comes depends on how many sync across the whole site: only the minutes are given, never that count. */
-const jobsOf = ({syncAll, ...rest}: Record<string, unknown>, forYouHour: number) => ({...rest, syncEvery: turnEvery(Number(syncAll) || 0), forYouHour}) as unknown as Hub['jobs'];
+// `notice`: the address called when Home changes (notice.ts), as far as a manager is shown it: its host name, when it was last
+// called and how that went, and whether a call is waiting its turn (`again`: the one second try after a call that failed).
+const jobsOf = ({syncAll, noticeHost, noticeAt, noticeResult, noticeWanted, noticeRetry, ...rest}: Record<string, unknown>, forYouHour: number) => ({...rest, syncEvery: turnEvery(Number(syncAll) || 0), forYouHour,
+  notice: typeof noticeHost === 'string' ? {host: noticeHost, at: Number(noticeAt) || 0, result: noticeResult ?? null, waiting: noticeWanted === 2, again: noticeWanted === 2 && noticeRetry === 1} : null}) as unknown as Hub['jobs'];
 async function state(env: Env, who: Who) {
   const hub = who.hub, data = JSON.parse(hub.data) as HubData, mine = who.person;
   const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, jobs, plays, picked, shelves, syncs, waits, tolds, favs] = await env.DB.batch([
@@ -188,7 +192,8 @@ async function state(env: Env, who: Who) {
     env.DB.prepare(`SELECT (SELECT at FROM runs WHERE job = 'cron') AS last, (SELECT count FROM runs WHERE job = 'cron') AS runs, (SELECT since FROM runs WHERE job = 'cron') AS since,
       (SELECT max(at) FROM drift WHERE hub = ?1 AND work IS NULL AND result IS NOT NULL) AS ran, (SELECT count(*) FROM trakt_outbox WHERE hub = ?1) AS waiting,
       (SELECT max(day) FROM drift WHERE hub = ?1 AND work IS NULL) AS checked, (SELECT count(*) FROM drift WHERE hub = ?1 AND day = (SELECT max(day) FROM drift WHERE hub = ?1) AND work IS NULL) AS people, (SELECT count(*) FROM drift WHERE hub = ?1 AND work IS NOT NULL) AS checking,
-      (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing, (SELECT min(at) FROM foryou_sync WHERE hub = ?1) AS syncingSince, (SELECT max(json_extract(items, '$.ran')) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recsAt, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recs, (SELECT min(at) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recsDue, (SELECT max(json_extract(items, '$.ran')) FROM rows_cache WHERE hub = ?1 AND kind = 'ahead') AS aheadAt, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'ahead') AS aheads, (SELECT min(at) FROM rows_cache WHERE hub = ?1 AND kind = 'ahead') AS aheadDue, (SELECT max(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelved, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelves, (SELECT max(good) FROM sync WHERE hub = ?1 AND matching = 1) AS matched, (SELECT count(*) FROM sync WHERE hub = ?1 AND matching = 1) AS matching, (SELECT max(good) FROM favs WHERE hub = ?1) AS hearted, (SELECT count(*) FROM favs f WHERE f.hub = ?1 AND EXISTS (SELECT 1 FROM secrets s WHERE s.hub = f.hub AND s.owner = f.person AND s.kind = ?3)) AS hearting, (SELECT count(*) FROM sync y JOIN secrets s ON s.hub = y.hub AND s.owner = y.person AND s.kind = ?3 WHERE y.matching = 1) AS syncAll, (SELECT max(lists_at) FROM drift WHERE hub = ?1) AS listed, (SELECT count(*) FROM people p JOIN secrets s ON s.hub = p.hub AND s.owner = p.id AND s.kind = 'mdblist' WHERE p.hub = ?1 AND json_extract(p.data, '$.lists') = 1) AS listers, (SELECT min(c.at) FROM rows_cache c JOIN people p ON p.hub = c.hub AND p.id = c.person WHERE c.hub = ?1 AND c.kind = 'shelf' AND EXISTS (SELECT 1 FROM json_each(p.data, '$.rows') r WHERE json_extract(r.value, '$.id') IN ('trakt-lists', 'trakt-liked-lists') AND json_extract(r.value, '$.on') = 1)) AS shelfDue`).bind(hub.id, new Date().toISOString().slice(0, 10), LINK),
+      (SELECT count(*) FROM foryou WHERE hub = ?1 AND day = ?2) AS picked, (SELECT max(at) FROM foryou WHERE hub = ?1) AS pickedAt, (SELECT count(*) FROM people WHERE hub = ?1) AS everyone, (SELECT count(*) FROM foryou_sync WHERE hub = ?1) AS syncing, (SELECT min(at) FROM foryou_sync WHERE hub = ?1) AS syncingSince, (SELECT max(json_extract(items, '$.ran')) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recsAt, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recs, (SELECT min(at) FROM rows_cache WHERE hub = ?1 AND kind = 'recs') AS recsDue, (SELECT max(json_extract(items, '$.ran')) FROM rows_cache WHERE hub = ?1 AND kind = 'ahead') AS aheadAt, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'ahead') AS aheads, (SELECT min(at) FROM rows_cache WHERE hub = ?1 AND kind = 'ahead') AS aheadDue, (SELECT max(at) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelved, (SELECT count(*) FROM rows_cache WHERE hub = ?1 AND kind = 'shelf') AS shelves, (SELECT max(good) FROM sync WHERE hub = ?1 AND matching = 1) AS matched, (SELECT count(*) FROM sync WHERE hub = ?1 AND matching = 1) AS matching, (SELECT max(good) FROM favs WHERE hub = ?1) AS hearted, (SELECT count(*) FROM favs f WHERE f.hub = ?1 AND EXISTS (SELECT 1 FROM secrets s WHERE s.hub = f.hub AND s.owner = f.person AND s.kind = ?3)) AS hearting, (SELECT count(*) FROM sync y JOIN secrets s ON s.hub = y.hub AND s.owner = y.person AND s.kind = ?3 WHERE y.matching = 1) AS syncAll, (SELECT max(lists_at) FROM drift WHERE hub = ?1) AS listed, (SELECT count(*) FROM people p JOIN secrets s ON s.hub = p.hub AND s.owner = p.id AND s.kind = 'mdblist' WHERE p.hub = ?1 AND json_extract(p.data, '$.lists') = 1) AS listers, (SELECT min(c.at) FROM rows_cache c JOIN people p ON p.hub = c.hub AND p.id = c.person WHERE c.hub = ?1 AND c.kind = 'shelf' AND EXISTS (SELECT 1 FROM json_each(p.data, '$.rows') r WHERE json_extract(r.value, '$.id') IN ('trakt-lists', 'trakt-liked-lists') AND json_extract(r.value, '$.on') = 1)) AS shelfDue,
+      (SELECT host FROM notices WHERE hub = ?1) AS noticeHost, (SELECT called FROM notices WHERE hub = ?1) AS noticeAt, (SELECT result FROM notices WHERE hub = ?1) AS noticeResult, (SELECT wanted FROM notices WHERE hub = ?1) AS noticeWanted, (SELECT retry FROM notices WHERE hub = ?1) AS noticeRetry`).bind(hub.id, new Date().toISOString().slice(0, 10), LINK),
     // Who has played something here: their Recently Watched has something in it even without Trakt or MDBList.
     env.DB.prepare('SELECT DISTINCT person FROM plays WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
     // What each For you place holds today, by name and what it came from (the manager sees them on that person's Home tab), the
@@ -960,6 +965,23 @@ async function setHost(env: Env, who: Who, body: Body) {
   await env.DB.prepare('UPDATE hubs SET data = ?, version = version + 1 WHERE id = ?').bind(JSON.stringify(next), who.hub.id).run();
   return {v: who.hub.version + 1, missing};
 }
+/* The address the hub calls after a Home change has reached the apps (notice.ts). It carries a token, so it goes into the vault
+   and is never sent back or logged: the manager is shown its host name only. Nothing is asked of it when it is saved. A new
+   address starts with nothing waiting; the time since the last call still counts. */
+async function setNotice(env: Env, who: Who, body: Body, site: URL) {
+  const typed = (typeof body.address === 'string' ? body.address : bad(400, 'Address is not valid')).trim() || bad(400, 'Paste the address');
+  if (typed.length > 300) bad(400, 'That address is too long.');
+  let mine = ''; try {mine = env.SITE_ORIGIN ? new URL(env.SITE_ORIGIN).hostname : '';} catch { /* none */ }
+  const clean = cleanAddress(typed, [site.hostname, mine]);
+  if ('error' in clean) return bad(400, clean.error);
+  await env.DB.batch([await putSecret(env, who.hub.id, HUB_OWNER, NOTICE, clean.address),
+    env.DB.prepare('INSERT INTO notices (hub, host) VALUES (?, ?) ON CONFLICT (hub) DO UPDATE SET host = excluded.host, result = NULL, wanted = 0, retry = 0').bind(who.hub.id, clean.host)]);
+  return {};
+}
+async function dropNotice(env: Env, who: Who) {
+  await env.DB.batch([env.DB.prepare('DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(who.hub.id, HUB_OWNER, NOTICE), env.DB.prepare('DELETE FROM notices WHERE hub = ?').bind(who.hub.id)]);
+  return {};
+}
 async function dropKey(env: Env, who: Who, name: string) {
   await env.DB.prepare('DELETE FROM secrets WHERE hub = ? AND owner = ? AND kind = ?').bind(who.hub.id, HUB_OWNER, `key:${name}`).run();
   return {};
@@ -998,7 +1020,7 @@ async function removeHub(request: Request, env: Env, who: Who, body: Body) {
   if (!await checkPassword(String(body.password ?? ''), stored!.pass)) {await failed(env, key); bad(403, 'That is not your password');}
   if (!await removePlayers(env, who.hub)) bad(502, 'The streaming server did not confirm the removal, so nothing was deleted. Try again in a moment.');
   const hub = who.hub.id;
-  await env.DB.batch([...['devices', 'plays', 'sittings', 'starts', 'fetches', 'heard_fields', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'sync', 'favs', 'hearts', 'sent', 'foryou', 'foryou_sync', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
+  await env.DB.batch([...['devices', 'plays', 'sittings', 'starts', 'fetches', 'heard_fields', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'sync', 'favs', 'hearts', 'sent', 'foryou', 'foryou_sync', 'notices', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
     env.DB.prepare('DELETE FROM hubs WHERE id = ?').bind(hub), env.DB.prepare('DELETE FROM passkeys WHERE account = ?').bind(who.account!.id), env.DB.prepare('DELETE FROM accounts WHERE id = ?').bind(who.account!.id)]);
   // Player apps stop reaching it at once, not when this copy of the Worker next looks the hub up.
   forgetHub(who.hub.code);
@@ -1017,6 +1039,7 @@ async function pushed(env: Env, hub: string, origin: string, at: number) {
   const row = await env.DB.prepare('SELECT h.id, h.data FROM foryou_sync s JOIN hubs h ON h.id = s.hub WHERE s.hub = ?').bind(hub).first<{id: string; data: string}>();
   if (!row) return;
   const got = await syncInTurn(env, row, origin, PUSH).catch(() => null);
+  await homeChanged(env, hub, got);
   if (got?.state === 'ok' && !got.more) await env.DB.prepare('DELETE FROM foryou_sync WHERE hub = ? AND at <= ?').bind(hub, at).run();
 }
 export async function api(request: Request, env: Env, url: URL, ctx?: ExecutionContext): Promise<Response> {
@@ -1072,8 +1095,12 @@ export async function api(request: Request, env: Env, url: URL, ctx?: ExecutionC
     if (first === 'lists' && method === 'POST') return reply(await findList(env, who, body));
     // (One piece of work on a hub's setups at a time; done, nothing is left for the hub to send by itself: pushed, above.)
     if (first === 'sync' && method === 'POST') {
-      const at = now(), got = (await syncInTurn(env, who.hub, url.origin, 30, true))!;
+      const at = now(), {changed, ...got} = (await syncInTurn(env, who.hub, url.origin, 30, true))!;
       if (got.state === 'ok' && !got.more && env.FRONT === 'aiometadata') await env.DB.prepare('DELETE FROM foryou_sync WHERE hub = ? AND at <= ?').bind(who.hub.id, at).run();
+      // A change that reached the apps is told to the address the hub's manager set, if any (notice.ts), once the page has its
+      // answer. Whether anything was written is the hub's own business, and no part of the answer.
+      const told = homeChanged(env, who.hub.id, {...got, changed});
+      if (ctx) ctx.waitUntil(told); else await told;
       return reply(got);
     }
     // An invited person gets their own rows; the manager can ask for anyone's.
@@ -1120,6 +1147,8 @@ export async function api(request: Request, env: Env, url: URL, ctx?: ExecutionC
     if (first === 'services' && second) return reply(await service(request, env, who, second, body));
     if (first === 'keys' && second && KEYS[second] && method === 'PUT') return reply(await catalogKey(env, who, second, body));
     if (first === 'keys' && second === 'mdblist' && method === 'DELETE') return reply(await dropKey(env, who, second));
+    if (first === 'notice' && !second && method === 'PUT') return reply(await setNotice(env, who, body, url));
+    if (first === 'notice' && !second && method === 'DELETE') return reply(await dropNotice(env, who));
     if (first === 'account') return reply(await account(request, env, who, second, third, body, url.origin));
     return reply({message: 'Not found'}, 404);
   } catch (error) {

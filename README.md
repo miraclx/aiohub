@@ -55,6 +55,8 @@ itself and hosts no video.
   which device and from roughly where. Titles saved to a device to watch later show as downloaded.
 - **Background work.** A list, under Hub, General, of every job the hub runs by itself, when each last ran and when it
   runs next.
+- **A call when Home changes.** Optional. Under Hub, General, the manager can enter a web address, and the hub sends it
+  an empty request after a Home change has reached the apps, at most once every five minutes.
 - **Debrid accounts.** A debrid service is a paid account that fetches a file and hands back a direct link to stream it
   from. The hub can hold several (TorBox, Real-Debrid, AllDebrid, Premiumize, Debrid-Link, EasyDebrid), and each group or
   person uses the one you pick for them. People never see the keys.
@@ -195,6 +197,13 @@ Newest first. Dates are the commit dates on `main`.
 
 ### 2026-11-27
 
+- Trakt shows someone as watching as soon as they start, not two minutes in. Something opened and closed within two
+  minutes still never counts as watched: it ends on Trakt as paused, at the spot it had before where there was one.
+- A start, pause or stop that Trakt turns away for being asked too often is sent again when the wait Trakt asked for ends,
+  as the title is by then, and never a start after its stop. Several rows opening at once read the same Trakt list once.
+- New, under Hub, General: "Call this address when Home changes". After a Home change has reached the apps, the hub sends
+  one empty request to an address the manager entered, at most once every five minutes. Background work shows how the
+  last one went.
 - What you watched is one list for every row: your Trakt history, your MDBList and what you finished here, newest first, a
   title in more than one of them once. Recently Watched is that list, For you and Recommended go by it, and connecting Trakt
   no longer stops your MDBList from being read. "Watched here" means finished or ticked, never only begun.
