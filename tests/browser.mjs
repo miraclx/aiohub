@@ -89,6 +89,8 @@ await fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/5 * 
 await owner.goto(BASE + '/#/hub/general'); await owner.reload(); const work = owner.locator('section', {has: owner.getByRole('heading', {name: 'Background work'})});
 const job = name => work.locator('.job', {has: owner.getByRole('heading', {name, exact: true})});
 await work.getByText('The hub does these by itself for everyone, one person at a time. Buttons on a person’s own page act for that person only, right away.').waitFor();
+// The section headings of Hub, General, kept to hold the preview's against (further down: the preview is this same page).
+const generalHeads = page => page.locator('main h2, main .accounts:not(.jobs) > li > div > h3').allTextContents(), realGeneral = await generalHeads(owner);
 // Trakt sync has two rows, one for each direction, and each says it is only for people with sync on.
 const SENDING = 'Trakt sync: here to Trakt', BRINGING = 'Trakt sync: Trakt to here';
 await job(SENDING).getByText('For everyone with Trakt sync on, every 5 min; for one person as they play', {exact: true}).waitFor();
@@ -1054,4 +1056,113 @@ await nobody.getByRole('button', {name: 'Run this hub? Sign in'}).click(); await
 await nobody.getByRole('button', {name: 'Sign in', exact: true}).click(); await nobody.getByRole('heading', {name: 'Sign this TV in as…'}).waitFor();
 await nobody.getByRole('radiogroup', {name: 'Who the TV is for'}).getByRole('radio').nth(1).check(); await nobody.getByRole('button', {name: 'Approve as Ada Two'}).click();
 await nobody.getByText('It signs in as Ada Two in a few seconds.', {exact: true}).waitFor(); await tvShots(nobody, 'f-tv-approved'); assert.equal(await tvIn(tv), true);
+
+// ---------- the preview (/?sample): this same site, with a pretend hub in the browser behind it ----------
+// Nothing it does reaches the hub: every request it makes is looked at, and none is to the hub or to another site (public cover
+// art for the rows of folders aside, as on a real hub). What it has no answer for it says
+// on the console, and that is counted too.
+{
+  const context = await browser.newContext({viewport: {width: 1280, height: 820}, colorScheme: 'dark'}), sample = await context.newPage(), asked = [], unanswered = [];
+  // Mid-afternoon, whenever this runs: the recorded evening then falls on one day, as it does for most visitors. (Just after
+  // midnight a play that began before it is worded differently, on a real hub too.)
+  const noon = new Date(); noon.setHours(15, 0, 0, 0); await context.clock.install({time: noon});
+  sample.on('pageerror', error => errors.push(`preview: ${error.message}`)); sample.on('console', message => {if (/^sample:/.test(message.text())) unanswered.push(message.text());});
+  sample.on('request', request => {const url = new URL(request.url()); if (/^\/(api|h)\//.test(url.pathname) || (url.origin !== new URL(BASE).origin && request.resourceType() !== 'image')) asked.push(request.url());});
+  const at = async hash => {await sample.goto(`${BASE}/?sample#${hash}`); await sample.locator('.preview-bar').waitFor();}, snap = async name => {if (shots) await sample.screenshot({path: `${shots}/preview-${name}.png`});};
+  const said = text => toast(sample).filter({hasText: text}).waitFor(), rowSwitch = name => sample.getByRole('switch', {name: `Show ${name} on Home`});
+  await at('/'); await sample.getByText('Add someone to Family').waitFor();
+  assert.match(await sample.locator('.preview-bar').innerText(), /^Preview with sample data\. Nothing here is saved or sent anywhere\. Reset/);
+  // Two groups, five people, one of them yet to join; whoever is watching is said beside their name, from the same Activity the real page asks for.
+  assert.deepEqual(await sample.locator('.group-head h2').allTextContents(), ['Family', 'Friends']); assert.deepEqual(await sample.locator('.people .person-text strong').allTextContents(), ['Ada', 'Ben', 'Chi', 'Add someone to Family', 'Dev', 'Eve', 'Add someone to Friends']);
+  await sample.locator('.people li', {hasText: 'Ada'}).getByText('Watching Harbor Lights').waitFor(); await sample.locator('.people li', {hasText: 'Chi'}).getByText('Link not opened yet').waitFor(); await snap('people');
+  // (a) Activity draws the parts played, and pointing at one names its times; (f) a downloaded entry and a title marked unwatched are there too.
+  await at('/activity'); await sample.getByRole('heading', {name: 'Watching now'}).waitFor();
+  const part = sample.locator('.now .bar .part[data-time]').first(); assert.ok(await sample.locator('.bar .part[data-time]').count() > 5); assert.equal(await sample.locator('.now .bar .part[data-time]').count() >= 2, true, 'the title playing now was skipped through once, so it has two parts');
+  await part.hover(); assert.match(await part.evaluate(node => getComputedStyle(node, '::after').content), /\d:\d\d–\d+:\d\d/, 'pointing at a part played shows its times'); await snap('activity');
+  await sample.locator('.plays li', {hasText: 'downloaded'}).first().waitFor(); await sample.locator('.plays li', {hasText: 'marked unwatched'}).waitFor();
+  for (const words of [/· paused for \d+ min/, /, last heard \d/, /· marked as watched/, /Runs longer than listed \(88 min\)/, /Watched \d+ of \d+ min · skipped \d+ min/, /· stopped at \d+%/, /\d{1,2}:\d\d [AP]M to \d{1,2}:\d\d [AP]M/]) await sample.locator('main').getByText(words).first().waitFor();
+  await sample.getByText('A title saved to a device to watch later shows as downloaded.').waitFor(); assert.ok(await sample.locator('.plays .posters span[style*="/posters/"]').count() > 5, 'each title has a picture');
+  // (c) Hub, General has the sections the real page has, in the same order.
+  await at('/hub/general'); await sample.getByRole('heading', {name: 'Background work'}).waitFor(); assert.deepEqual(await generalHeads(sample), realGeneral); await snap('hub-general');
+  await sample.locator('.job', {hasText: 'For you picks'}).getByText(/5 of 5 picked today/).waitFor(); assert.equal(await sample.getByLabel('Address to call when Home changes').inputValue(), 'https://example.com/hooks/home-changed');
+  const doors = sample.locator('section', {has: sample.getByRole('heading', {name: 'Advanced'})}); await doors.getByRole('button', {name: 'Show'}).click(); await doors.getByLabel('Your password').fill('anything'); await doors.getByRole('button', {name: 'Show'}).click(); await doors.getByRole('heading', {name: 'People'}).waitFor();
+  // A link to a made-up address says so instead of opening it.
+  await doors.getByRole('link', {name: 'Open AIOStreams'}).click(); await said('Preview: this opens another site on a real hub'); assert.equal(context.pages().length, 1);
+  await at('/hub/sources'); await sample.getByText('Real-Debrid').first().waitFor(); assert.deepEqual(await sample.locator('.accounts').first().locator('li > div > h3').allTextContents(), ['TorBox', 'Real-Debrid', 'AllDebrid']);
+  // (b) A person's Settings tab is the real one: no Advanced section. (e) Their devices are named by the apps that signed in.
+  await at('/person/ada/settings'); await sample.getByRole('heading', {name: 'Profile'}).waitFor(); assert.equal(await sample.getByRole('heading', {name: 'Advanced'}).count(), 0); assert.equal(await sample.getByText('Open in AIOMetadata').count(), 0);
+  await sample.locator('.share-text code').filter({hasText: '/?sample#/join/'}).waitFor();
+  await at('/person/ada/devices'); await sample.locator('.feed li').first().waitFor(); const apps = await sample.locator('.feed li small').evaluateAll(lines => lines.map(line => line.textContent.split(' · ')[0]));
+  assert.deepEqual(apps, ['Wholphin', 'Streamyfin']); await sample.getByRole('button', {name: 'Show'}).click(); await sample.getByLabel('Password', {exact: true}).filter({hasText: /^[a-z]+-[a-z]+-[a-z]+-\d\d$/}).waitFor(); await snap('person-devices');
+  await at('/person/ben/devices'); await sample.getByText('This app only shows new rows after its libraries are refreshed.').waitFor();
+  // A TV approved by its code, a device renamed and one signed out: each shows after the page's own reload.
+  await at('/person/dev/devices'); await sample.getByLabel('Code from the TV').fill('123456'); await sample.getByRole('button', {name: 'Approve'}).click(); await said('TV approved'); assert.equal(await sample.locator('.feed li').count(), 3);
+  await sample.getByLabel('Name of Apple TV').fill('Den TV'); await sample.getByLabel('Name of Apple TV').press('Enter'); await said('Renamed'); await sample.getByLabel('Name of Den TV').waitFor();
+  await sample.locator('.feed li', {has: sample.getByLabel('Name of Dev’s laptop')}).getByRole('button', {name: 'Sign out'}).click(); await sample.getByRole('dialog').getByRole('button', {name: 'Sign out'}).click(); await said('Dev’s laptop signed out'); assert.equal(await sample.locator('.feed li').count(), 2);
+  // The accounts each person has, as their manager sees them; someone who has not joined can have theirs connected with them.
+  await at('/person/ada/accounts'); await sample.getByText('Ada manages their own accounts and sync.').waitFor(); await sample.locator('.who', {hasText: 'ada_watches'}).waitFor(); assert.equal(await sample.getByRole('switch', {name: 'Trakt sync'}).getAttribute('aria-checked'), 'true');
+  await at('/person/dev/accounts'); await sample.locator('.who', {hasText: 'dev_lists'}).waitFor(); assert.equal(await sample.getByRole('switch', {name: 'MDBList sync'}).getAttribute('aria-checked'), 'true'); assert.equal(await sample.getByRole('switch', {name: 'Trakt sync'}).count(), 0);
+  await at('/person/eve/accounts'); assert.equal(await sample.locator('.who', {hasText: 'Not connected'}).count(), 2); assert.equal(await sample.locator('.sync-card').count(), 0);
+  // (d) A person's own view, opened the way their manager opens it: their link. A row Ben turns off there is off on his manager's
+  // view of him, still off after the page is loaded again, and back on after Reset.
+  await at('/person/ben'); await rowSwitch('Trending Movies').waitFor(); assert.equal(await rowSwitch('Trending Movies').getAttribute('aria-checked'), 'true');
+  await sample.locator('.preview-bar').getByRole('link', {name: 'Ben'}).click(); await sample.getByText('Shared with you by Sam').waitFor(); await sample.getByRole('button', {name: 'Back to manager'}).waitFor(); await snap('person-home');
+  // For you picks say why they were picked, and the title playing shows on their own Activity only.
+  await sample.getByText(/^Today: /).first().waitFor(); assert.equal(await sample.locator('.preview-bar a').count(), 0, await sample.locator('.preview-bar').innerHTML());
+  await rowSwitch('Trending Movies').click(); await said('Trending Movies'); await sample.locator('.off li', {hasText: 'Trending Movies'}).waitFor(); await sample.waitForTimeout(700);
+  await sample.goto(`${BASE}/?sample#/me/activity`); await sample.getByText('Paper Kites').first().waitFor(); assert.equal(await sample.getByText('Harbor Lights').count(), 1, 'only their own watching'); assert.equal(await sample.getByRole('heading', {name: 'This week', exact: true}).count(), 0);
+  // Connecting Trakt goes through the real page's steps, with Trakt itself pretended: connected, then asked about sync.
+  await sample.goto(`${BASE}/?sample#/me/accounts`); await sample.locator('li', {has: sample.getByRole('heading', {name: 'Trakt Free'})}).getByRole('button', {name: 'Connect'}).click(); await said('Trakt connected as ben_watches');
+  await sample.locator('.sync-card').getByText('Recommended').waitFor(); await sample.getByRole('switch', {name: 'Trakt sync'}).click(); await said('Trakt sync is on'); await sample.locator('.sync-card').getByText(/^Last checked /).waitFor();
+  await sample.getByRole('button', {name: 'Back to manager'}).click(); await sample.getByText('Add someone to Family').waitFor();
+  await at('/person/ben'); await sample.locator('.off li', {hasText: 'Trending Movies'}).waitFor(); assert.equal(await sample.locator('.rows').getByRole('switch', {name: 'Show Trending Movies on Home'}).count(), 0);
+  await sample.reload(); await sample.locator('.off li', {hasText: 'Trending Movies'}).waitFor(); await at('/person/ben/accounts'); await sample.locator('.who', {hasText: 'ben_watches'}).waitFor();
+  // The other way round: what the manager changes shows on the person's own page. Ben's name, and Eve allowed to change playback.
+  await at('/person/ben/settings'); await sample.getByLabel('Name', {exact: true}).fill('Benji'); await sample.getByLabel('Name', {exact: true}).press('Enter'); await said('Renamed'); await sample.waitForTimeout(700);
+  await sample.goto(`${BASE}/?sample#/join/sample-ben`); await sample.getByRole('heading', {name: 'Benji', exact: true}).waitFor(); await sample.getByText('Shared with you by Sam').waitFor(); await sample.getByRole('button', {name: 'Back to manager'}).click(); await sample.getByText('Add someone to Family').waitFor();
+  // Someone who has not joined: their link waits for them, as on a real hub.
+  await sample.goto(`${BASE}/?sample#/join/sample-chi`); await sample.getByText('Chi hasn’t joined yet.').waitFor();
+  // People and groups added, moved and removed.
+  await at('/'); await sample.getByText('Add someone to Friends').click(); await sample.getByLabel('Their name').fill('Femi'); await sample.getByRole('button', {name: 'Add and get link'}).click(); await sample.getByRole('heading', {name: 'Femi', exact: true}).waitFor(); await sample.locator('.share-text code').filter({hasText: '#/join/sample-femi'}).waitFor();
+  await sample.getByLabel('Group', {exact: true}).selectOption('family'); await said('Moved'); await sample.waitForTimeout(700); await at('/'); assert.deepEqual(await sample.locator('.group').first().locator('.person-text strong').allTextContents(), ['Ada', 'Benji', 'Chi', 'Femi', 'Add someone to Family']);
+  await at('/person/femi/settings'); await sample.getByRole('button', {name: 'Remove Femi'}).click(); await sample.getByRole('dialog').getByRole('button', {name: 'Remove'}).click(); await said('Femi removed'); await sample.waitForTimeout(700);
+  // The manager's account: a passkey added as if this device had made one, recovery codes, the hub's address to call changed.
+  await at('/account'); await sample.locator('li', {hasText: 'Add a passkey'}).getByRole('button', {name: 'Add'}).click(); await said('Passkey added'); assert.equal(await sample.locator('.accounts li', {hasText: /Added \d{4}-/}).count(), 2);
+  await sample.getByRole('button', {name: 'New codes'}).click(); await sample.locator('.codes li').first().waitFor(); assert.equal(await sample.locator('.codes li').count(), 10); await sample.keyboard.press('Escape');
+  await at('/hub/general'); const address = sample.getByLabel('Address to call when Home changes'); await address.fill('https://example.com/hooks/other'); await address.press('Enter'); await said('Address replaced'); await sample.locator('.job', {hasText: 'Home change notice'}).getByText('Nothing sent yet').waitFor();
+  // Signing out really signs out, here; any password signs back in to the same hub.
+  await at('/account'); await sample.getByRole('button', {name: 'Sign out'}).click(); await sample.getByRole('heading', {name: 'Sign in'}).waitFor(); await sample.locator('.preview-bar').waitFor();
+  await sample.getByLabel('Hub code').fill('k7m2x9'); await sample.getByLabel('Password').fill('anything'); await sample.getByRole('button', {name: 'Sign in', exact: true}).click(); await sample.getByText('Add someone to Family').waitFor();
+  assert.deepEqual(await sample.locator('.group').first().locator('.person-text strong').allTextContents(), ['Ada', 'Benji', 'Chi', 'Add someone to Family']);
+  // As Eve, who has nothing connected: MDBList with any key, its sync and the Watchlist switch, a list added to Home by its link,
+  // and a For you pick kept. Each is the real page saving to the pretend hub.
+  await sample.goto(`${BASE}/?sample#/join/sample-eve`); await sample.getByText('Shared with you by Sam').waitFor(); await sample.goto(`${BASE}/?sample#/me/accounts`);
+  await sample.locator('li', {has: sample.getByRole('heading', {name: 'MDBList Free'})}).getByRole('button', {name: 'Connect'}).click(); await sample.getByLabel('MDBList API key').fill('any key'); await sample.getByRole('button', {name: 'Save'}).click(); await said('MDBList connected as eve_lists');
+  await sample.getByRole('switch', {name: 'MDBList sync'}).click(); await said('MDBList sync is on'); assert.equal(await sample.getByRole('switch', {name: 'MDBList sync'}).getAttribute('aria-checked'), 'true');
+  await sample.getByRole('switch', {name: 'Watchlist sync'}).click(); await said('Watchlist is on');
+  await sample.goto(`${BASE}/?sample#/me/home`); await sample.getByRole('button', {name: '+ Add row'}).click(); await sample.getByLabel('From a link').fill('https://mdblist.com/lists/someone/cosy-mysteries'); await sample.getByRole('button', {name: 'Add', exact: true}).click();
+  await sample.locator('.rows .row h3', {hasText: 'Cosy mysteries'}).waitFor(); await sample.keyboard.press('Escape');
+  await sample.locator('.rows .row', {has: sample.locator('h3', {hasText: /^For you$/})}).first().getByRole('button', {name: 'Edit'}).click(); await sample.getByRole('button', {name: /^Keep “/}).click(); await said('Kept. It stays until you let it change.');
+  await sample.waitForTimeout(700); await sample.getByRole('button', {name: 'Back to manager'}).click(); await sample.getByText('Add someone to Family').waitFor();
+  await at('/person/eve'); await sample.locator('.rows .row h3', {hasText: 'Cosy mysteries'}).waitFor(); await at('/person/eve/accounts'); await sample.locator('.who', {hasText: 'eve_lists'}).waitFor();
+  // Deleting the hub leaves a new one to make: first-time setup, step by step, on the same pages a new manager gets.
+  await at('/account'); await sample.getByRole('button', {name: 'Delete', exact: true}).click(); await sample.getByRole('dialog').getByLabel('Password').fill('anything'); await sample.getByRole('button', {name: 'Delete everything'}).click(); await sample.getByRole('heading', {name: 'Sign in'}).waitFor();
+  await sample.getByRole('link', {name: 'Create a hub'}).click(); await sample.getByRole('heading', {name: 'Create your hub'}).waitFor(); assert.equal(await sample.getByLabel('Setup code').count(), 0); await sample.getByLabel('Password').fill('long enough'); await sample.getByRole('button', {name: 'Continue'}).click();
+  await sample.getByRole('heading', {name: /Which account/}).waitFor(); await sample.getByLabel('TorBox API key').fill('any key'); await sample.getByRole('button', {name: 'Continue'}).click(); await sample.getByRole('heading', {name: 'What fills Home?'}).waitFor();
+  await sample.getByLabel('TMDB API key').fill('any key'); await sample.getByRole('button', {name: 'Continue'}).click(); await sample.getByRole('heading', {name: /How should it pick/}).waitFor(); await sample.getByRole('button', {name: 'Continue'}).click();
+  await sample.getByLabel('Name').fill('Zed'); await sample.getByRole('button', {name: 'Finish'}).click(); await sample.getByRole('heading', {name: 'Zed', exact: true}).waitFor(); await sample.locator('.share-text code').filter({hasText: '#/join/sample-zed'}).waitFor();
+  await at('/'); assert.deepEqual(await sample.locator('.people .person-text strong').allTextContents(), ['Zed', 'Add someone to Family']); await at('/activity'); await sample.getByText('Nothing watched yet.').waitFor();
+  // Reset: the hub as it was recorded.
+  await sample.locator('.preview-bar').getByRole('button', {name: 'Reset'}).click(); await sample.locator('.people .person-text strong', {hasText: /^Ben$/}).waitFor(); assert.equal(await sample.locator('.people .person-text strong', {hasText: 'Benji'}).count(), 0);
+  await at('/person/ben'); assert.equal(await rowSwitch('Trending Movies').getAttribute('aria-checked'), 'true'); await at('/person/ben/accounts'); await sample.locator('.who', {hasText: 'Not connected'}).first().waitFor();
+  // Every page a visitor can reach opens, as the manager and as a person, with nothing left unanswered.
+  for (const hash of ['/hub', '/hub/playback', '/group/family', '/group/friends/playback', '/group/friends/sources', '/group/friends/activity', '/group/friends/settings', ...['ada', 'ben', 'chi', 'dev', 'eve'].flatMap(id => ['', '/playback', '/sources', '/activity', '/devices', '/accounts', '/settings'].map(tab => `/person/${id}${tab}`))]) {await at(hash); await sample.locator('main h1').first().waitFor(); await sample.waitForTimeout(120);}
+  for (const id of ['ada', 'dev', 'eve']) {await sample.goto(`${BASE}/?sample#/join/sample-${id}`); await sample.getByText('Shared with you by Sam').waitFor(); for (const tab of ['playback', 'devices', 'accounts', 'activity', 'you', 'home']) {await sample.goto(`${BASE}/?sample#/me/${tab}`); await sample.locator('.tabs').waitFor(); await sample.waitForTimeout(250);}
+    await sample.getByRole('button', {name: 'Back to manager'}).click(); await sample.getByText('Add someone to Family').waitFor();}
+  assert.equal((await sample.locator('.toast span').allTextContents()).join(''), '', 'no page says something went wrong just for being opened');
+  assert.deepEqual(unanswered, [], 'the preview answers everything the pages ask'); assert.deepEqual(asked, [], 'the preview asks the network for nothing but the site’s own files and public cover art');
+  // The pretend hub is its own file, fetched only for the preview: the real site never loads it.
+  const real = await open(), files = []; real.on('request', request => files.push(new URL(request.url()).pathname)); await real.goto(BASE + '/'); await real.getByRole('heading', {name: 'Sign in'}).waitFor(); assert.ok(files.includes('/app.js') && !files.some(file => file.startsWith('/sample-')), JSON.stringify(files)); await real.close();
+  await context.close();
+}
 console.log('browser flow ok; page errors:', JSON.stringify(errors)); await browser.close(); process.exit(errors.length ? 1 : 0);

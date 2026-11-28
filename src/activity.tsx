@@ -1,6 +1,6 @@
 import {useEffect, useState} from 'react';
-import {SAMPLE, samplePlays} from './data';
 import type {Hub, Play} from './data';
+import {picture} from './live';
 import type {Live} from './live';
 import {Avatar, Posters, Segments, Sheet} from './ui';
 
@@ -34,7 +34,7 @@ function told(row: Noted, now: number, code: string): Play | null {
   const at = new Date(row.updated * 1000), today = new Date(now * 1000), days = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() - new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime()) / 86400000);
   if (days > 6) return null;
   // Marked unwatched in an app, after it was played here: said quietly, with the device and time, like a tick as watched.
-  if (row.undone) return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}/${row.started}`, stamp: row.updated, personId: row.person, title: row.title, detail: `${row.detail} · marked unwatched`, on: row.device || 'A player app',
+  if (row.undone) return {art: row.art ? picture(code, row.art) : undefined, id: `${row.person}/${row.item}/${row.started}`, stamp: row.updated, personId: row.person, title: row.title, detail: `${row.detail} · marked unwatched`, on: row.device || 'A player app',
     when: ran(row, days, false, false), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
   // `updated` is when the player was last heard from: a player left open keeps reporting, paused or not. One that went quiet
   // without saying it stopped is shown with when it was last heard, and, if it sat paused, when that pause began. Where it was
@@ -46,7 +46,7 @@ function told(row: Noted, now: number, code: string): Play | null {
   const end = live ? '' : row.paused && row.playing ? ` · paused${partsOf(row).length && !row.over ? '' : ` at ${clock(row.position)}`}${row.since ? heard ? ` for ${span(now - row.since)}` : row.updated - row.since < 300 ? '' : ` since ${hm(row.since)}` : ''}` : row.over ? (ticked(row) && !partsOf(row).length ? ' · marked as watched' : finishedLong(row) ? ' · finished' : row.position ? ` · stopped at ${clock(row.position)}` : '')
     : ticked(row) && Math.max(0, ...partsOf(row).map(([, b]) => b)) < row.duration * 0.9 ? ' · marked as watched' : share >= 90 ? ' · finished' : share ? ` · stopped at ${share}%` : '';
   const parts = joined(partsOf(row)), seen = whole && row.parts ? parts.map(([a, b]) => [a / whole * 100, (b - a) / whole * 100] as [number, number]) : undefined;
-  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `${row.person}/${row.item}/${row.started}`, stamp: row.updated, personId: row.person, title: row.title, detail: row.detail + end, parts: seen, mark: whole ? Math.min(100, row.position / whole * 100) : undefined, ranges: parts.map(([a, b], n) => `${parts.length > 1 && row.started >= ORDERED ? `${nth(n + 1)} · ` : ''}${clock(a)}–${clock(b)}`), line: lineOf(row, parts), longer: row.over ? `Runs longer than listed (${minutes(row.duration)} min)` : undefined, clock: row.over ? clock(row.position) : undefined, progress: heard || (share && (row.over ? !finishedLong(row) : share < 90)) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
+  return {art: row.art ? picture(code, row.art) : undefined, id: `${row.person}/${row.item}/${row.started}`, stamp: row.updated, personId: row.person, title: row.title, detail: row.detail + end, parts: seen, mark: whole ? Math.min(100, row.position / whole * 100) : undefined, ranges: parts.map(([a, b], n) => `${parts.length > 1 && row.started >= ORDERED ? `${nth(n + 1)} · ` : ''}${clock(a)}–${clock(b)}`), line: lineOf(row, parts), longer: row.over ? `Runs longer than listed (${minutes(row.duration)} min)` : undefined, clock: row.over ? clock(row.position) : undefined, progress: heard || (share && (row.over ? !finishedLong(row) : share < 90)) ? share : undefined, on: row.device || 'A player app', where: row.place ? [row.place, brief(row.net)].filter(Boolean).join(' · ') : undefined,
     live: heard, quiet: quiet && days === 0, when: ran(row, days, heard, quiet), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
 }
 /* A title's file fetched by an app with no play to go with it (api.ts): shown as its own entry, as a download. */
@@ -54,7 +54,7 @@ interface Fetched {person: string; item: string; at: number; title: string; deta
 function downloaded(row: Fetched, now: number, code: string): Play | null {
   const at = new Date(row.at * 1000), today = new Date(now * 1000), days = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() - new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime()) / 86400000);
   if (days > 6) return null;
-  return {art: row.art ? `/h/${code}/Items/${row.art}/Images/Primary?maxHeight=300` : undefined, id: `down/${row.person}/${row.item}/${row.device}/${row.at}`, personId: row.person, title: row.title, detail: `${row.detail} · downloaded`, on: row.device || 'A player app', down: true, stamp: row.at,
+  return {art: row.art ? picture(code, row.art) : undefined, id: `down/${row.person}/${row.item}/${row.device}/${row.at}`, personId: row.person, title: row.title, detail: `${row.detail} · downloaded`, on: row.device || 'A player app', down: true, stamp: row.at,
     when: days > 1 ? at.toLocaleDateString(undefined, {weekday: 'long'}) : at.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'}), day: days === 0 ? 'Today' : days === 1 ? 'Yesterday' : 'Earlier this week'};
 }
 /* Parts are kept in the order they were first played since this deploy (front.ts); earlier sittings kept them in the order they
@@ -148,16 +148,16 @@ function Bar({play}: {play: Play}) {
 }
 /* The title's own picture, as the player apps show it. */
 const Picture = ({url}: {url: string}) => <div className="posters" aria-hidden="true"><span style={{backgroundImage: `url(${JSON.stringify(url)})`}}/></div>;
-export function Activity({hub, personId, groupId, pick, toast, live}: {hub: Hub; personId?: string; groupId?: string; pick?: boolean; toast: (text: string) => void; live?: Live}) {
+export function Activity({hub, personId, groupId, pick, toast, live}: {hub: Hub; personId?: string; groupId?: string; pick?: boolean; toast: (text: string) => void; live: Live}) {
   const [filter, setFilter] = useState('all'), [title, setTitle] = useState<string | null>(null), [real, setReal] = useState<Play[]>([]), [turn, setTurn] = useState(0), [noted, setNoted] = useState<{now: number; sittings: Noted[]}>({now: 0, sittings: []});
   useEffect(() => {
-    if (!live) return; let on = true;
+    let on = true;
     void live.call<{now: number; sittings: Noted[]; downloads?: Fetched[]}>('GET', '/api/activity').then(found => {if (on) {setNoted(found); setReal([...found.sittings.map(row => told(row, found.now, hub.code)), ...(found.downloads ?? []).map(row => downloaded(row, found.now, hub.code))].filter((play): play is Play => !!play).sort((a, b) => (b.stamp ?? 0) - (a.stamp ?? 0))); if (turn) toast('Up to date');}}, (error: Error) => toast(error.message));
     return () => {on = false;};
   }, [live, turn]);
   const scope = groupId ?? (filter === 'all' ? undefined : filter);
   const person = (id: string) => hub.people.find(item => item.id === id);
-  const all = (SAMPLE ? samplePlays() : real).filter(play => person(play.personId));
+  const all = real.filter(play => person(play.personId));
   const plays = all.filter(play => (!personId || play.personId === personId) && (!scope || person(play.personId)!.groupId === scope));
   const name = (id: string) => person(id)?.name ?? '';
   const now = plays.filter(play => play.live), days = ['Today', 'Yesterday', 'Earlier this week'] as const;
@@ -166,7 +166,7 @@ export function Activity({hub, personId, groupId, pick, toast, live}: {hub: Hub;
   const text = (play: typeof plays[number]) => personId ? play.detail : `${name(play.personId)} · ${play.detail}`;
   const head = <div className="activity-bar">
     {pick && hub.groups.length > 1 ? <Segments label="Show" value={filter} onChange={setFilter} options={[{value: 'all', label: 'Everyone'}, ...hub.groups.map(group => ({value: group.id, label: group.name}))]}/> : <span/>}
-    <button type="button" className="ghost small" onClick={() => live ? setTurn(turn + 1) : toast('Up to date')}>Refresh</button>
+    <button type="button" className="ghost small" onClick={() => setTurn(turn + 1)}>Refresh</button>
   </div>;
   if (!plays.length) return <section>{head}<p className="empty">Nothing watched yet. It shows up here once someone presses play.</p></section>;
   return <section>

@@ -12,7 +12,9 @@
     "db:migrations:apply": "wrangler d1 migrations apply DB --remote",
     "deploy": "npm run db:migrations:apply && wrangler deploy",
     "setup": "node setup.mjs",
-    "test": "sh tests/run.sh"
+    "test": "sh tests/run.sh",
+    "sample:record": "sh tests/run.sh sample",
+    "sample:check": "sh tests/run.sh sample --check"
   },
   "dependencies": {
     "@dnd-kit/react": "0.5.3",

@@ -1,33 +1,32 @@
 import {Fragment, useEffect, useRef, useState} from 'react';
 import type {ReactNode} from 'react';
 import {QRCodeSVG} from 'qrcode.react';
-import {FOR_YOU_KINDS, KEEPS_ROWS, SAMPLE, isPlace, orderOf, allServices, signUp, defaultRows, defaultSettings, groupRows, hosts, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, ownLists, personRows, currentPicks, linkedOf, needOf, resolve, samplePassword, samplePin, slug, traktRows, pillOf, SHELF_TITLES} from './data';
+import {FOR_YOU_KINDS, KEEPS_ROWS, isPlace, orderOf, allServices, signUp, defaultRows, defaultSettings, groupRows, isTrakt, newPerson, placed, pickable, TRAKT_IDS, withKids, withForYou, personRows, currentPicks, linkedOf, needOf, resolve, slug, traktRows, pillOf, SHELF_TITLES} from './data';
 import type {Device, Group, Hub, Person, Row, Settings} from './data';
 import {Activity} from './activity';
 import {GroupOrder, HomeEditor, moved} from './home';
 import {ForYouEditor, PlaybackEditor, SourcesEditor} from './settings';
 import type {EditorProps} from './settings';
-import {addPasskey, beAs, canPasskey, leaveAs, usePasskey} from './live';
+import {addPasskey, beAs, canPasskey, hubCode, leave, leaveAs, outside, usePasskey} from './live';
 import type {Live} from './live';
 import {Avatar, Confirm, NameField, Secret, Segments, Setting, Sheet, Switch, Tabs, addReal} from './ui';
 
-/* `live` is there when the page is backed by the real hub; without it everything runs on the preview's sample data. */
-export interface PageProps {hub: Hub; go: (to: string) => void; update: (change: (hub: Hub) => void) => void; toast: (text: string) => void; live?: Live}
+/* `live`: the hub behind the page (src/live.ts). */
+export interface PageProps {hub: Hub; go: (to: string) => void; update: (change: (hub: Hub) => void) => void; toast: (text: string) => void; live: Live}
 const HUB = 'Everyone';
-const soon = (toast: (text: string) => void, what: string) => () => toast(`Preview: this opens ${what}`);
 const fail = (toast: (text: string) => void) => (error: Error) => toast(error.message);
 
-/* A person's sign-in details. On the real hub they are fetched for one person at a time, only when a page shows them. */
+/* A person's sign-in details, fetched for one person at a time, only when a page shows them. */
 interface Creds {password: string; pin: string | null; link: string}
 function useCreds({live}: PageProps, person: Person): [Creds | null, () => void] {
   // Kept with whose they are: another person's page shows nothing until its own have come, never the last person's.
   const [creds, setCreds] = useState<{id: string; creds: Creds} | null>(null), [turn, setTurn] = useState(0);
   useEffect(() => {
-    if (!live) return; let on = true;
+    let on = true;
     void live.settled().then(() => live.call<Creds>('GET', `/api/people/${person.id}/signin`)).then(found => {if (on) setCreds({id: person.id, creds: found});}, () => {});
     return () => {on = false;};
   }, [live, person.id, turn]);
-  return [live ? creds?.id === person.id ? creds.creds : null : {password: person.password, pin: person.pin, link: `${location.origin}/${location.search}#/join/${person.id}`}, () => setTurn(turn + 1)];
+  return [creds?.id === person.id ? creds.creds : null, () => setTurn(turn + 1)];
 }
 function PasswordSheet({onClose, onSave, toast}: {onClose: () => void; onSave: (old: string, next: string) => Promise<unknown>; toast: (text: string) => void}) {
   const [old, setOld] = useState(''), [next, setNext] = useState(''), [busy, setBusy] = useState(false);
@@ -63,13 +62,13 @@ export function PeoplePage(page: PageProps) {
   const [adding, setAdding] = useState<string | null>(null), [name, setName] = useState(''), [from, setFrom] = useState(''), [grouping, setGrouping] = useState(false), [ordering, setOrdering] = useState(false);
   // Who is watching something right now, said beside their name. The rest of it is under Activity.
   const [playing, setPlaying] = useState<Record<string, string>>({});
-  useEffect(() => {if (!page.live) return; void page.live.call<{now: number; sittings: {person: string; title: string; playing: number; paused?: number; updated: number}[]}>('GET', '/api/activity').then(found => setPlaying(Object.fromEntries(found.sittings.filter(play => play.playing && !play.paused && found.now - play.updated < 600).reverse().map(play => [play.person, play.title]))), () => {});}, [hub.v]);
+  useEffect(() => {void page.live.call<{now: number; sittings: {person: string; title: string; playing: number; paused?: number; updated: number}[]}>('GET', '/api/activity').then(found => setPlaying(Object.fromEntries(found.sittings.filter(play => play.playing && !play.paused && found.now - play.updated < 600).reverse().map(play => [play.person, play.title]))), () => {});}, [hub.v]);
   return <>
     <div className="page-head"><div className="title-row"><h1>People</h1>{hub.groups.length > 1 && <button type="button" className="link" onClick={() => setOrdering(true)}>Reorder groups</button>}</div><p className="muted">Everyone you share streaming with. Each person gets their own Home.</p></div>
     {hub.groups.map(group => {
       const people = hub.people.filter(person => person.groupId === group.id);
       return <section key={group.id} className="group">
-        <div className="group-head"><h2>{group.name}{group.paused && <em className="tag">Paused</em>}</h2><span className="group-links">{SAMPLE && <button type="button" className="link" onClick={soon(toast, `the ${group.name} player`)}>Watch</button>}<a className="link" href={`#/group/${group.id}`}>Group settings</a></span></div>
+        <div className="group-head"><h2>{group.name}{group.paused && <em className="tag">Paused</em>}</h2><span className="group-links"><a className="link" href={`#/group/${group.id}`}>Group settings</a></span></div>
         <ul className="people">{people.map(person => <li key={person.id}><a href={`#/person/${person.id}`}>
           <Avatar name={person.name}/>
           <span className="person-text"><strong>{person.name}</strong><small>{person.paused || group.paused ? 'Paused' : playing[person.id] ? `Watching ${playing[person.id]}` : person.joined ? `${personRows(hub, person).filter(row => row.on).length} rows on Home${person.rows || Object.keys(person.settings).length ? ' · personalized' : ''}` : 'Link not opened yet'}</small></span>
@@ -121,44 +120,35 @@ const seenAt = (device: Device) => {
 /* AIOStreams' own web player: what the site links to unless it names another (WEB_PLAYER, worker/util.ts). */
 const AIOSTREAMS_PLAYER = 'https://web.aiostreams.org';
 function Devices({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
-  const {update, toast, live} = page;
-  const [code, setCode] = useState(''), [pin, setPin] = useState<string | null>(null);
+  const {toast, live} = page;
+  const [code, setCode] = useState('');
   const [ask, setAsk] = useState<{title: string; body: string; action: string; yes: () => void} | null>(null);
   const [creds, refresh] = useCreds(page, person), at = `/api/people/${person.id}`;
-  const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
-  const act = (work: Promise<unknown>, note: string) => {void work.then(async () => {await live!.reload(); refresh(); toast(note);}, fail(toast));};
+  const act = (work: Promise<unknown>, note: string) => {void work.then(async () => {await live.reload(); refresh(); toast(note);}, fail(toast));};
   const copy = (text: string) => () => {void navigator.clipboard?.writeText(text).catch(() => {}); toast('Copied');};
   const who = mine ? 'you' : person.name;
   return <section>
-    <div className="section-head"><div><h2>Devices</h2><p className="muted">Any Jellyfin app works: on a phone, a TV or a laptop.</p></div>{SAMPLE && <button type="button" className="primary" onClick={soon(toast, `${mine ? 'your' : person.name + '’s'} player in the browser`)}>Watch here</button>}</div>
-    {live && !person.ready && <div className="notice"><span>{mine ? 'Your' : `${person.name}’s`} profile can’t sign in to a player app yet. It is being set up on the streaming server; if this stays, check that a debrid account is connected under Hub, Sources.</span></div>}
+    <div className="section-head"><div><h2>Devices</h2><p className="muted">Any Jellyfin app works: on a phone, a TV or a laptop.</p></div></div>
+    {!person.ready && <div className="notice"><span>{mine ? 'Your' : `${person.name}’s`} profile can’t sign in to a player app yet. It is being set up on the streaming server; if this stays, check that a debrid account is connected under Hub, Sources.</span></div>}
     <h3 className="sub first">Sign in to an app</h3>
     <dl className="card creds">
       <div><dt>Server</dt><dd><code>{`${location.origin}/h/${page.hub.code}`}</code><button type="button" className="ghost small" onClick={copy(`${location.origin}/h/${page.hub.code}`)}>Copy</button></dd></div>
       <div><dt>Username</dt><dd><code>{person.name}</code><button type="button" className="ghost small" onClick={copy(person.name)}>Copy</button></dd></div>
       <div><dt>Password</dt><dd><Secret value={creds?.password ?? ''} label="Password" onCopy={() => toast('Copied')}/></dd></div>
     </dl>
-    <p className="muted small below">The username is {mine ? 'your' : 'their'} name; capitals and spaces don’t matter. This password is only for player apps{live ? `, separate from the one ${mine ? 'you use' : 'they use'} on this site` : ''}. Signing out everywhere replaces it.</p>
-    {live && page.hub.webPlayer && <><h3 className="sub">In a browser</h3>
+    <p className="muted small below">The username is {mine ? 'your' : 'their'} name; capitals and spaces don’t matter. This password is only for player apps, separate from the one {mine ? 'you use' : 'they use'} on this site. Signing out everywhere replaces it.</p>
+    {page.hub.webPlayer && <><h3 className="sub">In a browser</h3>
     <div className="card settings"><Setting title="Watch in a browser" hint={page.hub.webPlayer === AIOSTREAMS_PLAYER ? 'Opens AIOStreams’ own web player. The first time, paste the server address above, then sign in with the username and password. Quick Connect works there too.' : 'Opens a web player. The first time, paste the server address above, then sign in with the username and password.'}>
       <a className="ghost small button" href={page.hub.webPlayer} target="_blank" rel="noreferrer" onClick={() => {void navigator.clipboard?.writeText(`${location.origin}/h/${page.hub.code}`).catch(() => {}); toast('Server address copied');}}>Watch</a></Setting></div></>}
     <h3 className="sub">On a TV</h3>
-    <form className="card quick" onSubmit={event => {event.preventDefault(); if (live) {act(live.call('POST', `${at}/quick`, {code}), 'TV approved. It signs in within a few seconds.'); setCode(''); return;} edit(target => {target.devices.unshift({id: `d${Date.now()}`, app: 'AIOStreams', name: 'New TV', seen: 'Now'});}, 'TV signed in'); setCode('');}}>
+    <form className="card quick" onSubmit={event => {event.preventDefault(); act(live.call('POST', `${at}/quick`, {code}), 'TV approved. It signs in within a few seconds.'); setCode('');}}>
       <div><h3>Quick Connect</h3><p>Choose Quick Connect on the TV, then type the code it shows.</p></div>
       <div className="field-row"><input inputMode="numeric" aria-label="Code from the TV" placeholder="6-digit code" maxLength={6} value={code} onChange={event => setCode(event.target.value.replace(/\D/g, ''))}/><button className="primary" disabled={code.length !== 6}>Approve</button></div>
     </form>
-    {SAMPLE && <><h3 className="sub">Profile PIN</h3>
-    <div className="card settings">
-      <Setting title="Ask for a PIN" hint={`On a shared screen everyone’s profile is listed. The PIN keeps ${mine ? 'yours' : person.name + '’s'} closed to the others.`}><Switch label="Ask for a PIN" checked={!!person.pin} onChange={value => edit(target => {target.pin = value ? samplePin(person.id) : null;}, value ? 'PIN on' : 'PIN off')}/></Setting>
-      {person.pin && <Setting column title="PIN" hint="Changing it signs every device out.">
-        {pin === null ? <span className="secret"><Secret value={person.pin} label="PIN" onCopy={() => toast('Copied')}/><button type="button" className="ghost small" onClick={() => setPin('')}>Change</button></span>
-          : <form className="field-row narrow" onSubmit={event => {event.preventDefault(); edit(target => {target.pin = pin; target.devices = [];}, 'PIN changed'); setPin(null);}}><input inputMode="numeric" aria-label="New PIN" placeholder="6 digits" maxLength={8} autoFocus value={pin} onChange={event => setPin(event.target.value.replace(/\D/g, ''))}/><button className="primary" disabled={pin.length < 6}>Save</button></form>}
-      </Setting>}
-    </div></>}
     <h3 className="sub">Signed in</h3>
     {ask && <Confirm title={ask.title} body={ask.body} action={ask.action} onYes={() => {const yes = ask.yes; setAsk(null); yes();}} onClose={() => setAsk(null)}/>}
-    {person.devices.length ? <><ul className="feed">{person.devices.map(device => <li key={device.id}><div className="quiet-name">{live ? <NameField label={`Name of ${device.name}`} value={device.name} onSave={value => act(live.call('PUT', `${at}/devices/${device.id}`, {name: value}), 'Renamed')}/> : <strong>{device.name}</strong>}<small>{device.app} · {device.seen === 'Now' ? 'active now' : `last used ${device.seen.toLowerCase()}`}{seenAt(device)}</small>{KEEPS_ROWS.some(app => device.app.toLowerCase().includes(app.toLowerCase())) && <small className="keeps-rows">This app only shows new rows after its libraries are refreshed.{page.hub.setupPage?.startsWith('https://') && <> <a className="link" href={page.hub.setupPage} target="_blank" rel="noopener noreferrer">Set up automatic refresh</a></>}</small>}</div><button type="button" className="ghost small" onClick={() => setAsk({title: `Sign out ${device.name}?`, body: `The app on ${device.name} has to sign in again before it plays anything. Nothing else changes.`, action: 'Sign out', yes: () => live ? act(live.call('DELETE', `${at}/devices/${device.id}`), `${device.name} signed out`) : edit(target => {target.devices = target.devices.filter(item => item.id !== device.id);}, `${device.name} signed out`)})}>Sign out</button></li>)}</ul>
-      <button type="button" className="link below" onClick={() => live ? act(live.call('POST', `${at}/rotate`, {}), 'Signed out everywhere. New password set.') : edit(target => {target.devices = []; target.password = samplePassword(person.id);}, 'Signed out everywhere. New password set.')}>Sign {who} out everywhere</button></>
+    {person.devices.length ? <><ul className="feed">{person.devices.map(device => <li key={device.id}><div className="quiet-name"><NameField label={`Name of ${device.name}`} value={device.name} onSave={value => act(live.call('PUT', `${at}/devices/${device.id}`, {name: value}), 'Renamed')}/><small>{device.app} · {device.seen === 'Now' ? 'active now' : `last used ${device.seen.toLowerCase()}`}{seenAt(device)}</small>{KEEPS_ROWS.some(app => device.app.toLowerCase().includes(app.toLowerCase())) && <small className="keeps-rows">This app only shows new rows after its libraries are refreshed.{page.hub.setupPage?.startsWith('https://') && <> <a className="link" href={page.hub.setupPage} target="_blank" rel="noopener noreferrer">Set up automatic refresh</a></>}</small>}</div><button type="button" className="ghost small" onClick={() => setAsk({title: `Sign out ${device.name}?`, body: `The app on ${device.name} has to sign in again before it plays anything. Nothing else changes.`, action: 'Sign out', yes: () => act(live.call('DELETE', `${at}/devices/${device.id}`), `${device.name} signed out`)})}>Sign out</button></li>)}</ul>
+      <button type="button" className="link below" onClick={() => act(live.call('POST', `${at}/rotate`, {}), 'Signed out everywhere. New password set.')}>Sign {who} out everywhere</button></>
       : <p className="muted">No device yet.</p>}
   </section>;
 }
@@ -179,11 +169,11 @@ const Who = ({name}: {name: string}) => <p className="who" title={name || undefi
    What each switch drives has one owner, made here once (useTraktSync, useListsSync) and read by the cards: the page's rounds of
    catching up must never run twice. */
 function Accounts({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
-  const {hub, live} = page, group = hub.groups.find(item => item.id === person.groupId)!;
+  const {hub} = page, group = hub.groups.find(item => item.id === person.groupId)!;
   const trakt = useTraktSync(page, person, mine), lists = useListsSync(page, person, mine || !person.joined);
-  const linked = live ? !!person.history || person.lists || !!person.listsKept || !!person.moving : !!person.trakt || person.lists;
+  const linked = !!person.history || person.lists || !!person.listsKept || !!person.moving;
   return <section>
-    <div className="section-head"><div><h2>Accounts</h2><p className="muted">{mine ? 'Connect your own accounts. Connecting only reads from them. Sync, below, is what writes.' : live && person.joined ? `${person.name} manages their own accounts and sync.` : live ? <>{person.name} can connect their own accounts, or you can do it here with them. Connecting only reads from them. Sync, below, is what writes.</> : <>Only {person.name} can connect these, from their own page. <a className="link" href={`#/person/${person.id}/settings`}>Get their link</a></>}</p></div></div>
+    <div className="section-head"><div><h2>Accounts</h2><p className="muted">{mine ? 'Connect your own accounts. Connecting only reads from them. Sync, below, is what writes.' : person.joined ? `${person.name} manages their own accounts and sync.` : <>{person.name} can connect their own accounts, or you can do it here with them. Connecting only reads from them. Sync, below, is what writes.</>}</p></div></div>
     <ul className="accounts">
       <li><div><h3>Streams</h3><p>Played through the shared {resolve(hub, group, person).values.debrid} account. Nothing to set up.</p></div><span className="pill ok">Shared</span></li>
       <Trakt page={page} person={person} mine={mine}/>
@@ -241,14 +231,14 @@ const Gains = ({lines}: {lines: string[]}) => <div className="gains">{lines.map(
    addresses the hub calls from for a while at times, and a browser is not affected. The proof that finishes the sign-in stays in
    this tab; the hub only gets the finished login, to keep and renew. */
 function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boolean}) {
-  const {hub, update, toast, live} = page, at = `/api/people/${person.id}/scrobble`, link = person.history;
+  const {hub, toast, live} = page, at = `/api/people/${person.id}/scrobble`, link = person.history;
   const [phase, setPhase] = useState<'' | 'going' | 'connecting' | 'busy'>(''), busy = !!phase, [dropping, setDropping] = useState(false);
   const [older, setOlder] = useState(false);
   const their = mine ? 'your' : 'their', client = hub.traktClient ?? '';
   // The sign-in Trakt just sent back here, if it was for this person: the code is exchanged for the login, once.
   useEffect(() => {
     const back = returned, saved_ = signing();
-    if (!live || !back || saved_?.person !== person.id || saved_.hub !== hub.code) return;
+    if (!back || saved_?.person !== person.id || saved_.hub !== hub.code) return;
     returned = null; sessionStorage.removeItem(SIGNING);
     if (back.error || !back.code) return void toast(back.error === 'access_denied' ? 'Trakt wasn’t connected.' : 'Trakt didn’t finish signing in. Connect again.');
     if (back.state !== saved_.state) return void toast('That Trakt sign-in wasn’t started here. Connect again.');
@@ -258,16 +248,16 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     setPhase('connecting');
     const redirect = `${location.origin}/api/trakt/callback`, waiting = () => setPhase('busy');
     // Trakt's sign-in host allows only plain headers from a page; the API host wants its own.
-    const token = await patiently(() => fetch(`${TRAKT_AUTH}/oauth/token`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({code, client_id: client, redirect_uri: redirect, grant_type: 'authorization_code', code_verifier: verifier})}), waiting);
+    const token = await patiently(() => outside(`${TRAKT_AUTH}/oauth/token`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({code, client_id: client, redirect_uri: redirect, grant_type: 'authorization_code', code_verifier: verifier})}), waiting);
     const said = token ? await token.json().catch(() => null) as {access_token?: string; refresh_token?: string; expires_in?: number; created_at?: number; error?: string} | null : null, got = token?.ok ? said : null;
     // Trakt's own reason (its status and error name, never anything secret) goes in the message, so a failure can be told apart.
     if (!got?.access_token || !got.refresh_token) {setPhase(''); return toast(token ? `Trakt didn’t accept that sign-in (${token.status}${said?.error ? ` ${String(said.error).slice(0, 40)}` : ''}). Connect again.` : 'Trakt isn’t answering right now. Connect again in a few minutes.');}
-    const me = await patiently(() => fetch(`${TRAKT_API}/users/settings`, {headers: {'content-type': 'application/json', 'trakt-api-version': '2', 'trakt-api-key': client, authorization: `Bearer ${got.access_token}`}}), waiting);
+    const me = await patiently(() => outside(`${TRAKT_API}/users/settings`, {headers: {'content-type': 'application/json', 'trakt-api-version': '2', 'trakt-api-key': client, authorization: `Bearer ${got.access_token}`}}), waiting);
     // Their username to show, and Trakt's own stable name for the account (its slug), so the hub knows the same account connected again.
     const user = (me?.ok ? await me.json().catch(() => null) as {user?: {username?: string; ids?: {slug?: string}}} | null : null)?.user, username = String(user?.username ?? ''), slug = String(user?.ids?.slug ?? '');
     setPhase('connecting');
-    await live!.call('POST', `${at}/link`, {access: got.access_token, refresh: got.refresh_token, lasts: got.expires_in, created: got.created_at, username, slug, redirect})
-      .then(() => {toast(username ? `Trakt connected as ${username}` : 'Trakt connected'); live!.apps(); void live!.reload();}, fail(toast));
+    await live.call('POST', `${at}/link`, {access: got.access_token, refresh: got.refresh_token, lasts: got.expires_in, created: got.created_at, username, slug, redirect})
+      .then(() => {toast(username ? `Trakt connected as ${username}` : 'Trakt connected'); live.apps(); void live.reload();}, fail(toast));
     setPhase('');
   };
   // What connecting gives. Nothing here needs sync, and only what truly needs Trakt is said:
@@ -280,14 +270,7 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
   const gains = [...(hub.front ? [`For you also learns from what ${mine ? 'you’ve' : 'they’ve'} watched on Trakt.`] : []),
     `Up Next and New for you follow ${their} Trakt, so they count what ${mine ? 'you' : 'they'} watch anywhere.`, `Adds ${their} Trakt lists to Home.`];
   // Once they have joined, their accounts are theirs alone: their manager sees who it is connected as, and no buttons.
-  const on = !!link && !link.again, shown = !mine && !!live && person.joined;
-  if (!live) {
-    const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
-    return <li className="stacked"><div className="account-row"><div><h3>Trakt <span className="free">Free</span></h3>{person.trakt && <Who name=""/>}</div>
-      {person.trakt ? <button type="button" className="ghost small" onClick={() => edit(target => {target.trakt = false; target.rows = target.rows?.filter(row => !isTrakt(row)) ?? null;}, 'Trakt disconnected')}>Disconnect</button>
-        : mine ? <button type="button" className="primary small" onClick={() => edit(target => {target.trakt = true; if (target.rows) target.rows = [...traktRows(), ...target.rows];}, 'Trakt connected')}>Connect</button>
-        : <span className="pill" title={`Send ${person.name} their link from the Settings tab`}>Waiting for {person.name}</span>}</div><Gains lines={gains}/></li>;
-  }
+  const on = !!link && !link.again, shown = !mine && person.joined;
   // Saved once the hub answers; the apps catch up in the background.
   const work = (call: Promise<unknown>, note: string) => {setPhase('going'); void call.then(() => {toast(note); live.apps(); return live.reload();}, fail(toast)).finally(() => setPhase(''));};
   const connect = async () => {
@@ -297,7 +280,7 @@ function Trakt({page, person, mine}: {page: PageProps; person: Person; mine: boo
     sessionStorage.setItem(SIGNING, JSON.stringify({state, verifier, person: person.id, hub: hub.code, back: location.hash} satisfies Signing));
     // Connecting for someone else, this browser may be signed in to Trakt as someone else: Trakt then asks who is signing in.
     const ask = new URLSearchParams({response_type: 'code', client_id: client, redirect_uri: `${location.origin}/api/trakt/callback`, state, code_challenge: challenge, code_challenge_method: 'S256', ...(mine ? {} : {prompt: 'login'})});
-    location.assign(`${TRAKT_AUTH}/oauth/authorize?${ask}`);
+    leave(`${TRAKT_AUTH}/oauth/authorize?${ask}`);
   };
   if (shown) return <li className="stacked"><div className="account-row"><div><h3>Trakt <span className="free">Free</span></h3>{on ? <Who name={link!.username}/> : <p className="who">Not connected</p>}</div></div>
     {link?.again && <p className="small status-line" role="status"><span className="dot off" aria-hidden="true"/><span>Trakt needs {person.name} to sign in again.</span></p>}</li>;
@@ -330,11 +313,11 @@ function useTraktSync(page: PageProps, person: Person, mine: boolean) {
   const [catching, setCatching] = useState<{sent: number; total: number} | null>(null), running = useRef(false), planned = useRef(0), [busy, setBusy] = useState(false);
   // Kept with whose they are: another person's page never shows the last person's.
   const [early, setEarly] = useState<{who: string; found: Early} | null>(null);
-  const offered = !!live && mine && on && !!matching?.on && !matching.earlier && !matching.passed;
+  const offered = mine && on && !!matching?.on && !matching.earlier && !matching.passed;
   useEffect(() => {
     if (!offered) return;
     let gone = false;
-    void live!.call<{earlier: number; plays: Early['plays']}>('GET', `/api/people/${person.id}/matching`).then(got => {if (!gone) setEarly({who: whose, found: {n: got.earlier, plays: got.plays ?? []}});}, () => {});
+    void live.call<{earlier: number; plays: Early['plays']}>('GET', `/api/people/${person.id}/matching`).then(got => {if (!gone) setEarly({who: whose, found: {n: got.earlier, plays: got.plays ?? []}});}, () => {});
     return () => {gone = true;};
   }, [whose, offered]);
   // Passes of catching up, from this page and only with sync on, until there is no more: what was watched here that Trakt lacks,
@@ -345,32 +328,32 @@ function useTraktSync(page: PageProps, person: Person, mine: boolean) {
     let sent = 0; setCatching({sent, total});
     try {
       for (let pass = 0; pass < 30; pass++) {
-        const got = await live!.call<{trakt: number; home: number; left: number; more: boolean}>('POST', `/api/people/${person.id}/matching/pass`, {});
+        const got = await live.call<{trakt: number; home: number; left: number; more: boolean}>('POST', `/api/people/${person.id}/matching/pass`, {});
         sent += got.trakt; setCatching({sent, total: Math.max(total, sent + got.left)});
         if (!got.more) break;
       }
       if (loud) toast(sent ? `Added ${things(sent)} to Trakt` : 'Nothing needed adding');
-    } catch (error) {const until = (error as {until?: number}).until ?? 0; if (loud) toast(until ? toldToWait(until) : (error as Error).message);} finally {running.current = false; setCatching(null); await live!.reload();}
+    } catch (error) {const until = (error as {until?: number}).until ?? 0; if (loud) toast(until ? toldToWait(until) : (error as Error).message);} finally {running.current = false; setCatching(null); await live.reload();}
   };
   // On their own page, with sync on: one round of catching up when the page opens or it is turned on, unless one just ran or Trakt
   // has asked the hub to wait.
-  useEffect(() => {if (live && mine && on && matching?.on && Date.now() / 1000 - matching.good > AGAIN_PASS && !((matching.until ?? 0) > Date.now() / 1000)) {const total = planned.current; planned.current = 0; void catchUp(false, total);}}, [person.id, matching?.on]);
+  useEffect(() => {if (mine && on && matching?.on && Date.now() / 1000 - matching.good > AGAIN_PASS && !((matching.until ?? 0) > Date.now() / 1000)) {const total = planned.current; planned.current = 0; void catchUp(false, total);}}, [person.id, matching?.on]);
   const found = offered && early?.who === whose && early.found.n ? early.found : null;
   const turn = async (yes: boolean, add = false) => {
     if (busy) return;
     const was = !!matching?.on, agreed = yes && add ? found?.n ?? 0 : 0;
     setBusy(true);
     // Once agreed to, earlier plays stay agreed to while sync stays on.
-    try {await live!.call('POST', `/api/people/${person.id}/matching`, {on: yes, earlier: yes && (add || (was && !!matching?.earlier))});} catch (error) {setBusy(false); return toast((error as Error).message);}
+    try {await live.call('POST', `/api/people/${person.id}/matching`, {on: yes, earlier: yes && (add || (was && !!matching?.earlier))});} catch (error) {setBusy(false); return toast((error as Error).message);}
     setBusy(false);
     // Not now, at the question after connecting; or turned off, which stops both directions at once.
-    if (!yes) {toast(was ? 'Trakt sync is off. Nothing is sent to Trakt and nothing comes back.' : 'Trakt sync is off. You can turn it on here any time.'); return void live!.reload();}
+    if (!yes) {toast(was ? 'Trakt sync is off. Nothing is sent to Trakt and nothing comes back.' : 'Trakt sync is off. You can turn it on here any time.'); return void live.reload();}
     // Caught up by the page-open round above, which starts as it turns on.
-    planned.current = agreed; toast(was ? `Adding ${things(agreed)} to Trakt` : 'Trakt sync is on'); await live!.reload();
+    planned.current = agreed; toast(was ? `Adding ${things(agreed)} to Trakt` : 'Trakt sync is on'); await live.reload();
     // Already on (earlier plays agreed to): that round does not start again by itself.
     if (was) {const total = planned.current; planned.current = 0; await catchUp(false, total);}
   };
-  const later = () => {setBusy(true); void live!.call('POST', `/api/people/${person.id}/matching/later`, {}).then(() => live!.reload(), fail(toast)).finally(() => setBusy(false));};
+  const later = () => {setBusy(true); void live.call('POST', `/api/people/${person.id}/matching/later`, {}).then(() => live.reload(), fail(toast)).finally(() => setBusy(false));};
   return {catching, catchUp, turn, later, earlier: found, busy};
 }
 /* MDBList sync as the page drives it. Underneath, MDBList becomes where their progress is kept and AIOMetadata tracks it there
@@ -385,31 +368,31 @@ function useListsSync(page: PageProps, person: Person, sets: boolean) {
   // A switch under way: which way, how many copied of about how many. Then why it stopped, if it did.
   const [copying, setCopying] = useState<{to: 'mdblist' | 'here'; done: number; total: number} | null>(null), [stopped, setStopped] = useState(''), [busy, setBusy] = useState(false);
   const target = moving === 'mdblist' ? true : moving === 'here' ? false : person.lists;
-  const done = async (note: string) => {toast(note); live!.apps(); await live!.reload();};
+  const done = async (note: string) => {toast(note); live.apps(); await live.reload();};
   // Copies what the other side lacks, a pass at a time, and switches once it is all across. True when it switched.
   const move = async (to: 'mdblist' | 'here') => {
     setCopying({to, done: 0, total: 0}); setStopped('');
     try {
-      if (to === 'mdblist' && moving !== 'mdblist') {await live!.call('POST', at, {reuse: true, moving: true}); await live!.reload();}
+      if (to === 'mdblist' && moving !== 'mdblist') {await live.call('POST', at, {reuse: true, moving: true}); await live.reload();}
       // Back here: their setup stops passing plays on to MDBList first, so what is ticked here echoes nowhere.
-      if (to === 'here') {if (moving !== 'here') {await live!.call('POST', `/api/people/${person.id}/moving`, {to: 'here'}); await live!.reload();} await live!.sync();}
+      if (to === 'here') {if (moving !== 'here') {await live.call('POST', `/api/people/${person.id}/moving`, {to: 'here'}); await live.reload();} await live.sync();}
       let added = 0, switched = false;
       for (let pass = 0; pass < 30 && !switched; pass++) {
-        const got = await live!.call<{added: number; left: number; more: boolean; switched: boolean}>('POST', `/api/people/${person.id}/compare/${to === 'mdblist' ? 'here-mdblist' : 'mdblist-here'}`, {switch: true});
+        const got = await live.call<{added: number; left: number; more: boolean; switched: boolean}>('POST', `/api/people/${person.id}/compare/${to === 'mdblist' ? 'here-mdblist' : 'mdblist-here'}`, {switch: true});
         added += got.added; switched = got.switched; setCopying({to, done: added, total: added + (got.left ?? 0)});
         if (!got.more && !switched) break;
       }
-      if (switched) {await live!.sync(); await done(to === 'mdblist' ? 'MDBList sync is on' : 'MDBList sync is off. Nothing was lost.');}
+      if (switched) {await live.sync(); await done(to === 'mdblist' ? 'MDBList sync is on' : 'MDBList sync is off. Nothing was lost.');}
       return switched;
-    } catch (error) {setStopped((error as Error).message); await live!.reload(); return false;} finally {setCopying(null);}
+    } catch (error) {setStopped((error as Error).message); await live.reload(); return false;} finally {setCopying(null);}
   };
   // Left part way (the page was closed): picked up again when it opens.
-  useEffect(() => {if (live && sets && moving && !copying) void move(moving === 'here' ? 'here' : 'mdblist');}, [person.id]);
+  useEffect(() => {if (sets && moving && !copying) void move(moving === 'here' ? 'here' : 'mdblist');}, [person.id]);
   // The switch: on copies then switches; off while copying over undoes it at once (nothing switched yet).
   const flip = (on: boolean) => {
     if (copying || busy || !sets) return;
-    if (on && moving === 'here') {setBusy(true); void live!.call('POST', `/api/people/${person.id}/moving`, {to: null}).then(() => {setStopped(''); return done('MDBList sync stays on');}, fail(toast)).finally(() => setBusy(false)); return;}
-    if (!on && moving === 'mdblist') {setBusy(true); void live!.call('DELETE', at).then(() => {setStopped(''); return done('MDBList sync stays off');}, fail(toast)).finally(() => setBusy(false)); return;}
+    if (on && moving === 'here') {setBusy(true); void live.call('POST', `/api/people/${person.id}/moving`, {to: null}).then(() => {setStopped(''); return done('MDBList sync stays on');}, fail(toast)).finally(() => setBusy(false)); return;}
+    if (!on && moving === 'mdblist') {setBusy(true); void live.call('DELETE', at).then(() => {setStopped(''); return done('MDBList sync stays off');}, fail(toast)).finally(() => setBusy(false)); return;}
     void move(on ? 'mdblist' : 'here');
   };
   return {copying, stopped, setStopped, busy, setBusy, target, done, move, flip};
@@ -425,7 +408,7 @@ function Synced({page, person}: {page: PageProps; person: Person}) {
   const {live, hub} = page, whose = `${hub.code}/${person.id}`;
   const [open, setOpen] = useState(false), [got, setGot] = useState<{who: string; list: Sync[] | null; failed: boolean}>({who: '', list: null, failed: false});
   useEffect(() => {
-    if (!live || !open) return;
+    if (!open) return;
     let gone = false;
     void live.call<{synced: Sync[]}>('GET', `/api/people/${person.id}/matching/synced`).then(found => {if (!gone) setGot({who: whose, list: found.synced, failed: false});}, () => {if (!gone) setGot({who: whose, list: null, failed: true});});
     return () => {gone = true;};
@@ -455,25 +438,23 @@ function Synced({page, person}: {page: PageProps; person: Person}) {
 function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: Person; mine: boolean; trakt: ReturnType<typeof useTraktSync>; lists: ReturnType<typeof useListsSync>}) {
   const {hub, toast, live} = page, link = person.history, matching = person.matching ?? null;
   const [listing, setListing] = useState(false), [going, setGoing] = useState(false), [sure, setSure] = useState<'' | 'plays' | 'saves'>('');
-  // The preview has no hub behind it: its Trakt and Watchlist switches are kept here, for show.
-  const [shown, setShown] = useState({watching: true, hearts: false});
   const I = mine ? 'I' : 'they', my = mine ? 'my' : 'their', your = mine ? 'your' : 'their', keep = `${mine ? 'You' : 'They'} can keep watching.`;
   // Theirs to set, or their manager's while they have not joined. Trakt sync is theirs alone.
   const sets = mine || !person.joined;
-  const hasTrakt = live ? !!link : !!person.trakt, on = live ? !!link && !link.again : !!person.trakt;
-  const hasLists = live ? person.lists || !!person.listsKept || !!person.moving : person.lists;
-  const watching = live ? on && !!matching?.on : hasTrakt && shown.watching;
-  const hearts = live ? person.hearts ?? null : hub.front && (hasTrakt || hasLists) ? {on: shown.hearts} as NonNullable<Person['hearts']> : null;
+  const hasTrakt = !!link, on = !!link && !link.again;
+  const hasLists = person.lists || !!person.listsKept || !!person.moving;
+  const watching = on && !!matching?.on;
+  const hearts = person.hearts ?? null;
   const {catching, earlier} = trakt, {copying, stopped} = lists;
   // After their own sign-in, until they turn sync on: the Trakt row carries a Recommended tag (never on their manager's view).
-  const asking = !!live && mine && on && !!matching?.ask && !matching.on;
+  const asking = mine && on && !!matching?.ask && !matching.on;
   /* Under the Trakt switch. Unusual: told to wait (by Trakt, with the time), not answering, their MDBList key refused, nothing
      taken for three days (with Try again), or paused until Trakt is signed in to again. Otherwise only when it last checked. */
   const time = Date.now() / 1000, since = Math.min(matching?.failing ?? Infinity, matching?.waiting ?? Infinity), stuck = since < Infinity && time - since > STUCK;
   // Calls of theirs waiting for Trakt for a while (it keeps turning them away): not answering, though no look has failed.
   const queued = !!matching?.waiting && time - matching.waiting > QUEUED;
   const day = (s: number) => new Date(s * 1000).toLocaleDateString(undefined, {weekday: 'long'}), why = matching?.failing ? matching.why ?? '' : '';
-  const odd: {dot: 'wait' | 'off'; text: ReactNode} | null = !live || !matching || asking ? null
+  const odd: {dot: 'wait' | 'off'; text: ReactNode} | null = !matching || asking ? null
     : link?.again ? matching.on ? {dot: 'off', text: mine ? 'Paused. Sign in to Trakt again, above.' : 'Paused until they sign in to Trakt again.'} : null
     : catching && (catching.total || catching.sent) ? {dot: 'wait', text: `Catching up. ${keep}`}
     : !matching.on ? null
@@ -483,13 +464,12 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
     : why.startsWith('Trakt') || (queued && !why) ? {dot: 'wait', text: 'Trakt isn’t answering. We’ll try again within the hour.'}
     : why ? {dot: 'wait', text: why}
     : null;
-  const checked = !!live && on && !asking && !!matching?.on && !odd && !!matching.good ? `Last checked ${whenOf(matching.good * 1000)}` : '';
+  const checked = on && !asking && !!matching?.on && !odd && !!matching.good ? `Last checked ${whenOf(matching.good * 1000)}` : '';
   // Leaving watched titles out of rows takes two switches: MDBList sync (here), and Hide what's been watched (under Playback).
   const hiding = resolve(hub, hub.groups.find(item => item.id === person.groupId), person).values.hideWatched, playback = mine ? '#/me/playback' : `#/person/${person.id}/playback`;
   // (Why catching up stopped is the hub's own words: only their first sentence is said here, to keep the line short.)
-  const preview = () => toast('Preview: nothing is connected here');
   // The Watchlist switch and its offer: saved once the hub answers. The switch changes their setup, so the apps follow (`apps`).
-  const ask = (path: string, body: unknown, note: (got: {added?: number; more?: boolean}) => string, apps = false) => {setGoing(true); void live!.call<{added?: number; more?: boolean}>('POST', `/api/people/${person.id}/favorites${path}`, body).then(got => {toast(note(got)); if (apps) live!.apps(); return live!.reload();}, fail(toast)).finally(() => setGoing(false));};
+  const ask = (path: string, body: unknown, note: (got: {added?: number; more?: boolean}) => string, apps = false) => {setGoing(true); void live.call<{added?: number; more?: boolean}>('POST', `/api/people/${person.id}/favorites${path}`, body).then(got => {toast(note(got)); if (apps) live.apps(); return live.reload();}, fail(toast)).finally(() => setGoing(false));};
   const extra = mine && hearts?.on ? hearts.extra ?? 0 : 0;
   // Which watchlist is not a setting (Trakt's when Trakt is connected, else MDBList's), and no account is named here.
   const saves = mine ? 'Save a title in an app (the heart, in some apps) and it’s on my watchlist. Add one to my watchlist and it shows as saved in the apps.'
@@ -497,13 +477,13 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
   // What unwatching does, said while a sync is on. In an app: their own setup takes it, MDBList hears through their setup while
   // MDBList sync is on, and Trakt through the hub while Trakt sync is on (front.ts, unmarked). On Trakt's side it is not looked
   // for. On MDBList's side nothing is said: what their setup does with it is its own.
-  const anySync = watching || (live ? person.lists : hasLists);
+  const anySync = watching || person.lists;
   return <div className="card settings sync-card">
     <div className="setting column"><h3>Sync</h3>
     </div>
     {hasTrakt && <div className="setting column sync-row">
       {/* Just connected and not yet turned on: the row itself says sync is the suggested choice, until they turn it on. */}
-      <div className="switch-row"><h3>Trakt{asking && <em className="tag">Recommended</em>}</h3><Switch checked={watching} disabled={!mine || (!!live && !on) || trakt.busy} label="Trakt sync" onChange={value => live ? void trakt.turn(value) : setShown({...shown, watching: value})}/></div>
+      <div className="switch-row"><h3>Trakt{asking && <em className="tag">Recommended</em>}</h3><Switch checked={watching} disabled={!mine || !on || trakt.busy} label="Trakt sync" onChange={value => void trakt.turn(value)}/></div>
       <p>Keep what {I} watch the same here and on Trakt.</p>
       {odd ? <p className="status-line" role="status"><span className={`dot ${odd.dot}`} aria-hidden="true"/><span>{odd.text}</span></p>
         : checked ? <p className="quiet">{checked}</p>
@@ -519,7 +499,7 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
       {sure === 'plays' && earlier && <Confirm plain title={`Add ${things(earlier.n)} to Trakt?`} body="Trakt can’t undo this in one go." action="Add them" onYes={() => {setSure(''); setListing(false); void trakt.turn(true, true);}} onClose={() => setSure('')}/>}
     </div>}
     {hasLists && <div className="setting column sync-row">
-      <div className="switch-row"><h3>MDBList</h3><Switch checked={copying ? copying.to === 'mdblist' : lists.target} disabled={!sets || lists.busy} onChange={value => live ? lists.flip(value) : preview()} label="MDBList sync"/></div>
+      <div className="switch-row"><h3>MDBList</h3><Switch checked={copying ? copying.to === 'mdblist' : lists.target} disabled={!sets || lists.busy} onChange={lists.flip} label="MDBList sync"/></div>
       <p>Keep what {I} watch the same here and on MDBList.</p>
       {copying ? <p className="status-line" role="status"><span className="dot wait" aria-hidden="true"/><span>Catching up. {keep}</span></p>
         : stopped ? <p className="status-line" role="status"><span className="dot off" aria-hidden="true"/><span>Catching up stopped. {/^[^.]*\./.exec(stopped)?.[0] ?? stopped} {sets && <button type="button" className="link small" onClick={() => void lists.move(person.moving === 'here' ? 'here' : 'mdblist')}>Try again</button>}</span></p>
@@ -527,7 +507,7 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
     </div>}
     {/* Watchlist (worker/hearts.ts, worker/native.ts): only offered when it can be had (the hub says). */}
     {hearts && <div className="setting column sync-row">
-      <div className="switch-row"><h3>Watchlist</h3><Switch checked={hearts.on} disabled={!sets || going} label="Watchlist sync" onChange={value => live ? ask('', {on: value}, () => value ? 'Watchlist is on' : 'Watchlist is off. Nothing was removed.', true) : setShown({...shown, hearts: value})}/></div>
+      <div className="switch-row"><h3>Watchlist</h3><Switch checked={hearts.on} disabled={!sets || going} label="Watchlist sync" onChange={value => ask('', {on: value}, () => value ? 'Watchlist is on' : 'Watchlist is off. Nothing was removed.', true)}/></div>
       <p>Saved titles and {my} watchlist are one list.</p>
       <p>{saves}</p>
       {/* With MDBList alone, saves reach it only through MDBList sync (native.ts): said while that is off. */}
@@ -541,7 +521,7 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
       {sure === 'saves' && <Confirm plain title={`Add ${extra} ${extra === 1 ? 'title' : 'titles'} to your watchlist?`} body="They go on your Trakt watchlist. You can take any of them off later." action="Add them" onYes={() => {setSure(''); ask('/add', {}, got => got.more ? `Adding ${got.added} to your watchlist. The rest are offered after the next check.` : `Adding ${got.added} to your watchlist`);}} onClose={() => setSure('')}/>}
     </div>}
     {anySync && <div className="setting column sync-foot"><p>{mine ? 'Unwatch something in an app and it’s unwatched everywhere.' : 'When they unwatch something in an app, it’s unwatched everywhere.'}{watching && (mine ? ' If you only marked it watched here, just that one play leaves Trakt.' : ' If they only marked it watched here, just that one play leaves Trakt.')}{watching && ' Unwatching on Trakt’s own site or apps doesn’t reach here.'}</p>
-      {!!live && mine && on && matching?.on && <Synced page={page} person={person}/>}
+      {mine && on && matching?.on && <Synced page={page} person={person}/>}
     </div>}
   </div>;
 }
@@ -551,9 +531,9 @@ function SyncCard({page, person, mine, trakt, lists}: {page: PageProps; person: 
    For someone who has joined, their manager sees only who it is connected as.
    Another MDBList account is Disconnect, then Connect. */
 function MdbList({page, person, mine, sync}: {page: PageProps; person: Person; mine: boolean; sync: ReturnType<typeof useListsSync>}) {
-  const {hub, update, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
+  const {hub, toast, live} = page, at = `/api/people/${person.id}/mdblist`;
   const [keying, setKeying] = useState(false), [own, setOwn] = useState(''), [dropping, setDropping] = useState(false), [anyway, setAnyway] = useState(false);
-  const their = mine ? 'your' : 'their', moving = person.moving ?? null, connected = person.lists || (!!live && (!!person.listsKept || !!moving));
+  const their = mine ? 'your' : 'their', moving = person.moving ?? null, connected = person.lists || !!person.listsKept || !!moving;
   const {busy, setBusy, copying, setStopped, done, move} = sync;
   // What connecting gives: their MDBList watchlist in the Watchlist row (rows.ts, fill) and their own MDBList lists to add as
   // rows (api.ts, ownLists). Hiding what was watched is said too, with what it needs (native.ts, hideWatchedMdblist).
@@ -563,13 +543,7 @@ function MdbList({page, person, mine, sync}: {page: PageProps; person: Person; m
   const gains = [`Adds ${their} MDBList watchlist to Watchlist, and ${their} MDBList lists to ${hub.front ? 'My lists and ' : ''}Add row.`,
     ...(hub.front ? [`For you also learns from what ${mine ? 'you’ve' : 'they’ve'} watched on MDBList, while Trakt isn’t connected.`] : []), `Rows can hide what ${mine ? 'you’ve' : 'they’ve'} watched, once MDBList sync is on.`];
   // Once they have joined, their accounts are theirs alone: their manager sees who it is connected as, and no buttons.
-  if (live && !mine && person.joined) return <li className="stacked"><div className="account-row"><div><h3>MDBList <span className="free">Free</span></h3>{connected ? <Who name={person.listsName ?? ''}/> : <p className="who">Not connected</p>}</div></div></li>;
-  if (!live) {
-    const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === person.id)!)); toast(note);};
-    return <li className="stacked"><div className="account-row"><div><h3>MDBList <span className="free">Free</span></h3>{person.lists && <Who name=""/>}</div>
-      {person.lists ? null : mine ? <button type="button" className="primary small" onClick={() => edit(target_ => {target_.lists = true;}, 'MDBList connected')}>Connect</button>
-        : <span className="pill" title={`Send ${person.name} their link from the Settings tab`}>Waiting for {person.name}</span>}</div><Gains lines={gains}/></li>;
-  }
+  if (!mine && person.joined) return <li className="stacked"><div className="account-row"><div><h3>MDBList <span className="free">Free</span></h3>{connected ? <Who name={person.listsName ?? ''}/> : <p className="who">Not connected</p>}</div></div></li>;
   const save = () => {
     setBusy(true); void live.call<{username: string}>('POST', at, {key: own, ...(person.lists ? {} : {keep: true})}).then(found => {
       toast(found.username ? `MDBList connected as ${found.username}` : 'MDBList connected');
@@ -599,7 +573,7 @@ function useOwnPicks(page: PageProps, person: Person, mine: boolean) {
   const [own, setOwn] = useState<{who: string; lists: Found[]; because: Record<string, string>}>({who: '', lists: [], because: {}});
   const connected = (!!person.history && !person.history.again) || person.lists, who = `${page.hub.code}/${person.id}`;
   useEffect(() => {
-    if (!page.live || !mine) return;
+    if (!mine) return;
     let gone = false;
     void Promise.all([connected ? page.live.call<{lists: Found[]}>('GET', `/api/people/${person.id}/lists`).then(got => got.lists, () => []) : Promise.resolve([]), page.live.call<{because: Record<string, string>}>('GET', `/api/people/${person.id}/because`).then(got => got.because, () => ({}))])
       .then(([lists, because]) => {if (!gone) setOwn({who, lists, because});});
@@ -614,20 +588,20 @@ function PersonSections({page, person, tab, mine, base = `/person/${person.id}`}
   // Adding a row changes Home, which the hub allows only with arranging on too (someone saved before that was enforced may have add alone).
   const canArrange = !mine || person.can.arrange, canAdd = !mine || person.can.arrange && person.can.add;
   // Work their Home asks the hub for on the next run; the page reads again either way, so the row says where it stands.
-  const ask = (action: string, note: string) => void page.live!.call('POST', `/api/people/${person.id}/${action}`, {}).then(() => toast(note), fail(toast)).then(() => page.live!.reload());
+  const ask = (action: string, note: string) => void page.live.call('POST', `/api/people/${person.id}/${action}`, {}).then(() => toast(note), fail(toast)).then(() => page.live.reload());
   // What they would gain with an account: their own rows that wait for one (the Watchlist and the rows of their lists), for Add
   // row to list greyed. The rows of their lists are collections, which only apps on their own AIOMetadata setup show.
   const has = linkedOf(hub, person), needs = [...traktRows().map(row => ({id: row.id, title: row.title, needs: needOf(row.id, has)})),
     ...(hub.front ? [{id: 'trakt-lists', title: SHELF_TITLES['trakt-lists'], needs: has.trakt || has.lists ? '' : 'Trakt or MDBList'}, {id: 'trakt-liked-lists', title: SHELF_TITLES['trakt-liked-lists'], needs: has.trakt || has.lists ? '' : 'Trakt or MDBList'}] : [])].filter(item => item.needs);
   return <>
-    {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} mine={mine} person={person.id} level="own" rows={rows} front={!!hub.front} canAdd={canAdd} canArrange={canArrange}
+    {tab === 'home' && <HomeEditor find={link => page.live.call('POST', '/api/lists', {link})} fail={page.toast} mine={mine} person={person.id} level="own" rows={rows} front={!!hub.front} canAdd={canAdd} canArrange={canArrange}
       // Their own page, without the permission: said where the button would be, rather than nothing there.
       addHint={!mine || canAdd ? undefined : person.can.add ? 'Changing Home is turned off for you. Your manager can turn it on.' : 'Adding rows is turned off for you. Your manager can turn it on.'}
       // A row from their own account or watching says so in a pill (pillOf); "Yours" is for a row they added themselves, and
       // gives way to it (home.tsx, lineOf).
       tag={row => row.origin === 'own' && !row.core ? (mine ? 'Yours' : 'Personal') : undefined} pill={row => pillOf(row, mine)}
       needs={needs} accounts={`#${base}/accounts`}
-      lists={page.live ? own.lists : ownLists(person)} listsHint={page.live ? undefined : 'Connect Trakt or MDBList under Accounts to pick from your own lists.'}
+      lists={own.lists}
       because={own.because} limit={props.resolved.values.limit} listsOk={!!hub.mdblist || person.lists} keyHint={mine ? 'Your own MDBList key, under Accounts, works too.' : <>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>}
       onChange={(next: Row[], note) => edit(target => {
         // Only a Trakt row (or a row for children) switched on or off while following the Home above: kept as their choice, so they still follow it.
@@ -637,13 +611,13 @@ function PersonSections({page, person, tab, mine, base = `/person/${person.id}`}
       onMute={kind => props.set('forYouOff', [...(props.resolved.values.forYouOff ?? []), kind], `${FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'That kind'} won’t be picked`)}
       // "Less" from a For you row: that kind one step down their own order of kinds, so it is picked a little less from the next pick.
       order={order} onLess={kind => {const at = order.indexOf(kind); props.set('forYouOrder', moved(order, at, at + 1), `${FOR_YOU_KINDS.find(item => item.id === kind)?.title ?? 'That kind'} moves down. Picks change in a few minutes.`);}}
-      times={page.live && hub.forYouHour !== undefined ? {hour: hub.forYouHour, pickedAt: person.pickedAt, shelfAt: person.shelfAt, tiles: person.shelfTiles} : undefined}
-      forYou={page.live ? person.forYouDetail : undefined}
-      onPlace={page.live ? (place, asked, note) => void page.live!.call('POST', `/api/people/${person.id}/foryou/${place}`, asked).then(() => toast(note), fail(toast)).then(() => page.live!.reload()) : undefined}
-      onCheckLists={page.live ? () => ask('shelf', mine ? 'Checking your lists. Your apps have them in a few minutes.' : 'Checking their lists. Their apps have them in a few minutes.') : undefined}
+      times={hub.forYouHour !== undefined ? {hour: hub.forYouHour, pickedAt: person.pickedAt, shelfAt: person.shelfAt, tiles: person.shelfTiles} : undefined}
+      forYou={person.forYouDetail}
+      onPlace={(place, asked, note) => void page.live.call('POST', `/api/people/${person.id}/foryou/${place}`, asked).then(() => toast(note), fail(toast)).then(() => page.live.reload())}
+      onCheckLists={() => ask('shelf', mine ? 'Checking your lists. Your apps have them in a few minutes.' : 'Checking their lists. Their apps have them in a few minutes.')}
       onFollow={person.rows && canArrange ? () => edit(target => {target.rows = null;}, `Following ${group.name} again`) : undefined} followLabel={`Follow ${group.name} again`}/>}
-    {tab === 'home' && <ForYouEditor {...props} never={person.forYouDetail?.never} preview={page.live && person.forYouDetail ? {detail: person.forYouDetail, places: rows.filter(row => row.on && isPlace(row.id)).map(row => row.id)} : undefined}
-      onForget={page.live ? item => void page.live!.call('POST', `/api/people/${person.id}/foryou/never`, {seed: item.seed}).then(() => toast(`“${item.title}” counts again from the next pick`), fail(toast)).then(() => page.live!.reload()) : undefined}/>}
+    {tab === 'home' && <ForYouEditor {...props} never={person.forYouDetail?.never} preview={person.forYouDetail ? {detail: person.forYouDetail, places: rows.filter(row => row.on && isPlace(row.id)).map(row => row.id)} : undefined}
+      onForget={item => void page.live.call('POST', `/api/people/${person.id}/foryou/never`, {seed: item.seed}).then(() => toast(`“${item.title}” counts again from the next pick`), fail(toast)).then(() => page.live.reload())}/>}
     {tab === 'playback' && <PlaybackEditor {...props} kept={!!person.lists} limitSet={mine && !person.can.limit}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
     {tab === 'activity' && <Activity hub={hub} personId={person.id} toast={toast} live={page.live}/>}
@@ -655,7 +629,7 @@ function Invite({page, person}: {page: PageProps; person: Person}) {
   const [creds] = useCreds(page, person), link = creds?.link ?? '';
   return <div className="card share"><div className={`qr${link ? '' : ' wait'}`}>{link && <QRCodeSVG value={link} size={112} bgColor="#ffffff" fgColor="#111111" marginSize={2}/>}</div>
     <div className="share-text"><p>{person.joined ? `${person.name} has joined. The link still opens their page on a new device.` : `Send ${person.name} this link, or let them scan the code. They choose a password and set up their own side.`}</p><code className={link ? '' : 'wait'} aria-busy={!link}>{link}</code>
-      <div className="share-actions"><button type="button" className="primary" disabled={!link} onClick={() => {void navigator.clipboard?.writeText(link).catch(() => {}); page.toast('Link copied');}}>Copy link</button>{SAMPLE && <a className="link" href={`#/join/${person.id}`}>See what {person.name} sees →</a>}</div></div></div>;
+      <div className="share-actions"><button type="button" className="primary" disabled={!link} onClick={() => {void navigator.clipboard?.writeText(link).catch(() => {}); page.toast('Link copied');}}>Copy link</button></div></div></div>;
 }
 export function PersonPage(page: PageProps & {id: string; tab: string}) {
   const {hub, go, update, toast, id, tab, live} = page;
@@ -664,7 +638,6 @@ export function PersonPage(page: PageProps & {id: string; tab: string}) {
   // Their own rows (Trakt, lists, a Home of their own) get real posters too, from the setup they are on.
   const [, redraw] = useState(0);
   useEffect(() => {
-    if (!live) return;
     let on = true;
     const look = () => void live.call<{rows: Record<string, string[]>}>('GET', `/api/previews?person=${encodeURIComponent(id)}`).then(found => {if (on) {addReal(found.rows, id); redraw(count => count + 1);}}, () => {});
     addReal({}, id); look();
@@ -695,12 +668,10 @@ export function PersonPage(page: PageProps & {id: string; tab: string}) {
       <div className="card settings">
         <Setting title="Name"><NameField label="Name" value={person.name} onSave={value => edit(target => {target.name = value;}, 'Renamed')}/></Setting>
         {hub.groups.length > 1 && <Setting title="Group" hint="Moving keeps their own changes and follows the new group for the rest."><select aria-label="Group" value={person.groupId} onChange={event => edit(target => {target.groupId = event.target.value;}, 'Moved')}>{hub.groups.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Setting>}
-        {live && person.joined && <Setting title="Forgotten password" hint={`Lets ${person.name} choose a new password for their page through the invite link. Their apps stay signed in.`}><button type="button" className="ghost small" onClick={() => void live.call('POST', `/api/people/${id}/reset`, {}).then(() => live.reload()).then(() => toast('They can choose a new password with their link'), fail(toast))}>Reset</button></Setting>}
+        {person.joined && <Setting title="Forgotten password" hint={`Lets ${person.name} choose a new password for their page through the invite link. Their apps stay signed in.`}><button type="button" className="ghost small" onClick={() => void live.call('POST', `/api/people/${id}/reset`, {}).then(() => live.reload()).then(() => toast('They can choose a new password with their link'), fail(toast))}>Reset</button></Setting>}
         <Setting title="Make a copy" hint="A new person with the same Home, playback and permissions. Accounts and devices are not copied."><button type="button" className="ghost small" onClick={() => {setCopying(true); setName('');}}>Copy</button></Setting>
         <Setting title="Pause playing" hint={group.paused && !person.paused ? `All of ${group.name} is paused, ${person.name} with them. Turn it off in the group’s settings.` : person.paused ? `${person.name} can browse and search, but nothing plays. Something already playing runs to its end.` : 'They can still browse and search, but nothing new plays. Nothing is deleted.'}><Switch label="Pause playing" checked={!!person.paused} onChange={value => edit(target => {target.paused = value;}, value ? `${person.name} is paused` : `${person.name} can play again`)}/></Setting>
       </div>
-      {SAMPLE && <><h3 className="sub">Advanced</h3>
-      <div className="card settings"><Setting title="Open in AIOMetadata" hint={`Everything about ${person.name}’s catalogs that isn’t covered here.`}><button type="button" className="ghost small" onClick={soon(toast, 'their AIOMetadata setup')}>Open</button></Setting></div></>}
       <button type="button" className="danger" onClick={() => setRemoving(true)}>Remove {person.name}</button>
     </section>}
     {copying && <Sheet title={`Copy ${person.name}`} onClose={() => setCopying(false)}>
@@ -729,7 +700,6 @@ function GroupView(page: PageProps & {id: string; tab: string; group: Group; mem
   // Its Home with the posters someone in it starts with (see /api/previews): kept apart from any person's own posters.
   const [, redraw] = useState(0), key = `#g:${id}`;
   useEffect(() => {
-    if (!live) return;
     let on = true;
     const look = () => void live.call<{rows: Record<string, string[]>}>('GET', `/api/previews?group=${encodeURIComponent(id)}`).then(found => {if (on) {addReal(found.rows, key); redraw(count => count + 1);}}, () => {});
     look(); window.addEventListener('aiohub-synced', look);
@@ -739,7 +709,7 @@ function GroupView(page: PageProps & {id: string; tab: string; group: Group; mem
     <a className="back" href="#/">← People</a>
     <div className="page-head"><h1>{group.name}</h1><p className="muted">Everyone in this group starts here. {members.length} {members.length === 1 ? 'person' : 'people'}{custom ? `, ${custom} with their own changes` : ''}.</p></div>
     <Tabs base={`/group/${id}`} tab={tab} tabs={[['home', 'Home'], ['playback', 'Playback'], ['sources', 'Sources'], ['activity', 'Activity'], ['settings', 'Settings']]}/>
-    {tab === 'home' && <HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} level="group" limit={props.resolved.values.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} front={!!hub.front} rows={withForYou(withKids(placed(groupRows(hub, group)), props.resolved.values.limit === 'kids'), !!hub.front)} person={key} tag={row => row.origin === 'group' ? 'This group' : undefined} onChange={(rows, note) => edit(target => {target.rows = rows;}, note)}
+    {tab === 'home' && <HomeEditor find={link => page.live.call('POST', '/api/lists', {link})} fail={page.toast} level="group" limit={props.resolved.values.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} front={!!hub.front} rows={withForYou(withKids(placed(groupRows(hub, group)), props.resolved.values.limit === 'kids'), !!hub.front)} person={key} tag={row => row.origin === 'group' ? 'This group' : undefined} onChange={(rows, note) => edit(target => {target.rows = rows;}, note)}
       onFollow={group.rows ? () => edit(target => {target.rows = null;}, `Following ${HUB} again`) : undefined} followLabel="Use the default Home again"/>}
     {tab === 'home' && <ForYouEditor {...props}/>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
@@ -748,12 +718,9 @@ function GroupView(page: PageProps & {id: string; tab: string; group: Group; mem
     {tab === 'settings' && <section>
       <div className="card settings">
         <Setting title="Name"><NameField label="Group name" value={group.name} onSave={value => edit(target => {target.name = value;}, 'Renamed')}/></Setting>
-        {SAMPLE && <Setting title="Shared player" hint="One page for a shared screen. Everyone in the group is listed, each behind their PIN."><button type="button" className="ghost small" onClick={soon(toast, `the ${group.name} player`)}>Watch</button></Setting>}
         <Setting title="Pause playing" hint={group.paused ? `Nobody in ${group.name} can start anything. They can still browse and search. Something already playing runs to its end.` : 'Everyone in this group can still browse and search, but nothing new plays. Nothing is deleted.'}><Switch label="Pause playing for the group" checked={!!group.paused} onChange={value => edit(target => {target.paused = value;}, value ? `${group.name} is paused` : `${group.name} can play again`)}/></Setting>
         <Setting title="Make a copy" hint="A new group with the same Home, playback and sources. No people."><button type="button" className="ghost small" onClick={() => {let next = slug(`${group.name} copy`); while (hub.groups.some(item => item.id === next)) next += '-2'; update(draft => {draft.groups.push({id: next, name: `${group.name} copy`, rows: structuredClone(group.rows), settings: structuredClone(group.settings)});}); toast('Group copied'); go(`/group/${next}/settings`);}}>Copy</button></Setting>
       </div>
-      {SAMPLE && <><h3 className="sub">Advanced</h3>
-      <div className="card settings"><Setting title="Open in AIOStreams" hint="Everything about this group’s streams that isn’t covered here."><button type="button" className="ghost small" onClick={soon(toast, 'the group’s AIOStreams setup')}>Open</button></Setting></div></>}
       <button type="button" className="danger" disabled={!!members.length || hub.groups.length < 2} onClick={() => setRemoving(true)}>Remove this group</button>
       {!!members.length && <p className="muted small">Move or remove its people first.</p>}
     </section>}
@@ -769,20 +736,10 @@ export function HubPage(page: PageProps & {tab: string}) {
     <a className="back" href="#/">← People</a>
     <div className="page-head"><h1>Hub</h1><p className="muted">What every group starts with, where things play from, and the hub’s own setup. A group or a person can change anything for themselves.</p></div>
     <Tabs base="/hub" tab={tab} tabs={[['home', 'Home'], ['playback', 'Playback'], ['sources', 'Sources'], ['general', 'General']]}/>
-    {tab === 'home' && <><HomeEditor find={page.live ? link => page.live!.call('POST', '/api/lists', {link}) : undefined} fail={page.toast} level="hub" limit={hub.defaults.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} front={!!hub.front} rows={withForYou(placed(hub.rows), !!hub.front)} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{page.live && !hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p><ForYouEditor {...props}/></>}
+    {tab === 'home' && <><HomeEditor find={link => page.live.call('POST', '/api/lists', {link})} fail={page.toast} level="hub" limit={hub.defaults.limit} listsOk={!!hub.mdblist} keyHint={<>It goes under <a className="link" href="#/hub/sources">Hub, Sources</a>.</>} front={!!hub.front} rows={withForYou(placed(hub.rows), !!hub.front)} tag={() => undefined} onChange={(rows, note) => {update(next => {next.rows = rows;}); toast(note);}}/>{!hub.mdblist && <p className="notice"><span>The collection rows (by Service, by Genre) reach the player apps once the hub has an MDBList key.</span><a className="link" href="#/hub/sources">Add it</a></p>}<p className="muted small foot">{following} of {hub.groups.length} groups follow this Home.</p><ForYouEditor {...props}/></>}
     {tab === 'playback' && <PlaybackEditor {...props}/>}
     {tab === 'sources' && <SourcesEditor {...props}/>}
-    {tab === 'general' && page.live && <><ServerName hub={hub} update={update} toast={toast}/><Servers hub={hub} live={page.live} toast={toast}/><Notice hub={hub} live={page.live} toast={toast}/><Advanced live={page.live} toast={toast}/><Background hub={hub}/></>}
-    {tab === 'general' && SAMPLE && <section>
-      <div className="card settings">
-        <Setting column title="AIOStreams server" hint="Where the players connect behind the scenes. Changing it moves every group; watch history moves with it.">
-          <Segments label="AIOStreams server" value={hub.host} onChange={value => {update(next => {next.host = value;}); toast('Saved');}} options={hosts.map(item => ({value: item, label: item}))}/>
-          {hub.host === 'Your own' && <NameField label="Server address" value={hub.hostUrl || 'https://'} onSave={value => {update(next => {next.hostUrl = value;}); toast('Saved');}}/>}
-        </Setting>
-      </div>
-      <h3 className="sub">Advanced</h3>
-      <div className="card settings"><Setting title="Open in AIOStreams" hint="The shared setup every group builds on."><button type="button" className="ghost small" onClick={soon(toast, 'the shared AIOStreams setup')}>Open</button></Setting></div>
-    </section>}
+    {tab === 'general' && <><ServerName hub={hub} update={update} toast={toast}/><Servers hub={hub} live={page.live} toast={toast}/><Notice hub={hub} live={page.live} toast={toast}/><Advanced live={page.live} toast={toast}/><Background hub={hub}/></>}
   </>;
 }
 
@@ -957,29 +914,25 @@ function AddressField({kept, label, at, said, ask, live, toast}: {kept: string; 
 export function AccountPage({hub, update, toast, go, live}: PageProps) {
   const [ask, setAsk] = useState<{title: string; body: string; action: string; yes: () => void} | null>(null);
   const [codes, setCodes] = useState<string[] | null>(null), [changing, setChanging] = useState(false), [ending, setEnding] = useState(false), [pass, setPass] = useState(''), [busy, setBusy] = useState(false), [adding, setAdding] = useState(false);
-  const samples = Array.from({length: 10}, (_, i) => `sample-${String(1000 + i * 731 % 9000)}-${String(2000 + i * 419 % 8000)}`);
   return <>
-    <div className="person-head"><Avatar name={hub.me.name} size={64}/><div><h1>{live ? 'Your account' : hub.me.name}</h1><p className="muted">{live ? 'You run this hub.' : 'You run this hub. Your name is what invited people see.'}</p></div></div>
+    <div className="person-head"><Avatar name={hub.me.name} size={64}/><div><h1>Your account</h1><p className="muted">You run this hub.</p></div></div>
     <h3 className="sub first">Sign-in</h3>
     <div className="card settings">
-      {live ? <Setting title="Hub code" hint="You sign in with this code and your password."><span className="secret"><code>{hub.code}</code><button type="button" className="ghost small" onClick={() => {void navigator.clipboard?.writeText(hub.code).catch(() => {}); toast('Copied');}}>Copy</button></span></Setting>
-        : <Setting title="Name"><NameField label="Your name" value={hub.me.name} onSave={value => {update(next => {next.me.name = value;}); toast('Saved');}}/></Setting>}
-      <Setting title="Password" hint="Works on any device and in a password manager."><button type="button" className="ghost small" onClick={() => live ? setChanging(true) : toast('Preview: this asks for the old and a new password')}>Change</button></Setting>
-      <Setting title="Recovery codes" hint={live ? 'Ten spare keys for the day you lose your password. Any one gets you back in, once. They are shown only when made; making new ones retires the old.' : 'Ten one-time codes for the day you lose your password.'}><button type="button" className="ghost small" onClick={() => live ? void live.call<{codes: string[]}>('POST', '/api/account/recovery', {}).then(made => setCodes(made.codes), fail(toast)) : setCodes(samples)}>{live ? 'New codes' : 'Show'}</button></Setting>
+      <Setting title="Hub code" hint="You sign in with this code and your password."><span className="secret"><code>{hub.code}</code><button type="button" className="ghost small" onClick={() => {void navigator.clipboard?.writeText(hub.code).catch(() => {}); toast('Copied');}}>Copy</button></span></Setting>
+      <Setting title="Password" hint="Works on any device and in a password manager."><button type="button" className="ghost small" onClick={() => setChanging(true)}>Change</button></Setting>
+      <Setting title="Recovery codes" hint="Ten spare keys for the day you lose your password. Any one gets you back in, once. They are shown only when made; making new ones retires the old."><button type="button" className="ghost small" onClick={() => void live.call<{codes: string[]}>('POST', '/api/account/recovery', {}).then(made => setCodes(made.codes), fail(toast))}>New codes</button></Setting>
     </div>
-    {(SAMPLE || canPasskey()) && <><h3 className="sub">Passkeys</h3>
+    {canPasskey() && <><h3 className="sub">Passkeys</h3>
     {ask && <Confirm title={ask.title} body={ask.body} action={ask.action} onYes={() => {const yes = ask.yes; setAsk(null); yes();}} onClose={() => setAsk(null)}/>}
-    <ul className="accounts">{hub.me.passkeys.map(key => <li key={key.id}><div><h3>{key.name}</h3><p>Added {key.added}</p></div><button type="button" className="ghost small" onClick={() => setAsk({title: `Remove the passkey on ${key.name}?`, body: 'That device can no longer sign in with it. Your password and other passkeys still work.', action: 'Remove', yes: () => {if (live) return void live.call('DELETE', `/api/account/passkeys/${key.id}`).then(() => live.reload()).then(() => toast('Passkey removed'), fail(toast)); update(next => {next.me.passkeys = next.me.passkeys.filter(item => item.id !== key.id);}); toast('Passkey removed');}})}>Remove</button></li>)}
-      <li><div><h3>Add a passkey</h3><p>Sign in with a fingerprint or face on this device, with no hub code to type. Optional; the password always works.</p></div><button type="button" className="ghost small" disabled={adding} onClick={() => {if (live) {setAdding(true); return void addPasskey().then(() => live.reload()).then(() => toast('Passkey added'), (error: Error) => toast(error.name === 'NotAllowedError' ? 'No passkey was added' : error.name === 'InvalidStateError' ? 'This device already has a passkey here' : error.message)).finally(() => setAdding(false));} update(next => {next.me.passkeys.push({id: `k${Date.now()}`, name: 'This device', added: 'today'});}); toast('Passkey added');}}>Add</button></li></ul></>}
+    <ul className="accounts">{hub.me.passkeys.map(key => <li key={key.id}><div><h3>{key.name}</h3><p>Added {key.added}</p></div><button type="button" className="ghost small" onClick={() => setAsk({title: `Remove the passkey on ${key.name}?`, body: 'That device can no longer sign in with it. Your password and other passkeys still work.', action: 'Remove', yes: () => void live.call('DELETE', `/api/account/passkeys/${key.id}`).then(() => live.reload()).then(() => toast('Passkey removed'), fail(toast))})}>Remove</button></li>)}
+      <li><div><h3>Add a passkey</h3><p>Sign in with a fingerprint or face on this device, with no hub code to type. Optional; the password always works.</p></div><button type="button" className="ghost small" disabled={adding} onClick={() => {setAdding(true); void addPasskey().then(() => live.reload()).then(() => toast('Passkey added'), (error: Error) => toast(error.name === 'NotAllowedError' ? 'No passkey was added' : error.name === 'InvalidStateError' ? 'This device already has a passkey here' : error.message)).finally(() => setAdding(false));}}>Add</button></li></ul></>}
     <h3 className="sub">Appearance</h3>
     <div className="card settings"><Setting title="Theme"><Segments label="Theme" value={hub.me.theme} onChange={value => update(next => {next.me.theme = value;})} options={[{value: 'dark', label: 'Dark'}, {value: 'light', label: 'Light'}, {value: 'auto', label: 'Match device'}]}/></Setting></div>
-    {SAMPLE && <><h3 className="sub">Preview</h3>
-    <div className="card settings"><Setting title="First-time setup" hint="Walk through what a new manager sees."><button type="button" className="ghost small" onClick={() => go('/setup')}>Open</button></Setting></div></>}
-    <button type="button" className="danger" onClick={() => live ? void live.call('POST', '/api/signout', {}).then(() => {leaveAs(); go('/'); return live.reload();}, fail(toast)) : toast('Preview: this signs you out')}>Sign out</button>
-    {codes && <Sheet title="Recovery codes" onClose={() => setCodes(null)}><p className="muted sheet-lead">{live ? 'Any one of these, with your hub code, gets you back in. Each works once. Save them now: they are not shown again.' : 'Each works once. Keep them somewhere safe. These are samples.'}</p><ul className="codes">{codes.map(code => <li key={code}><code>{code}</code></li>)}</ul></Sheet>}
-    {changing && live && <PasswordSheet toast={toast} onClose={() => setChanging(false)} onSave={(old, password) => live.call('POST', '/api/account/password', {old, password})}/>}
-    {live && <><h3 className="sub">Danger</h3><div className="card settings"><Setting title="Delete this hub" hint="Removes the hub, everyone in it and its setup on the streaming server. There is no undo."><button type="button" className="ghost small" onClick={() => {setEnding(true); setPass('');}}>Delete</button></Setting></div></>}
-    {ending && live && <Sheet title="Delete this hub?" onClose={() => setEnding(false)}><form className="stack" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call('POST', '/api/hub/delete', {password: pass}).then(() => {localStorage.removeItem('hub-code'); go('/'); return live.reload();}, error => {fail(toast)(error); setBusy(false);});}}>
+    <button type="button" className="danger" onClick={() => void live.call('POST', '/api/signout', {}).then(() => {leaveAs(); go('/'); return live.reload();}, fail(toast))}>Sign out</button>
+    {codes && <Sheet title="Recovery codes" onClose={() => setCodes(null)}><p className="muted sheet-lead">Any one of these, with your hub code, gets you back in. Each works once. Save them now: they are not shown again.</p><ul className="codes">{codes.map(code => <li key={code}><code>{code}</code></li>)}</ul></Sheet>}
+    {changing && <PasswordSheet toast={toast} onClose={() => setChanging(false)} onSave={(old, password) => live.call('POST', '/api/account/password', {old, password})}/>}
+    <h3 className="sub">Danger</h3><div className="card settings"><Setting title="Delete this hub" hint="Removes the hub, everyone in it and its setup on the streaming server. There is no undo."><button type="button" className="ghost small" onClick={() => {setEnding(true); setPass('');}}>Delete</button></Setting></div>
+    {ending && <Sheet title="Delete this hub?" onClose={() => setEnding(false)}><form className="stack" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call('POST', '/api/hub/delete', {password: pass}).then(() => {hubCode.forget(); go('/'); return live.reload();}, error => {fail(toast)(error); setBusy(false);});}}>
       <p className="muted sheet-lead">Everyone is signed out of their apps and their sign-ins stop working. Type your password to confirm.</p>
       <label htmlFor="end-pass">Password</label><input id="end-pass" type="password" value={pass} onChange={event => setPass(event.target.value)} autoComplete="current-password" autoFocus/>
       <button className="primary danger-fill" disabled={busy || !pass}>{busy ? 'Deleting…' : 'Delete everything'}</button>
@@ -994,35 +947,34 @@ export function SetupPage({hub, go, update, toast, live, signedIn, needCode, lin
   const [mine] = useState(offer?.hub ?? ''), [proof] = useState(offer?.proof ?? '');
   const [tmdb, setTmdb] = useState(''), [lists, setLists] = useState('');
   const [typed, setCode] = useState(''), code = linkCode || typed, [busy, setBusy] = useState(false);
-  const [step, setStep] = useState(signedIn ? 1 : 0), [user, setUser] = useState(''), [pass, setPass] = useState(''), [service, setService] = useState(hub.services[0] ?? 'TorBox'), [key, setKey] = useState(''), [quality, setQuality] = useState<Settings['quality']>('balanced'), [first, setFirst] = useState(''), [groupName, setGroupName] = useState('Family');
+  const [step, setStep] = useState(signedIn ? 1 : 0), [pass, setPass] = useState(''), [service, setService] = useState(hub.services[0] ?? 'TorBox'), [key, setKey] = useState(''), [quality, setQuality] = useState<Settings['quality']>('balanced'), [first, setFirst] = useState(''), [groupName, setGroupName] = useState('Family');
   const back = <button type="button" className="ghost" onClick={() => setStep(step - 1)}>Back</button>;
   const work = (job: Promise<unknown>, then: () => void) => {setBusy(true); void job.then(then, fail(toast)).finally(() => setBusy(false));};
-  // On a real hub the keys get a step each: what plays the streams, then what fills Home.
-  const names = live ? ['You', 'Streams', 'Home', 'Quality', 'First person'] : ['You', 'Account', 'Quality', 'First person'], at = names[step];
+  // The keys get a step each: what plays the streams, then what fills Home.
+  const names = ['You', 'Streams', 'Home', 'Quality', 'First person'], at = names[step];
   return <div className="setup">
     <ol className="steps" aria-label="Progress">{names.map((label, index) => <li key={label} className={index === step ? 'on' : index < step ? 'done' : ''}>{label}</li>)}</ol>
-    {at === 'You' && <form className="stack" onSubmit={event => {event.preventDefault(); if (live) work(live.call('POST', '/api/signup', {password: pass, code, hub: mine, proof}).then(() => {localStorage.setItem('hub-code', mine); return live.reload();}), () => setStep(1)); else setStep(1);}}>
-      <h1>{live ? 'Create your hub' : 'Create your account'}</h1><p className="muted">{live ? 'Choose a password. You sign in with it and the hub code below, which is made for you. Save both.' : 'This is how you get back in, on any device.'}</p>
+    {at === 'You' && <form className="stack" onSubmit={event => {event.preventDefault(); work(live.call('POST', '/api/signup', {password: pass, code, hub: mine, proof}).then(() => {hubCode.set(mine); return live.reload();}), () => setStep(1));}}>
+      <h1>Create your hub</h1><p className="muted">Choose a password. You sign in with it and the hub code below, which is made for you. Save both.</p>
       {/* Shown as a fact, not a field: nobody chooses or edits it. The out-of-sight input is only there so a password manager saves it with the password. */}
-      {live && <><span className="label">Your hub code</span><div className="code-show"><code>{mine}</code><button type="button" className="ghost small" onClick={() => {void navigator.clipboard?.writeText(mine).catch(() => {}); toast('Copied');}}>Copy</button></div>
-        <input className="out-of-sight" aria-label="Hub code" name="username" value={mine} readOnly tabIndex={-1} autoComplete="username"/></>}
-      {!live && <><label htmlFor="setup-user">Username</label><input id="setup-user" value={user} onChange={event => setUser(event.target.value)} autoComplete="off" autoFocus/></>}
+      <span className="label">Your hub code</span><div className="code-show"><code>{mine}</code><button type="button" className="ghost small" onClick={() => {void navigator.clipboard?.writeText(mine).catch(() => {}); toast('Copied');}}>Copy</button></div>
+        <input className="out-of-sight" aria-label="Hub code" name="username" value={mine} readOnly tabIndex={-1} autoComplete="username"/>
       <label htmlFor="setup-pass">Password</label><input id="setup-pass" type="password" value={pass} onChange={event => setPass(event.target.value)} autoComplete="off"/>
       {needCode && !linkCode && <><label htmlFor="setup-code">Setup code</label><input id="setup-code" value={typed} onChange={event => setCode(event.target.value)} autoComplete="off"/><p className="muted small">The code that was chosen when this site was installed. If that wasn’t you, ask whoever did it.</p></>}
-      <p className="muted small">{live ? 'Use at least 8 characters for the password.' : 'Preview: any text works. Nothing is sent anywhere. A passkey can be added later.'}</p>
-      <button className="primary big" disabled={busy || (live ? pass.length < 8 || (needCode && !code.trim()) : !user.trim() || !pass)}>Continue</button>
-      {live && <a className="link center-text" href="#/">I already have an account</a>}
+      <p className="muted small">Use at least 8 characters for the password.</p>
+      <button className="primary big" disabled={busy || pass.length < 8 || (needCode && !code.trim())}>Continue</button>
+      <a className="link center-text" href="#/">I already have an account</a>
     </form>}
-    {(at === 'Streams' || at === 'Account') && <form className="stack" onSubmit={event => {event.preventDefault(); setStep(step + 1);}}>
-      {live && <div className="notice"><span>Your hub code is <strong>{hub.code}</strong>. You need it with your password to sign in, so save it now. It’s also on your account page.</span></div>}
+    {at === 'Streams' && <form className="stack" onSubmit={event => {event.preventDefault(); setStep(step + 1);}}>
+      <div className="notice"><span>Your hub code is <strong>{hub.code}</strong>. You need it with your password to sign in, so save it now. It’s also on your account page.</span></div>
       <h1>Which account do your streams come from?</h1><p className="muted">One account powers everyone. People you add never see the key. More can be connected later.</p>
       <div className="choices">{allServices.slice(0, 4).map(item => <button key={item} type="button" aria-pressed={service === item} className={service === item ? 'on' : ''} onClick={() => setService(item)}>{item}</button>)}</div>
-      {live && <p className="muted small">Stored encrypted and passed only to your hub’s own setup on AIOStreams.</p>}
+      <p className="muted small">Stored encrypted and passed only to your hub’s own setup on AIOStreams.</p>
       <label htmlFor="setup-key">{service} API key</label><input id="setup-key" type="password" value={key} onChange={event => setKey(event.target.value)} autoComplete="off" placeholder="Paste it here"/>
       <p className="muted small">No {service} account yet? <a className="link" href={signUp[service]} target="_blank" rel="noreferrer">Get one here</a>{service === 'TorBox' || service === 'Real-Debrid' ? ' (a referral link: it supports whoever runs this site).' : '.'}</p>
-      <div className="split">{!live && back}<button className="primary big" disabled={busy || !key.trim()}>Continue</button></div>
+      <div className="split"><button className="primary big" disabled={busy || !key.trim()}>Continue</button></div>
     </form>}
-    {at === 'Home' && live && <form className="stack" onSubmit={event => {event.preventDefault(); work(live.call('PUT', '/api/keys/tmdb', {key: tmdb}).then(() => lists.trim() ? live.call('PUT', '/api/keys/mdblist', {key: lists}) : undefined), () => setStep(step + 1));}}>
+    {at === 'Home' && <form className="stack" onSubmit={event => {event.preventDefault(); work(live.call('PUT', '/api/keys/tmdb', {key: tmdb}).then(() => lists.trim() ? live.call('PUT', '/api/keys/mdblist', {key: lists}) : undefined), () => setStep(step + 1));}}>
       <h1>What fills Home?</h1><p className="muted">The rows people see when they open the player are built from two free catalogs. Both keys stay with your hub.</p>
       <label htmlFor="setup-tmdb">TMDB API key</label><input id="setup-tmdb" type="password" value={tmdb} onChange={event => setTmdb(event.target.value)} autoComplete="off" placeholder="Paste it here" autoFocus/>
       <p className="muted small">Trending, top rated and popular rows, and search. <a className="link" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noreferrer">Get a key</a>, and copy the one labelled “API Key”.</p>
@@ -1042,12 +994,11 @@ export function SetupPage({hub, go, update, toast, live, signedIn, needCode, lin
       const finish = () => {
         update(next => {
           next.defaults = {...defaultSettings(), quality, debrid: service}; next.rows = defaultRows(!!next.front); next.groups = [group]; next.people = [person];
-          if (!live) {next.services = [service]; next.me.name = user.trim() || next.me.name;}
         });
         toast('You’re set up'); go(`/person/${person.id}/settings`);
       };
       // The key is stored first, on its own, so it never rides along with an ordinary save.
-      if (live) work(live.call('PUT', `/api/services/${encodeURIComponent(service)}`, {key}).then(() => live.reload()), finish); else finish();
+      work(live.call('PUT', `/api/services/${encodeURIComponent(service)}`, {key}).then(() => live.reload()), finish);
     }}>
       <h1>Who’s first?</h1><p className="muted">Add yourself or someone you’re sharing with. People sit in groups that share a Home and playback; more of both can come later.</p>
       <label htmlFor="setup-group">Group</label><input id="setup-group" value={groupName} onChange={event => setGroupName(event.target.value)} autoComplete="off"/>
@@ -1060,36 +1011,27 @@ export function SetupPage({hub, go, update, toast, live, signedIn, needCode, lin
 /* ---------- what an invited person sees ---------- */
 export function JoinPage(page: PageProps & {id: string; tab: string; base?: string}) {
   const {hub, update, toast, id, tab, live, go} = page, base = page.base ?? `/join/${id}`;
-  const [pass, setPass] = useState(''), [changing, setChanging] = useState(false);
+  const [changing, setChanging] = useState(false);
   const person = hub.people.find(item => item.id === id);
   if (!person) return <p className="empty">This link is no longer valid.</p>;
   const edit = (change: (person: Person) => void, note: string) => {update(next => change(next.people.find(item => item.id === id)!)); toast(note);};
-  if (!person.joined) return <form className="setup stack" onSubmit={event => {event.preventDefault(); edit(target => {target.joined = true; target.password = pass;}, 'You’re in');}}>
-    <div className="stack center"><Avatar name={person.name} size={84}/><h1>Hi {person.name}</h1><p className="muted">{hub.me.name} invited you. Choose a password. It signs you in here and in the player apps.</p></div>
-
-    <label htmlFor="join-pass">Password</label><input id="join-pass" type="password" value={pass} onChange={event => setPass(event.target.value)} autoComplete="off" autoFocus placeholder="At least 8 characters"/>
-    <button className="primary big" disabled={pass.length < 8}>Continue</button>
-    <p className="muted small center-text">Preview: any text works. A passkey can be added afterwards.</p>
-  </form>;
   const tabs: [string, string][] = [['home', 'Home'], ...(person.can.playback ? [['playback', 'Playback'] as [string, string]] : []), ['devices', 'Devices'], ['accounts', 'Accounts'], ['activity', 'Activity'], ['you', 'You']];
   return <>
     <div className="person-head"><Avatar name={person.name} size={64}/><div><h1>{person.name}</h1><p className="muted">{hub.me.name ? `Shared with you by ${hub.me.name}` : 'Shared with you'}</p></div></div>
     {(person.paused || hub.groups.find(item => item.id === person.groupId)?.paused) && <div className="notice"><span>Nothing’s playing right now. Try again later.</span></div>}
     <Tabs base={base} tab={tab} tabs={tabs}/>
-    {tab === 'home' && ((SAMPLE && !person.trakt) || !person.devices.length) && <div className="todo">
-      {!person.devices.length && <a href={`#${base}/devices`}><span className="check" aria-hidden="true">→</span><span><strong>Watch on a device</strong><small>Phone, TV or laptop. Takes a minute.</small></span></a>}
-      {!person.trakt && SAMPLE && <a href={`#${base}/accounts`}><span className="check" aria-hidden="true">→</span><span><strong>Connect Trakt</strong><small>Optional. Adds your watchlist and recommendations.</small></span></a>}
+    {tab === 'home' && !person.devices.length && <div className="todo">
+      <a href={`#${base}/devices`}><span className="check" aria-hidden="true">→</span><span><strong>Watch on a device</strong><small>Phone, TV or laptop. Takes a minute.</small></span></a>
     </div>}
     <PersonSections page={page} person={person} tab={tab === 'playback' && !person.can.playback ? 'home' : tab} mine base={base}/>
     {tab === 'you' && <section>
       <div className="card settings">
         <Setting title="Name"><NameField label="Your name" value={person.name} onSave={value => edit(target => {target.name = value;}, 'Renamed')}/></Setting>
-        <Setting title="Password" hint={live ? 'For this page. Player apps use their own password, under Devices.' : 'The same one signs you in to the player apps.'}><button type="button" className="ghost small" onClick={() => live ? setChanging(true) : toast('Preview: this asks for the old and a new password')}>Change</button></Setting>
-        {SAMPLE && <Setting title="Passkey" hint="Sign in here with a fingerprint or face. Optional."><button type="button" className="ghost small" onClick={() => toast('Preview: this adds a passkey on this device')}>Add</button></Setting>}
+        <Setting title="Password" hint="For this page. Player apps use their own password, under Devices."><button type="button" className="ghost small" onClick={() => setChanging(true)}>Change</button></Setting>
       </div>
-      {live && <button type="button" className="danger" onClick={() => void live.call('POST', '/api/signout', {}).then(() => {leaveAs(); go('/'); return live.reload();}, fail(toast))}>Sign out</button>}
+      <button type="button" className="danger" onClick={() => void live.call('POST', '/api/signout', {}).then(() => {leaveAs(); go('/'); return live.reload();}, fail(toast))}>Sign out</button>
     </section>}
-    {changing && live && <PasswordSheet toast={toast} onClose={() => setChanging(false)} onSave={(old, password) => live.call('POST', `/api/people/${id}/password`, {old, password}).then(() => live.reload())}/>}
+    {changing && <PasswordSheet toast={toast} onClose={() => setChanging(false)} onSave={(old, password) => live.call('POST', `/api/people/${id}/password`, {old, password}).then(() => live.reload())}/>}
   </>;
 }
 
@@ -1165,8 +1107,8 @@ export function TvGate({live, toast, hub, person, tv, given}: {live: Live; toast
 }
 export function SignInPage({live, toast, canCreate}: {live: Live; toast: (text: string) => void; canCreate: boolean}) {
   // This browser remembers the last hub code used on it, so signing out never loses it.
-  const [user, setUser] = useState(() => localStorage.getItem('hub-code') ?? ''), [pass, setPass] = useState(''), [code, setCode] = useState(''), [lost, setLost] = useState(false), [busy, setBusy] = useState(false);
-  return <form className="setup stack gate" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call('POST', '/api/signin', lost ? {username: user, recovery: code, password: pass} : {username: user, password: pass}).then(() => {localStorage.setItem('hub-code', user.trim().toLowerCase()); return live.reload();}, fail(toast)).finally(() => setBusy(false));}}>
+  const [user, setUser] = useState(() => hubCode.get()), [pass, setPass] = useState(''), [code, setCode] = useState(''), [lost, setLost] = useState(false), [busy, setBusy] = useState(false);
+  return <form className="setup stack gate" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call('POST', '/api/signin', lost ? {username: user, recovery: code, password: pass} : {username: user, password: pass}).then(() => {hubCode.set(user.trim().toLowerCase()); return live.reload();}, fail(toast)).finally(() => setBusy(false));}}>
     <h1>{lost ? 'Use a recovery code' : 'Sign in'}</h1><p className="muted">{lost ? 'A recovery code works once. Choose a new password with it.' : 'For the person who runs the hub. Invited? Open the link you were sent.'}</p>
     <label htmlFor="in-user">Hub code</label><input id="in-user" value={user} onChange={event => setUser(event.target.value)} autoComplete="username" autoCapitalize="none" autoFocus/>
     <p className="muted small">The short code you got when you created the hub.</p>

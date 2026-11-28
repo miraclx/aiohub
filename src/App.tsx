@@ -1,9 +1,9 @@
-import {useEffect, useMemo, useRef, useState} from 'react';
+import {Suspense, lazy, useEffect, useMemo, useRef, useState} from 'react';
 import type {ReactNode} from 'react';
-import {SAMPLE, sampleHub} from './data';
+import {SAMPLE, emptyHub} from './data';
 import type {Hub} from './data';
 import {Activity} from './activity';
-import {asWho, call, changes, leaveAs, settle} from './live';
+import {asWho, call, changes, hubCode, leaveAs, settle} from './live';
 import type {Live, Refused} from './live';
 import {AccountPage, GroupPage, HubPage, JoinGate, JoinPage, PeoplePage, PersonPage, SetupPage, SignInPage, TvGate, backFromTrakt, lostTrakt} from './pages';
 import type {PageProps} from './pages';
@@ -46,22 +46,13 @@ function Frame({page, parts, mine, bar, toastView, children}: {page?: PageProps;
   </div>;
 }
 
-/* The preview: the same screens on made-up data. Nothing is saved or sent. */
-function Preview() {
-  const [parts, go] = useRoute(), [hub, setHub] = useState<Hub>(sampleHub), [toast, toastView] = useToast();
-  const page = useMemo<PageProps>(() => ({hub, go, toast, update: change => setHub(current => {const next = structuredClone(current); change(next); return next;})}), [hub]);
-  useEffect(() => {document.documentElement.dataset.theme = hub.me.theme;}, [hub.me.theme]);
-  const [at, id, tab] = parts;
-  return <Frame page={page} parts={parts} toastView={toastView} mine={at === 'join' ? `#/join/${id}` : undefined}
-    bar={<p className="preview-bar">Preview with sample data. Nothing here is saved or sent anywhere. <button type="button" className="link" onClick={() => {setHub(sampleHub()); go('/');}}>Reset</button></p>}>
-    {at === 'setup' ? <SetupPage {...page}/> : at === 'join' ? <JoinPage {...page} id={id ?? ''} tab={tab ?? 'home'}/> : undefined}
-  </Frame>;
-}
+/* The preview (an address ending in ?sample): this same site with a pretend hub behind it (src/live.ts), and one bar saying so. */
+const PreviewBar = SAMPLE ? lazy(() => import('./sample/bar')) : null;
 
 // Back from Trakt's sign-in: put aside before the address is read for the first time.
-if (!SAMPLE) backFromTrakt();
+backFromTrakt();
 
-/* The real hub. What is on screen is the truth for the page; `saved` is what the hub last confirmed. */
+/* The hub. What is on screen is the truth for the page; `saved` is what the hub last confirmed. */
 function Hubbed() {
   const [parts, go] = useRoute(), [apps, setApps] = useState<AppsState>(null), [toast, toastView] = useToast(apps, () => setApps(null));
   const [hub, setHub] = useState<Hub | null>(null), [phase, setPhase] = useState<'loading' | 'out' | 'in'>('loading');
@@ -81,7 +72,7 @@ function Hubbed() {
         // Someone else in this tab now (another hub, or a person instead of the manager): no posters from before.
         const viewer = `${state.hub.code}/${state.role}/${state.personId ?? ''}`; if (viewer !== seenAs.current) {forgetReal(); seenAs.current = viewer;}
         loaded.current = Date.now(); saved.current = structuredClone(state.hub); role.current = state.role; show(state.hub); setWho({role: state.role, personId: state.personId ?? ''}); setPhase('in'); look();
-        if (state.role === 'owner') localStorage.setItem('hub-code', state.hub.code);
+        if (state.role === 'owner') hubCode.set(state.hub.code);
       } catch (error) {
         if ((error as Refused).status !== 401) {toast((error as Error).message); return;}
         saved.current = null; forgetReal(); seenAs.current = ''; show(null); setPhase('out'); setOpen(await call<{signup: boolean; code: boolean; hub?: string; proof?: string}>('GET', '/api/open').catch(() => null));
@@ -152,22 +143,23 @@ function Hubbed() {
   useEffect(() => {const leave = () => {void live.settled();}; window.addEventListener('pagehide', leave); return () => window.removeEventListener('pagehide', leave);}, []);
   const page = useMemo<PageProps | undefined>(() => hub ? {hub, go, toast, update: live.update, live} : undefined, [hub]);
   const [at, id, tab] = parts, inside = phase === 'in' && !!page;
-
-  if (phase === 'loading') return <Frame parts={parts} toastView={toastView}><p className="empty">Loading…</p></Frame>;
+  // The preview's bar, on every screen. Reset puts the sample hub back as it was, in the manager's view.
+  const bar = PreviewBar && <Suspense fallback={null}><PreviewBar manager={inside && who.role === 'owner'} toast={toast} onReset={() => {leaveAs(); go('/'); void live.reload();}}/></Suspense>;
+  const frame = {parts, toastView, bar};
+  if (phase === 'loading') return <Frame {...frame}><p className="empty">Loading…</p></Frame>;
   // A TV's Quick Connect link (front.ts): the TV's code after the #, as Jellyfin's own web page has it, and the hub's in ?tv. A link
   // with nothing after the # asks for the code.
   const tv = /^#!?\/quickconnect(?:\?(.*))?$/.exec(location.hash) ?? (!location.hash && new URLSearchParams(location.search).has('tv') ? [] : null);
-  if (tv) return <Frame parts={parts} toastView={toastView}><TvGate live={live} toast={toast} hub={inside ? hub : null} person={inside && who.role === 'person' ? hub?.people.find(person => person.id === who.personId) : undefined}
+  if (tv) return <Frame {...frame}><TvGate live={live} toast={toast} hub={inside ? hub : null} person={inside && who.role === 'person' ? hub?.people.find(person => person.id === who.personId) : undefined}
     tv={new URLSearchParams(location.search).get('tv') ?? ''} given={new URLSearchParams(tv[1] ?? '').get('code') ?? ''}/></Frame>;
   // Someone's link always goes through its gate: their own opens straight away; another person's asks for that person's password
   // (saying who is signed in now), so a shared browser never shows the wrong page.
-  if (at === 'join' && id) return <Frame parts={parts} toastView={toastView}><JoinGate token={id} live={live} toast={toast} manager={inside && who.role !== 'person'} signedAs={inside && who.role === 'person' ? hub?.people.find(person => person.id === who.personId)?.name : undefined} onIn={() => {void live.reload().then(() => go('/me'));}}/></Frame>;
+  if (at === 'join' && id) return <Frame {...frame}><JoinGate token={id} live={live} toast={toast} manager={inside && who.role !== 'person'} signedAs={inside && who.role === 'person' ? hub?.people.find(person => person.id === who.personId)?.name : undefined} onIn={() => {void live.reload().then(() => go('/me'));}}/></Frame>;
   // One place for first-time setup, so it keeps its step while the account is being created underneath it.
   const creating = phase === 'out' && at === 'setup' && !!open?.signup, unfinished = inside && who.role === 'owner' && !hub!.groups.length;
-  if (creating || unfinished) return <Frame parts={parts} toastView={toastView}><SetupPage hub={hub ?? {...sampleHub(), services: [], groups: [], people: []}} go={go} toast={toast} update={live.update} live={live} signedIn={phase === 'in'} needCode={open?.code} linkCode={at === 'setup' ? id : undefined} offer={open?.hub && open.proof ? {hub: open.hub, proof: open.proof} : undefined}/></Frame>;
-  if (!inside) return <Frame parts={parts} toastView={toastView}><SignInPage live={live} toast={toast} canCreate={!!open?.signup}/></Frame>;
-  if (who.role === 'person') return <Frame page={page} parts={parts} toastView={toastView} mine="#/me"><JoinPage {...page!} id={who.personId} base="/me" tab={(at === 'me' ? id : undefined) ?? 'home'}/></Frame>;
-  return <Frame page={page} parts={parts} toastView={toastView}/>;
+  if (creating || unfinished) return <Frame {...frame}><SetupPage hub={hub ?? emptyHub()} go={go} toast={toast} update={live.update} live={live} signedIn={phase === 'in'} needCode={open?.code} linkCode={at === 'setup' ? id : undefined} offer={open?.hub && open.proof ? {hub: open.hub, proof: open.proof} : undefined}/></Frame>;
+  if (!inside) return <Frame {...frame}><SignInPage live={live} toast={toast} canCreate={!!open?.signup}/></Frame>;
+  if (who.role === 'person') return <Frame page={page} {...frame} mine="#/me"><JoinPage {...page!} id={who.personId} base="/me" tab={(at === 'me' ? id : undefined) ?? 'home'}/></Frame>;
+  return <Frame page={page} {...frame}/>;
 }
-
-export const App = SAMPLE ? Preview : Hubbed;
+export const App = Hubbed;

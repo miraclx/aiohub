@@ -15,7 +15,7 @@ export interface EditorProps {
   set: <K extends keyof Settings>(key: K, value: Settings[K], note?: string) => void;
   reset: (key: keyof Settings) => void;
   update: (change: (hub: Hub) => void) => void; toast: (text: string) => void;
-  live?: Live;
+  live: Live;
   /* On a person's own page: whether their MDBList sync is on, which hiding what's been watched needs. */
   kept?: boolean;
   /* On a person's own page: the content limit is set for them, so it is shown but not changed here. */
@@ -24,7 +24,7 @@ export interface EditorProps {
 // Names AIOStreams knows. (Yoruba is not one of them, so it cannot be offered for audio.)
 const languages = ['English', 'French', 'Spanish', 'German', 'Portuguese', 'Arabic', 'Hindi', 'Japanese', 'Korean', 'Chinese'];
 
-export function PlaybackEditor({hub, resolved: {values, from}, scope, set, reset, mine, live, kept, limitSet}: EditorProps) {
+export function PlaybackEditor({hub, resolved: {values, from}, scope, set, reset, mine, kept, limitSet}: EditorProps) {
   const unkept = scope.level === 'own' && !kept;
   const line = (key: keyof Settings) => ({from: from[key], scope, onReset: () => reset(key)});
   const who = scope.level === 'hub' ? 'Everyone starts with these.' : scope.level === 'group' ? `Everyone in ${scope.names.group} starts with these.` : mine ? 'Yours. Anything you have not changed follows the group.' : 'Anything not changed here follows the group.';
@@ -44,8 +44,8 @@ export function PlaybackEditor({hub, resolved: {values, from}, scope, set, reset
     <h3 className="sub">In the player</h3>
     <div className="card settings">
       <Setting column title="Subtitles" hint="Offered in the player, from OpenSubtitles and from tracks inside the file." {...line('subtitles')}><Chips all={languages} value={values.subtitles} onChange={value => set('subtitles', value)}/></Setting>
-      {/* AIOStreams holds this once for the whole setup, so on a real hub it is a Defaults-only switch. */}
-      {(!live || scope.level === 'hub') && <Setting title="Skip buttons" hint="Skip intro, recap and credits, where the title has them marked." {...line('skip')}><Switch label="Skip buttons" checked={values.skip} onChange={value => set('skip', value)}/></Setting>}
+      {/* AIOStreams holds this once for the whole setup, so it is a Defaults-only switch. */}
+      {scope.level === 'hub' && <Setting title="Skip buttons" hint="Skip intro, recap and credits, where the title has them marked." {...line('skip')}><Switch label="Skip buttons" checked={values.skip} onChange={value => set('skip', value)}/></Setting>}
     </div>
     <h3 className="sub">What shows up</h3>
     <div className="card settings">
@@ -89,7 +89,7 @@ function Formatter({value, onSave}: {value: Template; onSave: (value: Template) 
 }
 
 export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset, update, toast, live}: EditorProps) {
-  const service_ = (method: string, name: string, body: unknown, note: string) => void live!.call(method, `/api/services/${encodeURIComponent(name)}`, body).then(() => {toast(note); live!.apps(); return live!.reload();}, (error: Error) => toast(error.message));
+  const service_ = (method: string, name: string, body: unknown, note: string) => void live.call(method, `/api/services/${encodeURIComponent(name)}`, body).then(() => {toast(note); live.apps(); return live.reload();}, (error: Error) => toast(error.message));
   const line = (key: keyof Settings) => ({from: from[key], scope, onReset: () => reset(key)});
   const [service, setService] = useState(''), [key, setKey] = useState(''), [link, setLink] = useState(''), [tmdb, setTmdb] = useState(''), [lists, setLists] = useState(''), [replacing, setReplacing] = useState(''), [fresh, setFresh] = useState('');
   const free = allServices.filter(item => !hub.services.includes(item)), shipped = defaultAddons(); // the wording of a built-in source's note is the site's, not what a hub happened to save
@@ -100,12 +100,12 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
     {scope.level === 'hub' && <><h3 className="sub first">Debrid accounts</h3>
       <ul className="accounts">{hub.services.map(item => <li key={item}><div><h3>{item}</h3><p>{(names => names ? `Used by ${names}.` : 'No group uses it.')(hub.groups.filter(group => (group.settings.debrid ?? hub.defaults.debrid) === item).map(group => group.name).join(', '))}</p>
         {/* Real-Debrid lets an account stream to one IP at a time; the hub leaves AIOStreams' proxy setting alone, so one set there stays. */}
-        {item === 'Real-Debrid' && live && <p className="muted small">Real-Debrid allows one IP at a time, so people watching from different places can trip it. A proxy set in AIOStreams avoids that; its login is under <a className="link" href="#/hub/general">General, Advanced</a>.</p>}</div>
-        {live && (replacing === item
+        {item === 'Real-Debrid' && <p className="muted small">Real-Debrid allows one IP at a time, so people watching from different places can trip it. A proxy set in AIOStreams avoids that; its login is under <a className="link" href="#/hub/general">General, Advanced</a>.</p>}</div>
+        {replacing === item
           ? <form className="field-row narrow" onSubmit={event => {event.preventDefault(); service_('PUT', item, {key: fresh}, `${item} key replaced`); setReplacing(''); setFresh('');}}><input type="password" aria-label={`New ${item} key`} placeholder="New API key" autoComplete="off" autoFocus value={fresh} onChange={event => setFresh(event.target.value)}/><button className="ghost small" disabled={!fresh.trim()}>Save</button></form>
-          : <button type="button" className="ghost small" onClick={() => {setReplacing(item); setFresh('');}}>Replace key</button>)}
-        {hub.services.length > 1 && <button type="button" className="ghost small" disabled={values.debrid === item || hub.groups.some(group => group.settings.debrid === item) || hub.people.some(person => person.settings.debrid === item)} title="Move every group off this account first" onClick={() => setAsk({title: `Disconnect ${item}?`, body: `Its key leaves the hub, and nothing plays from ${item} until it is connected again.`, action: 'Disconnect', yes: () => {if (live) return service_('DELETE', item, undefined, `${item} disconnected`); update(next => {next.services = next.services.filter(other => other !== item);}); toast(`${item} disconnected`);}})}>Disconnect</button>}</li>)}
-        {!!free.length && <li><form className="connect" onSubmit={event => {event.preventDefault(); const name = service || free[0]; if (live) service_('PUT', name, {key}, `${name} connected`); else {update(next => {next.services.push(name);}); toast(`${name} connected`);} setKey(''); setService('');}}>
+          : <button type="button" className="ghost small" onClick={() => {setReplacing(item); setFresh('');}}>Replace key</button>}
+        {hub.services.length > 1 && <button type="button" className="ghost small" disabled={values.debrid === item || hub.groups.some(group => group.settings.debrid === item) || hub.people.some(person => person.settings.debrid === item)} title="Move every group off this account first" onClick={() => setAsk({title: `Disconnect ${item}?`, body: `Its key leaves the hub, and nothing plays from ${item} until it is connected again.`, action: 'Disconnect', yes: () => service_('DELETE', item, undefined, `${item} disconnected`)})}>Disconnect</button>}</li>)}
+        {!!free.length && <li><form className="connect" onSubmit={event => {event.preventDefault(); const name = service || free[0]; service_('PUT', name, {key}, `${name} connected`); setKey(''); setService('');}}>
           <select aria-label="Service" value={service || free[0]} onChange={event => setService(event.target.value)}>{free.map(item => <option key={item}>{item}</option>)}</select>
           <input type="password" aria-label="API key" placeholder="API key" autoComplete="off" value={key} onChange={event => setKey(event.target.value)}/>
           <button className="ghost small" disabled={!key.trim()}>Connect</button><a className="link small" href={signUp[service || free[0]]} target="_blank" rel="noreferrer">Get an account</a></form></li>}
@@ -114,7 +114,7 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
       <Setting title="Debrid account" hint={scope.level === 'hub' ? 'The one new groups use.' : 'Which connected account plays the streams.'} {...line('debrid')}>
         {hub.services.length > 1 ? <Segments label="Debrid account" value={values.debrid} onChange={value => set('debrid', value)} options={hub.services.map(item => ({value: item, label: item}))}/> : <span className="pill">{values.debrid}</span>}</Setting>
     </div>
-    {live && scope.level === 'hub' && <><h3 className="sub">Catalogs</h3>
+    {scope.level === 'hub' && <><h3 className="sub">Catalogs</h3>
       {/* Laid out like the debrid accounts above: what it does, then Replace key once it is connected. */}
       <ul className="accounts">{([
         {id: 'tmdb', name: 'TMDB', on: hub.tmdb, does: 'Builds the Home rows.', missing: 'Missing. Home rows are built from TMDB; the key is free.', get: 'https://www.themoviedb.org/settings/api', value: tmdb, setValue: setTmdb},
@@ -134,7 +134,7 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
         <form className="field-row" onSubmit={event => {
           event.preventDefault(); const text = link.trim(); if (!text) return;
           const url = text.replace(/^stremio:\/\//, 'https://'), name = url.replace(/^https?:\/\//, '').split('/')[0], id = `custom-${hash(url)}`;
-          if (live && !/^https:\/\/\S+\/manifest\.json(\?\S*)?$/.test(url)) return toast('Paste the https address of the source’s manifest.json');
+          if (!/^https:\/\/\S+\/manifest\.json(\?\S*)?$/.test(url)) return toast('Paste the https address of the source’s manifest.json');
           if (!hub.addons.some(addon => addon.id === id)) update(next => {next.addons.push({id, name, note: scope.level === 'hub' ? 'Added by link.' : 'Added by link. Remove it under Hub.', custom: true, url});});
           set('sources', [...values.sources.filter(item => item !== id), id], `Added ${name}`); setLink('');
         }}><input aria-label="Addon link" placeholder="Add another by its manifest link" value={link} onChange={event => setLink(event.target.value)} autoComplete="off"/><button className="ghost" disabled={!link.trim()}>Add</button></form>

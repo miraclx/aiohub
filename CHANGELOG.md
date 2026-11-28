@@ -4,6 +4,10 @@ Newest first. Dates are the commit dates on `main`.
 
 ## 2026-11-28
 
+- The preview (`/?sample`) is the real site now, not a second copy of it: the same pages, asking a pretend hub kept in the
+  browser instead of the network. Its data is recorded from the local test Worker (`npm run sample:record`), changes made
+  in it are kept in that browser until Reset, and a person's own page opens from their link as it does for a manager. The
+  test run fails when the recording no longer matches what the Worker answers.
 - The README is one page, and the rest moved to `docs/`: Setting up, Updating, Settings, Features, How it works, Cost and
   limits, Working on it. What's new lives in this file.
 - The two server settings are named for what they are: `AIOSTREAMS_ORIGIN` and `AIOMETADATA_ORIGIN`. The earlier names,

@@ -29,6 +29,7 @@ button:disabled { opacity: .45; cursor: default; }
 .top nav a { padding: 7px 14px; border-radius: 999px; color: var(--muted); font-size: 14px; font-weight: 550; }
 .top nav a.on { background: var(--raised); color: var(--text); }
 .preview-bar { font-size: 13px; color: var(--muted); padding: 8px 12px; background: var(--surface); border-radius: 10px; margin: 6px 0 26px; }
+.preview-as { margin-left: 6px; }
 main { display: block; }
 /* A quiet credit under every page. */
 /* A Trakt row on a hub or group Home: a place kept for whoever connects Trakt. One slim dashed line, like the "Always first"

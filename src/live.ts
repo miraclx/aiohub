@@ -1,6 +1,24 @@
 // Talking to the hub's own API, and keeping what is on screen saved.
 // Changes show at once; a moment later every changed thing is sent as one save each, in order.
+import {SAMPLE} from './data';
 import type {Group, Hub, Person} from './data';
+
+/* The preview (an address ending in ?sample) is this same site with a pretend hub behind it: everything the site would ask the
+   network for is asked of src/sample instead, which is loaded only then. This file is the one place that knows. What is kept in
+   the browser is kept under names of the preview's own, so it never touches a real hub's on the same device. */
+type Pretend = typeof import('./sample/fake');
+let loading: Promise<Pretend> | undefined, pretend: Pretend | undefined;
+const sample = () => loading ??= import('./sample/fake').then(found => pretend = found);
+const kept = (name: string) => SAMPLE ? `sample-${name}` : name;
+/* Asking the hub. */
+const send = (path: string, init: RequestInit & {headers: Record<string, string>}) => SAMPLE ? sample().then(found => found.answer(path, init as {method: string; headers: Record<string, string>; body?: string})) : fetch(path, init);
+/* Asking another site straight from the page (Trakt's sign-in), and leaving for one. */
+export const outside = (url: string, init?: RequestInit) => SAMPLE ? sample().then(found => found.outside(url, init)) : fetch(url, init);
+export const leave = (url: string) => SAMPLE ? void sample().then(found => found.leave(url)) : location.assign(url);
+/* A title's own picture, as the player apps show it. */
+export const picture = (code: string, art: string) => pretend?.picture(art) ?? `/h/${code}/Items/${art}/Images/Primary?maxHeight=300`;
+/* The last hub code used on this browser, so signing out never loses it. */
+export const hubCode = {get: () => localStorage.getItem(kept('hub-code')) ?? '', set: (code: string) => localStorage.setItem(kept('hub-code'), code), forget: () => localStorage.removeItem(kept('hub-code'))};
 
 export interface Live {
   call: <T = Record<string, unknown>>(method: string, path: string, body?: unknown) => Promise<T>;
@@ -15,13 +33,13 @@ export interface Live {
 }
 export class Refused extends Error {constructor(public status: number, message: string, public until = 0) {super(message);}}
 /* A tab its manager opened a person's link in shows that person's view; other tabs stay the manager's. Kept per tab. */
-const AS_TAB = 'aiohub-as';
+const AS_TAB = kept('aiohub-as');
 export const asWho = () => {try {return sessionStorage.getItem(AS_TAB) ?? '';} catch {return '';}};
 export const beAs = (person: string) => {try {sessionStorage.setItem(AS_TAB, person);} catch { /* private mode: the tab stays the manager's */ }};
 export const leaveAs = () => {try {sessionStorage.removeItem(AS_TAB);} catch { /* nothing kept */ }};
 export async function call<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<T> {
   const as = asWho(), headers: Record<string, string> = {...(body === undefined ? {} : {'content-type': 'application/json'}), ...(as ? {'x-as': as} : {})};
-  const answer = await fetch(path, {method, credentials: 'same-origin', headers, body: body === undefined ? undefined : JSON.stringify(body)}).catch(() => {throw new Refused(0, 'Could not reach the hub. Check your connection.');});
+  const answer = await send(path, {method, credentials: 'same-origin', headers, body: body === undefined ? undefined : JSON.stringify(body)}).catch(() => {throw new Refused(0, 'Could not reach the hub. Check your connection.');});
   const data = await answer.json().catch(() => ({})) as T & {message?: string; until?: number};
   // Their view was signed out (here or in another tab): this tab goes back to the manager's own.
   if (as && answer.status === 401) {leaveAs(); location.hash = '#/'; location.reload();}
@@ -75,9 +93,11 @@ export function settle(hub: Hub, job: Job, v: number | undefined, shown?: Hub) {
 const packed = (bytes: ArrayBuffer | null) => bytes ? btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') : '';
 const unpacked = (text: string) => Uint8Array.from(atob(text.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 const bytesOf = (text: string) => new TextEncoder().encode(text);
-export const canPasskey = () => typeof window !== 'undefined' && !!window.PublicKeyCredential && !!navigator.credentials;
+export const canPasskey = () => SAMPLE || (typeof window !== 'undefined' && !!window.PublicKeyCredential && !!navigator.credentials);
 const device = () => {const agent = navigator.userAgent; const on = /iPhone/.test(agent) ? 'iPhone' : /iPad/.test(agent) ? 'iPad' : /Android/.test(agent) ? 'Android' : /Mac/.test(agent) ? 'Mac' : /Windows/.test(agent) ? 'Windows' : /Linux/.test(agent) ? 'Linux' : 'A device'; const browser = /Edg\//.test(agent) ? 'Edge' : /Firefox\//.test(agent) ? 'Firefox' : /Chrome\//.test(agent) ? 'Chrome' : /Safari\//.test(agent) ? 'Safari' : ''; return browser ? `${on} · ${browser}` : on;};
 export async function addPasskey() {
+  // A passkey is made by a real device. The preview lists one as if this device had made it.
+  if (SAMPLE) return void await call('POST', '/api/account/passkeys', {name: device()});
   const start = await call<{challenge: string; proof: string; user: string; name: string; exclude: string[]}>('POST', '/api/account/passkeys/options', {});
   const made = await navigator.credentials.create({publicKey: {
     challenge: bytesOf(start.challenge), rp: {name: 'AIOHub', id: location.hostname}, user: {id: bytesOf(start.user), name: `AIOHub ${start.name}`, displayName: `AIOHub ${start.name}`},
@@ -89,6 +109,7 @@ export async function addPasskey() {
   await call('POST', '/api/account/passkeys', {id: made.id, key: packed(answer.getPublicKey()), alg: answer.getPublicKeyAlgorithm(), clientData: packed(answer.clientDataJSON), challenge: start.challenge, proof: start.proof, name: device()});
 }
 export async function usePasskey() {
+  if (SAMPLE) return void await call('POST', '/api/passkey', {});
   const start = await call<{challenge: string; proof: string}>('GET', '/api/passkey');
   const got = await navigator.credentials.get({publicKey: {challenge: bytesOf(start.challenge), rpId: location.hostname, userVerification: 'preferred'}}) as PublicKeyCredential | null;
   if (!got) throw new Error('No passkey was chosen');

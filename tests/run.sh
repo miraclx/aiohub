@@ -19,10 +19,19 @@ fresh() {
   (npx wrangler dev --local --port 8799 --var TEST_WHERE:1 --var SITE_ORIGIN:http://127.0.0.1:8799 --var NOTICE_VIA:http://127.0.0.1:8798/notice "$@" > /tmp/aiohub-dev.log 2>&1 &)
   for i in $(seq 1 60); do curl -s -o /dev/null http://localhost:8799/api/open && return; sleep 0.5; done
 }
+# The made-up hub behind the preview (/?sample): `tests/run.sh sample` records it again into src/sample/recorded.json, and
+# `tests/run.sh sample --check` only says whether the checked-in one still matches what the Worker answers (scripts/record-sample.mjs).
+sample() {
+  fresh --var FRONT:aiometadata --var FLIXPATROL_API:http://127.0.0.1:8798/flix
+  node scripts/record-sample.mjs "$@" 2>&1 | grep -E "^(sample:|✖)|Error"
+}
+if [ "$1" = "sample" ]; then shift; sample "$@"; stop; exit; fi
 npx vite build >/dev/null 2>&1
 fresh; node --test tests/api.test.mjs 2>&1 | grep -E "^ℹ (tests|pass|fail)|✖"
 fresh; node tests/browser.mjs "$@" 2>&1 | tail -14
 # The same site with every person on their own AIOMetadata setup.
 # RECS_HOUR: the Recommended rows are worked out only in runs the tests date late in the day, so the other runs stay as they were.
 fresh --var FRONT:aiometadata --var FLIXPATROL_API:http://127.0.0.1:8798/flix --var RECS_HOUR:23; node --test tests/aiom.test.mjs 2>&1 | grep -E "^ℹ (tests|pass|fail)|✖" | sed "s/^/aiom: /"
+# The preview's recorded answers still have the shape the Worker gives today.
+sample --check
 stop

@@ -1,4 +1,3 @@
-import {SAMPLE} from './data';
 import {useEffect, useRef, useState} from 'react';
 import type {ReactNode} from 'react';
 import type {Level, Row} from './data';
@@ -15,8 +14,7 @@ export function useRoute(): [string[], (to: string) => void] {
 }
 
 export function hash(text: string) {let h = 7; for (const c of text) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h;}
-/* On the real hub a row shows what it really holds: the posters a player app would get. Until those are known it shows plain blanks,
-   never the preview's sample art. */
+/* A row shows what it really holds: the posters a player app would get. Until those are known it shows plain blanks. */
 const real = new Map<string, string[]>();
 export const showReal = (rows: Record<string, string[]>) => {real.clear(); for (const [id, posters] of Object.entries(rows)) real.set(id, posters);};
 /* One person's own rows, kept apart from the shared ones so a reload of either never wipes the other. They are shown only on that
@@ -28,12 +26,7 @@ export const addReal = (rows: Record<string, string[]>, person: string) => {own.
 export const forgetReal = () => {real.clear(); own.clear(); ownFor = '';};
 // `blank`: only blanks, for a row that holds nothing until someone connects an account.
 export function Posters({seed, dim, person, blank}: {seed: string; dim?: boolean; person?: string; blank?: boolean}) {
-  if (!SAMPLE) return <div className={`posters${dim ? ' dim' : ''}`} aria-hidden="true">{((blank ? null : (person && person === ownFor ? own.get(seed) : null) ?? real.get(seed)) ?? Array<string>(7).fill('')).map((poster, i) => <span key={i} className={poster ? '' : 'blank'} style={poster ? {backgroundImage: `url(${JSON.stringify(poster)})`} : undefined}/>)}</div>;
-  return <div className={`posters${dim ? ' dim' : ''}`} aria-hidden="true">{Array.from({length: 7}, (_, i) => {
-    const h = hash(`${i}:${seed}:${i * 7}`), a = (hash(seed) + i * 47 + h % 30) % 360, b = (a + 40 + (h >> 4) % 80) % 360;
-    const poster = String((hash(seed) + i * 5) % 56).padStart(2, '0');
-    return <span key={i} style={{backgroundImage: `url(/posters/${poster}.webp), linear-gradient(${150 + (h % 60)}deg, hsl(${a} 55% 42%), hsl(${b} 60% 20%))`}}/>;
-  })}</div>;
+  return <div className={`posters${dim ? ' dim' : ''}`} aria-hidden="true">{((blank ? null : (person && person === ownFor ? own.get(seed) : null) ?? real.get(seed)) ?? Array<string>(7).fill('')).map((poster, i) => <span key={i} className={poster ? '' : 'blank'} style={poster ? {backgroundImage: `url(${JSON.stringify(poster)})`} : undefined}/>)}</div>;
 }
 export function Covers({items, dim, tall}: {items: {title: string; image: string}[]; dim?: boolean; tall?: boolean}) {
   return <div className={`covers${dim ? ' dim' : ''}${tall ? ' tall' : ''}`} aria-hidden="true">{items.slice(0, 9).map(item => <span key={item.image} style={{backgroundImage: `url(${item.image})`}}/>)}</div>;

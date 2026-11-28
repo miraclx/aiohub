@@ -1,8 +1,8 @@
-// Shapes shared by the site and the Worker, the defaults a new hub starts with, and the sample data behind the preview.
-// The sample data holds no real accounts, keys or viewing history.
+// Shapes shared by the site and the Worker, and the defaults a new hub starts with.
 import formatter from './formatter.json';
 import shipped from './collections.json';
-/* The preview (address ends in ?sample) runs entirely on made-up data and saves nothing. */
+/* The preview (an address ending in ?sample): this same site with a pretend hub behind it. Only src/live.ts and the one bar in
+   src/App.tsx read this; no page does. */
 export const SAMPLE = new URLSearchParams((globalThis as {location?: {search: string}}).location?.search ?? '').has('sample');
 export type Level = 'hub' | 'group' | 'own';
 export interface Cover {title: string; image: string}
@@ -425,11 +425,6 @@ export function suggestedFor(has: (id: string) => boolean, limit: Limit, lists: 
     // How many are held back only for want of an MDBList key.
     locked: lists ? 0 : SUGGESTED.filter(item => fits(item) && !has(item.id) && needsLists(item) === 'all').length};
 }
-// What a connected account would list. Invented names.
-export const ownLists = (person: {trakt: boolean; lists: boolean}) => [
-  ...(person.trakt ? [{id: 'tl-rewatch', title: 'Weekend rewatches', kind: 'List · 24 titles', source: 'Trakt · your list'}, {id: 'tl-heist', title: 'Heist nights', kind: 'List · 12 titles', source: 'Trakt · your list'}] : []),
-  ...(person.lists ? [{id: 'ml-oscars', title: 'Award winners', kind: 'List · 60 titles', source: 'MDBList · your list'}, {id: 'ml-short', title: 'Under 90 minutes', kind: 'List · 41 titles', source: 'MDBList · your list'}] : []),
-];
 // Where to get an account. The first two are the site owner's referral links.
 export const signUp: Record<string, string> = {'TorBox': 'https://torbox.app/subscription?referral=79f669d0-a38c-4d10-96d7-52864fea5f1e', 'Real-Debrid': 'http://real-debrid.com/?id=14676327', 'AllDebrid': 'https://alldebrid.com/', 'Premiumize': 'https://www.premiumize.me/', 'Debrid-Link': 'https://debrid-link.com/', 'EasyDebrid': 'https://easydebrid.com/'};
 export const allServices = ['TorBox', 'Real-Debrid', 'AllDebrid', 'Premiumize', 'Debrid-Link', 'EasyDebrid'];
@@ -469,14 +464,14 @@ export const hasLists = (person: Person) => person.lists || !!person.listsKept;
    where that holds, or "Played here" alone. */
 export const TRAKT_AND_HERE = 'Trakt and played here', HERE_AND_LISTS = 'MDBList and played here', ALL_THREE = 'Trakt, MDBList and played here';
 /* Whether the hub itself reads their Trakt (the older link through AIOMetadata does not count: the hub cannot read it). */
-const hubTrakt = (person: Person) => person.history ? !person.history.again : SAMPLE && person.trakt;
+const hubTrakt = (person: Person) => !!person.history && !person.history.again;
 export const feedOf = (person: Person) => {
   const trakt = hubTrakt(person), lists = hasLists(person), here = trakt ? !!person.history && !person.matching?.on : !!person.played || !lists;
   return trakt ? (lists ? (here ? ALL_THREE : 'Trakt and MDBList') : here ? TRAKT_AND_HERE : 'Trakt') : lists ? (here ? HERE_AND_LISTS : 'MDBList') : 'Played here';
 };
 export const fedBy = (source: string) => ({trakt: /^Trakt\b/.test(source), lists: /\bMDBList\b/.test(source), here: /layed here$/.test(source)});
 /* What can be filled for a person, from their accounts and their watching. */
-export const linkedOf = (hub: Hub, person: Person): Linked => ({trakt: hasTrakt(person), lists: hasLists(person), watched: SAMPLE || hasLists(person) || !!person.history && !person.history.again || !!person.played,
+export const linkedOf = (hub: Hub, person: Person): Linked => ({trakt: hasTrakt(person), lists: hasLists(person), watched: hasLists(person) || !!person.history && !person.history.again || !!person.played,
   kids: resolve(hub, hub.groups.find(item => item.id === person.groupId), person).values.limit === 'kids', front: !!hub.front});
 /* Where each of a person's own rows comes from, as their Home says it: the one Watchlist from whichever of Trakt and MDBList they
    have, Recommended from Trakt or else from what they watched, Recently Watched, Up Next and New for you from what feeds them
@@ -490,44 +485,14 @@ const fromOf = (id: string, person: Person): string | undefined => id === 'recen
 export const personRows = (hub: Hub, person: Person) => rowsOf(person.rows, groupRows(hub, hub.groups.find(item => item.id === person.groupId)!), linkedOf(hub, person), person.picks)
   .map(row => fromOf(row.id, person) ? {...row, source: fromOf(row.id, person)!} : isPlace(row.id) && person.forYou?.[row.id] ? {...row, title: person.forYou[row.id], pick: person.forYouKinds?.[row.id] ?? 'popular'} : row);
 
-const words = ['maple', 'river', 'copper', 'lantern', 'meadow', 'harbor', 'ember', 'willow', 'pebble', 'comet'];
-function seed(text: string) {let h = 11; for (const c of text) h = (h * 33 + c.charCodeAt(0)) >>> 0; return h;}
-// Made-up sign-in details in a readable shape. Never a real credential.
-export const samplePassword = (text: string) => {const h = seed(text + Math.random()); return `${words[h % 10]}-${words[(h >>> 4) % 10]}-${10 + (h >>> 9) % 90}`;};
-export const samplePin = (text: string) => String(100000 + seed(text + Math.random()) % 900000);
 export const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30).replace(/-$/, '') || 'person';
 export function newPerson(hub: Hub, name: string, groupId: string): Person {
   let id = slug(name); while (hub.people.some(item => item.id === id)) id += '-2';
   // Playback is theirs to change from the start, all but the content limit, which their manager opens up separately.
-  return {id, name, groupId, joined: false, trakt: false, lists: false, rows: null, settings: {}, can: {arrange: true, add: true, playback: true, limit: false}, pin: samplePin(id), password: samplePassword(id), devices: []};
+  return {id, name, groupId, joined: false, trakt: false, lists: false, rows: null, settings: {}, can: {arrange: true, add: true, playback: true, limit: false}, pin: null, password: '', devices: []};
 }
-const person = (id: string, name: string, groupId: string, extra: Partial<Person>): Person => ({id, name, groupId, joined: true, trakt: false, lists: false, rows: null, settings: {}, can: {arrange: true, add: true, playback: false}, pin: samplePin(id), password: samplePassword(id), devices: [], ...extra});
-export const sampleHub = (): Hub => ({
-  name: 'Our place', code: 'k7m2', host: 'ForTheWeak', hostUrl: '', services: ['TorBox', 'Real-Debrid'], addons: defaultAddons(), defaults: defaultSettings(), rows: defaultRows(),
-  me: {name: 'Sam', theme: 'dark', passkeys: [{id: 'k1', name: 'MacBook', added: '8 Nov'}]},
-  groups: [
-    {id: 'family', name: 'Family', rows: null, settings: {}},
-    {id: 'friends', name: 'Friends', rows: defaultRows().map(r => r.id === 'mixed-genre' ? {...r, on: false} : r), settings: {quality: 'saver', maxSizeGb: 10, debrid: 'Real-Debrid'}},
-  ],
-  people: [
-    person('ada', 'Ada', 'family', {trakt: true, devices: [{id: 'd1', app: 'AIOStreams', name: 'Living room TV', seen: 'Now'}, {id: 'd2', app: 'Streamyfin', name: 'Ada’s iPhone', seen: 'Yesterday'}]}),
-    person('ben', 'Ben', 'family', {can: {arrange: true, add: false, playback: false}, settings: {limit: 'kids'}, devices: [{id: 'd3', app: 'AIOStreams', name: 'Ben’s tablet', seen: '2 h ago'}]}),
-    person('chi', 'Chi', 'family', {joined: false, can: {arrange: true, add: true, playback: true}}),
-    person('dev', 'Dev', 'friends', {trakt: true, lists: true, can: {arrange: true, add: true, playback: true}, devices: [{id: 'd4', app: 'Odin', name: 'Apple TV', seen: 'Now'}]}),
-  ],
-});
+/* A hub with nothing in it yet: what first-time setup starts from, before the hub's own answer has come. */
+export const emptyHub = (): Hub => ({name: '', code: '', host: 'ForTheWeak', hostUrl: '', services: [], addons: defaultAddons(), defaults: defaultSettings(), rows: defaultRows(), groups: [], people: [], me: {name: '', theme: 'dark', passkeys: []}});
 
-// Invented titles. Activity is what the player last reported, not a full play-by-play log.
+/* One entry on Activity, in the words the screen uses (src/activity.tsx). What a player last reported, not a full play-by-play log. */
 export interface Play {art?: string; id: string; personId: string; title: string; detail: string; when: string; live?: boolean; quiet?: boolean; day: 'Today' | 'Yesterday' | 'Earlier this week'; progress?: number; on: string; where?: string; parts?: [number, number][]; ranges?: string[]; mark?: number; line?: string; longer?: string; clock?: string; down?: boolean; stamp?: number}
-export const samplePlays = (): Play[] => [
-  {id: 'p1', personId: 'ada', title: 'Harbor Lights', detail: 'Season 2 · Episode 4', when: 'Since 8:05 pm', live: true, day: 'Today', progress: 62, on: 'AIOStreams · Living room TV', parts: [[0, 40], [48, 14]], line: 'Watched 27 of 50 min · skipped 4 min · paused twice'},
-  {id: 'p2', personId: 'dev', title: 'The Quiet Orbit', detail: 'Movie', when: 'Since 7:40 pm', live: true, day: 'Today', progress: 18, on: 'Odin · Apple TV'},
-  {id: 'p3', personId: 'ben', title: 'Paper Kites', detail: 'Movie · finished', when: '2 h ago', day: 'Today', on: 'AIOStreams · Ben’s tablet', where: 'Lagos, NG · SpaceX'},
-  {id: 'p4', personId: 'ada', title: 'Harbor Lights', detail: 'Season 2 · Episode 3 · finished', when: '5 h ago', day: 'Today', on: 'AIOStreams · Living room TV'},
-  {id: 'p5', personId: 'dev', title: 'North of Nowhere', detail: 'Season 1 · Episode 8 · finished', when: '9:40 pm', day: 'Yesterday', on: 'Odin · Apple TV'},
-  {id: 'p6', personId: 'ben', title: 'Small Engines', detail: 'Movie · stopped at 41%', when: '7:15 pm', day: 'Yesterday', progress: 41, on: 'AIOStreams · Ben’s tablet'},
-  {id: 'p9', personId: 'ben', title: 'Harbor Lights', detail: 'Season 1 · Episode 1 · finished', when: '4:30 pm', day: 'Yesterday', on: 'AIOStreams · Ben’s tablet'},
-  {id: 'p7', personId: 'ada', title: 'Glass Garden', detail: 'Movie · finished', when: 'Tuesday', day: 'Earlier this week', on: 'Streamyfin · Ada’s iPhone'},
-  {id: 'p8', personId: 'dev', title: 'North of Nowhere', detail: 'Season 1 · Episode 7 · finished', when: 'Monday', day: 'Earlier this week', on: 'Odin · Apple TV'},
-  {id: 'p10', personId: 'dev', title: 'Glass Garden', detail: 'Movie · stopped at 70%', when: 'Monday', day: 'Earlier this week', progress: 70, on: 'Odin · Apple TV'},
-];

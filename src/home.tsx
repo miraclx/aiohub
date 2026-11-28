@@ -4,7 +4,7 @@ import {DragDropProvider} from '@dnd-kit/react';
 import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
 import {FOR_YOU_KINDS, SECTIONS, TRAKT_IDS, aboutRow, folderFits, isPlace, nextPlace, pillOf, sourceShown, suggestedFor, suggestionOf} from './data';
 import type {Cover, ForYouDetail, Level, Limit, Row, Shown} from './data';
-import {Art, Confirm, Covers, NameField, Segments, Sheet, Switch, hash} from './ui';
+import {Art, Confirm, Covers, NameField, Sheet, Switch} from './ui';
 
 type Pick = {id: string; title: string; kind: string; source: string};
 export function Grip({handleRef, label}: {handleRef: (element: Element | null) => void; label: string}) {
@@ -29,7 +29,7 @@ const DAY_MS = 86_400_000, LIKED_ROW = 'trakt-liked-lists', isShelf = (id: strin
 const dayOf = (ms: number) => {const days = Math.round((new Date(ms).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / DAY_MS); return days === 0 ? 'today' : days === 1 ? 'tomorrow' : days === -1 ? 'yesterday' : new Date(ms).toLocaleDateString(undefined, {day: 'numeric', month: 'short'});};
 const atOf = (ms: number) => `${dayOf(ms) === 'today' ? '' : `${dayOf(ms)} `}at ${new Date(ms).toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;
 /* When a For you place is picked again: the day's picking starts at the hour; someone not picked for since then is on one of the
-   next runs (0). Nothing without times (the preview). */
+   next runs (0). Nothing without times. */
 function nextOf(times?: Times) {
   if (!times?.pickedAt) return undefined;
   const now = Date.now(), start = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T${String(times.hour).padStart(2, '0')}:00:00Z`);
@@ -129,7 +129,7 @@ export function moved<T>(list: T[], from: number, to: number) {const next = [...
 
 export interface HomeProps {
   rows: Row[]; level: Level; onChange: (rows: Row[], note: string) => void;
-  tag: (row: Row) => string | undefined; lists?: Pick[]; listsHint?: string;
+  tag: (row: Row) => string | undefined; lists?: Pick[];
   /* On a person's own Home: the pill of a row that comes from their own account or watching (pillOf). */
   pill?: (row: Row) => string | undefined;
   /* On a person's own Home: the rows that wait for an account they have not connected, each with what it needs ("Trakt"), and
@@ -141,7 +141,7 @@ export interface HomeProps {
   /* Whose Home this is, when it is a person's: their own rows' posters show only here. */
   person?: string;
   /* On a real hub: looks a pasted link up, and only what really reaches the player apps is offered. */
-  find?: (link: string) => Promise<Pick>; fail?: (text: string) => void;
+  find: (link: string) => Promise<Pick>; fail?: (text: string) => void;
   /* The content limit this Home is seen under, whether MDBList lists can be read for it, and (a person's own Home, in their own
      view only) which suggestions their watching points to. `keyHint`: what to say when picks wait for an MDBList key. */
   limit?: Limit; listsOk?: boolean; because?: Record<string, string>; keyHint?: React.ReactNode;
@@ -153,7 +153,7 @@ export interface HomeProps {
   onMute?: (kind: string) => void; onLess?: (kind: string) => void; order?: string[];
   times?: Times; forYou?: ForYouDetail; onPlace?: (place: string, asked: {use?: string; keep?: boolean; never?: boolean}, note: string) => void; onCheckLists?: () => void;
 }
-export function HomeEditor({rows, level, onChange, tag, pill, lists = [], listsHint, needs = [], accounts, followLabel, onFollow, canAdd = true, canArrange = true, mine = false, addHint, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute, onLess, order = [], times, forYou, onPlace, onCheckLists}: HomeProps) {
+export function HomeEditor({rows, level, onChange, tag, pill, lists = [], needs = [], accounts, followLabel, onFollow, canAdd = true, canArrange = true, mine = false, addHint, person, find, fail, limit = 'all', listsOk = true, because = {}, keyHint, front = false, onMute, onLess, order = [], times, forYou, onPlace, onCheckLists}: HomeProps) {
   const [adding, setAdding] = useState(false), [allLists, setAllLists] = useState(false), [link, setLink] = useState(''), [arranging, setArranging] = useState<string | null>(null);
   // A For you row switched off is listed under Not on Home only for someone without Add row, who could not bring one back otherwise;
   // with Add row, "Another For you row" does that, and the For you rows already on Home say there are some.
@@ -172,7 +172,7 @@ export function HomeEditor({rows, level, onChange, tag, pill, lists = [], listsH
     onChange([{...item, origin: level, on: true}, ...rows], `Added “${item.title}”`); setAdding(false); setLink('');
   }
   // A person's own lists are offered to them alone, on their own Home: never on a hub or group Home, nor to their manager.
-  const theirs = mine ? lists : [], picked = suggestedFor(id => rows.some(row => row.id === id), limit, !find || listsOk, new Date(), level === 'own' ? because : {});
+  const theirs = mine ? lists : [], picked = suggestedFor(id => rows.some(row => row.id === id), limit, listsOk, new Date(), level === 'own' ? because : {});
   const folder = rows.find(row => row.id === arranging), placesOn = rows.filter(row => isPlace(row.id) && row.on).length;
   // Under a content limit the rows for children come first, open; without one they wait folded at the end.
   const sections = [...SECTIONS].sort((a, b) => limit === 'all' ? 0 : Number(b.id === 'children') - Number(a.id === 'children'))
@@ -211,18 +211,15 @@ export function HomeEditor({rows, level, onChange, tag, pill, lists = [], listsH
     {adding && <Sheet title="Add a row" onClose={() => setAdding(false)}>
       <form className="link-form" onSubmit={event => {
         event.preventDefault(); const text = link.trim(); if (!text) return;
-        if (find) return void find(text).then(add, (error: Error) => fail?.(error.message));
-        const name = text.replace(/^https?:\/\/(www\.)?/, '').split(/[/?#]/).filter(Boolean);
-        add({id: `link-${hash(text)}`, title: name.slice(-1)[0]?.replace(/[-_]/g, ' ') || 'My list', kind: 'List', source: name[0]?.split('.')[0] ?? 'Link'});
+        void find(text).then(add, (error: Error) => fail?.(error.message));
       }}>
         <label htmlFor="add-link" className="sheet-sub first">From a link</label>
         <div className="field-row"><input id="add-link" value={link} onChange={event => setLink(event.target.value)} placeholder="Trakt, Letterboxd, MDBList, TMDB…" autoComplete="off"/><button className="primary" disabled={!link.trim()}>Add</button></div>
       </form>
-      {(!!theirs.length || (!find && listsHint && mine)) && <><h3 className="sheet-sub">Your lists</h3>
+      {!!theirs.length && <><h3 className="sheet-sub">Your lists</h3>
         {/* The first five, the rest a tap away: someone with many lists still sees the ready-made rows without a long scroll. */}
-        {theirs.length ? <><ul className="picks compact">{(allLists ? theirs : theirs.slice(0, 5)).map(item => choice(item, pillOf(item, mine) ? item.kind.replace(/^List · /, '') : `${item.source.split(' · ')[0]} · ${item.kind.replace(/^List · /, '')}`))}</ul>
-          {theirs.length > 5 && !allLists && <button type="button" className="link more" onClick={() => setAllLists(true)}>Show all {theirs.length}</button>}</>
-          : <p className="muted small">{listsHint}</p>}</>}
+        <ul className="picks compact">{(allLists ? theirs : theirs.slice(0, 5)).map(item => choice(item, pillOf(item, mine) ? item.kind.replace(/^List · /, '') : `${item.source.split(' · ')[0]} · ${item.kind.replace(/^List · /, '')}`))}</ul>
+          {theirs.length > 5 && !allLists && <button type="button" className="link more" onClick={() => setAllLists(true)}>Show all {theirs.length}</button>}</>}
       {/* Rows an account would add: not to be picked yet, so greyed, each saying what it needs and where to connect it. */}
       {!!needs.length && accounts && <><h3 className="sheet-sub">With an account</h3>
         <ul className="picks compact">{needs.map(item => <li key={item.id} className="needs"><span><strong>{item.title}</strong><small>{aboutRow({id: item.id, source: item.needs}, mine)} Needs {item.needs}.</small></span><a className="link" href={accounts} aria-label={`Connect ${item.needs}, for ${item.title}`}>Connect</a></li>)}</ul></>}
@@ -250,9 +247,6 @@ export function HomeEditor({rows, level, onChange, tag, pill, lists = [], listsH
       {/* Checked once a day; a list added or renamed since can be brought in at once. */}
       {isShelf(folder.id) && onCheckLists && <><h3 className="sheet-sub">Lists</h3><p className="sheet-lead">Checked once a day for lists added, removed or renamed on {['MDBList', 'Trakt and MDBList'].find(name => name === folder.source.split(' · ')[0]) ?? 'Trakt'}.</p>
         <button type="button" className="ghost" onClick={() => {setArranging(null); onCheckLists();}}>{mine ? 'Check my lists now' : 'Check their lists now'}</button></>}
-      {!find && <><h3 className="sheet-sub">Titles already watched</h3>
-      <Segments label="Titles already watched" value={folder.watched ?? 'follow'} onChange={value => set(folder.id, {watched: value === 'follow' ? undefined : value}, 'Saved')} options={[{value: 'follow', label: 'Default'}, {value: 'hide', label: 'Hide here'}, {value: 'show', label: 'Show here'}]}/>
-      <p className="muted small note">Default uses the “Hide what’s been watched” switch on the Playback tab.</p></>}
       {folder.covers && <><h3 className="sheet-sub">Folders</h3><p className="muted sheet-lead">Drag to choose what comes first. Tap a name to change it. Inside a folder, titles keep the list’s own ranking.</p>
       <DragDropProvider onDragEnd={event => {
         if (event.canceled || !isSortableOperation(event.operation) || !event.operation.source) return;

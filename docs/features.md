@@ -55,6 +55,8 @@ signed out.
 
 ## The manager
 
+![Activity: who is watching what, and which parts were played](images/activity.png)
+
 - **Invites.** Add a person, then send them a link or let them scan a code. They choose their own password.
 - **Groups.** Put people in groups such as Family or Friends. Settings and Home rows flow from the hub to a group to a
   person, and each level can change anything for itself.
