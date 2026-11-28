@@ -13,10 +13,11 @@ Measured on the author's hub over one busy day: 11 people, 22 signed-in devices.
 | --- | --- | --- | --- |
 | Requests to the Worker | 11,400 | 100,000 | 11% |
 | Database rows written | 5,200 | 100,000 | 5% |
-| Database rows read | 1,100,000 | 5,000,000 | 22% |
+| Database rows read | about 280,000 | 5,000,000 | 6% |
 | Database size | 1.4 MB | 500 MB | under 1% |
 
-A quiet day on the same hub was about 2,000 requests.
+A quiet day on the same hub was about 2,000 requests. The rows-read figure is that day's number of database reads at the rate
+measured after a later fix made each read lighter; on the day itself it was 1.2 million.
 
 - **Requests in** come from the player apps (browsing Home, opening a title, reporting progress while something
   plays) and from the site's own pages. The background run adds 288 a day. Opening the site's pages themselves is free
@@ -42,7 +43,7 @@ need it.
 
 You can raise `MAX_HUBS` and let other people make hubs on your copy. Know what that means first:
 
-- By the numbers above, one Free account has room for about five busy hubs. Past that, everyone on the copy gets
+- By the numbers above, one Free account has room for about eight busy hubs. Past that, everyone on the copy gets
   errors until midnight UTC.
 - Their debrid keys, accounts and watch history sit in your database, under your `VAULT_KEY`.
 - Everyone's Trakt goes through your Trakt app.
