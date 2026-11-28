@@ -88,6 +88,8 @@ section + section { margin-top: 44px; }
 /* Where the Add row button would be, for someone who may not add rows: a quiet line, kept narrow beside the heading. */
 .section-head .add-hint { flex: 0 1 220px; margin: 0; font-size: 13px; text-align: right; }
 .notice { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; background: color-mix(in srgb, var(--accent) 10%, var(--surface)); border-radius: 12px; padding: 10px 14px; font-size: 14px; margin-bottom: 14px; }
+.notice.offer .offer-actions { display: flex; align-items: center; gap: 14px; }
+.accounts + .under { margin-top: 8px; }
 .sub { margin: 30px 0 10px; color: var(--muted); font-size: 14px; font-weight: 600; text-transform: none; }
 .empty { color: var(--muted); padding: 28px 0; text-align: center; }
 

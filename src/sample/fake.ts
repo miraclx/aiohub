@@ -136,8 +136,11 @@ function reply(method: string, path: string, body: Any, as: string): Any {
       case 'POST people/:id/quick': who.devices.unshift({id: `tv${s.n++}`, app: 'Wholphin', name: 'TV', seen: 'Now', place: who.devices[0]?.place ?? null, net: who.devices[0]?.net ?? null}); return {};
       case 'POST people/:id/rotate': who.devices = []; signin(who.id, who.name).password = password(`${who.id}${s.n++}`); return {};
       // Their manager lets them choose a new password: until they do, they count as not joined, as on the hub.
-      case 'POST people/:id/reset': who.joined = false; return {};
+      case 'POST people/:id/reset': who.joined = false; who.passkeys = 0; return {};
       case 'POST people/:id/password': return {};
+      // A person's passkeys are theirs to change from a session of their own. Every person's page here is their manager's view of it,
+      // which the hub refuses the same way (worker/api.ts), and where the page offers neither.
+      case 'POST people/:id/passkeys': case 'POST people/:id/passkeys/options': case 'DELETE people/:id/passkeys': return bad(403, `Only ${who.name} can change their passkeys.`);
     }
     if (third === 'foryou' && method === 'POST' && fourth) {
       const detail = who.forYouDetail ?? bad(409, 'Nothing is picked for this row yet.'), held = detail.places[fourth] ?? bad(400, 'That row is not valid');

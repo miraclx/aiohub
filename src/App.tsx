@@ -3,7 +3,7 @@ import type {ReactNode} from 'react';
 import {SAMPLE, emptyHub} from './data';
 import type {Hub} from './data';
 import {Activity} from './activity';
-import {asWho, call, changes, hubCode, leaveAs, settle} from './live';
+import {asWho, call, changes, hubCode, leaveAs, passkeyOffer, settle} from './live';
 import type {Live, Refused} from './live';
 import {AccountPage, GroupPage, HubPage, JoinGate, JoinPage, PeoplePage, PersonPage, SetupPage, SignInPage, TvGate, backFromTrakt, lostTrakt} from './pages';
 import type {PageProps} from './pages';
@@ -71,6 +71,8 @@ function Hubbed() {
         if (!anyway && (edits.current !== mark || pending())) return;
         // Someone else in this tab now (another hub, or a person instead of the manager): no posters from before.
         const viewer = `${state.hub.code}/${state.role}/${state.personId ?? ''}`; if (viewer !== seenAs.current) {forgetReal(); seenAs.current = viewer;}
+        // How this browser just signed in decides whether a passkey is offered (pages.tsx, PasskeyOffer). Never in a manager's view of a person's page.
+        if (!state.hub.manager) passkeyOffer.settle(state.hub.code, state.personId ?? '');
         loaded.current = Date.now(); saved.current = structuredClone(state.hub); role.current = state.role; show(state.hub); setWho({role: state.role, personId: state.personId ?? ''}); setPhase('in'); look();
         if (state.role === 'owner') hubCode.set(state.hub.code);
       } catch (error) {

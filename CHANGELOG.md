@@ -4,6 +4,19 @@ Newest first. Dates are the commit dates on `main`.
 
 ## 2026-11-28
 
+- Passkeys are for everyone now, not only the manager. A person adds one on their own page, under You, and after that
+  signs in with their fingerprint, face or screen lock: from their link, or from the site's front page, where the one
+  "Use a passkey" button opens a manager's hub or a person's own page, whoever the passkey belongs to. The password comes
+  first and always works: a passkey is added only after signing in with one.
+- After signing in with a password, a person or a manager with no passkey is offered one in a single line on their page,
+  once on each device. "Not now" ends it there for good.
+- A person's passkeys are theirs alone. Their manager sees how many they have and nothing else, and cannot add or remove
+  one, not even from a view of their page. "Reset" under a person's Forgotten password now removes their passkeys with
+  their password, for a lost or stolen device. Removing a person or the hub removes them too.
+- A passkey works only at the address it was made on. A site that moves to a new address keeps its passwords; passkeys
+  are added again there. The Passkeys list says so.
+- A passkey the site already holds is refused when added a second time, instead of being reported as added.
+- New table `person_passkeys` (migration 0037).
 - A content limit now covers every row the hub makes itself, not only the ones AIOMetadata builds: the Watchlist, Recently
   Watched, Up Next, New for you, a person's own Trakt lists and Recommended all leave out what is rated above Kids or Teens,
   and what has no US rating. A row is filtered as it is read, so a limit the manager changes counts at the next refresh.

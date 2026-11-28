@@ -7,7 +7,7 @@ import {Activity} from './activity';
 import {GroupOrder, HomeEditor, moved} from './home';
 import {ForYouEditor, PlaybackEditor, SourcesEditor} from './settings';
 import type {EditorProps} from './settings';
-import {addPasskey, beAs, canPasskey, hubCode, leave, leaveAs, outside, usePasskey} from './live';
+import {addPasskey, beAs, canPasskey, hubCode, leave, leaveAs, outside, passkeyOffer, usePasskey} from './live';
 import type {Live} from './live';
 import {Avatar, Confirm, NameField, Secret, Segments, Setting, Sheet, Switch, Tabs, addReal} from './ui';
 
@@ -56,6 +56,31 @@ function copyOf(hub: Hub, source: Person, name: string, groupId = source.groupId
   return copy;
 }
 
+/* ---------- passkeys: the manager's on their account page, a person's on their own page ---------- */
+const notAdded = (error: Error) => error.name === 'NotAllowedError' ? 'No passkey was added' : error.name === 'InvalidStateError' ? 'This device already has a passkey here' : error.message;
+/* `person`: the person whose own page this is; without it, the manager's account. hub.me.passkeys holds the passkeys of whoever
+   is signed in. */
+function Passkeys({page: {hub, live, toast}, person}: {page: PageProps; person?: string}) {
+  const [ask, setAsk] = useState<{title: string; body: string; yes: () => void} | null>(null), [adding, setAdding] = useState(false);
+  const at = person ? `/api/people/${encodeURIComponent(person)}/passkeys` : '/api/account/passkeys';
+  if (!canPasskey()) return null;
+  return <><h3 className="sub">Passkeys</h3>
+    {ask && <Confirm title={ask.title} body={ask.body} action="Remove" onYes={() => {const yes = ask.yes; setAsk(null); yes();}} onClose={() => setAsk(null)}/>}
+    <ul className="accounts">{hub.me.passkeys.map(key => <li key={key.id}><div><h3>{key.name}</h3><p>Added {key.added}</p></div><button type="button" className="ghost small" onClick={() => setAsk({title: `Remove the passkey on ${key.name}?`, body: 'That device can no longer sign in with it. Your password and other passkeys still work.', yes: () => void live.call('DELETE', `${at}/${key.id}`).then(() => live.reload()).then(() => toast('Passkey removed'), fail(toast))})}>Remove</button></li>)}
+      <li><div><h3>Add a passkey</h3><p>{person ? 'Sign in with your fingerprint, face or screen lock on this device, with no password to type.' : 'Sign in with your fingerprint, face or screen lock on this device, with no hub code to type.'} Optional; the password always works.</p></div><button type="button" className="ghost small" disabled={adding} onClick={() => {setAdding(true); void addPasskey(person).then(() => {passkeyOffer.done(hub.code, person ?? ''); return live.reload();}).then(() => toast('Passkey added'), (error: Error) => toast(notAdded(error))).finally(() => setAdding(false));}}>Add</button></li></ul>
+    <p className="muted small under">A passkey works only at this site’s address. If the site ever moves to a new one, sign in with your password and add a passkey again.</p></>;
+}
+/* The offer to add one: a line on their page after they sign in with a password, once on a device for each person or manager
+   (src/live.ts, passkeyOffer). Never where the browser cannot make one, for someone who has one, or in a manager's view of a
+   person's page. */
+function PasskeyOffer({page: {hub, live, toast}, person}: {page: PageProps; person?: string}) {
+  const who = person ?? '', [gone, setGone] = useState(false), [busy, setBusy] = useState(false);
+  if (gone || hub.manager || !canPasskey() || hub.me.passkeys.length || !passkeyOffer.asked(hub.code, who)) return null;
+  return <div className="notice offer"><span>Skip the password next time. Add a passkey to sign in with your fingerprint, face or screen lock.</span>
+    <span className="offer-actions"><button type="button" className="ghost small" disabled={busy} onClick={() => {setBusy(true); void addPasskey(person).then(() => {passkeyOffer.done(hub.code, who); return live.reload();}).then(() => toast('Passkey added'), (error: Error) => toast(notAdded(error))).finally(() => setBusy(false));}}>Add a passkey</button>
+      <button type="button" className="link" onClick={() => {passkeyOffer.done(hub.code, who); setGone(true);}}>Not now</button></span></div>;
+}
+
 /* ---------- people ---------- */
 export function PeoplePage(page: PageProps) {
   const {hub, go, update, toast} = page;
@@ -64,6 +89,7 @@ export function PeoplePage(page: PageProps) {
   const [playing, setPlaying] = useState<Record<string, string>>({});
   useEffect(() => {void page.live.call<{now: number; sittings: {person: string; title: string; playing: number; paused?: number; updated: number}[]}>('GET', '/api/activity').then(found => setPlaying(Object.fromEntries(found.sittings.filter(play => play.playing && !play.paused && found.now - play.updated < 600).reverse().map(play => [play.person, play.title]))), () => {});}, [hub.v]);
   return <>
+    <PasskeyOffer page={page}/>
     <div className="page-head"><div className="title-row"><h1>People</h1>{hub.groups.length > 1 && <button type="button" className="link" onClick={() => setOrdering(true)}>Reorder groups</button>}</div><p className="muted">Everyone you share streaming with. Each person gets their own Home.</p></div>
     {hub.groups.map(group => {
       const people = hub.people.filter(person => person.groupId === group.id);
@@ -668,7 +694,7 @@ export function PersonPage(page: PageProps & {id: string; tab: string}) {
       <div className="card settings">
         <Setting title="Name"><NameField label="Name" value={person.name} onSave={value => edit(target => {target.name = value;}, 'Renamed')}/></Setting>
         {hub.groups.length > 1 && <Setting title="Group" hint="Moving keeps their own changes and follows the new group for the rest."><select aria-label="Group" value={person.groupId} onChange={event => edit(target => {target.groupId = event.target.value;}, 'Moved')}>{hub.groups.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Setting>}
-        {person.joined && <Setting title="Forgotten password" hint={`Lets ${person.name} choose a new password for their page through the invite link. Their apps stay signed in.`}><button type="button" className="ghost small" onClick={() => void live.call('POST', `/api/people/${id}/reset`, {}).then(() => live.reload()).then(() => toast('They can choose a new password with their link'), fail(toast))}>Reset</button></Setting>}
+        {person.joined && <Setting title="Forgotten password" hint={`Lets ${person.name} choose a new password for their page through the invite link.${person.passkeys ? ` Their ${person.passkeys === 1 ? 'passkey is' : `${person.passkeys} passkeys are`} removed too.` : ''} Their apps stay signed in.`}><button type="button" className="ghost small" onClick={() => void live.call('POST', `/api/people/${id}/reset`, {}).then(() => live.reload()).then(() => toast('They can choose a new password with their link'), fail(toast))}>Reset</button></Setting>}
         <Setting title="Make a copy" hint="A new person with the same Home, playback and permissions. Accounts and devices are not copied."><button type="button" className="ghost small" onClick={() => {setCopying(true); setName('');}}>Copy</button></Setting>
         <Setting title="Pause playing" hint={group.paused && !person.paused ? `All of ${group.name} is paused, ${person.name} with them. Turn it off in the group’s settings.` : person.paused ? `${person.name} can browse and search, but nothing plays. Something already playing runs to its end.` : 'They can still browse and search, but nothing new plays. Nothing is deleted.'}><Switch label="Pause playing" checked={!!person.paused} onChange={value => edit(target => {target.paused = value;}, value ? `${person.name} is paused` : `${person.name} can play again`)}/></Setting>
       </div>
@@ -929,8 +955,7 @@ function AddressField({kept, label, at, said, ask, live, toast}: {kept: string; 
 
 /* ---------- the manager's own account ---------- */
 export function AccountPage({hub, update, toast, go, live}: PageProps) {
-  const [ask, setAsk] = useState<{title: string; body: string; action: string; yes: () => void} | null>(null);
-  const [codes, setCodes] = useState<string[] | null>(null), [changing, setChanging] = useState(false), [ending, setEnding] = useState(false), [pass, setPass] = useState(''), [busy, setBusy] = useState(false), [adding, setAdding] = useState(false);
+  const [codes, setCodes] = useState<string[] | null>(null), [changing, setChanging] = useState(false), [ending, setEnding] = useState(false), [pass, setPass] = useState(''), [busy, setBusy] = useState(false);
   return <>
     <div className="person-head"><Avatar name={hub.me.name} size={64}/><div><h1>Your account</h1><p className="muted">You run this hub.</p></div></div>
     <h3 className="sub first">Sign-in</h3>
@@ -939,10 +964,7 @@ export function AccountPage({hub, update, toast, go, live}: PageProps) {
       <Setting title="Password" hint="Works on any device and in a password manager."><button type="button" className="ghost small" onClick={() => setChanging(true)}>Change</button></Setting>
       <Setting title="Recovery codes" hint="Ten spare keys for the day you lose your password. Any one gets you back in, once. They are shown only when made; making new ones retires the old."><button type="button" className="ghost small" onClick={() => void live.call<{codes: string[]}>('POST', '/api/account/recovery', {}).then(made => setCodes(made.codes), fail(toast))}>New codes</button></Setting>
     </div>
-    {canPasskey() && <><h3 className="sub">Passkeys</h3>
-    {ask && <Confirm title={ask.title} body={ask.body} action={ask.action} onYes={() => {const yes = ask.yes; setAsk(null); yes();}} onClose={() => setAsk(null)}/>}
-    <ul className="accounts">{hub.me.passkeys.map(key => <li key={key.id}><div><h3>{key.name}</h3><p>Added {key.added}</p></div><button type="button" className="ghost small" onClick={() => setAsk({title: `Remove the passkey on ${key.name}?`, body: 'That device can no longer sign in with it. Your password and other passkeys still work.', action: 'Remove', yes: () => void live.call('DELETE', `/api/account/passkeys/${key.id}`).then(() => live.reload()).then(() => toast('Passkey removed'), fail(toast))})}>Remove</button></li>)}
-      <li><div><h3>Add a passkey</h3><p>Sign in with a fingerprint or face on this device, with no hub code to type. Optional; the password always works.</p></div><button type="button" className="ghost small" disabled={adding} onClick={() => {setAdding(true); void addPasskey().then(() => live.reload()).then(() => toast('Passkey added'), (error: Error) => toast(error.name === 'NotAllowedError' ? 'No passkey was added' : error.name === 'InvalidStateError' ? 'This device already has a passkey here' : error.message)).finally(() => setAdding(false));}}>Add</button></li></ul></>}
+    <Passkeys page={{hub, update, toast, go, live}}/>
     <h3 className="sub">Appearance</h3>
     <div className="card settings"><Setting title="Theme"><Segments label="Theme" value={hub.me.theme} onChange={value => update(next => {next.me.theme = value;})} options={[{value: 'dark', label: 'Dark'}, {value: 'light', label: 'Light'}, {value: 'auto', label: 'Match device'}]}/></Setting></div>
     <button type="button" className="danger" onClick={() => void live.call('POST', '/api/signout', {}).then(() => {leaveAs(); go('/'); return live.reload();}, fail(toast))}>Sign out</button>
@@ -1055,6 +1077,7 @@ export function JoinPage(page: PageProps & {id: string; tab: string; base?: stri
   const tabs: [string, string][] = [['home', 'Home'], ...(person.can.playback ? [['playback', 'Playback'] as [string, string]] : []), ['devices', 'Devices'], ['accounts', 'Accounts'], ['activity', 'Activity'], ['you', 'You']];
   return <>
     <div className="person-head"><Avatar name={person.name} size={64}/><div><h1>{person.name}</h1><p className="muted">{hub.me.name ? `Shared with you by ${hub.me.name}` : 'Shared with you'}</p></div></div>
+    <PasskeyOffer page={page} person={id}/>
     {(person.paused || hub.groups.find(item => item.id === person.groupId)?.paused) && <div className="notice"><span>Nothing’s playing right now. Try again later.</span></div>}
     <Tabs base={base} tab={tab} tabs={tabs}/>
     {tab === 'home' && !person.devices.length && <div className="todo">
@@ -1066,6 +1089,8 @@ export function JoinPage(page: PageProps & {id: string; tab: string; base?: stri
         <Setting title="Name"><NameField label="Your name" value={person.name} onSave={value => edit(target => {target.name = value;}, 'Renamed')}/></Setting>
         <Setting title="Password" hint="For this page. Player apps use their own password, under Devices."><button type="button" className="ghost small" onClick={() => setChanging(true)}>Change</button></Setting>
       </div>
+      {/* Their own to add and remove: never shown in their manager's view of this page, where the hub refuses both. */}
+      {!hub.manager && <Passkeys page={page} person={id}/>}
       <button type="button" className="danger" onClick={() => void live.call('POST', '/api/signout', {}).then(() => {leaveAs(); go('/'); return live.reload();}, fail(toast))}>Sign out</button>
     </section>}
     {changing && <PasswordSheet toast={toast} onClose={() => setChanging(false)} onSave={(old, password) => live.call('POST', `/api/people/${id}/password`, {old, password}).then(() => live.reload())}/>}
@@ -1086,13 +1111,15 @@ export function JoinGate({token, live, toast, manager, signedAs, onIn}: {token: 
   if (info === 'gone') return <p className="empty">This link is no longer valid. Ask for a new one.</p>;
   if (waiting) return <p className="empty">{info.name} hasn’t joined yet. Send them this link, so they can choose their own password. <a className="link" href="#/">Back to people</a></p>;
   if (manager) return <p className="empty">This is {info.name}’s link, for another hub. Send it to them instead of opening it here. <a className="link" href="#/">Back to people</a></p>;
-  return <form className="setup stack gate" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call('POST', '/api/join', {token, password: pass}).then(onIn, fail(toast)).finally(() => setBusy(false));}}>
-    <div className="stack center"><Avatar name={info.name} size={84}/><h1>Hi {info.name}</h1><p className="muted">{info.joined ? 'Type your password to open your page.' : 'You’ve been invited. Choose a password for your page here. Only you know it.'}</p>{signedAs && <p className="muted small">{signedAs} is signed in on this browser. Continuing signs {info.name} in instead.</p>}</div>
+  return <form className="setup stack gate" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call('POST', '/api/join', {token, password: pass}).then(() => {passkeyOffer.signed('password'); onIn();}, fail(toast)).finally(() => setBusy(false));}}>
+    <div className="stack center"><Avatar name={info.name} size={84}/><h1>Hi {info.name}</h1><p className="muted">{info.joined ? canPasskey() ? 'Type your password to open your page, or use a passkey.' : 'Type your password to open your page.' : 'You’ve been invited. Choose a password for your page here. Only you know it.'}</p>{signedAs && <p className="muted small">{signedAs} is signed in on this browser. Continuing signs {info.name} in instead.</p>}</div>
     {/* Their name is their username. It only matters on the Devices tab, so it is not mentioned here; the hidden field lets a password manager file the password under it. */}
     <input type="text" value={info.username} readOnly autoComplete="username" hidden/>
     <label htmlFor="join-pass">Password</label><input id="join-pass" type="password" value={pass} onChange={event => setPass(event.target.value)} autoComplete={info.joined ? 'current-password' : 'new-password'} autoFocus placeholder={info.joined ? '' : 'At least 8 characters'}/>
     {!info.joined && !!pass && pass.length < 8 && <p className="warn small">At least 8 characters: {8 - pass.length} more to go.</p>}
     <button className="primary big" disabled={busy || pass.length < (info.joined ? 1 : 8)}>Continue</button>
+    {/* Only once they have joined: a passkey is added from their own page, after a password. Only their own opens this link. */}
+    {info.joined && canPasskey() && <button type="button" className="ghost big" disabled={busy} onClick={() => {setBusy(true); void usePasskey(token).then(() => {passkeyOffer.signed('passkey'); onIn();}, (error: Error) => toast(error.name === 'NotAllowedError' ? 'No passkey was used' : error.message)).finally(() => setBusy(false));}}>Use a passkey</button>}
     <p className="muted small center-text">{info.joined ? 'Forgot it? Whoever invited you can let you choose a new one.' : 'Player apps get their own password, which you’ll find inside.'}</p>
   </form>;
 }
@@ -1145,14 +1172,14 @@ export function TvGate({live, toast, hub, person, tv, given}: {live: Live; toast
 export function SignInPage({live, toast, canCreate}: {live: Live; toast: (text: string) => void; canCreate: boolean}) {
   // This browser remembers the last hub code used on it, so signing out never loses it.
   const [user, setUser] = useState(() => hubCode.get()), [pass, setPass] = useState(''), [code, setCode] = useState(''), [lost, setLost] = useState(false), [busy, setBusy] = useState(false);
-  return <form className="setup stack gate" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call('POST', '/api/signin', lost ? {username: user, recovery: code, password: pass} : {username: user, password: pass}).then(() => {hubCode.set(user.trim().toLowerCase()); return live.reload();}, fail(toast)).finally(() => setBusy(false));}}>
-    <h1>{lost ? 'Use a recovery code' : 'Sign in'}</h1><p className="muted">{lost ? 'A recovery code works once. Choose a new password with it.' : 'For the person who runs the hub. Invited? Open the link you were sent.'}</p>
+  return <form className="setup stack gate" onSubmit={event => {event.preventDefault(); setBusy(true); void live.call('POST', '/api/signin', lost ? {username: user, recovery: code, password: pass} : {username: user, password: pass}).then(() => {passkeyOffer.signed('password'); hubCode.set(user.trim().toLowerCase()); return live.reload();}, fail(toast)).finally(() => setBusy(false));}}>
+    <h1>{lost ? 'Use a recovery code' : 'Sign in'}</h1><p className="muted">{lost ? 'A recovery code works once. Choose a new password with it.' : canPasskey() ? 'For the person who runs the hub. Invited? Open the link you were sent, or use your passkey below.' : 'For the person who runs the hub. Invited? Open the link you were sent.'}</p>
     <label htmlFor="in-user">Hub code</label><input id="in-user" value={user} onChange={event => setUser(event.target.value)} autoComplete="username" autoCapitalize="none" autoFocus/>
     <p className="muted small">The short code you got when you created the hub.</p>
     {lost && <><label htmlFor="in-code">Recovery code</label><input id="in-code" value={code} onChange={event => setCode(event.target.value)} autoComplete="off"/></>}
     <label htmlFor="in-pass">{lost ? 'New password' : 'Password'}</label><input id="in-pass" type="password" value={pass} onChange={event => setPass(event.target.value)} autoComplete={lost ? 'new-password' : 'current-password'} placeholder={lost ? 'At least 8 characters' : ''}/>
     <button className="primary big" disabled={busy || !user.trim() || !pass || (lost && (!code.trim() || pass.length < 8))}>{lost ? 'Set password and sign in' : 'Sign in'}</button>
-    {!lost && canPasskey() && <button type="button" className="ghost big" disabled={busy} onClick={() => {setBusy(true); void usePasskey().then(() => live.reload(), (error: Error) => toast(error.name === 'NotAllowedError' ? 'No passkey was used' : error.message)).finally(() => setBusy(false));}}>Use a passkey</button>}
+    {!lost && canPasskey() && <button type="button" className="ghost big" disabled={busy} onClick={() => {setBusy(true); void usePasskey().then(() => {passkeyOffer.signed('passkey'); return live.reload();}, (error: Error) => toast(error.name === 'NotAllowedError' ? 'No passkey was used' : error.message)).finally(() => setBusy(false));}}>Use a passkey</button>}
     <button type="button" className="link center-text" onClick={() => setLost(!lost)}>{lost ? 'Back to sign in' : 'Forgot your password?'}</button>
     {canCreate ? <a className="link center-text" href="#/setup">Create a hub</a> : <p className="muted small center-text">This site isn’t taking new hubs right now.</p>}
   </form>;

@@ -653,6 +653,100 @@ test('a passkey signs the manager in with no hub code or password', async () => 
   assert.equal((await owner('DELETE', `/api/account/passkeys/${held[0].id}`)).status, 200); assert.equal((await attempt()).status, 403);
 });
 
+// A passkey as a device would make and use one: a key pair, the public half handed over, and the site's challenge signed.
+async function passkey(id) {
+  const {createHash, sign, KeyObject} = await import('node:crypto'), b = bytes => Buffer.from(bytes).toString('base64url');
+  const pair = await crypto.subtle.generateKey({name: 'ECDSA', namedCurve: 'P-256'}, true, ['sign', 'verify']), key = b(await crypto.subtle.exportKey('spki', pair.publicKey));
+  const said = (type, challenge) => Buffer.from(JSON.stringify({type, challenge: b(Buffer.from(String(challenge))), origin: BASE}));
+  return {id, key,
+    // Added from a signed-in session `as`, at the manager's address or a person's.
+    add: async (as, at, name = 'Phone · Chrome', change = {}) => {const start = (await as('POST', `${at}/options`, {})).body; return as('POST', at, {id: change.id ?? id, key, alg: -7, clientData: b(said('webauthn.create', start.challenge)), challenge: start.challenge, proof: start.proof, name});},
+    // Used from a browser nobody is signed in on. `token`: on someone's invite link.
+    use: async (token, change = {}) => {
+      const fresh = client(), go = (await fresh('GET', '/api/passkey')).body, clientData = said('webauthn.get', go.challenge);
+      const auth = Buffer.concat([createHash('sha256').update(new URL(BASE).hostname).digest(), Buffer.from([5, 0, 0, 0, 1])]);
+      const signature = sign('sha256', Buffer.concat([auth, createHash('sha256').update(clientData).digest()]), {key: KeyObject.from(pair.privateKey), dsaEncoding: 'der'});
+      const answer = await fresh('POST', '/api/passkey', {id: change.id ?? id, clientData: b(clientData), authData: b(auth), signature: b(signature), challenge: go.challenge, proof: go.proof, ...(token === undefined ? {} : {token})});
+      return {status: answer.status, message: answer.body?.message, state: answer.status === 200 ? (await fresh('GET', '/api/state')).body : null, fresh};
+    }};
+}
+let adaKey;
+test('a person’s own passkeys: added, used and removed by them alone, and never anyone else’s way in', async () => {
+  const mine = '/api/people/ada/passkeys', one = adaKey = await passkey('ada-passkey-one-0123456789'), managers = await passkey('manager-passkey-two-0123456789');
+  // Only they add one, from a session of their own: not a stranger, not their manager, not another person, and not their manager
+  // looking at their page (the link opened in the manager's browser).
+  assert.equal((await stranger('POST', `${mine}/options`, {})).status, 401); assert.equal((await owner('POST', `${mine}/options`, {})).status, 403); assert.equal((await one.add(owner, mine)).status, 403);
+  assert.equal((await guest('POST', '/api/people/ben/passkeys/options', {})).status, 403);
+  // (A browser that keeps every cookie it is given, as a real one does: the manager's own and the one for the view.)
+  const kept = new Map(), browser = async (method, path, body, headers = {}) => {
+    const answer = await fetch(BASE + path, {method, headers: {origin: BASE, 'content-type': 'application/json', cookie: [...kept].map(pair => pair.join('=')).join('; '), ...headers}, body: body === undefined ? undefined : JSON.stringify(body)});
+    for (const set of answer.headers.getSetCookie()) {const [name, value] = set.split(';')[0].split('='); kept.set(name, value);}
+    return {status: answer.status, body: await answer.json().catch(() => null)};
+  };
+  assert.equal((await browser('POST', '/api/signin', {username: hub.code, password: 'correct horse'})).status, 200);
+  const viewing = await browser('POST', '/api/join', {token: link}); assert.equal(viewing.body.as, 'ada');
+  const view = (method, path, body) => browser(method, path, body, {'x-as': 'ada'});
+  assert.equal((await view('GET', '/api/state')).body.role, 'person'); assert.equal((await view('POST', `${mine}/options`, {})).status, 403);
+  // What the device files it under says nothing of the hub or of them.
+  const start = (await guest('POST', `${mine}/options`, {})).body; assert.match(start.user, /^[\w-]{40,64}$/); assert.ok(!start.user.includes(hub.code) && !start.user.toLowerCase().includes('ada')); assert.deepEqual(start.exclude, []);
+  assert.equal((await guest('POST', mine, {id: one.id, key: one.key, alg: -7, clientData: Buffer.from(JSON.stringify({type: 'webauthn.create', challenge: Buffer.from(start.challenge).toString('base64url'), origin: 'https://elsewhere.example'})).toString('base64url'), challenge: start.challenge, proof: start.proof})).status, 400);
+  assert.equal((await one.add(guest, mine, 'Phone · Chrome')).status, 200);
+  // Theirs to see, by name. Their manager gets how many, and nothing else: not on the hub's page, not in a view of theirs.
+  const own = (await guest('GET', '/api/state')).body.hub; assert.deepEqual(own.me.passkeys.map(key => key.name), ['Phone · Chrome']); assert.equal(own.people[0].passkeys, 1);
+  const all = (await owner('GET', '/api/state')).body.hub; assert.equal(all.people.find(person => person.id === 'ada').passkeys, 1); assert.equal(all.people.find(person => person.id === 'ben').passkeys, 0); assert.deepEqual(all.me.passkeys, []);
+  for (const seen of [JSON.stringify(all), JSON.stringify((await view('GET', '/api/state')).body)]) assert.ok(!seen.includes(one.key) && !seen.includes('ada-passkey') && !seen.includes('Phone · Chrome'));
+  assert.ok(!JSON.stringify(own).includes(one.key) && !JSON.stringify(own).includes(one.id));
+  assert.deepEqual((await view('GET', '/api/state')).body.hub.me.passkeys, []); assert.equal((await view('DELETE', `${mine}/${own.me.passkeys[0].id}`)).status, 403); assert.equal((await owner('DELETE', `${mine}/${own.me.passkeys[0].id}`)).status, 403);
+  // It signs them in, as themselves, with nothing typed: from the site's front page and from their own link.
+  const into = await one.use(); assert.equal(into.status, 200); assert.equal(into.state.role, 'person'); assert.equal(into.state.personId, 'ada'); assert.deepEqual(into.state.hub.people.map(person => person.id), ['ada']); assert.equal(into.state.hub.host, '');
+  assert.equal((await into.fresh('PUT', '/api/hub', {})).status, 403); assert.equal((await into.fresh('GET', '/api/people/ben/signin')).status, 403);
+  assert.equal((await one.use(link)).status, 200);
+  // A session it made is as good as a password's, and no more: it can add another passkey, and ends with the others on a reset.
+  // On someone else's link it opens nothing, and nor does the manager's passkey there; the manager's still lands as the manager.
+  const bens = (await owner('GET', '/api/people/ben/signin')).body.link.split('/join/')[1];
+  assert.equal((await client()('POST', '/api/join', {token: bens, password: 'bens own password'})).status, 200);
+  const wrong = await one.use(bens); assert.equal(wrong.status, 403); assert.match(wrong.message, /belongs to someone else/);
+  assert.equal((await managers.add(owner, '/api/account/passkeys', 'Mac · Safari')).status, 200);
+  assert.equal((await managers.use(link)).status, 403); const boss = await managers.use(); assert.equal(boss.status, 200); assert.equal(boss.state.role, 'owner'); assert.equal(boss.state.hub.people.length > 1, true);
+  // One passkey is one person's: Ben cannot take Ada's id or the manager's as his own, nor the manager Ada's; a second try at one's own is refused too.
+  const ben = client(); assert.equal((await ben('POST', '/api/join', {token: bens, password: 'bens own password'})).status, 200);
+  const thief = await passkey('bens-passkey-three-0123456789');
+  assert.equal((await thief.add(ben, '/api/people/ben/passkeys', 'x', {id: one.id})).status, 400); assert.equal((await thief.add(ben, '/api/people/ben/passkeys', 'x', {id: managers.id})).status, 400);
+  assert.equal((await thief.add(owner, '/api/account/passkeys', 'x', {id: one.id})).status, 400); assert.equal((await one.add(guest, mine)).status, 400);
+  assert.equal((await ben('POST', '/api/people/ada/passkeys/options', {})).status, 403); assert.equal((await ben('DELETE', `/api/people/ada/passkeys/${own.me.passkeys[0].id}`)).status, 403);
+  // Ben's own key under Ada's id signs nothing in, and Ben's own passkey lands as Ben.
+  assert.equal((await thief.use(undefined, {id: one.id})).status, 403);
+  assert.equal((await thief.add(ben, '/api/people/ben/passkeys', 'Ben’s phone')).status, 200); const asBen = await thief.use(); assert.equal(asBen.state.personId, 'ben'); assert.equal((await thief.use(link)).status, 403);
+  assert.deepEqual((await ben('GET', '/api/state')).body.hub.me.passkeys.map(key => key.name), ['Ben’s phone']);
+  // Another hub on the same site, with someone of the same name: nothing of Ada's is theirs to list, remove or take, and what
+  // their device files a passkey under differs.
+  const {createHash} = await import('node:crypto'), token = 'sother-hub-session-token', other = '/api/people/ada/passkeys', there = (method, path, body) => client()(method, path, body, {cookie: `hub_s=${token}`});
+  sql(`INSERT INTO accounts (id, username, name, pass, created) VALUES ('acct-other', 'othercode', '', 'x', 1); INSERT INTO hubs (id, code, owner, data, created) VALUES ('hub-other', 'othercode', 'acct-other', '{}', 1);
+    INSERT INTO people (hub, id, grp, name, data, joined, jf, invite, created) VALUES ('hub-other', 'ada', 'g', 'Ada L', '{}', 1, 'jf-other-ada', 'invite-other-ada', 1);
+    INSERT INTO sessions (id, hub, person, expires) VALUES ('${createHash('sha256').update(token).digest('hex')}', 'hub-other', 'ada', ${Math.floor(Date.now() / 1000) + 600})`);
+  try {
+    const theirs = (await there('POST', `${other}/options`, {})).body; assert.deepEqual(theirs.exclude, []); assert.notEqual(theirs.user, start.user);
+    assert.equal((await there('DELETE', `${other}/${own.me.passkeys[0].id}`)).status, 200); assert.equal((await one.use()).status, 200, 'another hub’s Ada removed this one’s passkey');
+    assert.equal((await thief.add(there, other, 'x', {id: one.id})).status, 400);
+    const far = await passkey('other-hub-passkey-0123456789'); assert.equal((await far.add(there, other, 'Far away')).status, 200);
+    const landed = await far.use(); assert.equal(landed.status, 200); assert.equal((await landed.fresh('POST', `${mine}/options`, {})).body.exclude.length, 1, 'their session is for their own hub');
+    assert.deepEqual((await landed.fresh('POST', `${other}/options`, {})).body.exclude, [far.id]); assert.equal((await far.use(link)).status, 403);
+    assert.equal((await guest('GET', '/api/state')).body.hub.me.passkeys.length, 1);
+  } finally {sql("DELETE FROM person_passkeys WHERE hub = 'hub-other'; DELETE FROM sessions WHERE hub = 'hub-other'; DELETE FROM people WHERE hub = 'hub-other'; DELETE FROM hubs WHERE id = 'hub-other'; DELETE FROM accounts WHERE id = 'acct-other'");}
+  // Ten is the most.
+  const spare = []; for (let n = 0; n < 9; n++) {spare.push(await passkey(`ada-spare-${n}-0123456789abcdef`)); assert.equal((await spare[n].add(guest, mine, `Spare ${n}`)).status, 200);}
+  const eleventh = await passkey('ada-eleventh-0123456789abcdef'), full = await eleventh.add(guest, mine); assert.equal(full.status, 400); assert.match(full.body.message, /Ten passkeys/);
+  // Removed by them, one stops working and the rest go on.
+  const listed = (await guest('GET', '/api/state')).body.hub.me.passkeys; assert.equal(listed.length, 10);
+  assert.equal((await guest('DELETE', `${mine}/${listed.find(key => key.name === 'Spare 0').id}`)).status, 200); assert.equal((await spare[0].use()).status, 403); assert.equal((await spare[1].use()).status, 200); assert.equal((await one.use()).status, 200);
+  // "Reset" is the manager's tool for someone who lost their way in: the password, every page they were signed in on, and every
+  // passkey of theirs go. Nobody else's do.
+  assert.equal((await owner('POST', '/api/people/ben/reset', {})).status, 200); assert.equal((await thief.use()).status, 403); assert.equal((await ben('GET', '/api/state')).status, 401); assert.equal(asBen.fresh && (await asBen.fresh('GET', '/api/state')).status, 401);
+  assert.equal(sql("SELECT count(*) AS n FROM person_passkeys WHERE person = 'ben'")[0].n, 0); assert.equal((await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ben').passkeys, 0);
+  assert.equal((await one.use()).status, 200); assert.equal((await managers.use()).status, 200);
+  assert.equal((await owner('DELETE', `/api/account/passkeys/${(await owner('GET', '/api/state')).body.hub.me.passkeys[0].id}`)).status, 200);
+});
+
 test('account: password, recovery codes, sign out', async () => {
   assert.equal((await owner('POST', '/api/account/password', {old: 'wrong', password: 'a new password'})).status, 403);
   assert.equal((await owner('POST', '/api/account/password', {old: 'correct horse', password: 'a new password'})).status, 200);
@@ -696,6 +790,8 @@ test('removing a person removes their sign-in', async () => {
   assert.ok(theirs() > 0); assert.equal((await owner('DELETE', '/api/people/ada')).status, 200); assert.equal(theirs(), 0, 'and what they watched');
   assert.equal((await guest('GET', '/api/state')).status, 401);
   assert.deepEqual((await client()('POST', '/api/join', {token: link})).body, {gone: true});
+  // Their passkeys went with them: none is kept, and the one that worked a moment ago signs nobody in.
+  assert.equal(sql('SELECT count(*) AS n FROM person_passkeys')[0].n, 0); assert.equal((await adaKey.use()).status, 403);
 });
 test('deleting the hub also removes its setup on the streaming server', async () => {
   assert.deepEqual((await owner('POST', '/api/sync', {})).body, {state: 'ok'});
@@ -713,3 +809,9 @@ test('wrong guesses are cut off', async () => {
   assert.ok(cut > 0 && cut <= 8, String(tries)); assert.ok(tries.slice(0, cut).every(status => status === 403) && tries.slice(cut).every(status => status === 429));
   assert.equal((await stranger('POST', '/api/signin', {username: hub.code, password: 'recovered password'})).status, 429);
 });
+test('wrong passkeys are cut off the same way', async () => {
+  // Counted by where the tries come from, with every other wrong guess from there (40 in ten minutes), as for the manager's.
+  const tries = []; for (let i = 0; i < 41; i++) tries.push((await adaKey.use()).status);
+  const cut = tries.indexOf(429); assert.ok(cut > 0, String(tries)); assert.ok(tries.slice(0, cut).every(status => status === 403) && tries.slice(cut).every(status => status === 429));
+});
+

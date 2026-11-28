@@ -4,7 +4,7 @@ AIOHub is a small site that sets up Jellyfin player apps for a household or a gr
 
 ## What a hub keeps
 
-- **Sign-in:** the manager's username, a hashed password and any passkeys. Sessions expire.
+- **Sign-in:** the manager's username, a hashed password and any passkeys, and the same for each person who has joined: a hashed password and any passkeys. A passkey kept here is a device name and the public half of a key. The fingerprint, face or screen lock itself never leaves the device. Sessions expire.
 - **People and groups:** the names the manager gives them and their Home and playback settings.
 - **Devices:** the name and app of each signed-in player, when it was last seen, and the rough place (city, country, network name) the request came from, so a manager can spot a device they don't know.
 - **What's watched:** for each person, the titles played in their apps, each time they watch: how far in, which parts were played and how often they were paused, on which device and from roughly where. Managers see this on the hub's Activity page. When an app saves a title to a device to watch later, the hub notes which title, on which device and when, and shows it there as downloaded. A tick they take back in an app is deleted from Activity; if they had really played the title, the play stays and a line says it was marked unwatched, on which device and when.

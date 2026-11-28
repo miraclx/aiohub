@@ -1,4 +1,4 @@
-// Passkeys for the manager's account (WebAuthn), checked with the Worker's own crypto. No attestation: a passkey is added from a
+// Passkeys (WebAuthn) for the manager's account and for each person's own page, checked with the Worker's own crypto. No attestation: a passkey is added from a
 // signed-in session, so the browser's word for the public key is enough. The password always keeps working.
 import type {Env} from './util';
 import {b64, dec, enc, now, random, same, stamp, unb64} from './util';

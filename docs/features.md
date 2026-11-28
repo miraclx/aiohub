@@ -42,6 +42,7 @@ site does not reach the hub. [Privacy](../PRIVACY.md) has every detail of what i
 - **TVs:** Quick Connect, the Jellyfin way to sign in without typing on a remote. The TV shows a six-digit code and
   they approve it from their page.
 - **In a browser:** a link on their Devices page opens a web player.
+- **On the site:** their name and password, or a passkey (fingerprint, face or screen lock).
 
 ### Playback
 

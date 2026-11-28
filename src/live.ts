@@ -95,10 +95,12 @@ const unpacked = (text: string) => Uint8Array.from(atob(text.replace(/-/g, '+').
 const bytesOf = (text: string) => new TextEncoder().encode(text);
 export const canPasskey = () => SAMPLE || (typeof window !== 'undefined' && !!window.PublicKeyCredential && !!navigator.credentials);
 const device = () => {const agent = navigator.userAgent; const on = /iPhone/.test(agent) ? 'iPhone' : /iPad/.test(agent) ? 'iPad' : /Android/.test(agent) ? 'Android' : /Mac/.test(agent) ? 'Mac' : /Windows/.test(agent) ? 'Windows' : /Linux/.test(agent) ? 'Linux' : 'A device'; const browser = /Edg\//.test(agent) ? 'Edge' : /Firefox\//.test(agent) ? 'Firefox' : /Chrome\//.test(agent) ? 'Chrome' : /Safari\//.test(agent) ? 'Safari' : ''; return browser ? `${on} · ${browser}` : on;};
-export async function addPasskey() {
+/* `person`: the person adding one to their own page; without it, the manager adding one to their account. */
+export async function addPasskey(person = '') {
+  const at = person ? `/api/people/${encodeURIComponent(person)}/passkeys` : '/api/account/passkeys';
   // A passkey is made by a real device. The preview lists one as if this device had made it.
-  if (SAMPLE) return void await call('POST', '/api/account/passkeys', {name: device()});
-  const start = await call<{challenge: string; proof: string; user: string; name: string; exclude: string[]}>('POST', '/api/account/passkeys/options', {});
+  if (SAMPLE) return void await call('POST', at, {name: device()});
+  const start = await call<{challenge: string; proof: string; user: string; name: string; exclude: string[]}>('POST', `${at}/options`, {});
   const made = await navigator.credentials.create({publicKey: {
     challenge: bytesOf(start.challenge), rp: {name: 'AIOHub', id: location.hostname}, user: {id: bytesOf(start.user), name: `AIOHub ${start.name}`, displayName: `AIOHub ${start.name}`},
     pubKeyCredParams: [{type: 'public-key', alg: -7}, {type: 'public-key', alg: -257}], authenticatorSelection: {residentKey: 'required', userVerification: 'preferred'}, attestation: 'none',
@@ -106,13 +108,29 @@ export async function addPasskey() {
   }}) as PublicKeyCredential | null;
   if (!made) throw new Error('No passkey was made');
   const answer = made.response as AuthenticatorAttestationResponse;
-  await call('POST', '/api/account/passkeys', {id: made.id, key: packed(answer.getPublicKey()), alg: answer.getPublicKeyAlgorithm(), clientData: packed(answer.clientDataJSON), challenge: start.challenge, proof: start.proof, name: device()});
+  await call('POST', at, {id: made.id, key: packed(answer.getPublicKey()), alg: answer.getPublicKeyAlgorithm(), clientData: packed(answer.clientDataJSON), challenge: start.challenge, proof: start.proof, name: device()});
 }
-export async function usePasskey() {
+/* Signing in with one. Nothing is typed first: the browser offers the passkeys it holds for this site, a manager's or a person's,
+   and the hub answers as whoever the chosen one belongs to. `token`: on someone's invite link, where only theirs is taken. */
+export async function usePasskey(token?: string) {
   if (SAMPLE) return void await call('POST', '/api/passkey', {});
   const start = await call<{challenge: string; proof: string}>('GET', '/api/passkey');
   const got = await navigator.credentials.get({publicKey: {challenge: bytesOf(start.challenge), rpId: location.hostname, userVerification: 'preferred'}}) as PublicKeyCredential | null;
   if (!got) throw new Error('No passkey was chosen');
   const answer = got.response as AuthenticatorAssertionResponse;
-  await call('POST', '/api/passkey', {id: got.id, clientData: packed(answer.clientDataJSON), authData: packed(answer.authenticatorData), signature: packed(answer.signature), challenge: start.challenge, proof: start.proof});
+  await call('POST', '/api/passkey', {id: got.id, clientData: packed(answer.clientDataJSON), authData: packed(answer.authenticatorData), signature: packed(answer.signature), challenge: start.challenge, proof: start.proof, ...(token === undefined ? {} : {token})});
 }
+/* The offer to add a passkey, made once on a device to each person or manager, after they sign in with a password. How this
+   browser just signed in is noted when it does (`signed`), and filed under the hub and person once the hub says who that was
+   (`settle`): a password asks, unless it was answered before; a passkey answers it. "Not now" and adding one answer it for good
+   (`done`). `who`: the person's id, or '' for the manager. */
+const SIGNED = kept('aiohub-signed'), offerKey = (hub: string, who: string) => kept(`passkey-offer:${hub}:${who}`);
+export const passkeyOffer = {
+  signed: (how: 'password' | 'passkey') => {try {sessionStorage.setItem(SIGNED, how);} catch { /* nothing kept: no offer */ }},
+  settle: (hub: string, who: string) => {try {
+    const how = sessionStorage.getItem(SIGNED); if (!how) return; sessionStorage.removeItem(SIGNED);
+    if (how === 'passkey') localStorage.setItem(offerKey(hub, who), 'done'); else if (localStorage.getItem(offerKey(hub, who)) !== 'done') localStorage.setItem(offerKey(hub, who), 'ask');
+  } catch { /* nothing kept: no offer */ }},
+  asked: (hub: string, who: string) => {try {return localStorage.getItem(offerKey(hub, who)) === 'ask';} catch {return false;}},
+  done: (hub: string, who: string) => {try {localStorage.setItem(offerKey(hub, who), 'done');} catch { /* nothing kept */ }},
+};

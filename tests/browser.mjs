@@ -174,6 +174,12 @@ const guest = await open();
 await guest.goto(link); await guest.getByRole('heading', {name: 'Hi Ada'}).waitFor(); await shot(guest, '7-join');
 await guest.getByLabel('Password').fill('my own password'); await guest.getByRole('button', {name: 'Continue'}).click();
 await guest.getByRole('tab', {name: 'Playback'}).or(guest.getByRole('link', {name: 'Playback'})).first().waitFor(); await shot(guest, '8-own-page');
+// Having chosen a password, she is offered a passkey in one line on her page. It waits there until she answers; "Not now" ends it
+// on this browser for good.
+const passkeyLine = page => page.locator('.notice.offer');
+await passkeyLine(guest).getByText('Skip the password next time. Add a passkey to sign in with your fingerprint, face or screen lock.').waitFor();
+await guest.reload(); await passkeyLine(guest).waitFor(); await passkeyLine(guest).getByRole('button', {name: 'Not now'}).click(); assert.equal(await passkeyLine(guest).count(), 0);
+await guest.reload(); await guest.getByRole('heading', {name: 'Ada', exact: true}).waitFor(); await guest.getByRole('tab', {name: 'Playback'}).or(guest.getByRole('link', {name: 'Playback'})).first().waitFor(); assert.equal(await passkeyLine(guest).count(), 0, '“Not now” lasts across a reload');
 assert.equal(await guest.getByRole('link', {name: 'People'}).count(), 0);
 // Add row on her own Home, with no account connected yet: the rows an account would add are there greyed, each saying in one line
 // what it is and how it is put together, then what it needs, with a Connect that goes to her Accounts tab. They are not buttons:
@@ -193,6 +199,7 @@ await guest.goto(BASE + '/#/me/you'); await guest.getByRole('button', {name: 'Si
 // Coming back through the link now asks for the password.
 await guest.goto(link); await guest.getByText('Type your password').waitFor();
 await guest.getByLabel('Password').fill('my own password'); await guest.getByRole('button', {name: 'Continue'}).click(); await guest.getByRole('heading', {name: 'Ada', exact: true}).waitFor();
+assert.equal(await passkeyLine(guest).count(), 0, '“Not now” lasts across signing in again');
 
 // Accounts, on her own page: Trakt and MDBList, each saying what connecting gives in short lines, each with one Connect, and
 // that connecting only reads. With nothing connected there is no Sync card, and nothing on the page says where her progress is kept.
@@ -1042,6 +1049,40 @@ await owner.goto(BASE + '/#/person/ada/settings'); await owner.locator('.share-t
 await owner.locator('.setting', {hasText: 'Make a copy'}).getByRole('button', {name: 'Copy'}).click(); await owner.getByRole('dialog').getByRole('textbox').fill('Ada Two'); await owner.getByRole('dialog').getByRole('textbox').press('Enter');
 // The address changes a moment before the page is drawn: the copy's page is the one headed with its name.
 await owner.waitForURL(/#\/person\/ada-two/); await owner.getByRole('heading', {name: 'Ada Two', exact: true}).waitFor(); for (let i = 0; i < 20; i++) {const shown = await owner.locator('.share-text code').allTextContents(); assert.ok(!shown.includes(link), `the copy shows its own link, never Ada's (at ${owner.url().split('#')[1]}, try ${i}, shown ${JSON.stringify(shown.map(item => item.slice(-12)))}, Ada's ends ${link.slice(-12)})`); await owner.waitForTimeout(150);}
+// Passkeys are for everyone. Ada Two, on a browser of her own with a stand-in authenticator of its own: she joins with a password
+// (the join form offers nothing else), is offered a passkey once on her page, adds it, and from then on signs in with it alone,
+// from the site's front page and from her link. The offer does not come back.
+{
+  const twoLink = await owner.locator('.share-text code').filter({hasText: '/#/join/i'}).textContent();
+  const context = await browser.newContext({viewport: {width: 1280, height: 820}, colorScheme: 'dark'}), two = await context.newPage(); two.on('pageerror', error => errors.push(error.message));
+  const keys = await context.newCDPSession(two); await keys.send('WebAuthn.enable');
+  await keys.send('WebAuthn.addVirtualAuthenticator', {options: {protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true}});
+  const snap = async name => {if (shots) {await two.waitForTimeout(300); await two.screenshot({path: `${shots}/passkeys-${name}.png`});}};
+  const mine = two.getByRole('heading', {name: 'Ada Two', exact: true}), usePasskey = two.getByRole('button', {name: 'Use a passkey'});
+  await two.goto(twoLink); await two.getByRole('heading', {name: 'Hi Ada Two'}).waitFor(); assert.equal(await usePasskey.count(), 0, 'choosing a password comes first');
+  await two.getByLabel('Password').fill('ada twos password'); await two.getByRole('button', {name: 'Continue'}).click(); await mine.waitFor();
+  await passkeyLine(two).getByText('Skip the password next time.').waitFor(); await snap('1-offer');
+  await passkeyLine(two).getByRole('button', {name: 'Add a passkey'}).click(); await toast(two).filter({hasText: 'Passkey added'}).waitFor(); await passkeyLine(two).waitFor({state: 'detached'});
+  // Her own passkeys, on her You tab, with the one line about the site's address.
+  await two.goto(BASE + '/#/me/you'); await two.getByRole('heading', {name: 'Passkeys'}).waitFor(); assert.equal(await two.locator('.accounts li', {hasText: /Added \d{4}-/}).count(), 1);
+  await two.getByText('A passkey works only at this site’s address.', {exact: false}).waitFor(); await two.locator('.toast span').waitFor({state: 'detached', timeout: 8000}).catch(() => {}); await snap('2-own-passkeys');
+  // Her manager is told how many, where the reset is; in a view of her page, nothing of them is shown and none is offered.
+  await owner.reload(); await owner.locator('.setting', {hasText: 'Forgotten password'}).getByText('Their passkey is removed too.', {exact: false}).waitFor();
+  const peek = await owner.context().newPage(); await peek.goto(twoLink); await peek.getByRole('heading', {name: 'Ada Two', exact: true}).waitFor(); await peek.goto(BASE + '/#/me/you'); await peek.getByRole('button', {name: 'Sign out'}).waitFor();
+  assert.equal(await peek.getByRole('heading', {name: 'Passkeys'}).count(), 0); assert.equal(await passkeyLine(peek).count(), 0); await peek.close();
+  // Signed out, the front page's one passkey button opens her own page, with nothing typed.
+  await two.getByRole('button', {name: 'Sign out'}).click(); await two.getByRole('heading', {name: 'Sign in'}).waitFor(); await two.getByText('or use your passkey below', {exact: false}).waitFor(); await snap('4-sign-in');
+  await usePasskey.click(); await mine.waitFor(); await two.getByText('Shared with you').waitFor(); assert.equal(await passkeyLine(two).count(), 0, 'the offer does not come back');
+  assert.equal(await two.getByRole('link', {name: 'People'}).count(), 0);
+  // And so does her link, which now offers it beside the password.
+  await two.goto(BASE + '/#/me/you'); await two.getByRole('button', {name: 'Sign out'}).click(); await two.getByRole('heading', {name: 'Sign in'}).waitFor();
+  await two.goto(twoLink); await two.getByText('Type your password to open your page, or use a passkey.').waitFor(); await snap('3-join');
+  await usePasskey.click(); await mine.waitFor(); assert.equal(await passkeyLine(two).count(), 0);
+  // "Reset" by her manager takes her passkey with her password: the device still offers it, and the site no longer knows it.
+  await owner.locator('.setting', {hasText: 'Forgotten password'}).getByRole('button', {name: 'Reset'}).click(); await toast(owner).filter({hasText: 'They can choose a new password with their link'}).waitFor();
+  await two.goto(BASE + '/'); await two.reload(); await two.getByRole('heading', {name: 'Sign in'}).waitFor(); await usePasskey.click(); await toast(two).filter({hasText: 'That passkey is not one this site knows'}).waitFor();
+  await context.close();
+}
 // A TV's Quick Connect link, as a player app shows it: Jellyfin's web page, with the TV's code after the #. It opens the site, which
 // asks who the TV is for, names them on the button and approves nothing without a tap.
 const tvAsks = async () => (await fetch(`${BASE}/h/${hubCode}/QuickConnect/Initiate`, {method: 'POST', headers: {authorization: 'MediaBrowser Client="Wholphin", Device="Living room TV", DeviceId="tv-quick"'}})).json();
@@ -1159,6 +1200,20 @@ await nobody.getByText('It signs in as Ada Two in a few seconds.', {exact: true}
   await at('/account'); await sample.getByRole('button', {name: 'Sign out'}).click(); await sample.getByRole('heading', {name: 'Sign in'}).waitFor(); await sample.locator('.preview-bar').waitFor();
   await sample.getByLabel('Hub code').fill('k7m2x9'); await sample.getByLabel('Password').fill('anything'); await sample.getByRole('button', {name: 'Sign in', exact: true}).click(); await sample.getByText('Add someone to Family').waitFor();
   assert.deepEqual(await sample.locator('.group').first().locator('.person-text strong').allTextContents(), ['Ada', 'Benji', 'Chi', 'Add someone to Family']);
+  // Passkeys in the preview, where no device can be asked: with one already there nothing is offered; with none, signing in with
+  // a password offers one, adding it lists one as if this device had made it, and "Use a passkey" signs in.
+  assert.equal(await sample.locator('.notice.offer').count(), 0); await at('/account');
+  for (let left = 2; left > 0; left--) {await sample.locator('.accounts li', {hasText: /Added \d{4}-/}).first().getByRole('button', {name: 'Remove'}).click(); await sample.getByRole('dialog').getByRole('button', {name: 'Remove'}).click(); await said('Passkey removed'); await sample.waitForTimeout(300);}
+  assert.equal(await sample.locator('.accounts li', {hasText: /Added \d{4}-/}).count(), 0);
+  const again = async how => {await at('/account'); await sample.getByRole('button', {name: 'Sign out'}).click(); await sample.getByRole('heading', {name: 'Sign in'}).waitFor();
+    if (how === 'passkey') await sample.getByRole('button', {name: 'Use a passkey'}).click(); else {await sample.getByLabel('Hub code').fill('k7m2x9'); await sample.getByLabel('Password').fill('anything'); await sample.getByRole('button', {name: 'Sign in', exact: true}).click();}
+    await sample.getByText('Add someone to Family').waitFor();};
+  // (Adding one on the account page, above, answered the offer on this browser for good: asked afresh here, as on a new device.)
+  await sample.evaluate(() => {for (const key of Object.keys(localStorage)) if (key.startsWith('sample-passkey-offer:')) localStorage.removeItem(key);});
+  await again('password'); await sample.locator('.notice.offer').getByText('Skip the password next time.').waitFor(); await snap('passkey-offer');
+  await sample.locator('.notice.offer').getByRole('button', {name: 'Add a passkey'}).click(); await said('Passkey added'); await sample.locator('.notice.offer').waitFor({state: 'detached'});
+  await at('/account'); assert.equal(await sample.locator('.accounts li', {hasText: /Added \d{4}-/}).count(), 1);
+  await again('passkey'); assert.equal(await sample.locator('.notice.offer').count(), 0); await sample.waitForTimeout(2700);
   // As Eve, who has nothing connected: MDBList with any key, its sync and the Watchlist switch, a list added to Home by its link,
   // and a For you pick kept. Each is the real page saving to the pretend hub.
   await sample.goto(`${BASE}/?sample#/join/sample-eve`); await sample.getByText('Shared with you by Sam').waitFor(); await sample.goto(`${BASE}/?sample#/me/accounts`);

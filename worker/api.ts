@@ -177,14 +177,17 @@ const jobsOf = ({syncAll, noticeHost, noticeAt, noticeResult, noticeWanted, noti
   notice: typeof noticeHost === 'string' ? {address, host: noticeHost, at: Number(noticeAt) || 0, result: noticeResult ?? null, waiting: noticeWanted === 2, again: noticeWanted === 2 && noticeRetry === 1} : null}) as unknown as Hub['jobs'];
 async function state(env: Env, who: Who) {
   const hub = who.hub, data = JSON.parse(hub.data) as HubData, mine = who.person;
-  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, jobs, plays, picked, shelves, syncs, waits, tolds, favs] = await env.DB.batch([
+  const [groups, people, devices, owner, ready, keys, passkeys, traktLinks, oldTrakt, listKeys, jobs, plays, picked, shelves, syncs, waits, tolds, favs, passkeyCounts] = await env.DB.batch([
     env.DB.prepare('SELECT id, name, data, version FROM groups WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? AND id = ?').bind(hub.id, mine) : env.DB.prepare('SELECT id, grp, name, data, joined, paused, version FROM people WHERE hub = ? ORDER BY created, id').bind(hub.id),
     mine ? env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? AND person = ? ORDER BY seen DESC').bind(hub.id, mine) : env.DB.prepare('SELECT ref, person, app, name, seen, place, net FROM devices WHERE hub = ? ORDER BY seen DESC').bind(hub.id),
     env.DB.prepare('SELECT name FROM accounts WHERE id = ?').bind(hub.owner),
     env.DB.prepare("SELECT owner, kind FROM secrets WHERE hub = ? AND kind IN ('upstream', 'upstream-aiom')").bind(hub.id),
     env.DB.prepare("SELECT kind FROM secrets WHERE hub = ? AND owner = ? AND kind IN ('key:tmdb', 'key:mdblist', 'key:posters', ?)").bind(hub.id, HUB_OWNER, NOTICE_PAGE),
-    env.DB.prepare('SELECT substr(id, 1, 16) AS id, name, created FROM passkeys WHERE account = ? ORDER BY created').bind(who.account?.id ?? ''),
+    // The passkeys of whoever is signed in: the manager's own, or a person's own. Never a person's in their manager's view of
+    // their page (who.manager): a manager is given how many each person has (below), nothing more.
+    who.account ? env.DB.prepare('SELECT substr(id, 1, 16) AS id, name, created FROM passkeys WHERE account = ? ORDER BY created').bind(who.account.id)
+      : env.DB.prepare('SELECT substr(id, 1, 16) AS id, name, created FROM person_passkeys WHERE hub = ? AND person = ? ORDER BY created').bind(hub.id, who.manager ? '' : mine ?? ''),
     env.DB.prepare('SELECT owner, value FROM secrets WHERE hub = ? AND kind = ? AND owner = coalesce(?, owner)').bind(hub.id, LINK, mine ?? null),
     env.DB.prepare("SELECT owner FROM secrets WHERE hub = ? AND kind = 'trakt'").bind(hub.id),
     env.DB.prepare("SELECT owner, value FROM secrets WHERE hub = ? AND kind = 'mdblist' AND owner = coalesce(?, owner)").bind(hub.id, mine ?? null),
@@ -212,7 +215,10 @@ async function state(env: Env, who: Who) {
     env.DB.prepare("SELECT person, max(at) AS at FROM rows_cache WHERE hub = ? AND kind IN ('trakt-wait', 'trakt-wait-send') AND at > ? AND person = coalesce(?, person) GROUP BY person").bind(hub.id, now(), mine ?? null),
     // Whose Watchlist switch is on, and what the cron counted for the offer under it (given to their own page only, below).
     env.DB.prepare('SELECT person, found FROM favs WHERE hub = ? AND person = coalesce(?, person)').bind(hub.id, mine ?? null),
+    // How many passkeys each person has. A count only: which devices, and the keys, are theirs alone.
+    env.DB.prepare('SELECT person, count(*) AS n FROM person_passkeys WHERE hub = ? AND person = coalesce(?, person) GROUP BY person').bind(hub.id, mine ?? null),
   ]);
+  const passkeyCount = new Map((passkeyCounts.results as {person: string; n: number}[]).map(row => [row.person, row.n]));
   const forYou = new Map((picked.results as {person: string; picks: string; pool: string; never: string; at: number}[]).map(row => [row.person, {names: namesOf(row.picks), kinds: kindsOf(row.picks), at: row.at, detail: detailOf(row.picks, row.pool, row.never)}]));
   const shelfAt = new Map((shelves.results as {person: string; at: number}[]).map(row => [row.person, row.at]));
   const shelfTiles = new Map((shelves.results as {person: string; items: string}[]).map(row => [row.person, shelfFrom(row.items).filter(list => list.cover).map(list => ({title: list.title, image: list.cover, ...(likedList(list.id) ? {liked: true} : {})}))]));
@@ -262,8 +268,8 @@ async function state(env: Env, who: Who) {
       // The UTC hour the day's For you picking starts, so a Home can say when the next picks come.
       forYouHour: pickHour(env),
       groups: shown.map(groupDto), people: persons.map(row => personDto(row, devices.results as unknown as DeviceRow[], linked.has(row.id), history[row.id] ?? null, aiomTrakt.has(row.id), listsName[row.id] ?? '', moves[row.id] ?? null, keyed.has(row.id), playedHere.has(row.id), matchingOf(row.id), heartsOf(row.id))).map(person => {const picked = forYou.get(person.id), shelved = shelfAt.get(person.id);
-        return {...person, ...(picked ? {forYou: {...STAND_INS, ...picked.names}, forYouKinds: picked.kinds, pickedAt: picked.at, forYouDetail: picked.detail} : {}), ...(shelved !== undefined ? {shelfAt: shelved, shelfTiles: shelfTiles.get(person.id) ?? []} : {})};}),
-      me: who.account ? {name: who.account.name, theme: who.account.theme, passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark', passkeys: []},
+        return {...person, passkeys: passkeyCount.get(person.id) ?? 0, ...(picked ? {forYou: {...STAND_INS, ...picked.names}, forYouKinds: picked.kinds, pickedAt: picked.at, forYouDetail: picked.detail} : {}), ...(shelved !== undefined ? {shelfAt: shelved, shelfTiles: shelfTiles.get(person.id) ?? []} : {})};}),
+      me: {...(who.account ? {name: who.account.name, theme: who.account.theme} : {name: (owner.results[0] as {name: string} | undefined)?.name ?? '', theme: 'dark'}), passkeys: (passkeys.results as {id: string; name: string; created: number}[]).map(row => ({id: row.id, name: row.name, added: new Date(row.created * 1000).toISOString().slice(0, 10)}))},
     },
   };
 }
@@ -358,6 +364,7 @@ async function savePerson(env: Env, who: Who, id: string, body: Body) {
 }
 const forget = (env: Env, hub: string, id: string) => [
   env.DB.prepare('DELETE FROM devices WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare('DELETE FROM sessions WHERE hub = ? AND person = ?').bind(hub, id),
+  env.DB.prepare('DELETE FROM person_passkeys WHERE hub = ? AND person = ?').bind(hub, id),
 ];
 async function removePerson(env: Env, who: Who, id: string) {
   forgetSeats(who.hub.id, id);
@@ -386,6 +393,24 @@ async function person(env: Env, who: Who, id: string) {
 }
 async function personAction(request: Request, env: Env, who: Who, id: string, action: string, rest: string | undefined, body: Body, origin: string) {
   const hub = who.hub.id, row = await person(env, who, id);
+  // Their own passkeys, for their page on the site: added, listed (in what their page loads) and removed by them alone, from a
+  // session of their own. Never from their manager's view of their page, so a manager cannot put a passkey of their own on it.
+  if (action === 'passkeys') {
+    if (who.person !== id || who.manager) bad(403, `Only ${row.name} can change their passkeys.`);
+    if (request.method === 'POST' && rest === 'options') {
+      const held = await env.DB.prepare('SELECT id FROM person_passkeys WHERE hub = ? AND person = ?').bind(hub, id).all<{id: string}>();
+      // What the device files the passkey under is a stamp of the site's own: it says nothing of the hub or the person.
+      return {...await challenge(env), user: await stamp(env, `passkey-user:${hub}:${id}`), name: row.name, exclude: held.results.map(item => item.id)};
+    }
+    if (request.method === 'POST' && !rest) {
+      const made = await newPasskey(env, origin, body);
+      if (((await env.DB.prepare('SELECT count(*) AS n FROM person_passkeys WHERE hub = ? AND person = ?').bind(hub, id).first<{n: number}>())?.n ?? 0) >= 10) bad(400, 'Ten passkeys is the most. Remove one first.');
+      const done = await env.DB.prepare('INSERT INTO person_passkeys (id, hub, person, name, key, alg, created) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE NOT EXISTS (SELECT 1 FROM passkeys WHERE id = ?1) ON CONFLICT DO NOTHING').bind(made.id, hub, id, made.name, made.key, made.alg, now()).run();
+      if (!done.meta.changes) bad(400, TAKEN_KEY);
+      return {};
+    }
+    if (request.method === 'DELETE' && rest) {await env.DB.prepare('DELETE FROM person_passkeys WHERE hub = ? AND person = ? AND substr(id, 1, 16) = ?').bind(hub, id, rest).run(); return {};}
+  }
   const signin = await getSecret<SignIn>(env, hub, id, 'signin') ?? bad(500, 'Sign-in details are missing');
   // One rule for who sets a sync switch of this person's (the Sync card's three). They do, from their own page. Their manager
   // does only while they have not joined (`joined`: they chose a password of their own through their invite link, so they have
@@ -702,8 +727,9 @@ async function personAction(request: Request, env: Env, who: Who, id: string, ac
     return {};
   }
   if (action === 'reset' && request.method === 'POST' && !who.person) {
-    // They forgot it. Nobody can read it back, so the invite link lets them choose a new one. Their apps stay signed in.
-    await env.DB.batch([env.DB.prepare("UPDATE people SET pass = '', joined = 0 WHERE hub = ? AND id = ?").bind(hub, id), env.DB.prepare('DELETE FROM sessions WHERE hub = ? AND person = ?').bind(hub, id)]);
+    // They forgot it, or lost the device they sign in on. Nobody can read it back, so the invite link lets them choose a new one,
+    // and every passkey of theirs goes with every page they were signed in on. Their apps stay signed in.
+    await env.DB.batch([env.DB.prepare("UPDATE people SET pass = '', joined = 0 WHERE hub = ? AND id = ?").bind(hub, id), env.DB.prepare('DELETE FROM sessions WHERE hub = ? AND person = ?').bind(hub, id), env.DB.prepare('DELETE FROM person_passkeys WHERE hub = ? AND person = ?').bind(hub, id)]);
     return {};
   }
   if (action === 'pin' && request.method === 'POST') {
@@ -840,6 +866,13 @@ async function join(request: Request, env: Env, body: Body, who: Who | null) {
   } else await env.DB.prepare('UPDATE people SET joined = 1, pass = ? WHERE hub = ? AND id = ?').bind(await hashPassword(cleanPassword(body.password)), row.hub, row.id).run();
   return reply({ok: true}, 200, await startSession(env, {hub: row.hub, person: row.id}));
 }
+/* A passkey as the browser hands it over, checked: made for the site's own challenge, on this site, of a kind the site can read. */
+const TAKEN_KEY = 'That passkey is already in use here.';
+async function newPasskey(env: Env, origin: string, body: Body) {
+  if (!await created(env, origin, body)) bad(400, 'That passkey could not be checked. Try again.');
+  const id = text(body.id, 1400, 'Passkey'), key = text(body.key, 2000, 'Passkey'), alg: number = body.alg === -7 || body.alg === -257 ? body.alg : bad(400, 'This device makes a kind of passkey the site cannot check');
+  return {id, key, alg, name: text(body.name ?? '', 60, 'Name').trim() || 'A device'};
+}
 async function account(request: Request, env: Env, who: Who, action: string | undefined, extra: string | undefined, body: Body, origin: string) {
   const me = who.account!;
   if (!action && request.method === 'PUT') {
@@ -864,10 +897,11 @@ async function account(request: Request, env: Env, who: Who, action: string | un
     return {...await challenge(env), user: me.id, name: me.username, exclude: held.results.map(row => row.id)};
   }
   if (action === 'passkeys' && request.method === 'POST' && !extra) {
-    if (!await created(env, origin, body)) bad(400, 'That passkey could not be checked. Try again.');
-    const id = text(body.id, 1400, 'Passkey'), key = text(body.key, 2000, 'Passkey'), alg = body.alg === -7 || body.alg === -257 ? body.alg : bad(400, 'This device makes a kind of passkey the site cannot check');
+    const made = await newPasskey(env, origin, body);
     if (((await env.DB.prepare('SELECT count(*) AS n FROM passkeys WHERE account = ?').bind(me.id).first<{n: number}>())?.n ?? 0) >= 10) bad(400, 'Ten passkeys is the most. Remove one first.');
-    await env.DB.prepare('INSERT INTO passkeys (id, account, name, key, alg, created) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').bind(id, me.id, text(body.name ?? '', 60, 'Name').trim() || 'A device', key, alg, now()).run();
+    // One the site already holds, for anyone, is not taken again: an id is one passkey's, across managers and people alike.
+    const done = await env.DB.prepare('INSERT INTO passkeys (id, account, name, key, alg, created) SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE NOT EXISTS (SELECT 1 FROM person_passkeys WHERE id = ?1) ON CONFLICT DO NOTHING').bind(made.id, me.id, made.name, made.key, made.alg, now()).run();
+    if (!done.meta.changes) bad(400, TAKEN_KEY);
     return {};
   }
   if (action === 'passkeys' && request.method === 'DELETE' && extra) {
@@ -1050,7 +1084,7 @@ async function removeHub(request: Request, env: Env, who: Who, body: Body) {
   if (!await checkPassword(String(body.password ?? ''), stored!.pass)) {await failed(env, key); bad(403, 'That is not your password');}
   if (!await removePlayers(env, who.hub)) bad(502, 'The streaming server did not confirm the removal, so nothing was deleted. Try again in a moment.');
   const hub = who.hub.id;
-  await env.DB.batch([...['devices', 'plays', 'sittings', 'starts', 'fetches', 'heard_fields', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'sync', 'favs', 'hearts', 'sent', 'foryou', 'foryou_sync', 'notices', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
+  await env.DB.batch([...['devices', 'plays', 'sittings', 'starts', 'fetches', 'heard_fields', 'quick', 'secrets', 'rows_keys', 'trakt_outbox', 'rows_cache', 'drift', 'sync', 'favs', 'hearts', 'sent', 'foryou', 'foryou_sync', 'notices', 'person_passkeys', 'people', 'groups', 'ops'].map(table => env.DB.prepare(`DELETE FROM ${table} WHERE hub = ?`).bind(hub)), env.DB.prepare('DELETE FROM sessions WHERE hub = ? OR account = ?').bind(hub, who.account!.id),
     env.DB.prepare('DELETE FROM hubs WHERE id = ?').bind(hub), env.DB.prepare('DELETE FROM passkeys WHERE account = ?').bind(who.account!.id), env.DB.prepare('DELETE FROM accounts WHERE id = ?').bind(who.account!.id)]);
   // Player apps stop reaching it at once, not when this copy of the Worker next looks the hub up.
   forgetHub(who.hub.code);
@@ -1089,9 +1123,18 @@ export async function api(request: Request, env: Env, url: URL, ctx?: ExecutionC
     if (first === 'passkey' && method === 'POST') {
       const key = guesses(request, 'passkey').slice(1);
       if (await blocked(env, key)) bad(429, 'Too many tries. Wait ten minutes.');
-      const held = await env.DB.prepare('SELECT account, key, alg FROM passkeys WHERE id = ?').bind(String(body.id ?? '')).first<{account: string; key: string; alg: number}>();
+      // One button for everyone: a manager's passkey or a person's. Who is signed in comes only from the row whose key checked the
+      // signature (never from anything the page sent), and a person's only while they are still in the hub and have joined.
+      const id = String(body.id ?? ''), [managers, persons] = await env.DB.batch([
+        env.DB.prepare('SELECT account, key, alg FROM passkeys WHERE id = ?').bind(id),
+        env.DB.prepare('SELECT k.hub, k.person, k.key, k.alg, p.invite FROM person_passkeys k JOIN people p ON p.hub = k.hub AND p.id = k.person AND p.joined = 1 WHERE k.id = ?').bind(id),
+      ]);
+      const held = (managers.results[0] ?? persons.results[0]) as {account?: string; hub?: string; person?: string; invite?: string; key: string; alg: number} | undefined;
       if (!held || !await signed(env, url.origin, body, held.key, held.alg)) {await failed(env, key); bad(403, 'That passkey is not one this site knows');}
-      return reply({}, 200, await startSession(env, {account: held!.account}));
+      // On someone's invite link (the page sends its token), only that person's passkey opens it. Said only to whoever just
+      // proved they hold the passkey, so it tells nobody else anything.
+      if (body.token !== undefined && (!held!.person || held!.invite !== await sha(String(body.token)))) bad(403, 'That passkey belongs to someone else. Pick your own, or type your password.');
+      return reply({}, 200, await startSession(env, held!.account ? {account: held!.account} : {hub: held!.hub!, person: held!.person!}));
     }
     // Back from Trakt's sign-in: straight on to the page, which finishes it (see Trakt in pages.tsx). The code is single-use and
     // worthless without the proof the page kept, and it travels in the fragment, which browsers never send anywhere.
