@@ -1,6 +1,7 @@
 // Runs against `wrangler dev` with a throwaway local database. No real accounts or upstream calls.
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
+import labels from '../src/labels.json' with {type: 'json'};
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8799';
 function client() {
   let cookie = '';
@@ -568,6 +569,75 @@ test('what a group or a person changes for themselves reaches the players as the
   assert.deepEqual([...fake.configs.values()][0].config.variants.map(item => item.id).sort(), ['hub-p-ada', 'hub-p-ben']);
 });
 
+/* The stream label (src/labels.json): the two ready-made ones and three streams as each shows them. The examples were rendered
+   once with AIOStreams' own formatter and copied in; the site has no formatter of its own, so this checks only their shape. */
+test('the ready-made stream labels are well formed, and their examples are what an app would show', () => {
+  const emoji = /\p{Extended_Pictographic}/gu;
+  for (const [id, most] of [['short', 2], ['detailed', 3]]) {
+    const label = labels[id];
+    for (const part of [label.name, label.description]) {
+      for (const [open, close] of ['{}', '[]']) assert.equal(part.split(open).length, part.split(close).length, `${id}: ${open}${close} are balanced`);
+      assert.equal(part.split('"').length % 2, 1, `${id}: quotes are paired`);
+      assert.equal(part.split('["').length, part.split('"||"').length, `${id}: every choice is ["this"||"that"]`); assert.equal(part.split('["').length, part.split('"]').length);
+    }
+    assert.deepEqual((label.name + label.description).match(emoji) ?? [], [labels.mark], `${id}: the waiting mark is the only symbol, used once`);
+    assert.ok(label.name.startsWith(`{service.cached::isfalse["${labels.mark} "||""]}`), `${id}: the mark leads the first line, only for a stream that is not ready`);
+    assert.ok(!label.name.includes('\n')); assert.equal(label.description.split('\n').length, most - 1);
+    assert.ok(label.name.length < 20_000 && label.description.length < 20_000);
+    for (const example of labels.examples) {
+      const lines = example[id].split('\n');
+      assert.equal(lines.length, most, `${id}, ${example.what}`);
+      for (const line of lines) {assert.ok(line && line === line.trim() && !/^·|·$|·\s*·|\s\s/.test(line), `${id}, ${example.what}: no stray separator in “${line}”`); assert.ok(!/[{}\[\]"|]/.test(line), `${id}, ${example.what}: nothing left unfilled`);}
+      assert.deepEqual(lines.join('').match(emoji) ?? [], example.what === 'Not ready yet' ? [labels.mark] : [], `${id}, ${example.what}`);
+    }
+  }
+  assert.equal(labels.examples.length, 3); assert.equal(labels.detailed.name, labels.short.name); assert.ok(labels.detailed.description.startsWith(labels.short.description + '\n'));
+  // The label hubs used to start with is kept to be recognised, word for word.
+  assert.ok(labels.old.name.startsWith('{stream.size::>1073741824["😑 "||""]}')); assert.equal(labels.old.description.split('\n').length, 8);
+});
+test('the stream label: Short unless chosen, the label hubs used to start with now means Short, and only the manager writes a custom one', async () => {
+  const sent = () => [...fake.configs.values()][0].config, as = text => ({id: 'custom', definitions: {custom: text}}), line = text => `set formatter = ${JSON.stringify(as(text))}`;
+  const state = async () => (await owner('GET', '/api/state')).body.hub;
+  const putHub = async formatter => {const hub = await state(); return (await owner('PUT', '/api/hub', {...hub, defaults: {...hub.defaults, formatter}})).status;};
+  const putGroup = async settings => {const group = (await state()).groups[0]; return (await owner('PUT', `/api/groups/${group.id}`, {name: group.name, rows: group.rows, settings, v: group.v})).status;};
+  const sync = async () => assert.deepEqual((await owner('POST', '/api/sync', {})).body, {state: 'ok'});
+  // A new hub starts on Short, and that is what its setup holds.
+  const start = await state(), group = start.groups[0];
+  assert.equal(start.defaults.formatter, 'short'); await sync(); assert.deepEqual(sent().formatter, as(labels.short));
+  // Only a ready-made label by its name, or two pieces of text.
+  for (const wrong of ['long', '', null, 7, [], {name: 'x'}, {name: 1, description: 'y'}, {name: 'x', description: 'y'.repeat(20_001)}]) assert.equal(await putHub(wrong), 400, JSON.stringify(wrong)?.slice(0, 40));
+  assert.equal(await putHub('detailed'), 200); await sync(); assert.deepEqual(sent().formatter, as(labels.detailed));
+  // The manager writes one of their own.
+  const own = {name: '{stream.resolution}', description: '{stream.filename}', custom: true};
+  assert.equal(await putHub(own), 200); assert.deepEqual((await state()).defaults.formatter, own); await sync(); assert.deepEqual(sent().formatter, as({name: own.name, description: own.description}));
+  // A hub saved before the ready-made labels holds bare text. Exactly the old starting label: Short from now on, and its setup,
+  // which held the long label, gets the short one on the next sync. What the hub has stored is left as it was.
+  assert.equal(await putHub({...labels.old, custom: true}), 200); await sync(); assert.deepEqual(sent().formatter, as(labels.old), 'pasted back as custom, the old long label is kept');
+  assert.equal(await putHub(labels.old), 200); assert.deepEqual((await state()).defaults.formatter, labels.old); await sync(); assert.deepEqual(sent().formatter, as(labels.short));
+  // Any other bare text is a custom label, as it was.
+  assert.equal(await putHub({name: labels.old.name + ' ', description: labels.old.description}), 200); await sync(); assert.deepEqual(sent().formatter, as({name: labels.old.name + ' ', description: labels.old.description}));
+  assert.equal(await putHub(labels.old), 200);
+  // A group: holding the old starting label is no change from a hub on Short; Detailed, or text of its own, travels as its change.
+  const of = () => sent().variants.find(item => item.id === `hub-g-${group.id}`)?.script.split('\n') ?? [];
+  assert.equal(await putGroup({formatter: labels.old}), 200); await sync(); assert.ok(!of().some(text => text.startsWith('set formatter')));
+  assert.equal(await putGroup({formatter: 'detailed'}), 200); await sync(); assert.ok(of().includes(line(labels.detailed)));
+  assert.equal(await putGroup({formatter: own}), 200); await sync(); assert.ok(of().includes(line({name: own.name, description: own.description})));
+  assert.equal(await putGroup({}), 200); assert.equal(await putHub('short'), 200);
+  // A person picks a ready-made label for themselves, never text of their own; one their manager gave them is left alone.
+  const ada = async () => (await owner('GET', '/api/state')).body.hub.people.find(person => person.id === 'ada');
+  const manage = async (can, settings) => {const p = await ada(); return (await owner('PUT', '/api/people/ada', {name: p.name, groupId: p.groupId, rows: p.rows, settings: settings ?? p.settings, can: {...p.can, ...can}, v: p.v})).status;};
+  const mine = async settings => {const p = (await guest('GET', '/api/state')).body.hub.people[0]; return guest('PUT', '/api/people/ada', {name: p.name, groupId: p.groupId, rows: p.rows, settings: {...p.settings, ...settings}, can: p.can, trakt: p.trakt, lists: p.lists, v: p.v});};
+  const before = await ada();
+  assert.equal(await manage({playback: true}), 200);
+  assert.equal((await mine({formatter: 'detailed'})).status, 200); await sync(); assert.ok(sent().variants.find(item => item.id === 'hub-p-ada').script.split('\n').includes(line(labels.detailed)));
+  const refused = await mine({formatter: own}); assert.equal(refused.status, 403); assert.match(refused.body.message, /Pick Short or Detailed/);
+  assert.equal((await mine({formatter: {name: 'x', description: 'y'}})).status, 403); assert.equal((await ada()).settings.formatter, 'detailed');
+  assert.equal(await manage({}, {...(await ada()).settings, formatter: own}), 200); assert.equal((await mine({quality: 'balanced'})).status, 200, 'the custom label she was given rides along unchanged');
+  assert.deepEqual((await ada()).settings.formatter, own); assert.equal((await mine({formatter: {...own, name: 'hers'}})).status, 403); assert.equal((await mine({formatter: 'short'})).status, 200);
+  // As it was, for the tests that follow.
+  assert.equal(await manage(before.can, before.settings), 200); await sync();
+  assert.deepEqual(sent().formatter, as(labels.short)); assert.deepEqual(sent().variants.map(item => item.id).sort(), ['hub-p-ada', 'hub-p-ben']);
+});
 test('the hub’s servers: only the manager, only public https addresses, and a page save cannot change them', async () => {
   assert.equal((await guest('PUT', '/api/host', {aiostreams: '', aiometadata: ''})).status, 403);
   for (const bad of ['http://streams.example', 'https://10.0.0.1', 'https://localhost', 'https://user:pw@streams.example', 'not an address']) assert.equal((await owner('PUT', '/api/host', {aiostreams: bad, aiometadata: ''})).status, 400, bad);

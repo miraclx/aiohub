@@ -4,6 +4,16 @@ Newest first. Dates are the commit dates on `main`.
 
 ## 2026-11-28
 
+- Stream labels are ready-made now. Under Sources, "Stream label" offers Short (two lines: resolution, HDR, source and
+  size, then languages and sound) and Detailed (a third line with the video format and the file name), each shown beside
+  three example streams. A stream that is not ready to play at once starts with ⏳; nothing else carries a symbol. A
+  person can pick either for themselves.
+- New hubs start on Short. A hub still on the long label every hub used to start with gets Short too, with nothing to
+  do: its apps show it after the hub's next sync. A label somebody wrote themselves is kept as it is, as Custom.
+- Custom is for the manager, on the hub or a group: two boxes of AIOStreams formatter text, with a link to AIOStreams'
+  own editor and to its reference. The old long label can be pasted there to keep it. There is no live preview any more.
+- The copy of AIOStreams' formatter that drew the live preview is gone (`formatter-preview/`, and the `buffer`
+  dependency with it).
 - Passkeys are for everyone now, not only the manager. A person adds one on their own page, under You, and after that
   signs in with their fingerprint, face or screen lock: from their link, or from the site's front page, where the one
   "Use a passkey" button opens a manager's hub or a person's own page, whoever the passkey belongs to. The password comes

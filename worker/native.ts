@@ -1,7 +1,7 @@
 // The hub's own setup on the streaming server (AIOStreams): created once per hub, then kept in step with what the site holds.
 // The hub only ever talks to a setup it created itself, whose id and password it keeps in the vault. Nothing here names an id in an
 // error or a log line. Each request shape was proven by script against a live server first.
-import {CERTS, folderFits, isPlace, rowsOf, serviceOf, suggestionOf, withKids} from '../src/data';
+import {CERTS, folderFits, isPlace, labelText, rowsOf, serviceOf, suggestionOf, withKids} from '../src/data';
 import type {Addon, Limit, Part, Row, Settings} from '../src/data';
 import type {Env} from './util';
 import {gate, getSecret, hosted, inTurn, newToken, now, putSecret, sha, unseal} from './util';
@@ -153,7 +153,9 @@ function patch(stored: Stored, data: HubData, key: string, people: {id: string; 
   }
   stored.jellyfin = {...(stored.jellyfin ?? {}), segments: data.defaults.skip, primary: stored.jellyfin?.primary ?? {name: 'Hub', trackers: []}, personas: users.filter(user => keep.has(user.id))};
 }
-const label = (settings: Settings) => ({id: 'custom', definitions: {custom: {name: settings.formatter.name, description: settings.formatter.description}}});
+// The stream label as AIOStreams holds it: always its "custom" formatter, with the text of the label chosen (a ready-made one, or
+// the manager's own). A hub still holding the label hubs used to start with gets the short one (labelText, src/data.ts).
+const label = (settings: Settings) => ({id: 'custom', definitions: {custom: labelText(settings.formatter)}});
 /* What one level changes compared with the level above it, as variant lines. Only real differences are written. */
 function differences(above: Settings, own: Settings, keys: Map<string, string>, home: string | null, extras: Addon[], runtime = false): string[] {
   const a: Stored = {}, b: Stored = {}, lines: string[] = []; playback(a, above, runtime); playback(b, own, runtime);

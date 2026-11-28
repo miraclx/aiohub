@@ -97,8 +97,7 @@ node setup.mjs
 
 AIOHub stands on other people's work:
 
-- [AIOStreams](https://github.com/Viren070/AIOStreams) by Viren070, which finds the streams and whose formatter the
-  stream-label preview reuses.
+- [AIOStreams](https://github.com/Viren070/AIOStreams) by Viren070, which finds the streams.
 - [AIOMetadata](https://github.com/cedya77/aiometadata) by cedya77, which builds the rows, artwork and search.
 - Yeb, who runs the ForTheWeak servers a new copy starts on.
 - [fusion-starter-kit](https://github.com/itsrenoria/fusion-starter-kit) by itsrenoria, for the collection artwork.
@@ -106,5 +105,4 @@ AIOHub stands on other people's work:
 
 ## Licence
 
-AGPL-3.0-only. See [LICENSE](LICENSE). The stream-label preview reuses formatter code from AIOStreams under the same
-licence; see `formatter-preview/NOTICE`.
+AGPL-3.0-only. See [LICENSE](LICENSE).

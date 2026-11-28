@@ -2,6 +2,7 @@
 // Each person is served by their own AIOMetadata setup, which the hub makes, keeps in step and removes.
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
+import labels from '../src/labels.json' with {type: 'json'};
 import http from 'node:http';
 import {execFileSync} from 'node:child_process';
 import {existsSync, readFileSync} from 'node:fs';
@@ -411,6 +412,28 @@ test('a change at the hub reaches everyone who has not changed it for themselves
   assert.equal(ben.config.apiKeys.mdblist, undefined); assert.equal(ben.config.mdblistWatchTracking, false);
   // What is saved in an app stays on the server for everyone until their Watchlist switch is on: MDBList sync alone sends it nowhere.
   assert.deepEqual([ada.config.jellyfinWatchlistServices, ben.config.jellyfinWatchlistServices], [['server'], ['server']]);
+});
+test('the stream label reaches AIOStreams: Short to start with, Detailed for whoever picks it, the manager’s own text, and Short for a hub still on the old starting label', async () => {
+  const as = text => ({id: 'custom', definitions: {custom: text}}), line = text => `set formatter = ${JSON.stringify(as(text))}`;
+  const putHub = async formatter => {const state = (await owner('GET', '/api/state')).body.hub; return (await owner('PUT', '/api/hub', {...state, defaults: {...state.defaults, formatter}})).status;};
+  const putAda = async change => {const me = (await owner('GET', '/api/state')).body.hub.people.find(item => item.id === 'ada'), settings = {...me.settings, ...change}; if (change.formatter === undefined) delete settings.formatter;
+    return (await owner('PUT', '/api/people/ada', {name: me.name, groupId: me.groupId, rows: me.rows, settings, can: me.can, paused: me.paused, trakt: me.trakt, lists: me.lists, v: me.v})).status;};
+  const adas = () => players().variants.find(item => item.id === 'hub-c-ada')?.script.split('\n') ?? [];
+  // A new hub: Short, for everyone, in the one AIOStreams setup.
+  assert.equal((await owner('GET', '/api/state')).body.hub.defaults.formatter, 'short'); assert.deepEqual(players().formatter, as(labels.short));
+  // Ada picks Detailed: it travels as her one change, at her own stream address. Following the hub again takes it away.
+  assert.equal(await putAda({formatter: 'detailed'}), 200); assert.deepEqual(await syncAll(), {state: 'ok'});
+  assert.deepEqual(adas(), [line(labels.detailed)]); assert.ok(playerOf('Ada')[1].config.jellyfinStreamUrl.endsWith('/v/hub-c-ada/manifest.json')); assert.deepEqual(players().formatter, as(labels.short));
+  assert.equal(await putAda({formatter: undefined}), 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(adas(), []); assert.ok(!playerOf('Ada')[1].config.jellyfinStreamUrl.includes('/v/'));
+  // The manager's own text goes as written.
+  const own = {name: '{stream.resolution}', description: '{stream.filename}', custom: true};
+  assert.equal(await putHub(own), 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(players().formatter, as({name: own.name, description: own.description}));
+  // A hub from before the ready-made labels: its setup holds the long label it started with (here put there as custom text), and
+  // what it has stored is that label as bare text. Its next sync sends Short, with nothing saved by anyone.
+  assert.equal(await putHub({...labels.old, custom: true}), 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(players().formatter, as(labels.old));
+  assert.equal(await putHub(labels.old), 200); assert.deepEqual((await owner('GET', '/api/state')).body.hub.defaults.formatter, labels.old);
+  assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(players().formatter, as(labels.short)); assert.deepEqual(adas(), []);
+  assert.equal(await putHub('short'), 200); assert.deepEqual(await syncAll(), {state: 'ok'}); assert.deepEqual(players().formatter, as(labels.short));
 });
 let token, jf, uuid;
 test('an app signs in through the hub and never sees the setup, its address or its private routes', async () => {

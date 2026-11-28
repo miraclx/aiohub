@@ -72,7 +72,10 @@ const CHECK: {[K in keyof Settings]-?: (value: unknown) => Settings[K]} = {
   forYouOff: value => list(value, 20, 20, 'For you').filter(id => FOR_YOU_KINDS.some(kind => kind.id === id)),
   forYouOrder: value => [...new Set(list(value, 20, 20, 'For you').filter(id => FOR_YOU_KINDS.some(kind => kind.id === id)))],
   forYouBecause: value => oneOf(value, ['lately', 'any'] as const, 'For you'),
-  formatter: value => ({name: text((value as Record<string, unknown>)?.name, 20_000, 'Stream label'), description: text((value as Record<string, unknown>).description, 20_000, 'Stream label')}),
+  // A ready-made label by its name, or text of the manager's own. `custom` is kept as sent: without it, text is as a hub saved it
+  // before the ready-made labels (src/data.ts, Label).
+  formatter: value => value === 'short' || value === 'detailed' ? value : !value || typeof value !== 'object' || Array.isArray(value) ? bad(400, 'Stream label is not valid')
+    : {name: text((value as Record<string, unknown>).name, 20_000, 'Stream label'), description: text((value as Record<string, unknown>).description, 20_000, 'Stream label'), ...((value as Record<string, unknown>).custom === true ? {custom: true as const} : {})},
 };
 const LATER = new Set<keyof Settings>(['ageBadge', 'forYouOff', 'forYouOrder', 'forYouBecause']);
 function cleanSettings(value: unknown, whole: boolean): Overrides {
@@ -333,6 +336,8 @@ async function savePerson(env: Env, who: Who, id: string, body: Body) {
       if (!before.can.playback) bad(403, 'Changing playback is turned off for you');
       // The content limit is theirs to change only when the manager said so as well.
       if ((settings as Overrides).limit !== (before.settings as Overrides).limit && !before.can.limit) bad(403, 'Your content limit is set for you');
+      // A label of one's own wording is the manager's to write. One they already hold is left as it is.
+      if (typeof settings.formatter === 'object' && JSON.stringify(settings.formatter) !== JSON.stringify(before.settings.formatter)) bad(403, 'Pick Short or Detailed. A custom label is set by whoever runs the hub');
       next.settings = settings;
     }
     const done = await env.DB.prepare('UPDATE people SET name = ?, login = ?, data = ?, version = version + 1 WHERE hub = ? AND id = ? AND version = ?').bind(name, slug(name), JSON.stringify(next), hub, id, Number(body.v)).run().catch(() => bad(409, TAKEN));

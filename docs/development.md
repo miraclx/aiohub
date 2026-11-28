@@ -22,7 +22,6 @@ instead. It needs a Chromium binary because the walk-through drives one. A full 
 | `worker/` | The Worker: the site's API, the sign-in front that player apps talk to, and the code that keeps AIOStreams and AIOMetadata matching. |
 | `migrations/` | The database tables. New ones are only ever added. |
 | `tests/` | The three test parts and their stand-in servers. |
-| `formatter-preview/` | See below. |
 | `public/` | Pictures the site shows: poster backdrops and collection covers. |
 | `setup.mjs` | The terminal setup script. |
 | `scripts/default-home.mjs` | Prints the rows a new hub's Home starts with. |
@@ -41,14 +40,3 @@ None of these belong on a real site. Each is described where it is declared, in 
 
 If you keep a `.dev.vars` from before the server settings were renamed, delete it before running the tests, so the
 run copies the current `tests/local.vars`.
-
-## formatter-preview
-
-The manager can choose how stream names are labelled in the apps, and the site shows a live preview of the label
-while they edit it. To make that preview match what AIOStreams will really produce, it runs AIOStreams' own formatter
-code in the browser.
-
-`formatter-preview/` is that code: the formatter files from AIOStreams v2.37.0, unchanged under `upstream/`, and the
-same files with their types removed under `canonical/`, which is what the site loads. `source-manifest.json` records
-where each file came from, and `scripts/verify-source.mjs` checks them against it. It runs in a browser worker and
-makes no network requests. `NOTICE` has the licence details.

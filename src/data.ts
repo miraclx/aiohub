@@ -1,5 +1,5 @@
 // Shapes shared by the site and the Worker, and the defaults a new hub starts with.
-import formatter from './formatter.json';
+import labels from './labels.json';
 import shipped from './collections.json';
 /* The preview (an address ending in ?sample): this same site with a pretend hub behind it. Only src/live.ts and the one bar in
    src/App.tsx read this; no page does. */
@@ -10,11 +10,33 @@ export interface Row {id: string; title: string; kind: string; source: string; o
   /* Site only, never saved: on a person's Home, the kind of today's For you pick in this place (FOR_YOU_KINDS id, or 'popular'). */
   pick?: string}
 export interface Template {name: string; description: string}
+/* How each stream is named in a player app's list of versions: one of the two ready-made labels, or text the manager wrote
+   (`custom`, in AIOStreams' formatter syntax: the first line, and the rest).
+   - A hub saved before the ready-made labels holds a bare {name, description} with no `custom` mark. One that is exactly the label
+     hubs used to start with (OLD_LABEL) now means Short, so those hubs get the short label with nothing to do; any other is
+     custom, its text as it was.
+   - A label saved as custom from now on carries `custom: true` and is always custom, whatever its text: the old long label can
+     be pasted back and kept. */
+export type Label = 'short' | 'detailed' | (Template & {custom?: true});
+/* The two ready-made labels, as AIOStreams formatter text, and three streams as each shows them (`examples`: the first line,
+   then the rest, as an app lists a version). The examples are not worked out here: they were rendered once with AIOStreams
+   v2.37.0's own formatter on 2026-11-28 and copied in, so they are what a server really sends. Every field and modifier used
+   is also in AIOStreams main (v2.38.1). tests/api.test.mjs checks the shape of both.
+   MARK leads the first line only when a stream is not ready to play at once. */
+export const LABELS: {short: Template; detailed: Template} = {short: labels.short, detailed: labels.detailed};
+export const LABEL_EXAMPLES: {what: string; short: string; detailed: string}[] = labels.examples, MARK = labels.mark;
+/* The label every hub started with until 2026-11-28 (the whole of the old src/formatter.json, character for character). Kept
+   only to recognise it in what a hub has stored: see Label. Never sent anywhere. */
+export const OLD_LABEL: Template = labels.old;
+export const labelKind = (value: Label | undefined): 'short' | 'detailed' | 'custom' => value === 'detailed' ? 'detailed'
+  : !value || value === 'short' || (!value.custom && value.name === OLD_LABEL.name && value.description === OLD_LABEL.description) ? 'short' : 'custom';
+/* The text AIOStreams is given for a label. */
+export const labelText = (value: Label | undefined): Template => {const kind = labelKind(value); return kind === 'custom' ? {name: (value as Template).name, description: (value as Template).description} : LABELS[kind];};
 export interface Settings {
   quality: 'saver' | 'balanced' | 'best'; maxSizeGb: number; languages: string[]; cachedFirst: boolean; search: 'fast' | 'balanced' | 'thorough';
   subtitles: string[]; skip: boolean;
   limit: 'all' | 'teen' | 'kids'; hideWatched: boolean; spoilers: boolean; unreleased: boolean; posters: 'better' | 'plain'; ageBadge?: boolean;
-  debrid: string; sources: string[]; formatter: Template;
+  debrid: string; sources: string[]; formatter: Label;
   // Kinds of For you pick left out (FOR_YOU_KINDS). Missing or empty: every kind may be picked.
   forYouOff?: string[];
   // The kinds of pick in the order they count for (orderOf). Missing or empty: FOR_YOU_ORDER.
@@ -447,7 +469,7 @@ export const defaultSettings = (): Settings => ({
   quality: 'balanced', maxSizeGb: 25, languages: ['English'], cachedFirst: true, search: 'balanced',
   subtitles: ['English'], skip: true,
   limit: 'all', hideWatched: false, spoilers: false, unreleased: true, posters: 'better', ageBadge: false,
-  debrid: 'TorBox', sources: ['library', 'torrentio', 'comet', 'meteor'], formatter: formatter as Template, forYouOff: [], forYouOrder: [], forYouBecause: 'lately',
+  debrid: 'TorBox', sources: ['library', 'torrentio', 'comet', 'meteor'], formatter: 'short', forYouOff: [], forYouOrder: [], forYouBecause: 'lately',
 });
 export interface Resolved {values: Settings; from: Record<keyof Settings, Level>}
 export function resolve(hub: Hub, group?: Group, person?: Person): Resolved {

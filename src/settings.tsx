@@ -3,9 +3,8 @@ import type {ReactNode} from 'react';
 import {DragDropProvider} from '@dnd-kit/react';
 import {isSortableOperation, useSortable} from '@dnd-kit/react/sortable';
 import type {Live} from './live';
-import {FIXTURES, FormatterPreviewClient} from 'formatter-preview';
-import {FOR_YOU_KINDS, allServices, defaultAddons, fillOrder, orderOf, signUp} from './data';
-import type {ForYouDetail, Hub, Level, Resolved, Settings, Shown, Template} from './data';
+import {FOR_YOU_KINDS, LABEL_EXAMPLES, MARK, allServices, defaultAddons, fillOrder, labelKind, labelText, orderOf, signUp} from './data';
+import type {ForYouDetail, Hub, Label, Level, Resolved, Settings, Shown} from './data';
 import {Chips, Confirm, Segments, Setting, Switch, hash} from './ui';
 import type {Scope} from './ui';
 import {Grip, moved} from './home';
@@ -61,34 +60,39 @@ export function PlaybackEditor({hub, resolved: {values, from}, scope, set, reset
   </section>;
 }
 
-function Formatter({value, onSave}: {value: Template; onSave: (value: Template) => void}) {
-  const [draft, setDraft] = useState(value), [editing, setEditing] = useState(false);
-  // One representative sample stream. The engine has others, but choosing between samples is not a setting anyone needs.
-  const fixture = 'detailed';
-  const [out, setOut] = useState<{name: string; description: string} | null>(null), [error, setError] = useState('');
-  const client = useMemo(() => new FormatterPreviewClient(), []);
-  useEffect(() => setDraft(value), [value]);
-  useEffect(() => {
-    let live = true;
-    const timer = setTimeout(() => {client.render(draft, fixture).then(result => {if (live) {setOut(result.output); setError('');}}, (reason: Error) => {if (live && reason.message !== 'Preview cancelled.') setError(reason.message);});}, 250);
-    return () => {live = false; clearTimeout(timer);};
-  }, [draft, fixture, client]);
-  const dirty = draft.name !== value.name || draft.description !== value.description;
-  return <div className="formatter">
-    <div className="stream-sample" aria-label="How a stream looks">{out ? <><pre className="stream-name">{out.name.trim()}</pre><pre>{out.description.trim()}</pre></> : <p className="muted small">{error || 'Rendering…'}</p>}</div>
-    {error && out && <p className="warn small">{error}</p>}
-    <div className="formatter-bar">
-      <span className="muted small">A sample stream, as the player would list it.</span><button type="button" className="ghost small" onClick={() => setEditing(!editing)}>{editing ? 'Close editor' : 'Edit'}</button>
+/* The stream label: two ready-made ones, each beside three streams as an app lists them (fixed text: src/data.ts, LABEL_EXAMPLES),
+   and, for the manager on the hub or a group, a label of their own wording. A person picks a ready-made one; a custom label
+   that reaches them is shown, not edited. */
+const LABEL_CHOICES = [
+  {id: 'short', title: 'Short', does: 'Two lines: the picture and the size, then the sound.'},
+  {id: 'detailed', title: 'Detailed', does: 'A third line adds the video format and the file name.'},
+] as const;
+function StreamLabel({value, canWrite, mine, editor, onSave}: {value: Label; canWrite: boolean; mine?: boolean; editor: string; onSave: (value: Label) => void}) {
+  const kind = labelKind(value), text = labelText(value);
+  const [draft, setDraft] = useState(text), [writing, setWriting] = useState(false);
+  // (By what the label is, not the object it came in: a page that reads the hub again must not clear a box being typed in.)
+  useEffect(() => {setDraft({name: text.name, description: text.description}); setWriting(false);}, [kind, text.name, text.description]);
+  const open = canWrite && (writing || kind === 'custom'), dirty = draft.name !== text.name || draft.description !== text.description || kind !== 'custom';
+  return <div className="labels" role="radiogroup" aria-label="Stream label">
+    <div className="label-choices">
+      {LABEL_CHOICES.map(choice => <button type="button" key={choice.id} role="radio" aria-checked={kind === choice.id && !writing} className={`label-choice${kind === choice.id && !writing ? ' on' : ''}`} onClick={() => {setWriting(false); onSave(choice.id);}}>
+        <strong>{choice.title}</strong><span className="muted small">{choice.does}</span>
+        {LABEL_EXAMPLES.map(example => {const [first, ...rest] = example[choice.id].split('\n'); return <span className="label-example" key={example.what} aria-label={`${choice.title}: ${example.what.charAt(0).toLowerCase() + example.what.slice(1)}`}><b>{first}</b>{rest.map(line => <span key={line}>{line}</span>)}</span>;})}
+      </button>)}
     </div>
-    {editing && <div className="stack formatter-edit">
-      <label htmlFor="fmt-name">Left column</label><textarea id="fmt-name" rows={4} spellCheck={false} value={draft.name} onChange={event => setDraft({...draft, name: event.target.value})}/>
-      <label htmlFor="fmt-desc">Details</label><textarea id="fmt-desc" rows={10} spellCheck={false} value={draft.description} onChange={event => setDraft({...draft, description: event.target.value})}/>
-      <div className="split"><button type="button" className="ghost" disabled={!dirty} onClick={() => setDraft(value)}>Discard</button><button type="button" className="primary" disabled={!dirty || !!error} onClick={() => onSave(draft)}>Save</button></div>
+    <p className="muted small">The examples are an episode, a 4K film, and a stream that is not ready yet. {MARK} means the file has to be fetched first, which can take minutes.</p>
+    {canWrite ? <button type="button" role="radio" aria-checked={open} className={`label-choice wide${open ? ' on' : ''}`} onClick={() => setWriting(true)}><strong>Custom</strong><span className="muted small">A label in your own wording.</span></button>
+      : kind === 'custom' && <p className="muted small">{mine ? 'A custom label is in use, set by whoever runs the hub. Pick Short or Detailed to use one of those.' : 'A custom label is in use. It is written under Hub or on the group. Pick Short or Detailed to use one of those here.'}</p>}
+    {open && <div className="stack label-edit">
+      <p className="muted small">Written as an AIOStreams formatter template. {editor && <><a className="link" href={`${editor}/stremio/configure?menu=formatter`} target="_blank" rel="noreferrer">Build one in AIOStreams’ editor</a>, then paste its two parts here. </>}<a className="link" href="https://aiostreams.org/reference/custom-formatter/" target="_blank" rel="noreferrer">What can go in a template</a></p>
+      <label htmlFor="label-first">First line</label><textarea id="label-first" rows={3} spellCheck={false} value={draft.name} onChange={event => setDraft({...draft, name: event.target.value})}/>
+      <label htmlFor="label-rest">The rest</label><textarea id="label-rest" rows={6} spellCheck={false} value={draft.description} onChange={event => setDraft({...draft, description: event.target.value})}/>
+      <div className="split"><button type="button" className="ghost" onClick={() => {setDraft(text); setWriting(false);}} disabled={kind === 'custom' && !dirty}>{kind === 'custom' ? 'Discard' : 'Cancel'}</button><button type="button" className="primary" disabled={!dirty || draft.name.length > 20_000 || draft.description.length > 20_000} onClick={() => onSave({name: draft.name, description: draft.description, custom: true})}>Save</button></div>
     </div>}
   </div>;
 }
 
-export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset, update, toast, live}: EditorProps) {
+export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset, update, toast, live, mine}: EditorProps) {
   const service_ = (method: string, name: string, body: unknown, note: string) => void live.call(method, `/api/services/${encodeURIComponent(name)}`, body).then(() => {toast(note); live.apps(); return live.reload();}, (error: Error) => toast(error.message));
   const line = (key: keyof Settings) => ({from: from[key], scope, onReset: () => reset(key)});
   const [service, setService] = useState(''), [key, setKey] = useState(''), [link, setLink] = useState(''), [tmdb, setTmdb] = useState(''), [lists, setLists] = useState(''), [replacing, setReplacing] = useState(''), [fresh, setFresh] = useState('');
@@ -142,7 +146,7 @@ export function SourcesEditor({hub, resolved: {values, from}, scope, set, reset,
     </div>
     <h3 className="sub">How a stream is listed</h3>
     <div className="card settings">
-      <Setting column title="Stream label" hint="What each choice looks like in the player’s list of streams." {...line('formatter')}><Formatter value={values.formatter} onSave={value => set('formatter', value, 'Label saved')}/></Setting>
+      <Setting column title="Stream label" hint="How each stream is named in an app’s list of versions." {...line('formatter')}><StreamLabel value={values.formatter} canWrite={scope.level !== 'own'} mine={mine} editor={(hub.hostUrl || hub.usual?.aiostreams || '').replace(/\/+$/, '')} onSave={value => set('formatter', value, 'Label saved')}/></Setting>
     </div>
   </section>;
 }

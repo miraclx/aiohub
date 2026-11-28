@@ -101,6 +101,41 @@ await owner.goto(BASE + '/#/person/ada/devices'); await owner.getByRole('button'
 await owner.getByLabel('Password', {exact: true}).filter({hasText: /^[a-z]+-[a-z]+-[a-z]+-\d\d$/}).waitFor(); const password = await owner.getByLabel('Password', {exact: true}).textContent(); await shot(owner, '4-devices');
 await owner.goto(BASE + '/#/hub/playback'); await owner.getByRole('radio', {name: 'Best'}).click().catch(() => owner.getByText('Best', {exact: true}).first().click()); await owner.waitForTimeout(900);
 await owner.goto(BASE + '/#/hub/sources'); await owner.getByText('TorBox').first().waitFor(); await shot(owner, '5-sources');
+// The stream label, under Sources: two ready-made labels, each with three streams as an app lists them, and picking one saves it.
+// The manager can also write one, with a way to AIOStreams' own editor and to what such a label can hold. On a person's page
+// only the ready-made ones can be picked, and a custom label that reaches them is said, not shown for editing.
+{
+  // Screenshots of this setting are taken on a wide dark page; the walk-through goes back to the phone size after.
+  const wide = async name => {if (!shots) return; await owner.setViewportSize({width: 1280, height: 820}); await toast(owner).first().waitFor({state: 'hidden'}).catch(() => {}); await owner.locator('.labels').evaluate(node => node.scrollIntoView({block: 'end'})); await owner.evaluate(() => window.scrollBy(0, 24)); await owner.waitForTimeout(150); await owner.screenshot({path: `${shots}/${name}.png`}); await owner.setViewportSize({width: 390, height: 844});};
+  const label = () => owner.evaluate(() => fetch('/api/state').then(answer => answer.json()).then(state => ({hub: state.hub.defaults.formatter, ada: state.hub.people.find(person => person.id === 'ada').settings.formatter})));
+  const pick = owner.getByRole('radiogroup', {name: 'Stream label'}), choice = name => pick.getByRole('radio', {name: new RegExp(`^${name}`)});
+  assert.equal(await choice('Short').getAttribute('aria-checked'), 'true'); assert.equal(await choice('Detailed').getAttribute('aria-checked'), 'false');
+  assert.deepEqual((await choice('Short').locator('.label-example').allInnerTexts()).map(text => text.split('\n')), [['1080p · WEB-DL · 645 MB', 'English · DD+ 5.1'], ['4K · Dolby Vision · REMUX · 58 GB', 'English, French · Atmos 7.1'], ['⏳ 1080p · BluRay · 2.1 GB', 'English · AAC 5.1']]);
+  const detailed = (await choice('Detailed').locator('.label-example').allInnerTexts()).map(text => text.split('\n'));
+  assert.deepEqual(detailed.map(lines => lines.length), [3, 3, 3]); assert.deepEqual(detailed[0], ['1080p · WEB-DL · 645 MB', 'English · DD+ 5.1', 'AVC · The.Show.S01E02.1080p.WEB-DL.DDP5.1.H.264-GROUP.mkv']);
+  await owner.getByText('The examples are an episode, a 4K film, and a stream that is not ready yet. ⏳ means the file has to be fetched first, which can take minutes.', {exact: true}).waitFor();
+  assert.equal(await owner.locator('.labels textarea').count(), 0, 'no boxes until Custom is picked');
+  await choice('Detailed').click(); await toast(owner).filter({hasText: 'Label saved'}).waitFor(); assert.equal(await choice('Detailed').getAttribute('aria-checked'), 'true');
+  await owner.waitForTimeout(900); assert.equal((await label()).hub, 'detailed'); await wide('label-hub');
+  // Custom: two boxes holding the label in use, to start from, and the two links, each in a new tab.
+  await choice('Custom').click(); const first = owner.getByLabel('First line', {exact: true}), rest = owner.getByLabel('The rest', {exact: true});
+  assert.match(await first.inputValue(), /^\{service\.cached::isfalse/); assert.equal((await rest.inputValue()).split('\n').length, 2);
+  const build = owner.getByRole('link', {name: 'Build one in AIOStreams’ editor', exact: true}), about = owner.getByRole('link', {name: 'What can go in a template', exact: true});
+  assert.match(await build.getAttribute('href'), /^https?:\/\/[^/]+\/stremio\/configure\?menu=formatter$/); assert.equal(await build.getAttribute('target'), '_blank');
+  assert.equal(await about.getAttribute('href'), 'https://aiostreams.org/reference/custom-formatter/'); assert.equal(await about.getAttribute('target'), '_blank');
+  assert.equal((await label()).hub, 'detailed', 'opening the boxes saves nothing');
+  await first.fill('{stream.resolution}'); await rest.fill('{stream.filename}'); await owner.getByRole('button', {name: 'Save', exact: true}).click(); await toast(owner).filter({hasText: 'Label saved'}).waitFor();
+  await owner.waitForTimeout(900); assert.deepEqual((await label()).hub, {name: '{stream.resolution}', description: '{stream.filename}', custom: true});
+  assert.equal(await choice('Custom').getAttribute('aria-checked'), 'true'); assert.equal(await first.inputValue(), '{stream.resolution}'); await wide('label-custom');
+  // A person's page: no Custom, and the custom label that reaches them is said. Short picked there is theirs, and can be reset.
+  await owner.goto(BASE + '/#/person/ada/sources'); await choice('Short').waitFor(); assert.equal(await choice('Custom').count(), 0); assert.equal(await owner.locator('.labels textarea').count(), 0);
+  await owner.getByText('A custom label is in use. It is written under Hub or on the group. Pick Short or Detailed to use one of those here.', {exact: true}).waitFor();
+  assert.equal(await choice('Short').getAttribute('aria-checked'), 'false'); assert.equal(await choice('Detailed').getAttribute('aria-checked'), 'false');
+  await choice('Short').click(); await toast(owner).filter({hasText: 'Label saved'}).waitFor(); await owner.waitForTimeout(900); assert.equal((await label()).ada, 'short'); assert.equal(await choice('Short').getAttribute('aria-checked'), 'true'); await wide('label-person');
+  await owner.getByRole('button', {name: /^Reset Stream label to /}).click(); await owner.waitForTimeout(900); assert.equal((await label()).ada, undefined);
+  // Back to Short for the hub.
+  await owner.goto(BASE + '/#/hub/sources'); await choice('Short').click(); await toast(owner).filter({hasText: 'Label saved'}).waitFor(); await owner.waitForTimeout(900); assert.equal((await label()).hub, 'short');
+}
 // Background work on Hub, General: one cron run (before the daily check's hour), then when it ran, runs next, and how often it has.
 await fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent('*/5 * * * *')}&time=${Date.UTC(2026, 0, 1, 3)}`);
 await owner.goto(BASE + '/#/hub/general'); await owner.reload(); const work = owner.locator('section', {has: owner.getByRole('heading', {name: 'Background work'})});

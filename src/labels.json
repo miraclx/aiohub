@@ -1,0 +1,32 @@
+{
+ "mark": "⏳",
+ "short": {
+  "name": "{service.cached::isfalse[\"⏳ \"||\"\"]}{stream.resolution::exists[\"{stream.resolution::replace('2160p','4K')}\"||\"\"]}{stream.visualTags::keep('DV','HDR10+','HDR10','HDR','HLG')::exists[\"{stream.resolution::exists[\" · \"||\"\"]}{stream.visualTags::~DV[\"Dolby Vision\"||\"{stream.visualTags::keep('DV','HDR10+','HDR10','HDR','HLG')::first}\"]}\"||\"\"]}{stream.quality::exists[\"{stream.resolution::exists::or::stream.visualTags::keep('DV','HDR10+','HDR10','HDR','HLG')::exists[\" · \"||\"\"]}{stream.quality::replace('BluRay REMUX','REMUX')}\"||\"\"]}{stream.size::>0[\"{stream.resolution::exists::or::stream.visualTags::keep('DV','HDR10+','HDR10','HDR','HLG')::exists::or::stream.quality::exists[\" · \"||\"\"]}{stream.size::sbytes}\"||\"\"]}{stream.resolution::exists::or::stream.visualTags::keep('DV','HDR10+','HDR10','HDR','HLG')::exists::or::stream.quality::exists::or::stream.size::>0[\"\"||\"{stream.filename::exists[\"{stream.filename::truncate(48)}\"||\"Stream\"]}\"]}",
+  "description": "{stream.languages::exists[\"{stream.languages::slice(0,3)::join(', ')}\"||\"\"]}{stream.audioTags::exists[\"{stream.languages::exists[\" · \"||\"\"]}{stream.audioTags::first}\"||\"\"]}{stream.audioChannels::exists[\"{stream.audioTags::exists[\" \"||\"{stream.languages::exists[\" · \"||\"\"]}\"]}{stream.audioChannels::first}\"||\"\"]}"
+ },
+ "detailed": {
+  "name": "{service.cached::isfalse[\"⏳ \"||\"\"]}{stream.resolution::exists[\"{stream.resolution::replace('2160p','4K')}\"||\"\"]}{stream.visualTags::keep('DV','HDR10+','HDR10','HDR','HLG')::exists[\"{stream.resolution::exists[\" · \"||\"\"]}{stream.visualTags::~DV[\"Dolby Vision\"||\"{stream.visualTags::keep('DV','HDR10+','HDR10','HDR','HLG')::first}\"]}\"||\"\"]}{stream.quality::exists[\"{stream.resolution::exists::or::stream.visualTags::keep('DV','HDR10+','HDR10','HDR','HLG')::exists[\" · \"||\"\"]}{stream.quality::replace('BluRay REMUX','REMUX')}\"||\"\"]}{stream.size::>0[\"{stream.resolution::exists::or::stream.visualTags::keep('DV','HDR10+','HDR10','HDR','HLG')::exists::or::stream.quality::exists[\" · \"||\"\"]}{stream.size::sbytes}\"||\"\"]}{stream.resolution::exists::or::stream.visualTags::keep('DV','HDR10+','HDR10','HDR','HLG')::exists::or::stream.quality::exists::or::stream.size::>0[\"\"||\"{stream.filename::exists[\"{stream.filename::truncate(48)}\"||\"Stream\"]}\"]}",
+  "description": "{stream.languages::exists[\"{stream.languages::slice(0,3)::join(', ')}\"||\"\"]}{stream.audioTags::exists[\"{stream.languages::exists[\" · \"||\"\"]}{stream.audioTags::first}\"||\"\"]}{stream.audioChannels::exists[\"{stream.audioTags::exists[\" \"||\"{stream.languages::exists[\" · \"||\"\"]}\"]}{stream.audioChannels::first}\"||\"\"]}\n{stream.encode::exists[\"{stream.encode}\"||\"\"]}{stream.visualTags::~10bit[\"{stream.encode::exists[\" · \"||\"\"]}10-bit\"||\"\"]}{stream.filename::exists[\"{stream.encode::exists::or::stream.visualTags::~10bit[\" · \"||\"\"]}{stream.filename::truncate(56)}\"||\"\"]}"
+ },
+ "examples": [
+  {
+   "what": "An episode",
+   "short": "1080p · WEB-DL · 645 MB\nEnglish · DD+ 5.1",
+   "detailed": "1080p · WEB-DL · 645 MB\nEnglish · DD+ 5.1\nAVC · The.Show.S01E02.1080p.WEB-DL.DDP5.1.H.264-GROUP.mkv"
+  },
+  {
+   "what": "A 4K film",
+   "short": "4K · Dolby Vision · REMUX · 58 GB\nEnglish, French · Atmos 7.1",
+   "detailed": "4K · Dolby Vision · REMUX · 58 GB\nEnglish, French · Atmos 7.1\nHEVC · 10-bit · The.Film.2024.2160p.UHD.BluRay.REMUX.DV.HDR.HEVC.TrueHD.…"
+  },
+  {
+   "what": "Not ready yet",
+   "short": "⏳ 1080p · BluRay · 2.1 GB\nEnglish · AAC 5.1",
+   "detailed": "⏳ 1080p · BluRay · 2.1 GB\nEnglish · AAC 5.1\nHEVC · 10-bit · The.Film.2024.1080p.BluRay.x265.10bit.AAC.5.1-GROUP.mkv"
+  }
+ ],
+ "old": {
+  "name": "{stream.size::>1073741824[\"😑 \"||\"\"]}{stream.proxied::istrue[\"🕵️‍♂️ \"||\"\"]}{stream.private::istrue[\"🔒 \"||\"\"]}{service.cached::istrue::and::stream.library::isfalse[\"⚡ \"||\"\"]}{service.cached::isfalse[\"⏳ \"||\"\"]}{stream.library::istrue[\"☁️ \"||\"\"]}{stream.resolution::exists[\"{stream.resolution::replace('2160p', '🔥 4K UHD')::replace('1440p','✨ 1440 QHD')::replace('1080p','🚀 1080p FHD')::replace('720p','💿 720p HD')::replace('576p','💩 576p Low Quality')::replace('480p','💩 480p Low Quality')::replace('360p','💩 360p Low Quality')::replace('240p','💩 240p Low Quality')::replace('144p','💩 144p Low Quality')}\"||\"💩 Unknown\"]}{stream.upscaled::istrue[\" 🆙\"||\"\"]}{stream.regexMatched::exists[\" ({stream.regexMatched})\"||\"\"]}",
+  "description": "{stream.title::exists[\"🎬 {stream.title::title} \"||\"\"]}{stream.year::exists[\"({stream.year}) \"||\"\"]}{stream.seasonEpisode::exists[\"🍂 {stream.seasonEpisode::join(' • ')}\"||\"\"]}\n{stream.quality::exists[\"🎥 {stream.quality} \"||\"\"]}{stream.encode::exists[\"🎞️ {stream.encode} \"||\"\"]}{stream.visualTags::length::>0[\"📺 {stream.visualTags::join(' • ')} \"||\"\"]}\n{stream.audioTags::length::>0[\"🎧 {stream.audioTags::join(' • ')} \"||\"\"]}{stream.audioChannels::length::>0[\"🔊 {stream.audioChannels::join(' • ')} \"||\"\"]}\n{stream.seeders::>0[\"👥 {stream.seeders} \"||\"\"]}{stream.indexer::exists[\"📡 {stream.indexer::truncate(20)} \"||\"\"]}🔍{addon.name}\n{stream.size::>0[\"📦 {stream.size::bytes2} \"||\"\"]}{stream.folderSize::>0[\"/ 📦 {stream.folderSize::bytes2} \"||\"\"]}{stream.bitrate::>0[\"• {stream.bitrate::bitrate}\"||\"\"]}\n{stream.duration::>0[\"⏱️ {stream.duration::time}\"||\"\"]}\n{stream.languageEmojis::exists[\"🌐 {stream.languageEmojis::join(' • ')}\"||\"\"]}\n{stream.filename::exists[\"📁 {stream.filename}\"||\"\"]}"
+ }
+}

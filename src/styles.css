@@ -352,12 +352,16 @@ button.from.own:hover { text-decoration: underline; }
 .addons li + li { border-top: 1px solid var(--line); }
 .addons div { display: grid; min-width: 0; }
 .addons small { color: var(--muted); font-size: 14px; }
-.formatter { display: grid; gap: 10px; }
-.stream-sample { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; gap: 16px; min-height: 64px; overflow-x: auto; }
-.stream-sample pre { margin: 0; font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; white-space: pre; }
-.stream-name { font-weight: 650 !important; flex-shrink: 0; }
-.formatter-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
-.formatter-edit label { margin-bottom: -8px; }
+.labels { display: grid; gap: 10px; }
+.label-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.label-choice { display: grid; gap: 8px; align-content: start; text-align: left; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); min-width: 0; }
+.label-choice.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.label-choice.wide { gap: 2px; }
+.label-example { display: grid; gap: 1px; padding: 9px 12px; border-radius: 9px; background: var(--surface); font-size: 13px; line-height: 1.45; color: var(--muted); min-width: 0; }
+.label-example b { color: var(--text); font-weight: 650; }
+.label-example > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.label-edit label { margin-bottom: -8px; }
+@media (max-width: 640px) { .label-choices { grid-template-columns: 1fr; } }
 
 /* activity */
 .activity-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 18px; overflow-x: auto; }
