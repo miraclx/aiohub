@@ -105,4 +105,7 @@ AIOHub stands on other people's work:
 
 ## Licence
 
-AGPL-3.0-only. See [LICENSE](LICENSE).
+The code is yours to use under either [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), whichever suits you.
+
+The pictures under `public/` are not covered by that. The posters and collection covers belong to their owners and are
+included only so the preview and the collection rows look as they do in the apps.

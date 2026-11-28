@@ -4,6 +4,8 @@ Newest first. Dates are the commit dates on `main`.
 
 ## 2026-11-28
 
+- The licence is now MIT or Apache 2.0, your choice. It was AGPL only because of the AIOStreams formatter code, which is
+  no longer here. Earlier versions stay under the licence they were published with.
 - Stream labels are ready-made now. Under Sources, "Stream label" offers Short (two lines: resolution, HDR, source and
   size, then languages and sound) and Detailed (a third line with the video format and the file name), each shown beside
   three example streams. A stream that is not ready to play at once starts with ⏳; nothing else carries a symbol. A
