@@ -847,6 +847,11 @@ function Background({hub}: {hub: Hub}) {
     // what their MDBList or their watching here adds to Trakt's own, and nothing for someone with neither.
     {name: 'Up Next and New for you', every: `For everyone who has either row on Home and watches something Trakt does not know of, every day from ${time(start)}; for one person after they finish something, from that hour`, last: `${ran(jobs.aheadAt ?? null)}${jobs.aheads ? ` · ${jobs.aheads} ${jobs.aheads === 1 ? 'person' : 'people'}` : ''}`,
       next: !hub.tmdb ? 'once the hub has a TMDB key' : typeof jobs.aheadDue === 'number' ? (jobs.aheadDue + 86_400) * 1000 > now ? `next run ${day((jobs.aheadDue + 86_400) * 1000)}` : 'under way' : 'once someone turns one on'},
+    // The US ratings a content limit goes by, for the rows the hub makes itself (worker/limit.ts): a row read under Kids or
+    // Teens notes the titles it has no rating for, and a run with nothing else to do looks a few of them up on TMDB with the
+    // hub's key, one person a run. Until then such a title is left out of their rows.
+    {name: 'Ratings for content limits', every: 'For everyone on Kids or Teens, when one of their rows has a title whose rating is not known yet: a few titles each run, one person at a time', last: ran(jobs.ratedAt ?? null),
+      next: !hub.tmdb ? 'once the hub has a TMDB key' : jobs.rating ? `${jobs.rating} ${jobs.rating === 1 ? 'title' : 'titles'} to look up · next run in ${Math.max(1, Math.ceil((next - now) / 60_000))} min` : 'when a new title turns up'},
   ];
   return <section>
     <div className="section-head"><div><h2>Background work</h2><p className="muted">The hub does these by itself for everyone, one person at a time. Buttons on a person’s own page act for that person only, right away.</p></div></div>
@@ -867,18 +872,30 @@ function ServerName({hub, update, toast}: {hub: Hub; update: PageProps['update']
     </form>
   </section>;
 }
+/* What each of the two servers does, said the same on the Servers card and in first-time setup. */
+const SERVER_DOES = {aiostreams: 'Finds the streams and is what the player apps talk to behind your hub’s address.', aiometadata: 'Builds the Home rows, collections and search.'};
+/* An address as its host name, to name a server by ('' when it is not an address). */
+const hostOf = (address: string | undefined) => {try {return new URL(address ?? '').hostname;} catch {return '';}};
+/* What moving to another server does, as the Worker does it (worker/native.ts: the old setup is removed first, and only once the
+   old server confirms; the new one is made after; an app that asks in between is turned away with a 401, worker/front.ts, and
+   carries on with the same sign-in once the new setup is there). Watched marks are kept by the server each person's apps sign in to: their
+   own AIOMetadata setup where the site runs that way (hub.front), else AIOStreams. With MDBList sync on, the new setup reads
+   what was watched from their MDBList. Nothing puts Trakt's back on a new server (worker/sync.ts only brings what is new). */
+const movingHint = (front: boolean) => `Moving removes the old setups, then makes new ones on the new server. Apps stay signed in, and everything set here carries over, Trakt and MDBList connections too. Watched marks are kept on the ${front ? 'AIOMetadata' : 'AIOStreams'} server and do not move.${front ? ' With MDBList sync on, they come back by themselves. With Trakt alone, your history stays on Trakt but the marks in the apps start again.' : ''}`;
 function Servers({hub, live, toast}: {hub: Hub; live: Live; toast: (text: string) => void}) {
   const [up, setUp] = useState(hub.hostUrl), [meta, setMeta] = useState(hub.metaUrl ?? ''), [busy, setBusy] = useState(false);
   const changed = up.trim() !== hub.hostUrl || meta.trim() !== (hub.metaUrl ?? '');
+  // The site's own two servers, by host name, as it is set up (never a name written here).
+  const usual = [...new Set([hostOf(hub.usual?.aiostreams), hostOf(hub.usual?.aiometadata)].filter(Boolean))];
   return <section>
-    <div className="section-head"><div><h2>Servers</h2><p className="muted">Where your hub’s setups live. Leave a field empty to use this site’s usual server (ForTheWeak).</p></div></div>
+    <div className="section-head"><div><h2>Servers</h2><p className="muted">Where your hub’s setups live. Leave a field empty to use this site’s usual {usual.length > 1 ? 'servers' : 'server'}{usual.length ? ` (${usual.join(' and ')})` : ''}.</p></div></div>
     <form className="card settings" onSubmit={event => {
       event.preventDefault(); setBusy(true);
       void live.call<{missing: string[]}>('PUT', '/api/host', {aiostreams: up, aiometadata: meta}).then(answer => {toast(answer.missing.length ? 'Saved. Some sources are not offered there and are off.' : 'Saved'); live.apps(); return live.reload();}, (error: Error) => toast(error.message)).finally(() => setBusy(false));
     }}>
-      <Setting column title="AIOStreams" hint="Finds the streams and is what the player apps talk to behind your hub’s address."><input aria-label="AIOStreams address" placeholder="https://aiostreams.fortheweak.cloud" value={up} onChange={event => setUp(event.target.value)} autoComplete="off" inputMode="url"/></Setting>
-      <Setting column title="AIOMetadata" hint="Builds the Home rows, collections and search."><input aria-label="AIOMetadata address" placeholder="https://aiometadata.fortheweak.cloud" value={meta} onChange={event => setMeta(event.target.value)} autoComplete="off" inputMode="url"/></Setting>
-      <Setting column title="Moving" hint="Changing a server makes fresh setups on the new one and removes the old ones. Apps stay signed in and everything set here carries over. What has been watched so far stays behind on the old AIOStreams server.">
+      <Setting column title="AIOStreams" hint={SERVER_DOES.aiostreams}><input aria-label="AIOStreams address" placeholder={hub.usual?.aiostreams ?? ''} value={up} onChange={event => setUp(event.target.value)} autoComplete="off" inputMode="url"/></Setting>
+      <Setting column title="AIOMetadata" hint={SERVER_DOES.aiometadata}><input aria-label="AIOMetadata address" placeholder={hub.usual?.aiometadata ?? ''} value={meta} onChange={event => setMeta(event.target.value)} autoComplete="off" inputMode="url"/></Setting>
+      <Setting column title="Moving" hint={movingHint(!!hub.front)}>
         <button className="primary" disabled={busy || !changed}>{busy ? 'Checking…' : 'Check and save'}</button></Setting>
     </form>
   </section>;
@@ -950,8 +967,15 @@ export function SetupPage({hub, go, update, toast, live, signedIn, needCode, lin
   const [step, setStep] = useState(signedIn ? 1 : 0), [pass, setPass] = useState(''), [service, setService] = useState(hub.services[0] ?? 'TorBox'), [key, setKey] = useState(''), [quality, setQuality] = useState<Settings['quality']>('balanced'), [first, setFirst] = useState(''), [groupName, setGroupName] = useState('Family');
   const back = <button type="button" className="ghost" onClick={() => setStep(step - 1)}>Back</button>;
   const work = (job: Promise<unknown>, then: () => void) => {setBusy(true); void job.then(then, fail(toast)).finally(() => setBusy(false));};
+  // The two servers: each field starts as the hub's own choice, else the site's usual one (known once the hub exists). Left as
+  // the usual one, nothing is kept for the hub, so it follows the site's choice; anything else is checked as it is under Hub,
+  // General (PUT /api/host) before going on. Nothing has made a setup on any server yet: that starts with the first person.
+  const [upTyped, setUpTyped] = useState<string | null>(null), [metaTyped, setMetaTyped] = useState<string | null>(null);
+  const usual = hub.usual ?? {aiostreams: '', aiometadata: ''}, up = upTyped ?? (hub.hostUrl || usual.aiostreams), meta = metaTyped ?? (hub.metaUrl || usual.aiometadata);
+  const own = (typed: string, usually: string) => {const clean = typed.trim().replace(/\/+$/, ''); return clean === usually.replace(/\/+$/, '') ? '' : clean;};
+  const ownUp = own(up, usual.aiostreams), ownMeta = own(meta, usual.aiometadata);
   // The keys get a step each: what plays the streams, then what fills Home.
-  const names = ['You', 'Streams', 'Home', 'Quality', 'First person'], at = names[step];
+  const names = ['You', 'Servers', 'Streams', 'Home', 'Quality', 'First person'], at = names[step];
   return <div className="setup">
     <ol className="steps" aria-label="Progress">{names.map((label, index) => <li key={label} className={index === step ? 'on' : index < step ? 'done' : ''}>{label}</li>)}</ol>
     {at === 'You' && <form className="stack" onSubmit={event => {event.preventDefault(); work(live.call('POST', '/api/signup', {password: pass, code, hub: mine, proof}).then(() => {hubCode.set(mine); return live.reload();}), () => setStep(1));}}>
@@ -965,14 +989,27 @@ export function SetupPage({hub, go, update, toast, live, signedIn, needCode, lin
       <button className="primary big" disabled={busy || pass.length < 8 || (needCode && !code.trim())}>Continue</button>
       <a className="link center-text" href="#/">I already have an account</a>
     </form>}
-    {at === 'Streams' && <form className="stack" onSubmit={event => {event.preventDefault(); setStep(step + 1);}}>
+    {at === 'Servers' && <form className="stack" onSubmit={event => {
+      event.preventDefault();
+      if (ownUp === hub.hostUrl && ownMeta === (hub.metaUrl ?? '')) return setStep(step + 1);
+      work(live.call('PUT', '/api/host', {aiostreams: ownUp, aiometadata: ownMeta}).then(() => live.reload()), () => {setUpTyped(null); setMetaTyped(null); setStep(step + 1);});
+    }}>
       <div className="notice"><span>Your hub code is <strong>{hub.code}</strong>. You need it with your password to sign in, so save it now. It’s also on your account page.</span></div>
+      <h1>Which servers should your hub use?</h1><p className="muted">Your hub keeps its setups on two servers. The two filled in below are the ones this site recommends. You can change them later under Hub, General.</p>
+      <label htmlFor="setup-aiostreams">AIOStreams address{usual.aiostreams && !ownUp ? <span className="muted"> (recommended)</span> : null}</label><input id="setup-aiostreams" value={up} onChange={event => setUpTyped(event.target.value)} placeholder={usual.aiostreams} autoComplete="off" inputMode="url"/>
+      <p className="muted small">{SERVER_DOES.aiostreams}{ownUp && hostOf(usual.aiostreams) ? ` The recommended one is ${hostOf(usual.aiostreams)}.` : ''}</p>
+      <label htmlFor="setup-aiometadata">AIOMetadata address{usual.aiometadata && !ownMeta ? <span className="muted"> (recommended)</span> : null}</label><input id="setup-aiometadata" value={meta} onChange={event => setMetaTyped(event.target.value)} placeholder={usual.aiometadata} autoComplete="off" inputMode="url"/>
+      <p className="muted small">{SERVER_DOES.aiometadata}{ownMeta && hostOf(usual.aiometadata) ? ` The recommended one is ${hostOf(usual.aiometadata)}.` : ''}</p>
+      <p className="muted small">These are public servers run by volunteers. You can use your own or another public one. <a className="link" href="https://aiostreams.org/getting-started/public-instances" target="_blank" rel="noreferrer">Other public AIOStreams servers</a> · <a className="link" href="https://uptime.ibbylabs.dev" target="_blank" rel="noreferrer">Are they up?</a></p>
+      <div className="split"><button className="primary big" disabled={busy}>{busy ? 'Checking…' : ownUp === hub.hostUrl && ownMeta === (hub.metaUrl ?? '') ? 'Use these' : 'Check and continue'}</button></div>
+    </form>}
+    {at === 'Streams' && <form className="stack" onSubmit={event => {event.preventDefault(); setStep(step + 1);}}>
       <h1>Which account do your streams come from?</h1><p className="muted">One account powers everyone. People you add never see the key. More can be connected later.</p>
       <div className="choices">{allServices.slice(0, 4).map(item => <button key={item} type="button" aria-pressed={service === item} className={service === item ? 'on' : ''} onClick={() => setService(item)}>{item}</button>)}</div>
       <p className="muted small">Stored encrypted and passed only to your hub’s own setup on AIOStreams.</p>
       <label htmlFor="setup-key">{service} API key</label><input id="setup-key" type="password" value={key} onChange={event => setKey(event.target.value)} autoComplete="off" placeholder="Paste it here"/>
       <p className="muted small">No {service} account yet? <a className="link" href={signUp[service]} target="_blank" rel="noreferrer">Get one here</a>{service === 'TorBox' || service === 'Real-Debrid' ? ' (a referral link: it supports whoever runs this site).' : '.'}</p>
-      <div className="split"><button className="primary big" disabled={busy || !key.trim()}>Continue</button></div>
+      <div className="split">{back}<button className="primary big" disabled={busy || !key.trim()}>Continue</button></div>
     </form>}
     {at === 'Home' && <form className="stack" onSubmit={event => {event.preventDefault(); work(live.call('PUT', '/api/keys/tmdb', {key: tmdb}).then(() => lists.trim() ? live.call('PUT', '/api/keys/mdblist', {key: lists}) : undefined), () => setStep(step + 1));}}>
       <h1>What fills Home?</h1><p className="muted">The rows people see when they open the player are built from two free catalogs. Both keys stay with your hub.</p>

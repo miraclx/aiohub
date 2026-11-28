@@ -24,6 +24,7 @@
      Trakt at all: it has no way to (it imports no send).
    - Hearts they already had that Trakt lacks are only counted here, now and then (`found`), for their page to offer once: adding
      them is theirs to ask for (api.ts), never done by itself. One they said "Not now" to is kept as 'pass' and not offered again.
+   - Under a content limit the hub hearts only titles the limit lets through (limit.ts), and takes no heart away for it.
    Turning the switch off, or disconnecting Trakt, only stops this: hearts stay where they are, and nothing leaves Trakt. */
 import type {Env} from './util';
 import {getSecret, now} from './util';
@@ -32,6 +33,8 @@ import {packed, server, unpacked} from './here';
 import type {Ids, Via} from './here';
 import {traktWatchlist} from './rows';
 import {setupOf} from './places';
+import {limitOf} from './foryou';
+import {fitting} from './limit';
 
 // EVERY: how often each person is looked at at most. HEARTS: the hearts made or taken away in a run (each is a write and a read
 // back). LOOK: the titles a run asks their server about (one read). CHEAP: a look that read no more of Trakt than this and did not
@@ -106,10 +109,15 @@ export async function hearts(env: Env): Promise<boolean> {
   // Left the watchlist: only hearts the hub saw there, and only when the whole list is known.
   const leave = list.whole ? rows.filter(row => !!row.seen && (row.state === 'hub' || row.state === 'own') && !listed.has(row.key)) : [];
   // To heart, newest first as Trakt gave them: a title the ledger lacks, or one Trakt lists later than the ledger has it.
-  const add = list.items.flatMap(item => {
+  const new_ = list.items.flatMap(item => {
     const known = keysOf(item).flatMap(key => ledger.get(key) ?? []).sort((a, b) => b.listed - a.listed)[0];
     return !known || (item.at ?? 0) > known.listed ? [{item, known}] : [];
   });
+  // Under a content limit the hub hearts only what the limit lets through, as for any list it hands to their apps (limit.ts):
+  // Favorites is a list too. Only the hearts the hub would make: nothing is noted for a title left out (so it is hearted once
+  // its rating is known to fit, or the limit goes), and no heart is ever taken away for a limit (`leave` knows nothing of it).
+  const limit = new_.length ? await limitOf(env, hub, person) ?? 'all' : 'all', fits = new Set(await fitting(env, hub, person, limit, new_.map(entry => entry.item)));
+  const add = new_.filter(entry => fits.has(entry.item));
   // Their hearts counted for the offer: now and then, and only against a whole list (what is not on it is otherwise not known).
   const count = list.whole && at - who.found_at >= COUNT_EVERY;
   if (!leave.length && !add.length && !count) {await env.DB.batch([...notes, looked(false, list.items.length > 0)]); return false;}

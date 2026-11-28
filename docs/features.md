@@ -62,7 +62,7 @@ signed out.
   person, and each level can change anything for itself.
 - **Content limits.** Set a person or a group to Kids or Teens. Their rows then show only titles with a rating that
   fits, and Kids get rows and folders made for children. The manager decides whether a person may change their own
-  limit. See the note in [Cost and limits](limits.md#what-it-does-not-do).
+  limit.
 - **Activity.** Who is watching what right now, and what was watched before: how far in, which parts were played, on
   which device and from roughly where. Titles saved to a device show as downloaded.
 - **Debrid accounts.** The hub can hold several, and each group or person uses the one you pick for them.

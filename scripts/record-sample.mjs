@@ -332,6 +332,8 @@ function scrubbed(answers) {
       let n = 0; const door = found => {if (!found) return; const id = `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`; found.open = found.open.replace(found.id, id).replace(/\/stremio\/[^/]+\/[^/]+\/configure$/, `/stremio/${id}/configure`); found.id = id; found.password = password(`setup ${n}`);};
       door(answer.aiostreams); for (const found of [answer.aiometadata, ...(answer.own ?? [])]) {door(found); if (found) found.open = found.open.replace(UP, 'https://aiometadata.example');}
     }
+    // The site's usual AIOMetadata server (the local run has one stand-in for both servers).
+    if (answer?.hub?.usual?.aiometadata === UP) answer.hub.usual.aiometadata = 'https://aiometadata.example';
     void as;
   }
   const text = JSON.stringify(answers).replaceAll(`${UP}/api/auth/trakt`, 'https://aiometadata.example/api/auth/trakt').replaceAll(`${UP}/jellyfin`, 'https://aiometadata.example/jellyfin').replaceAll(UP, 'https://aiostreams.example').replaceAll(BASE, '{site}').replaceAll(BASE.replace('127.0.0.1', 'localhost'), '{site}')

@@ -53,6 +53,8 @@ export const KEEPS_ROWS = ['Nuvio'];
 export interface Hub {
   /* A page the manager set for people to open (Hub, General; worker/notice.ts), sent to everyone signed in to the hub. */
   setupPage?: string;
+  /* The two servers this site uses unless the hub names its own (the site's settings; manager only). '' where it has none. */
+  usual?: {aiostreams: string; aiometadata: string};
   // The five-minute background work (manager only): last run (unix seconds), runs counted, calls waiting for Trakt, the last day the
   // Trakt/MDBList check finished, for how many people, and how many are part way through.
   jobs?: {shelved?: number | null; shelves?: number; shelfDue?: number | null;
@@ -64,7 +66,9 @@ export interface Hub {
     /* Recommended rows worked out by the hub (worker/recs.ts): the last time for anyone here, for how many people, and the oldest still kept. */
     recsAt?: number | null; recs?: number; recsDue?: number | null;
     /* Up Next and New for you looked up by the hub for people without Trakt (worker/ahead.ts): the same three. */
-    aheadAt?: number | null; aheads?: number; aheadDue?: number | null; last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number;
+    aheadAt?: number | null; aheads?: number; aheadDue?: number | null;
+    /* Ratings looked up for content limits (worker/limit.ts): the last look for anyone here, and how many titles wait for one. */
+    ratedAt?: number | null; rating?: number; last: number | null; runs: number | null; since: number | null; ran: number | null; waiting: number; checked: string | null; people: number; checking: number;
     /* For you (each person's apps on their own AIOMetadata only): people picked for today of everyone, the last pick, whether the
        hub's apps are waiting to be brought in step, and the UTC hour picking starts. */
     picked?: number; pickedAt?: number | null; everyone?: number; syncing?: number; syncingSince?: number | null; forYouHour?: number;

@@ -34,6 +34,7 @@ import {TMDB_OWNER, show, tmdb} from './foryou';
 import type {Ask} from './foryou';
 import {AHEAD, dayHour, recommend, scan} from './recs';
 import type {Scan} from './recs';
+import {found} from './limit';
 
 const CALLS = 16, CALLS_BESIDE = 10, DAY = 86400, SHOWS = 40, LISTED = 60, RECENT = 99 * DAY, NEW_MOST = 50, SOON = 600, RETRY = 6 * 3600, IDS = 400, SETTLED = 365 * DAY, FORGET = 30 * DAY, HUB = '#hub';
 /* A show as TMDB last had it: its newest episode out and the next to come, each as one number (rows.ts, nth; -1 for none) with
@@ -88,11 +89,6 @@ export async function nightly(env: Env, when: number): Promise<boolean> {
   const all = await scan(env);
   return await recommend(env, when, all) || ahead(env, all);
 }
-/* The film or show TMDB has under an IMDb id. */
-const found = (ask: Ask, imdb: string) => tmdb(ask, `find/${imdb}?external_source=imdb_id`, body => {
-  const b = body as {movie_results?: {id?: number}[]; tv_results?: {id?: number}[]};
-  return {m: Number(b.movie_results?.[0]?.id) || 0, s: Number(b.tv_results?.[0]?.id) || 0};
-});
 /* A film's first day out, and the day it came out to watch at home: its earliest digital, disc or TV release (TMDB's release
    types 4, 5 and 6) in the US, else anywhere. '' when TMDB lists none. Asked for with the film's details, so what is kept is
    never mistaken for the ratings recs.ts keeps from the release dates alone. */

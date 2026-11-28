@@ -63,9 +63,9 @@ For anyone you do not know well, send them the Deploy button instead.
 
 - **Not a player, not a media server.** AIOHub ships no app and stores no video. It needs AIOStreams, AIOMetadata and
   a debrid account behind it.
-- **Content limits rely on ratings.** They use US ratings from TMDB. Under Kids, a title with no rating is left out.
-- **Content limits do not filter a person's own rows yet.** Up Next, New for you and the Watchlist come from what that
-  person watches and saves, and are shown as they are.
+- **Content limits rely on ratings.** They use US ratings from TMDB. A title with no rating is left out under Kids, and under
+  Teens too in the rows the hub makes itself. A newly limited person's own rows can look short for up to an hour while
+  ratings are looked up.
 - **Passkeys are for the manager only.** People sign in with their name and password.
 - **Real-Debrid allows one IP at a time.** People watching from different places can trip that. A proxy set in
   AIOStreams avoids it.

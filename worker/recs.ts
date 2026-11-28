@@ -6,24 +6,26 @@
    Under a content limit a title is listed only once TMDB says it carries a US rating the limit lets through (CERTS in data.ts);
    one with no rating, or one not looked up yet, is left out, and so is anything TMDB marks adult, whatever the limit. That goes
    for Trakt's own recommendations too: under a limit they are listed only as far as they pass, ahead of what was worked out.
-   This is the hub's own check. AIOMetadata has the person's limit as well, but nothing here shows that it applies it to a row
-   the hub serves.
+   This is the hub's own check, made where every row the hub serves is checked (limit.ts, fitting), with the ratings kept here
+   and there. AIOMetadata has the person's limit as well, but nothing here shows that it applies it to a row the hub serves.
    All of it takes more calls than a row may make when it is asked for, so a cron step (the last of a run, index.ts) works it out
    ahead, one person a run and once a day each, from HOUR (UTC) like the day's other work, and keeps it by hub and person (rows_cache, RECS): the two lists, the limit they
    were made under, and each rating looked up, so a rating is asked for once. TMDB is asked with that hub's own key only, and its
    answers are kept a day per hub with For you's (they are not personal). A run makes at most CALLS calls; under a limit what is
    left to look up is done on the next runs. */
-import {CERTS, rowsOf} from '../src/data';
+import {rowsOf} from '../src/data';
 import type {Limit, Row, Settings} from '../src/data';
 import type {Env} from './util';
 import {getSecret, now} from './util';
 import {listedOf, watchedOf} from './rows';
 import type {Item} from './rows';
-import {TMDB_OWNER, limitOf, recommended, seenSet, tagOf, tmdb, unseen} from './foryou';
+import {TMDB_OWNER, recommended, seenSet, tagOf, unseen} from './foryou';
+import {RECS, certOf} from './limit';
 import {LINK} from './trakt';
 import type {Ask} from './foryou';
 
-export const RECS = 'recs', AHEAD = 'ahead';
+export {RECS};
+export const AHEAD = 'ahead';
 // Tried again this long after a run with nothing watched to go on (or no TMDB key yet), and after one with ratings still to look up.
 // A run reads their watching and watchlist first (a page of each), so it asks TMDB less than a For you run does.
 const CALLS = 16, DAY = 86400, HOUR = 4, SEEDS = 10, MOST = 60, CERTS_KEPT = 800, RETRY = 6 * 3600, SOON = 600, HUB = '#hub';
@@ -32,30 +34,19 @@ interface Built {limit: Limit; movie: Item[]; series: Item[]; certs: Record<stri
 const read = (text: string | null | undefined): Built => {
   try {const kept = JSON.parse(text ?? '') as Partial<Built>; return {limit: kept.limit ?? 'all', movie: kept.movie ?? [], series: kept.series ?? [], certs: kept.certs ?? {}};} catch {return {limit: 'all', movie: [], series: [], certs: {}};}
 };
-/* Whether a title's US rating passes a limit: every rating it carries is one the limit lets through. None known: no. */
-const passes = (type: 'movie' | 'series', cert: string | undefined, limit: Limit) => {
-  const let_ = CERTS[limit]?.[type].split('|') ?? [], had = (cert ?? '').split('|').filter(Boolean);
-  return had.length > 0 && had.every(rating => let_.includes(rating));
-};
-
 /* ---------- serving the two rows (rows.ts) ---------- */
-/* `theirs`: Trakt's own recommendations of this type, when it is connected and has given any. */
-export async function recommendedOf(env: Env, hub: string, person: string, type: 'movie' | 'series', theirs: Item[]): Promise<Item[]> {
-  const limit = await limitOf(env, hub, person);
-  if (!limit) return [];
+/* `theirs`: Trakt's own recommendations of this type, when it is connected and has given any. With no limit they are the row.
+   Under a limit: Trakt's own first, then what was worked out, each title once. Which of them the limit lets through is decided
+   where it is for every row (limit.ts, fitting, as the row is handed over), from the ratings the step below looked up. */
+export async function recommendedOf(env: Env, hub: string, person: string, type: 'movie' | 'series', theirs: Item[], limit: Limit): Promise<Item[]> {
   if (limit === 'all' && theirs.length) return theirs;
   const kept = read((await env.DB.prepare('SELECT items FROM rows_cache WHERE hub = ? AND person = ? AND kind = ?').bind(hub, person, RECS).first<{items: string}>())?.items);
   if (limit === 'all') return kept[type];
-  const fits = (item: Item) => !!item.tmdb && passes(type, kept.certs[tagOf({type, tmdb: item.tmdb})], limit), seen = new Set<string>();
-  return [...theirs.filter(fits), ...kept[type].filter(fits)].filter(item => !seen.has(`${item.tmdb}`) && !!seen.add(`${item.tmdb}`));
+  const seen = new Set<string>();
+  return [...theirs, ...kept[type]].filter(item => !!item.tmdb && !seen.has(`${item.tmdb}`) && !!seen.add(`${item.tmdb}`));
 }
 
 /* ---------- the cron step ---------- */
-/* A title's US ratings on TMDB, as "PG" or "PG|PG-13" (a film can carry one for each cut), '' when it has none. null when TMDB
-   did not answer. */
-const certOf = (ask: Ask, type: 'movie' | 'series', id: number) => type === 'movie'
-  ? tmdb(ask, `movie/${id}/release_dates`, body => [...new Set(((body as {results?: {iso_3166_1?: string; release_dates?: {certification?: string}[]}[]}).results ?? []).filter(item => item.iso_3166_1 === 'US').flatMap(item => item.release_dates ?? []).map(item => String(item.certification ?? '').trim()).filter(Boolean))].join('|'))
-  : tmdb(ask, `tv/${id}/content_ratings`, body => String(((body as {results?: {iso_3166_1?: string; rating?: string}[]}).results ?? []).find(item => item.iso_3166_1 === 'US')?.rating ?? '').trim());
 /* Everyone, with their hub's and group's Home and settings, and what the day's two steps kept for each (this one, and ahead.ts):
    read once a run for both. `kept` goes by hub, person and kind; `linked`, whose Trakt is connected to the hub, by hub and person. */
 export interface Scan {

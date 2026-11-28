@@ -1230,6 +1230,12 @@ test('Recently Watched is what each person watched, from whichever of Trakt, MDB
   sql(`INSERT INTO plays (hub, person, item, title, detail, updated, position, duration) VALUES ('${hubId}', 'ben', '${pack('movie', 'tt0114709')}', 'Toy Story', 'Movie', 100, 6000, 6000), ('${hubId}', 'ben', '${pack('episode', 'tt0944947', 1, 2)}', 'Meta Show', 'Season 1 · Episode 2', 300, 3000, 3000),
     ('${hubId}', 'ben', '${pack('episode', 'tt0944947', 1, 1)}', 'Meta Show', 'Season 1 · Episode 1', 200, 3000, 3000), ('${hubId}', 'ben', 'not-a-title-id', 'Unknown', 'Movie', 400, 6000, 6000), ('${hubId}', 'ben', '${pack('movie', 'tt0114710')}', 'Only Begun', 'Movie', 500, 600, 6000)`);
   const bens = [{id: 'tt0944947', type: 'series', name: 'Meta Show'}, {id: 'tt0114709', type: 'movie', name: 'Toy Story'}];
+  // Ben is on Kids, and a row the hub makes lists only what is known to be rated for it (worker/limit.ts): nothing yet, and
+  // both titles wait to be looked up. Reading the row asked TMDB nothing.
+  const tmdbAsked = fake.tmdb.length; assert.deepEqual((await get(benWatched)).body.metas, []); assert.equal(fake.tmdb.length, tmdbAsked);
+  assert.deepEqual(JSON.parse(sql("SELECT items FROM rows_cache WHERE person = 'ben' AND kind = 'certs'")[0].items).want, [{id: 'tt0944947', type: 'series'}, {id: 'tt0114709', type: 'movie'}]);
+  // Looked up since (as the cron step keeps it: which title each IMDb id is on TMDB, and its US rating), both are for children.
+  sql(`UPDATE rows_cache SET items = '${JSON.stringify({certs: {m862: 'G', s1399: 'TV-PG'}, ids: {'movie:tt0114709': 862, 'series:tt0944947': 1399}, miss: {}, want: []})}' WHERE person = 'ben' AND kind = 'certs'`);
   assert.deepEqual((await get(benWatched)).body.metas, bens);
   // His address has nothing else of anyone's: no MDBList watchlist, no Trakt rows. Hers never has his plays, and his never her lists.
   const benAt = benWatched.split('/catalog/')[0];
@@ -2650,6 +2656,23 @@ test('every heart on her server gone at once (a setup made again): nothing is re
   // Put back as they were, for what follows.
   for (const title of Object.values(FAV)) fake.favs.get(uuid).add(title.id);
 });
+test('under a content limit the hub hearts only what the limit lets through, once its rating is known, and takes no heart away for it', async () => {
+  // Two titles of her Trakt watchlist the hub has yet to heart (as if new to it): one rated for children, one for adults.
+  TMDB[`movie/${FAV.three.tmdb}/release_dates`] = {results: [{iso_3166_1: 'US', release_dates: [{certification: 'PG'}]}]}; TMDB[`movie/${FAV.four.tmdb}/release_dates`] = {results: [{iso_3166_1: 'US', release_dates: [{certification: 'R'}]}]};
+  const from = fake.hearts.length, wanted = () => JSON.parse(sql("SELECT items FROM rows_cache WHERE person = 'ada' AND kind = 'certs'")[0]?.items ?? '{"want":[]}').want.length;
+  for (const title of [FAV.three, FAV.four]) fake.favs.get(uuid).delete(title.id);
+  sql(`DELETE FROM hearts WHERE person = 'ada' AND key IN ('movie:${FAV.three.imdb}', 'movie:${FAV.four.imdb}'); DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'certs'`);
+  await setPerson('ada', me => ({settings: {...me.settings, limit: 'kids'}}));
+  // Neither is rated yet: nothing is hearted, and none of the hearts she has is taken away.
+  await heartsTurn(); assert.deepEqual(heartWrites(from), []); assert.equal(wanted(), 2);
+  for (let n = 0; n < 20 && wanted(); n++) await cron(); assert.equal(wanted(), 0);
+  // Rated: the one for children is hearted. The other is not, however often her turn comes, and nothing is noted for it.
+  await heartsTurn(); await heartsTurn(); assert.deepEqual(heartWrites(from), ['+three']); assert.ok(!hearted().includes(FAV.four.id)); assert.equal(ledgerOf()[`movie:${FAV.four.imdb}`], undefined);
+  // The limit taken off: it is hearted at her next turn. Nothing was removed from Trakt at any point.
+  await setPerson('ada', me => {const {limit: _, ...settings} = me.settings; return {settings};});
+  await heartsTurn(); assert.deepEqual(heartWrites(from), ['+three', '+four']); assert.equal(removes(), 0); assert.deepEqual(hearted(), Object.values(FAV).map(title => title.id).sort());
+  sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind = 'certs'");
+});
 test('a Trakt removal is only ever sent from the hook that hears an app’s own DELETE: no other file can', async () => {
   const {readFileSync, readdirSync} = await import('node:fs'), dir = new URL('../worker/', import.meta.url);
   const naming = readdirSync(dir).filter(name => readFileSync(new URL(name, dir), 'utf8').includes('watchlist/remove'));
@@ -3325,6 +3348,71 @@ test('Up Next and New for you take in what Trakt does not know of: without Trakt
   });
   await syncOn(); trakt.history = history; lists.recent = was; sql("DELETE FROM rows_cache WHERE person = 'ada' AND (kind LIKE 'history%' OR kind IN ('next', 'new'))");
   await setPerson('ada', () => ({rows: mine.rows, picks: mine.picks})); assert.deepEqual(await syncAll(), {state: 'ok'});
+});
+test('a content limit on every row the hub makes: Kids and Teens leave out what is rated above them and what has no rating, in the Watchlist, Recently Watched, Up Next, New for you and one of her Trakt lists; no limit changes nothing; a changed limit counts at the next read; ratings are looked up a few a run, never as a row is read', async () => {
+  const address = playerOf('Ada')[1].config.catalogs.find(item => item.id === 'custom.aiohub_rows.all.history').sourceUrl.split('/catalog/')[0], ids = async path => (await (await fetch(`${address}/catalog/${path}.json`)).json()).metas.map(item => item.id);
+  const forget = () => sql("DELETE FROM rows_cache WHERE person = 'ada' AND (kind LIKE 'watchlist%' OR kind LIKE 'history%' OR kind LIKE 'list_%' OR kind IN ('next', 'new', 'certs'))"), wanted = () => JSON.parse(sql("SELECT items FROM rows_cache WHERE person = 'ada' AND kind = 'certs'")[0]?.items ?? '{"want":[]}').want.length;
+  // Four films and four shows: one rated for children, one for teens, one for adults, and one with no US rating at all.
+  const film = (name, n) => ({title: name, ids: {imdb: `tt93000${n}`, tmdb: 9300 + n}}), show = (name, n) => ({title: name, ids: {imdb: `tt93100${n}`, tmdb: 9310 + n}});
+  const FILMS = [film('For all', 1), film('Adult', 2), film('Unrated', 3), film('Teen', 4)], SHOWS = [show('For all', 1), show('Adult', 2), show('Unrated', 3), show('Teen', 4)];
+  const us = rating => ({results: [{iso_3166_1: 'US', release_dates: [{certification: rating}]}]}), tv = rating => ({results: [{iso_3166_1: 'US', rating}]});
+  Object.assign(TMDB, {'movie/9301/release_dates': us('G'), 'movie/9302/release_dates': us('R'), 'movie/9303/release_dates': {results: [{iso_3166_1: 'GB', release_dates: [{certification: 'U'}]}]}, 'movie/9304/release_dates': us('PG-13'),
+    'tv/9311/content_ratings': tv('TV-PG'), 'tv/9312/content_ratings': tv('TV-MA'), 'tv/9313/content_ratings': {results: []}, 'tv/9314/content_ratings': tv('TV-14'),
+    // A film her list knows only by its IMDb id: TMDB is asked which film that is, then for its rating.
+    'find/tt9300009': {movie_results: [{id: 9309}], tv_results: []}, 'movie/9309/release_dates': us('PG')});
+  const f = FILMS.map(item => item.ids.imdb), t = SHOWS.map(item => item.ids.imdb), before = {watchlist: trakt.watchlist, history: trakt.history, upNext: trakt.upNext, calendar: trakt.calendar, list: READS['/users/me/lists/501/items']};
+  // Thirty more films on her watchlist, none of them rated: more than one run looks up.
+  const MORE = Array.from({length: 30}, (_, n) => ({title: `More ${n}`, ids: {imdb: `tt94000${10 + n}`, tmdb: 9400 + n}})); for (const item of MORE) TMDB[`movie/${item.ids.tmdb}/release_dates`] = {results: []};
+  const settle = async () => {for (let n = 0; n < 40 && wanted(); n++) await cron(); assert.equal(wanted(), 0, 'every wanted rating was looked up');};
+  await traktAlone(async () => {
+    trakt.watchlist = [...FILMS, ...MORE].map((movie, n) => ({type: 'movie', movie, listed_at: ago(1 + n)})); trakt.history = FILMS.map((movie, n) => ({watched_at: ago(1 + n), type: 'movie', movie}));
+    trakt.upNext = SHOWS.map(item => ({show: item})); trakt.calendar = {shows: SHOWS.map((item, n) => ({first_aired: ago(2 + n), episode: {season: 1, number: 3}, show: item})), dvd: []};
+    READS['/users/me/lists/501/items'] = [...FILMS.map(movie => ({type: 'movie', movie})), {type: 'movie', movie: {title: 'Only an IMDb id', ids: {imdb: 'tt9300009'}}}];
+    forget(); waited();
+    // The rows, and what each holds with no limit: everything, as before. Nothing is looked up or noted for her.
+    const ROWS = {'all/watchlist': [...f, ...MORE.map(item => item.ids.imdb)].slice(0, 20), 'all/history': f, 'series/up_next': t, 'all/upnext_new': t, 'all/list_mine_501': [...f, 'tt9300009']};
+    const all = async () => Object.fromEntries(await Promise.all(Object.keys(ROWS).map(async path => [path, await ids(path)])));
+    let asked = fake.tmdb.length; assert.deepEqual(await all(), ROWS); assert.equal(wanted(), 0); assert.equal(fake.tmdb.length, asked);
+    // Kids, set by her manager: at the very next read nothing is listed that is not known to be rated for children, so nothing
+    // yet. Reading asks TMDB nothing: the titles are noted, rows read together each adding its own.
+    await setPerson('ada', me => ({settings: {...me.settings, limit: 'kids'}}));
+    assert.deepEqual(await all(), Object.fromEntries(Object.keys(ROWS).map(path => [path, []]))); assert.equal(fake.tmdb.length, asked); assert.equal(wanted(), 4 + 30 + 4 + 1);
+    // A run with nothing else to do looks some up: twenty calls at most, the rest on the next runs.
+    for (let n = 0; n < 10 && fake.tmdb.length === asked; n++) await cron();
+    const first = fake.tmdb.length - asked; assert.ok(first > 0 && first <= 20, `one run asked TMDB ${first} times`);
+    await settle(); assert.ok(fake.tmdb.includes('movie/9301/release_dates') && fake.tmdb.includes('tv/9312/content_ratings') && fake.tmdb.includes('find/tt9300009') && fake.tmdb.includes('movie/9309/release_dates'), fake.tmdb.slice(asked).join(' '));
+    // Kids: G and PG films, TV-PG and below. Rated R or TV-MA, PG-13 or TV-14, or with no US rating: left out of every row.
+    const KIDS = {'all/watchlist': [f[0]], 'all/history': [f[0]], 'series/up_next': [t[0]], 'all/upnext_new': [t[0]], 'all/list_mine_501': [f[0], 'tt9300009']};
+    asked = fake.tmdb.length; assert.deepEqual(await all(), KIDS); assert.equal(fake.tmdb.length, asked); assert.equal(wanted(), 0);
+    // The Background work row says when ratings were last looked up, and that none wait.
+    const jobs = (await owner('GET', '/api/state')).body.hub.jobs; assert.ok(jobs.ratedAt > 0); assert.equal(jobs.rating, 0);
+    // Teens, a moment later: PG-13 and TV-14 are back at once, with no run in between and nothing asked of TMDB. One with no
+    // rating stays out, as in the Recommended rows.
+    await setPerson('ada', me => ({settings: {...me.settings, limit: 'teen'}}));
+    assert.deepEqual(await all(), {'all/watchlist': [f[0], f[3]], 'all/history': [f[0], f[3]], 'series/up_next': [t[0], t[3]], 'all/upnext_new': [t[0], t[3]], 'all/list_mine_501': [f[0], f[3], 'tt9300009']}); assert.equal(fake.tmdb.length, asked);
+    // A long list under a limit is read further, so a page is not short because its start was left out: after the two that fit
+    // come a hundred and thirty films known to have no rating (the list's second page on Trakt), and then one more that fits.
+    const LONG = Array.from({length: 130}, (_, n) => ({title: `Long ${n}`, ids: {imdb: `tt95${String(n).padStart(5, '0')}`, tmdb: 9500 + n}}));
+    sql(`UPDATE rows_cache SET items = json_set(items, '$.certs', json_patch(json_extract(items, '$.certs'), json('${JSON.stringify({...Object.fromEntries(LONG.map(item => [`m${item.ids.tmdb}`, ''])), m9305: 'PG'})}'))) WHERE person = 'ada' AND kind = 'certs'`);
+    trakt.watchlist = [FILMS[0], FILMS[3], ...LONG, film('Also for all', 5)].map((movie, n) => ({type: 'movie', movie, listed_at: ago(1 + n)}));
+    sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind LIKE 'watchlist%'"); trakt.reads = [];
+    assert.deepEqual(await ids('all/watchlist'), [f[0], f[3], 'tt930005']); assert.deepEqual(trakt.reads.filter(read => read.where === '/sync/watchlist/all/added/desc').map(read => new URLSearchParams(read.query).get('page')), ['1', '2']);
+    assert.equal(fake.tmdb.length, asked); assert.equal(wanted(), 0);
+    // While titles still wait for a rating nothing further is read: a hundred and fifty unrated films nobody has looked up
+    // are read one page deep, and only that page waits, its start first.
+    trakt.watchlist = Array.from({length: 150}, (_, n) => ({type: 'movie', movie: {title: `New ${n}`, ids: {imdb: `tt97${String(n).padStart(5, '0')}`, tmdb: 9700 + n}}, listed_at: ago(1 + n)}));
+    sql("DELETE FROM rows_cache WHERE person = 'ada' AND kind LIKE 'watchlist%'"); trakt.reads = [];
+    assert.deepEqual(await ids('all/watchlist'), []); assert.deepEqual(trakt.reads.filter(read => read.where === '/sync/watchlist/all/added/desc').map(read => new URLSearchParams(read.query).get('page')), ['1']);
+    assert.equal(wanted(), 100); assert.equal(fake.tmdb.length, asked); sql("UPDATE rows_cache SET items = json_set(items, '$.want', json('[]')) WHERE person = 'ada' AND kind = 'certs'");
+    // What she watched and what is on her lists is as it was: only the rows changed. Her kept lists are whole.
+    assert.equal(JSON.parse(sql("SELECT items FROM rows_cache WHERE person = 'ada' AND kind = 'watchlist'")[0].items).length, 100);
+    // The limit taken off again: every row whole at the next read.
+    await setPerson('ada', me => {const {limit: _, ...settings} = me.settings; return {settings};});
+    assert.deepEqual(await ids('all/history'), f); assert.deepEqual(await ids('series/up_next'), t); assert.deepEqual(await ids('all/list_mine_501'), [...f, 'tt9300009']);
+    // Ratings are kept for her alone, under her hub: nobody else's row reads them.
+    assert.deepEqual(sql("SELECT person FROM rows_cache WHERE kind = 'certs' AND items LIKE '%m9301%'").map(row => row.person), ['ada']);
+  }, false);
+  Object.assign(trakt, {watchlist: before.watchlist, history: before.history, upNext: before.upNext, calendar: before.calendar}); READS['/users/me/lists/501/items'] = before.list; forget(); waited();
 });
 test('a play is only ever taken off Trakt from the hook that hears an app’s own un-mark: no other file can', async () => {
   const {readFileSync, readdirSync} = await import('node:fs'), dir = new URL('../worker/', import.meta.url), files = readdirSync(dir), text = name => readFileSync(new URL(name, dir), 'utf8');

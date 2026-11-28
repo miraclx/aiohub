@@ -68,7 +68,24 @@ const shownCode = await owner.getByLabel('Hub code').inputValue(); assert.match(
 await owner.getByLabel('Password').fill('correct horse'); await owner.getByLabel('Setup code').fill('wrong');
 await owner.getByRole('button', {name: 'Continue'}).click(); await toast(owner).filter({hasText: 'setup code'}).waitFor();
 await owner.goto(BASE + '/#/setup/local-claim'); assert.equal(await owner.getByLabel('Setup code').count(), 0); await owner.getByRole('button', {name: 'Continue'}).click();
-await owner.getByRole('heading', {name: /Which account/}).waitFor(); const hubCode = await owner.locator('.notice strong').textContent(); assert.equal(hubCode, shownCode, 'the code shown before creating must be the one the hub gets'); await shot(owner, '2-setup');
+// The servers come first, before anything is set up on one: the site's own two, filled in and marked as recommended, by the
+// addresses this site is set up with (the local stand-ins here), never a name written into the page.
+await owner.getByRole('heading', {name: 'Which servers should your hub use?'}).waitFor(); const hubCode = await owner.locator('.notice strong').textContent(); assert.equal(hubCode, shownCode, 'the code shown before creating must be the one the hub gets');
+{
+  const up = owner.getByLabel('AIOStreams address'), meta = owner.getByLabel('AIOMetadata address'), usual = 'http://127.0.0.1:8798';
+  assert.equal(await up.inputValue(), usual); assert.equal(await meta.inputValue(), usual); assert.equal(await owner.locator('label .muted', {hasText: '(recommended)'}).count(), 2);
+  assert.ok(!(await owner.locator('.setup').textContent()).includes('ForTheWeak'), 'no server is named by hand');
+  for (const [name, href] of [['Other public AIOStreams servers', 'https://aiostreams.org/getting-started/public-instances'], ['Are they up?', 'https://uptime.ibbylabs.dev']]) {const link = owner.getByRole('link', {name}); assert.equal(await link.getAttribute('href'), href); assert.equal(await link.getAttribute('target'), '_blank');}
+  if (shots) await owner.locator('.toast').first().waitFor({state: 'detached', timeout: 8000}).catch(() => {}); await shot(owner, '2a-setup-servers');
+  // Another address is checked as it is under Hub, General, and says what is wrong in the same words; the step stays.
+  await up.fill('http://streams.example'); assert.equal(await owner.locator('label .muted', {hasText: '(recommended)'}).count(), 1); await owner.getByText('The recommended one is 127.0.0.1.').waitFor();
+  await owner.getByRole('button', {name: 'Check and continue'}).click(); await toast(owner).filter({hasText: 'The AIOStreams address must be a public https address'}).waitFor();
+  await owner.getByRole('heading', {name: 'Which servers should your hub use?'}).waitFor();
+  // Back to the recommended one: nothing is kept for the hub, so it follows the site's own choice.
+  await up.fill(usual); await owner.getByRole('button', {name: 'Use these'}).click();
+}
+await owner.getByRole('heading', {name: /Which account/}).waitFor(); await shot(owner, '2-setup');
+{const kept = (await (await owner.request.get(BASE + '/api/state')).json()).hub; assert.equal(kept.hostUrl, ''); assert.equal(kept.metaUrl, ''); assert.deepEqual(kept.usual, {aiostreams: 'http://127.0.0.1:8798', aiometadata: 'http://127.0.0.1:8798'});}
 await owner.getByLabel('TorBox API key').fill('tb-key-for-test'); await owner.getByRole('button', {name: 'Continue'}).click(); await owner.getByRole('heading', {name: 'What fills Home?'}).waitFor();
 await owner.getByLabel('TMDB API key').fill('tmdb-key-for-test'); if (shots) await owner.screenshot({path: `${shots}/real-2b-home-keys.png`}); await owner.getByRole('button', {name: 'Continue'}).click(); await owner.getByRole('heading', {name: /How should it pick/}).waitFor();
 await owner.getByRole('button', {name: 'Continue'}).click();
@@ -719,7 +736,15 @@ if (shots) {
   await owner.reload(); await owner.mouse.move(0, 0); await owner.getByText('Tiny Tales').first().waitFor();
 }
 await credit(owner); assert.equal(await owner.getByText('Test build').count(), 0, 'no test-build banner');
-await owner.goto(BASE + '/#/hub/general'); await owner.getByRole('heading', {name: 'Background work'}).waitFor(); await shot(owner, '16c-general-wide'); await owner.setViewportSize({width: 390, height: 844});
+await owner.goto(BASE + '/#/hub/general'); await owner.getByRole('heading', {name: 'Background work'}).waitFor(); await shot(owner, '16c-general-wide');
+// The Servers card names this site's own servers as it is set up (the local stand-in here), and says what moving does.
+{
+  const card = owner.locator('section', {has: owner.getByRole('heading', {name: 'Servers', exact: true})}); if (shots) {await owner.locator('.toast').first().waitFor({state: 'detached', timeout: 8000}).catch(() => {}); await card.screenshot({path: `${shots}/real-16d-servers-card.png`});}
+  const text = await card.textContent(); assert.ok(text.includes('this site’s usual server (127.0.0.1)') && !text.includes('ForTheWeak'), text);
+  assert.equal(await card.getByLabel('AIOStreams address').getAttribute('placeholder'), 'http://127.0.0.1:8798'); assert.equal(await card.getByLabel('AIOMetadata address').getAttribute('placeholder'), 'http://127.0.0.1:8798');
+  assert.ok(text.includes('removes the old setups, then makes new ones') && text.includes('Apps stay signed in') && !text.includes('stays behind'), text);
+}
+await owner.setViewportSize({width: 390, height: 844});
 // The address to call when Home changes (Hub, General): a plain field holding the saved address, for the manager, changed in place
 // like a name: Save shows only while the text differs from what is kept. Refused unless it is https. Emptied and saved, it is
 // removed, after asking. Background work says how the last call went, never the address. (.example names exist nowhere; nothing
@@ -1148,6 +1173,10 @@ await nobody.getByText('It signs in as Ada Two in a few seconds.', {exact: true}
   // Deleting the hub leaves a new one to make: first-time setup, step by step, on the same pages a new manager gets.
   await at('/account'); await sample.getByRole('button', {name: 'Delete', exact: true}).click(); await sample.getByRole('dialog').getByLabel('Password').fill('anything'); await sample.getByRole('button', {name: 'Delete everything'}).click(); await sample.getByRole('heading', {name: 'Sign in'}).waitFor();
   await sample.getByRole('link', {name: 'Create a hub'}).click(); await sample.getByRole('heading', {name: 'Create your hub'}).waitFor(); assert.equal(await sample.getByLabel('Setup code').count(), 0); await sample.getByLabel('Password').fill('long enough'); await sample.getByRole('button', {name: 'Continue'}).click();
+  // The servers step in the preview: the pretend site's two, and a typed address is kept and the walk goes on.
+  await sample.getByRole('heading', {name: 'Which servers should your hub use?'}).waitFor(); assert.equal(await sample.getByLabel('AIOStreams address').inputValue(), 'https://aiostreams.example'); assert.equal(await sample.getByLabel('AIOMetadata address').inputValue(), 'https://aiometadata.example');
+  await sample.getByLabel('AIOStreams address').fill('https://streams.mine.example/'); await sample.getByRole('button', {name: 'Check and continue'}).click();
+  await sample.getByRole('heading', {name: /Which account/}).waitFor(); await sample.getByRole('button', {name: 'Back'}).click(); assert.equal(await sample.getByLabel('AIOStreams address').inputValue(), 'https://streams.mine.example'); await sample.getByRole('button', {name: 'Use these'}).click();
   await sample.getByRole('heading', {name: /Which account/}).waitFor(); await sample.getByLabel('TorBox API key').fill('any key'); await sample.getByRole('button', {name: 'Continue'}).click(); await sample.getByRole('heading', {name: 'What fills Home?'}).waitFor();
   await sample.getByLabel('TMDB API key').fill('any key'); await sample.getByRole('button', {name: 'Continue'}).click(); await sample.getByRole('heading', {name: /How should it pick/}).waitFor(); await sample.getByRole('button', {name: 'Continue'}).click();
   await sample.getByLabel('Name').fill('Zed'); await sample.getByRole('button', {name: 'Finish'}).click(); await sample.getByRole('heading', {name: 'Zed', exact: true}).waitFor(); await sample.locator('.share-text code').filter({hasText: '#/join/sample-zed'}).waitFor();

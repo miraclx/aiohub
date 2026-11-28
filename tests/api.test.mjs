@@ -573,6 +573,8 @@ test('the hub’s servers: only the manager, only public https addresses, and a 
   for (const bad of ['http://streams.example', 'https://10.0.0.1', 'https://localhost', 'https://user:pw@streams.example', 'not an address']) assert.equal((await owner('PUT', '/api/host', {aiostreams: bad, aiometadata: ''})).status, 400, bad);
   assert.equal((await owner('PUT', '/api/host', {aiostreams: '', aiometadata: ''})).status, 200);
   const hub = (await owner('GET', '/api/state')).body.hub; assert.equal(hub.hostUrl, ''); assert.deepEqual(hub.missing, []);
+  // The site's own two servers (its settings) are sent to the manager, for the Servers card and first-time setup; never to a person.
+  assert.deepEqual(hub.usual, {aiostreams: 'http://127.0.0.1:8798', aiometadata: 'http://127.0.0.1:8798'}); assert.equal('usual' in (await guest('GET', '/api/state')).body.hub, false);
   assert.equal((await owner('PUT', '/api/hub', {...hub, hostUrl: 'https://elsewhere.example', metaUrl: 'https://elsewhere.example'})).status, 200);
   assert.equal((await owner('GET', '/api/state')).body.hub.hostUrl, '');
 });

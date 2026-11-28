@@ -4,6 +4,18 @@ Newest first. Dates are the commit dates on `main`.
 
 ## 2026-11-28
 
+- A content limit now covers every row the hub makes itself, not only the ones AIOMetadata builds: the Watchlist, Recently
+  Watched, Up Next, New for you, a person's own Trakt lists and Recommended all leave out what is rated above Kids or Teens,
+  and what has no US rating. A row is filtered as it is read, so a limit the manager changes counts at the next refresh.
+  Ratings are looked up on TMDB a few titles each run (new row under Hub, General, Background work: "Ratings for content
+  limits"), and a title is left out until its rating is known. Under a limit the hub also saves to Favorites only what the
+  limit lets through; it never takes a saved title away for a limit, and what was watched is untouched.
+- First-time setup has a Servers step, before anything is set up on a server: the site's own AIOStreams and AIOMetadata
+  servers are filled in as recommended, and another address is checked the way it is under Hub, General.
+- The Servers card names this site's own servers as it is set up, not a fixed name, and says what moving really does:
+  the old setups are removed first and new ones made, apps stay signed in, and watched marks are kept on the server and do
+  not move. With MDBList sync on, what was watched comes back by itself.
+- The Hub page finds who has played something with one look per person, not a read of every play.
 - The preview (`/?sample`) is the real site now, not a second copy of it: the same pages, asking a pretend hub kept in the
   browser instead of the network. Its data is recorded from the local test Worker (`npm run sample:record`), changes made
   in it are kept in that browser until Reset, and a person's own page opens from their link as it does for a manager. The

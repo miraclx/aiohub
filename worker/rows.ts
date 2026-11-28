@@ -18,6 +18,9 @@ import {mdblist} from './carry';
 import {unpacked} from './here';
 import {FOR_YOU_SERVED, served as forYouServed} from './foryou';
 import {AHEAD, recommendedOf} from './recs';
+import {limitOf} from './foryou';
+import {fitting} from './limit';
+import type {Limit} from '../src/data';
 import {freshExtra, freshHere, nextHere} from './ahead';
 
 export const ROWS = 'rows';
@@ -470,18 +473,33 @@ export async function rows(env: Env, path: string[]): Promise<Response> {
   const row = what !== 'catalog' ? undefined : list ? (type === 'all' ? listServed(list[1], list[2]) : undefined) : mine || Object.values(SERVED).find(item => item.type === type && item.id === catalog) || BEFORE[`${type}/${catalog}`];
   if (!row) return answer(404, {err: 'Not found'});
   const skip = Math.max(0, Number(new URLSearchParams(extra ? name : '').get('skip') ?? 0) || 0);
-  const all = mine ? await forYouServed(env, owner.hub, owner.person, row.id, row.type as 'movie' | 'series') : await fill(env, owner.hub, owner.person, row, skip + PAGE);
+  // Their content limit as it stands now (their own, else their group's, else the hub's). Someone removed has no rows.
+  const limit = await limitOf(env, owner.hub, owner.person);
+  if (!limit) return answer(200, {metas: []});
   // A row of one type lists only that type (the address from before for New for you's shows).
-  const items = row.type === 'all' ? all : all.filter(item => item.type === row.type);
+  const listed = async (want: number) => {
+    const all = mine ? await forYouServed(env, owner.hub, owner.person, row.id, row.type as 'movie' | 'series') : await fill(env, owner.hub, owner.person, row, want, limit);
+    return row.type === 'all' ? all : all.filter(item => item.type === row.type);
+  };
+  /* THE ONE WAY OUT: every list the hub hands to a person's apps is filtered here by their content limit (limit.ts), whatever
+     row it is and however it was made. Nothing kept is filtered, so a limit changed a moment ago counts now. Under a limit a
+     long list is read further when what fits of its start does not fill the page asked for (twice at most), but only once
+     every title read so far is rated: while some still wait to be looked up, the start of the list is what gets looked up
+     first, and nothing further is read or noted. */
+  const told = {unknown: 0};
+  let want = skip + PAGE, all = await listed(want), items = await fitting(env, owner.hub, owner.person, limit, all, told);
+  for (let deeper = 0; deeper < 2 && limit !== 'all' && !mine && PAGES[row.kind] && !told.unknown && items.length < skip + PAGE && all.length >= want; deeper++) {
+    want = all.length + 200; all = await listed(want); items = await fitting(env, owner.hub, owner.person, limit, all, told);
+  }
   return answer(200, {metas: items.slice(skip, skip + PAGE).map(item => ({id: item.id, type: item.type, name: item.name}))});
 }
-/* A row's titles, from this person's own accounts and watching only. Trakt disconnected from the hub, or MDBList's key removed: nothing of
+/* A row's titles, whole (their content limit is applied where the row is handed over: rows, above), from this person's own accounts and watching only. Trakt disconnected from the hub, or MDBList's key removed: nothing of
    that account's, even if it was read a moment ago. Never an error, which AIOMetadata would keep. */
 const linkOf = async (env: Env, hub: string, person: string) => env.TRAKT_CLIENT_ID ? getSecret<{again?: boolean}>(env, hub, person, LINK) : null;
-async function fill(env: Env, hub: string, person: string, row: Served, want: number): Promise<Item[]> {
+async function fill(env: Env, hub: string, person: string, row: Served, want: number, limit: Limit = 'all'): Promise<Item[]> {
   const link = await linkOf(env, hub, person);
-  // Recommended: Trakt's when it is connected, as far as their content limit lets it through; else what was worked out for them (recs.ts).
-  if (row.kind === 'movies' || row.kind === 'shows') return recommendedOf(env, hub, person, row.type as 'movie' | 'series', link ? await itemsOf(env, hub, person, row, want) : []);
+  // Recommended: Trakt's when it is connected and they have no content limit; else what was worked out for them, after Trakt's own under a limit (recs.ts).
+  if (row.kind === 'movies' || row.kind === 'shows') return recommendedOf(env, hub, person, row.type as 'movie' | 'series', link ? await itemsOf(env, hub, person, row, want) : [], limit);
   // New for you and Up Next: Trakt's when it is connected, and what the hub found for the shows Trakt does not know of after;
   // without Trakt, all of it from what they watched and what was looked up ahead (ahead.ts).
   if (row.kind === 'fresh') return link ? freshOf(env, hub, person, row) : freshHere(env, hub, person);

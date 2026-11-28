@@ -7,6 +7,7 @@ import {hearts} from './hearts';
 import {forYou, resend} from './foryou';
 import {due} from './notice';
 import {nightly} from './ahead';
+import {rate} from './limit';
 import {sweep, waitOut} from './trakt';
 import type {Env} from './util';
 import {named, now} from './util';
@@ -33,6 +34,7 @@ export default {
   // person's MDBList what was watched here and it lacks (sync.ts, leftovers), once a day each: after those, so it never holds a pick
   // up. Last of all, a run with nothing else to do works out one person's Recommended rows (recs.ts), once a day each, from 4:00 UTC,
   // or with none of those to do looks up one person's Up Next and New for you (ahead.ts: for someone without Trakt), once a day each.
+  // A run with none of that either looks up the ratings a person's content limit is waiting for (limit.ts, rate), at any hour.
   async scheduled(event: ScheduledController, site: Env, ctx: ExecutionContext) {
     const env = named(site);
     // Each run is counted, for the Hub page. Every job below has its own row under Hub, General, Background work (Background in
@@ -47,7 +49,8 @@ export default {
       .then(busy => busy || drift(env, event.scheduledTime)).catch(error => {console.error('drift', (error as Error).message); return true;})
       .then(busy => busy || forYou(env, event.scheduledTime)).catch(error => {console.error('foryou', (error as Error).message); return true;})
       .then(busy => busy || leftovers(env, event.scheduledTime)).catch(error => {console.error('leftovers', (error as Error).message); return true;})
-      .then(busy => busy ? null : nightly(env, event.scheduledTime)).catch(error => console.error('nightly', (error as Error).message))
+      .then(busy => busy || nightly(env, event.scheduledTime)).catch(error => {console.error('nightly', (error as Error).message); return true;})
+      .then(busy => busy ? null : rate(env)).catch(error => console.error('rate', (error as Error).message))
       // Last, with everything else done: a start, pause or stop Trakt asked the hub to wait a few minutes with goes when that wait ends.
       .then(() => waitOut(env)).catch(error => console.error('wait out', (error as Error).message)));
   },

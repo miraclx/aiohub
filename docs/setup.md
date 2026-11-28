@@ -49,10 +49,11 @@ never replace your `VAULT_KEY` by accident. Put the file back and run it again.
 
 1. Open the one-time link and choose a password. The site makes a hub code for you. You sign in with the two together,
    so save both.
-2. Paste a debrid key.
-3. Paste your TMDB key, and an MDBList key if you have one.
-4. Pick a starting quality.
-5. Add your first group and person.
+2. Choose the two servers your hub uses, or keep the ones the site recommends.
+3. Paste a debrid key.
+4. Paste your TMDB key, and an MDBList key if you have one.
+5. Pick a starting quality.
+6. Add your first group and person.
 
 ## 3. Invite people
 
